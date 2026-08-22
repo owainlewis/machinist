@@ -1,6 +1,7 @@
 package factorycli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -124,11 +125,13 @@ func (c command) run(arguments []string) error {
 		if len(remaining) != 1 {
 			return &usageError{message: "status does not accept arguments"}
 		}
-		client, err := newAPIClient(*server, c.client)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, err := newAPIClient(ctx, *server, c.client)
 		if err != nil {
 			return err
 		}
-		return c.status(client, *jsonOutput)
+		return c.status(ctx, client, *jsonOutput)
 	case "show":
 		if len(remaining) != 2 || strings.TrimSpace(remaining[1]) == "" {
 			return &usageError{message: "show requires exactly one Run ID"}
@@ -136,20 +139,24 @@ func (c command) run(arguments []string) error {
 		if strings.ContainsAny(remaining[1], "/?#") {
 			return &usageError{message: "Run ID must be one URL path segment"}
 		}
-		client, err := newAPIClient(*server, c.client)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, err := newAPIClient(ctx, *server, c.client)
 		if err != nil {
 			return err
 		}
-		return c.show(client, remaining[1], *jsonOutput)
+		return c.show(ctx, client, remaining[1], *jsonOutput)
 	case "workers":
 		if len(remaining) != 1 {
 			return &usageError{message: "workers does not accept arguments"}
 		}
-		client, err := newAPIClient(*server, c.client)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, err := newAPIClient(ctx, *server, c.client)
 		if err != nil {
 			return err
 		}
-		return c.workers(client, *jsonOutput)
+		return c.workers(ctx, client, *jsonOutput)
 	case "server", "worker":
 		if *jsonOutput {
 			return &usageError{message: "--json is available only for status, show, and workers"}

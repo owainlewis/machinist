@@ -1,10 +1,13 @@
 package factorycli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,8 +23,8 @@ import (
 func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 	now := time.Date(2026, time.August, 22, 10, 11, 12, 0, time.FixedZone("BST", 3600))
 	run := protocol.Run{
-		ID: "run-1", Task: protocol.TaskSnapshot{Name: "Review Factory"},
-		State: protocol.RunRunning, Source: "manual", SessionCount: 1, ActiveCount: 1,
+		ID: "run-\x1b[2J1", Task: protocol.TaskSnapshot{Name: "Review Factory"},
+		State: protocol.RunState("running\x00"), Source: "manual", SessionCount: 1, ActiveCount: 1,
 		AdmittedAt: now, UpdatedAt: now,
 	}
 	detail := protocol.RunDetail{Run: run, Sessions: []protocol.Session{{
@@ -31,7 +34,7 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 	}}}
 	worker := protocol.Worker{
 		ID: "worker-1", Name: "local", Online: true, Health: "healthy",
-		Runtime: "codex", ActiveCount: 1, Capacity: 10, LastHeartbeat: now,
+		Runtime: "codex\x1b[2J", ActiveCount: 1, Capacity: 10, LastHeartbeat: now,
 	}
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
@@ -39,7 +42,7 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 		output.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/v1/runs":
-			json.NewEncoder(output).Encode(protocol.RunPage{Runs: []protocol.Run{run}})
+			json.NewEncoder(output).Encode(protocol.RunPage{Runs: []protocol.Run{run}, NextCursor: "cursor\x1b[2J"})
 		case "/api/v1/runs/run-1":
 			json.NewEncoder(output).Encode(detail)
 		case "/api/v1/workers":
@@ -54,9 +57,9 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 		arguments []string
 		contains  []string
 	}{
-		{[]string{"--server", server.URL, "status"}, []string{"RUN ID", "run-1", "Review Factory", "2026-08-22T09:11:12Z"}},
-		{[]string{"--server", server.URL, "show", "run-1"}, []string{"Run: run-1", "SESSION ID", "github.com/owainlewis/factory", "ATTEMPTS", `safe\u001B[2Junsafe\u0000end`}},
-		{[]string{"--server", server.URL, "workers"}, []string{"WORKER ID", "worker-1", "healthy", "codex"}},
+		{[]string{"--server", server.URL, "status"}, []string{"RUN ID", `run-\u001B[2J1`, "Review Factory", `running\u0000`, `cursor\u001B[2J`, "2026-08-22T09:11:12Z"}},
+		{[]string{"--server", server.URL, "show", "run-1"}, []string{`Run: run-\u001B[2J1`, "SESSION ID", "github.com/owainlewis/factory", "ATTEMPTS", `safe\u001B[2Junsafe\u0000end`}},
+		{[]string{"--server", server.URL, "workers"}, []string{"WORKER ID", "worker-1", "healthy", `codex\u001B[2J`}},
 	}
 	for _, test := range tests {
 		var stdout, stderr bytes.Buffer
@@ -84,7 +87,7 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 		t.Fatalf("JSON status = %d, stderr %q", code, stderr.String())
 	}
 	var page protocol.RunPage
-	if err := json.Unmarshal(stdout.Bytes(), &page); err != nil || len(page.Runs) != 1 || page.Runs[0].ID != "run-1" {
+	if err := json.Unmarshal(stdout.Bytes(), &page); err != nil || len(page.Runs) != 1 || page.Runs[0].ID != "run-\x1b[2J1" {
 		t.Fatalf("JSON status = %#v, error %v", page, err)
 	}
 	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50,/api/v1/runs/run-1,/api/v1/workers,/api/v1/runs?limit=50"; got != want {
@@ -155,7 +158,7 @@ func TestFiniteCommandsReportEmptyResultsAndServerErrors(t *testing.T) {
 
 func TestFiniteCommandsRejectUnsafeEndpointsAndMalformedResponses(t *testing.T) {
 	for _, endpoint := range []string{
-		"https://127.0.0.1:7337", "http://example.com:7337", "http://127.0.0.1:0",
+		"https://127.0.0.1:7337", "http://example.com:7337", "http://127.0.0.1:0", "http://127.0.0.1:00", "http://127.0.0.1:65536",
 		"http://127.0.0.1:7337/path", "http://user@127.0.0.1:7337",
 	} {
 		var stderr bytes.Buffer
@@ -170,6 +173,50 @@ func TestFiniteCommandsRejectUnsafeEndpointsAndMalformedResponses(t *testing.T) 
 	var stderr bytes.Buffer
 	if code := Run(Options{Arguments: []string{"--server", server.URL, "status"}, Stderr: &stderr}); code != 1 || !strings.Contains(stderr.String(), "decode server response") {
 		t.Fatalf("malformed response = %d, stderr %q", code, stderr.String())
+	}
+}
+
+func TestFiniteCommandsSanitizeHTTPReasonPhrases(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	served := make(chan error, 1)
+	go func() {
+		connection, err := listener.Accept()
+		if err != nil {
+			served <- err
+			return
+		}
+		defer connection.Close()
+		reader := bufio.NewReader(connection)
+		for {
+			line, readErr := reader.ReadString('\n')
+			if readErr != nil {
+				served <- readErr
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, err = io.WriteString(connection, "HTTP/1.1 500 BAD\x1b[2JSTATUS\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+		served <- err
+	}()
+	var stderr bytes.Buffer
+	code := Run(Options{
+		Arguments: []string{"--server", "http://" + listener.Addr().String(), "status"},
+		Stderr:    &stderr,
+	})
+	if err := <-served; err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || !strings.Contains(stderr.String(), `500 BAD\u001B[2JSTATUS`) {
+		t.Fatalf("unsafe HTTP status = %d, stderr %q", code, stderr.String())
+	}
+	if strings.ContainsRune(stderr.String(), '\x1b') {
+		t.Fatalf("unsafe HTTP status wrote a terminal control byte: %q", stderr.String())
 	}
 }
 
