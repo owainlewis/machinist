@@ -42,6 +42,7 @@ if [ -n "$native" ]; then
   archive_root="factory_${version#v}_${native_os}_${native_arch}"
   mkdir -p "$temporary/rollback/archive" "$temporary/rollback/bin" "$temporary/rollback/state"
   tar -xzf "$temporary/first/$archive_root.tar.gz" -C "$temporary/rollback/archive"
+  install -m 0755 "$temporary/rollback/archive/$archive_root/factory" "$temporary/rollback/bin/factory"
   install -m 0755 "$temporary/rollback/archive/$archive_root/factory-server" "$temporary/rollback/bin/factory-server"
   install -m 0755 "$temporary/rollback/archive/$archive_root/factory-worker" "$temporary/rollback/bin/factory-worker"
   printf 'pre-upgrade database\n' > "$temporary/rollback/state/factory.sqlite3"
@@ -50,6 +51,7 @@ if [ -n "$native" ]; then
   mv "$temporary/rollback/state/factory.sqlite3" "$temporary/rollback/state/factory.sqlite3.failed"
   cp -p "$temporary/rollback/state/factory.sqlite3.before-upgrade" "$temporary/rollback/state/factory.sqlite3"
   cmp "$temporary/rollback/state/factory.sqlite3.before-upgrade" "$temporary/rollback/state/factory.sqlite3"
+  "$temporary/rollback/bin/factory" version | grep -F "$version" >/dev/null
   "$temporary/rollback/bin/factory-server" version | grep -F "$version" >/dev/null
   "$temporary/rollback/bin/factory-worker" version | grep -F "$commit" >/dev/null
 fi

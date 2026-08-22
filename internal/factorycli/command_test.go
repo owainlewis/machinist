@@ -1,0 +1,284 @@
+package factorycli
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/owainlewis/factory/internal/protocol"
+)
+
+func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
+	now := time.Date(2026, time.August, 22, 10, 11, 12, 0, time.FixedZone("BST", 3600))
+	run := protocol.Run{
+		ID: "run-1", Task: protocol.TaskSnapshot{Name: "Review Factory"},
+		State: protocol.RunRunning, Source: "manual", SessionCount: 1, ActiveCount: 1,
+		AdmittedAt: now, UpdatedAt: now,
+	}
+	detail := protocol.RunDetail{Run: run, Sessions: []protocol.Session{{
+		ID: "session-1", RepositoryIdentity: "github.com/owainlewis/factory",
+		State: protocol.SessionRunning, AssignedWorkerID: "worker-1",
+		Attempts: []protocol.Attempt{{ID: "attempt-1"}}, Result: "safe\x1b[2Junsafe\x00end\n" + strings.Repeat("🙂", 100),
+	}}}
+	worker := protocol.Worker{
+		ID: "worker-1", Name: "local", Online: true, Health: "healthy",
+		Runtime: "codex", ActiveCount: 1, Capacity: 10, LastHeartbeat: now,
+	}
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
+		paths = append(paths, request.URL.RequestURI())
+		output.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/v1/runs":
+			json.NewEncoder(output).Encode(protocol.RunPage{Runs: []protocol.Run{run}})
+		case "/api/v1/runs/run-1":
+			json.NewEncoder(output).Encode(detail)
+		case "/api/v1/workers":
+			json.NewEncoder(output).Encode(workerPage{Workers: []protocol.Worker{worker}})
+		default:
+			http.NotFound(output, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	tests := []struct {
+		arguments []string
+		contains  []string
+	}{
+		{[]string{"--server", server.URL, "status"}, []string{"RUN ID", "run-1", "Review Factory", "2026-08-22T09:11:12Z"}},
+		{[]string{"--server", server.URL, "show", "run-1"}, []string{"Run: run-1", "SESSION ID", "github.com/owainlewis/factory", "ATTEMPTS", `safe\u001B[2Junsafe\u0000end`}},
+		{[]string{"--server", server.URL, "workers"}, []string{"WORKER ID", "worker-1", "healthy", "codex"}},
+	}
+	for _, test := range tests {
+		var stdout, stderr bytes.Buffer
+		if code := Run(Options{Arguments: test.arguments, Stdout: &stdout, Stderr: &stderr}); code != 0 {
+			t.Fatalf("Run(%v) = %d, stderr %q", test.arguments, code, stderr.String())
+		}
+		for _, want := range test.contains {
+			if !strings.Contains(stdout.String(), want) {
+				t.Fatalf("Run(%v) output %q does not contain %q", test.arguments, stdout.String(), want)
+			}
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("Run(%v) stderr = %q", test.arguments, stderr.String())
+		}
+		if !utf8.ValidString(stdout.String()) {
+			t.Fatalf("Run(%v) wrote invalid UTF-8: %q", test.arguments, stdout.String())
+		}
+		if strings.ContainsAny(stdout.String(), "\x00\x1b") {
+			t.Fatalf("Run(%v) wrote terminal control bytes: %q", test.arguments, stdout.String())
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(Options{Arguments: []string{"--server", server.URL, "--json", "status"}, Stdout: &stdout, Stderr: &stderr}); code != 0 {
+		t.Fatalf("JSON status = %d, stderr %q", code, stderr.String())
+	}
+	var page protocol.RunPage
+	if err := json.Unmarshal(stdout.Bytes(), &page); err != nil || len(page.Runs) != 1 || page.Runs[0].ID != "run-1" {
+		t.Fatalf("JSON status = %#v, error %v", page, err)
+	}
+	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50,/api/v1/runs/run-1,/api/v1/workers,/api/v1/runs?limit=50"; got != want {
+		t.Fatalf("API paths = %q, want %q", got, want)
+	}
+}
+
+func TestFiniteCommandsRejectRedirectsWithoutMutatingTheHTTPClient(t *testing.T) {
+	targetCalled := false
+	target := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
+		targetCalled = true
+		json.NewEncoder(output).Encode(protocol.RunPage{})
+	}))
+	t.Cleanup(target.Close)
+	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
+		http.Redirect(output, request, target.URL, http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	client := &http.Client{Timeout: time.Second}
+	var stderr bytes.Buffer
+	code := Run(Options{
+		Arguments: []string{"--server", server.URL, "status"}, Stderr: &stderr,
+		HTTPClient: client,
+	})
+	if code != 1 || !strings.Contains(stderr.String(), "server returned 302 Found") {
+		t.Fatalf("redirect = %d, stderr %q", code, stderr.String())
+	}
+	if targetCalled {
+		t.Fatal("redirect target received a request")
+	}
+	if client.CheckRedirect != nil {
+		t.Fatal("caller's HTTP client was mutated")
+	}
+}
+
+func TestFiniteCommandsReportEmptyResultsAndServerErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
+		output.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/v1/runs":
+			json.NewEncoder(output).Encode(protocol.RunPage{})
+		case "/api/v1/workers":
+			json.NewEncoder(output).Encode(workerPage{})
+		default:
+			output.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(output).Encode(protocol.ErrorBody{Error: protocol.APIError{Code: "not_found", Message: "Run was not found"}})
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	for _, test := range []struct {
+		command string
+		want    string
+	}{{"status", "No Runs."}, {"workers", "No Workers."}} {
+		var stdout bytes.Buffer
+		if code := Run(Options{Arguments: []string{"--server", server.URL, test.command}, Stdout: &stdout}); code != 0 || !strings.Contains(stdout.String(), test.want) {
+			t.Fatalf("%s = code %d, output %q", test.command, code, stdout.String())
+		}
+	}
+	var stderr bytes.Buffer
+	if code := Run(Options{Arguments: []string{"--server", server.URL, "show", "missing"}, Stderr: &stderr}); code != 1 {
+		t.Fatalf("missing show = %d, stderr %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "404 Not Found: Run was not found") {
+		t.Fatalf("missing show stderr = %q", stderr.String())
+	}
+}
+
+func TestFiniteCommandsRejectUnsafeEndpointsAndMalformedResponses(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://127.0.0.1:7337", "http://example.com:7337", "http://127.0.0.1:0",
+		"http://127.0.0.1:7337/path", "http://user@127.0.0.1:7337",
+	} {
+		var stderr bytes.Buffer
+		if code := Run(Options{Arguments: []string{"--server", endpoint, "status"}, Stderr: &stderr}); code != 1 {
+			t.Fatalf("endpoint %q = %d, stderr %q", endpoint, code, stderr.String())
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(output, "not-json")
+	}))
+	t.Cleanup(server.Close)
+	var stderr bytes.Buffer
+	if code := Run(Options{Arguments: []string{"--server", server.URL, "status"}, Stderr: &stderr}); code != 1 || !strings.Contains(stderr.String(), "decode server response") {
+		t.Fatalf("malformed response = %d, stderr %q", code, stderr.String())
+	}
+}
+
+func TestStartCommandsExecCompatibilityBinariesWithConfig(t *testing.T) {
+	bin := t.TempDir()
+	for _, name := range []string{"factory", "factory-server", "factory-worker"} {
+		path := filepath.Join(bin, name)
+		if err := os.WriteFile(path, []byte("binary"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		role string
+		key  string
+	}{
+		{"server", "FACTORY_SERVER_CONFIG"},
+		{"worker", "FACTORY_WORKER_CONFIG"},
+	}
+	for _, test := range tests {
+		t.Run(test.role, func(t *testing.T) {
+			var path string
+			var arguments, environment []string
+			var stderr bytes.Buffer
+			code := Run(Options{
+				Arguments: []string{test.role, "start", "--config", "config.toml"},
+				Stderr:    &stderr, Environment: []string{test.key + "=old", "KEEP=value"},
+				Executable: func() (string, error) { return filepath.Join(bin, "factory"), nil },
+				LookPath:   func(string) (string, error) { return "", errors.New("not found") },
+				Exec: func(gotPath string, gotArguments, gotEnvironment []string) error {
+					path, arguments, environment = gotPath, gotArguments, gotEnvironment
+					return nil
+				},
+			})
+			if code != 0 || stderr.Len() != 0 {
+				t.Fatalf("start = %d, stderr %q", code, stderr.String())
+			}
+			resolvedBin, err := filepath.EvalSymlinks(bin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if path != filepath.Join(resolvedBin, "factory-"+test.role) || len(arguments) != 1 || arguments[0] != "factory-"+test.role {
+				t.Fatalf("exec = %q %#v", path, arguments)
+			}
+			if got := strings.Join(environment, ","); got != "KEEP=value,"+test.key+"=config.toml" {
+				t.Fatalf("environment = %q", got)
+			}
+		})
+	}
+}
+
+func TestStartCommandsReturnUsefulUsageAndLookupErrors(t *testing.T) {
+	tests := []struct {
+		arguments []string
+		code      int
+		want      string
+	}{
+		{nil, 2, "a command is required"},
+		{[]string{"server"}, 2, "server requires the start command"},
+		{[]string{"worker", "start", "extra"}, 2, "unexpected worker start arguments"},
+		{[]string{"server", "start", "--config="}, 2, "--config requires a non-empty path"},
+		{[]string{"--json", "server", "start"}, 2, "--json is available only"},
+		{[]string{"server", "start"}, 1, "locate factory-server"},
+	}
+	for _, test := range tests {
+		var stderr bytes.Buffer
+		code := Run(Options{
+			Arguments: test.arguments, Stderr: &stderr,
+			Executable: func() (string, error) { return "/missing/factory", nil },
+			LookPath:   func(string) (string, error) { return "", errors.New("not found") },
+		})
+		if code != test.code || !strings.Contains(stderr.String(), test.want) {
+			t.Fatalf("Run(%v) = %d, stderr %q; want %d containing %q", test.arguments, code, stderr.String(), test.code, test.want)
+		}
+	}
+}
+
+func TestHelpIsConciseAndDoesNotAdvertiseFutureCommands(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Run(Options{Arguments: []string{"help"}, Stdout: &stdout, Stderr: &stderr}); code != 0 {
+		t.Fatalf("help = %d, stderr %q", code, stderr.String())
+	}
+	for _, want := range []string{"factory server start", "factory worker start", "factory [--server URL] [--json] status", "FACTORY_SERVER"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("help %q does not contain %q", stdout.String(), want)
+		}
+	}
+	for _, forbidden := range []string{"factory build", "factory run", "factory update", "factory answer"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("help advertises %q: %q", forbidden, stdout.String())
+		}
+	}
+}
+
+func TestFactoryServerEnvironmentOverridesDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(output).Encode(protocol.RunPage{})
+	}))
+	t.Cleanup(server.Close)
+	var stdout, stderr bytes.Buffer
+	code := Run(Options{
+		Arguments: []string{"status"}, Stdout: &stdout, Stderr: &stderr,
+		Getenv: func(key string) string {
+			if key == "FACTORY_SERVER" {
+				return "  " + server.URL + "  "
+			}
+			return ""
+		},
+	})
+	if code != 0 || stdout.String() != "No Runs.\n" {
+		t.Fatalf("environment endpoint = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+}

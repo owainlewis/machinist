@@ -167,10 +167,10 @@ func Build(ctx context.Context, options Options) error {
 			"-X", "github.com/owainlewis/factory/internal/buildinfo.Commit=" + options.Commit,
 		}, " ")
 		environment := releaseGoEnvironment("CGO_ENABLED=0", "GOOS="+target.OS, "GOARCH="+target.Arch)
-		if err := runCommand(ctx, root, environment, "go", "build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-ldflags", ldflags, "-o", binaryDirectory, "./cmd/factory-server", "./cmd/factory-worker"); err != nil {
+		if err := runCommand(ctx, root, environment, "go", "build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-ldflags", ldflags, "-o", binaryDirectory, "./cmd/factory", "./cmd/factory-server", "./cmd/factory-worker"); err != nil {
 			return err
 		}
-		for _, binary := range []string{"factory-server", "factory-worker"} {
+		for _, binary := range []string{"factory", "factory-server", "factory-worker"} {
 			if err := verifyBuildMetadata(ctx, filepath.Join(binaryDirectory, binary), target, options.Version, options.Commit); err != nil {
 				return err
 			}
@@ -178,6 +178,7 @@ func Build(ctx context.Context, options Options) error {
 		archiveName := archiveName(options.Version, target)
 		archivePath := filepath.Join(output, archiveName)
 		files := []archiveFile{
+			{name: "factory", path: filepath.Join(binaryDirectory, "factory"), mode: 0o755},
 			{name: "factory-server", path: filepath.Join(binaryDirectory, "factory-server"), mode: 0o755},
 			{name: "factory-worker", path: filepath.Join(binaryDirectory, "factory-worker"), mode: 0o755},
 			{name: "LICENSE", path: filepath.Join(root, "LICENSE"), mode: 0o644},
@@ -922,7 +923,7 @@ func Verify(ctx context.Context, repositoryRoot, directory, version, commit stri
 		return err
 	}
 	archiveDirectory := filepath.Join(extracted, archiveRoot(version, target))
-	for _, binary := range []string{"factory-server", "factory-worker"} {
+	for _, binary := range []string{"factory", "factory-server", "factory-worker"} {
 		path := filepath.Join(archiveDirectory, binary)
 		if err := verifyBuildMetadata(ctx, path, target, version, commit); err != nil {
 			return err

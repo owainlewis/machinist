@@ -10,6 +10,7 @@ build:
     data_home="${FACTORY_DATA_HOME:-${FACTORY_V2_DATA_HOME:-${HOME:?HOME or FACTORY_DATA_HOME is required}/.factory}}"
     build_directory="${FACTORY_BUILD_DIR:-${FACTORY_V2_BUILD_DIR:-$data_home/bin}}"
     mkdir -p "$build_directory"
+    go build -o "$build_directory/factory" ./cmd/factory
     go build -o "$build_directory/factory-server" ./cmd/factory-server
     go build -o "$build_directory/factory-worker" ./cmd/factory-worker
     printf 'Factory binaries built in %s\n' "$build_directory"

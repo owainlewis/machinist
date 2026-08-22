@@ -5,10 +5,10 @@ Factory publishes one archive for each supported operating system and CPU:
 - Linux amd64 and arm64
 - macOS amd64 and arm64
 
-Each archive contains `factory-server`, `factory-worker`, the project license,
-this guide, the changelog, and generated third-party notices. The release also
-publishes one SPDX 2.3 SBOM per archive, `SHA256SUMS`, a release manifest, and a
-standalone copy of the third-party notices.
+Each archive contains `factory`, `factory-server`, `factory-worker`, the project
+license, this guide, the changelog, and generated third-party notices. The
+release also publishes one SPDX 2.3 SBOM per archive, `SHA256SUMS`, a release
+manifest, and a standalone copy of the third-party notices.
 
 ## Install a release
 
@@ -29,17 +29,19 @@ awk -v file="$archive" '$2 == file' SHA256SUMS | sha256sum -c -
 ```
 
 The checksum file covers every published file except itself. Extract the
-verified archive for your platform and install both binaries:
+verified archive for your platform and install all three binaries:
 
 ```sh
 tar -xzf factory_1.2.3_linux_amd64.tar.gz
+install -m 0755 factory_1.2.3_linux_amd64/factory ~/.local/bin/factory
 install -m 0755 factory_1.2.3_linux_amd64/factory-server ~/.local/bin/factory-server
 install -m 0755 factory_1.2.3_linux_amd64/factory-worker ~/.local/bin/factory-worker
+factory version
 factory-server version
 factory-worker version
 ```
 
-Both commands must report the release tag and the same full source commit shown
+All three commands must report the release tag and the same full source commit shown
 by the GitHub release. Factory stores configuration and state outside the
 archive, under `~/.factory` by default.
 
@@ -60,8 +62,8 @@ server and workers. Upgrade them as one unit:
    done
    ```
 
-3. Replace both binaries from the verified new archive.
-4. Confirm both `version` commands show the same tag and commit.
+3. Replace all three binaries from the verified new archive.
+4. Confirm all three `version` commands show the same tag and commit.
 5. Start the server, check `/healthz`, then start the workers and confirm they
    are healthy in the UI.
 
@@ -72,7 +74,8 @@ rollback is compatible.
 ## Roll back
 
 Stop the workers and server first. If the failed version did not migrate the
-database, reinstall both binaries from the prior verified archive and restart.
+database, reinstall all three binaries from the prior verified archive and
+restart.
 If it did migrate the database, move the failed database aside and restore the
 closed pre-upgrade copy before reinstalling the prior binaries:
 
@@ -111,7 +114,7 @@ identical. Verify a target without executing it:
 ```
 
 Pass `execute` as the final argument on a matching host to install-extract and
-run both version commands.
+run all three version commands.
 
 ## Publish a release
 

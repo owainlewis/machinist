@@ -7,8 +7,12 @@ recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- One `factory` command for starting the existing server or Worker and reading
+  current Runs, Run details, and Workers through the loopback API. The
+  `factory-server` and `factory-worker` commands remain available for
+  compatibility.
 - Reproducible Linux and macOS release archives for amd64 and arm64.
-- Embedded version and source commit reporting in both Factory binaries.
+- Embedded version and source commit reporting in all Factory binaries.
 - SPDX SBOMs, SHA-256 checksums, and generated third-party license notices.
 
 ### Changed

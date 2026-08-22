@@ -1,17 +1,6 @@
 # Factory architecture
 
-> **Status:** Current implementation
->
-> **Verification basis:** `origin/main` at commit `e767947`
->
-> **Future direction:** The proposed
-> [agent-directed software factory](docs/software-factory/design.md) adds
-> work-item admission and agent-owned semantic status while preserving the
-> current Worker lifecycle. The proposed
-> [Cloud Run agent backend](docs/cloud-run-agents/design.md) adds elastic
-> execution. This document describes only code that exists today.
-
-## 1. Executive summary
+## Executive summary
 
 Factory is a local-first control plane for repeatable software-engineering
 agents. An operator saves a prompt and execution settings as a Task. Running
@@ -19,8 +8,11 @@ or scheduling that Task creates a Run with one Session per repository. A
 persistent Worker claims each Session, prepares an isolated Git worktree, runs
 Pi, Codex, or Claude Code, streams events, and reports one terminal result.
 
-The implementation has three main parts:
+The implementation has four main parts:
 
+- `factory` is the operator CLI. Long-running commands replace themselves with
+  the compatible server or Worker executable, while finite commands read the
+  loopback HTTP API and never open SQLite or Worker directories.
 - `factory-server` owns durable state, scheduling, routing, the HTTP API, and
   the embedded browser UI.
 - `factory-worker` owns runtime health, repository caches, worktrees, agent
@@ -38,10 +30,10 @@ artifacts, and credentials are not implemented yet. The contract keeps Factory
 as the source of truth and preserves the persistent Worker path as the built-in
 `persistent-auto` default.
 
-## 2. System context
+### System architecture
 
 ```text
-Operator browser
+Operator browser or `factory` CLI
       |
       | loopback HTTP and JSON
       v
@@ -66,7 +58,21 @@ The control plane decides what should run and records what happened. A Worker
 decides how to execute one claim safely on its machine. The agent runtime is a
 child process and does not receive a control-plane operator credential.
 
-## 3. Current product model
+### Dependency hierarchy
+
+```text
+cmd/factory         -> internal/factorycli   -> internal/protocol
+cmd/factory-server  -> internal/controlplane -> internal/protocol
+                    -> web
+cmd/factory-worker  -> internal/worker       -> internal/protocol
+```
+
+Entry points depend on their runtime package, and both long-running runtime
+packages share only protocol types. Worker code must never import control-plane
+implementation code. Finite CLI commands depend on the HTTP protocol and cannot
+read control-plane or Worker state directly.
+
+## Current product model
 
 ### Task
 
@@ -135,7 +141,7 @@ Workers clone them on demand with `gh`, keep at most 100 cache entries, fetch
 before an Attempt, and resolve the current base branch and commit. Legacy
 static repository paths remain readable through Worker configuration.
 
-## 4. Architectural invariants
+## Architectural invariants
 
 1. SQLite and the control plane are the authority for Run and Attempt state.
 2. A claim is assigned only to its selected, healthy, online Worker with a ready
@@ -159,8 +165,23 @@ static repository paths remain readable through Worker configuration.
    concurrency, generation, and schedule context.
 10. Operator builds embed committed `web/dist` assets and do not require Node.js
     at runtime.
+11. Finite `factory` commands accept only an explicit-port plain HTTP loopback
+    endpoint and read current state through bounded API routes.
 
-## 5. Components
+## Components
+
+### Operator CLI
+
+`cmd/factory` delegates parsing and finite HTTP work to `internal/factorycli`.
+The `status`, `show`, and `workers` commands decode protocol resources and write
+either stable tabular output or one JSON value. They do not import SQLite or
+Worker packages.
+
+The `server start` and `worker start` commands replace the CLI process with the
+matching compatibility executable beside it or on `PATH`. An explicit config
+path is passed through the existing `FACTORY_SERVER_CONFIG` or
+`FACTORY_WORKER_CONFIG` environment contract. Process replacement preserves the
+existing role's signal and shutdown behavior.
 
 ### Control plane
 
@@ -223,7 +244,7 @@ the same-origin API.
 uses an SPA fallback, immutable caching for versioned assets, and restrictive
 security headers. Node.js is needed only when UI source changes.
 
-## 6. Critical flows
+## Critical flows
 
 ### Task admission
 
@@ -265,7 +286,7 @@ Only failed or cancelled Sessions can be retried. Retry preserves the Session
 and Attempt history, selects a currently eligible Worker, and creates the next
 Attempt when claimed.
 
-## 7. API and security boundaries
+## API and security boundaries
 
 The local listener exposes health plus operator and Worker routes under
 `/api/v1`: Workers, repositories, Tasks, Runs, overview, Attempts, and event
@@ -282,7 +303,7 @@ Agents may execute repository code using credentials already available on the
 Worker host. Worktrees isolate Git state, not hostile code. The product must not
 describe a Worker as a security sandbox.
 
-## 8. Persistence and migration
+## Persistence and migration
 
 Migrations are embedded from `migrations/` and applied in order. Migration 27
 introduces the current lifecycle model. Migration 28 adds the current
@@ -302,33 +323,9 @@ Worker enrollment or credentials. Older migration tables may remain for
 history and upgrade compatibility but are not part of the current UI or
 admission path.
 
-## 9. Future execution backend boundary
-
-The product direction separates three choices:
-
-| Choice | Current | Proposed |
-| --- | --- | --- |
-| Execution backend | Persistent local or VM Worker | Cloud Run Job |
-| Agent runtime | Pi, Codex, Claude Code | Same runtime contract |
-| Provider and model | Local subscription or API access | API-backed access |
-
-Persistent Workers remain the best path for subscription sessions, warm
-caches, and inspectable worktrees. Cloud Run is intended for bursty parallel
-Runs where a disposable container and API-backed model are acceptable.
-
-The proposed adapter does not make Cloud Run the scheduler or database.
-Factory still owns frozen input, Attempt identity, retry, cancellation, events,
-cost history, and the terminal result. Cloud Run owns disposable compute. A
-verified patch or Git recovery artifact replaces the retained-worktree
-guarantee for ephemeral execution. See the
-[Cloud Run design](docs/cloud-run-agents/design.md) for dispatch fencing,
-outbound control, least-privilege identity, failure recovery, and rollout.
-
-## 10. Known limitations
+## Known limitations
 
 - Only the embedded SQLite orchestration path exists.
-- Cloud Run execution profiles and elastic dispatch are designed but not
-  implemented.
 - Managed repository acquisition supports GitHub through `gh`.
 - The current Worker resolves a repository's base commit during Attempt
   preparation, so a later retry can observe a newer default branch commit.
@@ -337,10 +334,11 @@ outbound control, least-privilege identity, failure recovery, and rollout.
 - Execution isolates worktrees and process groups but does not sandbox hostile
   repository code or network egress.
 
-## 11. Source map
+## Source map
 
 | Area | Primary files |
 | --- | --- |
+| Operator CLI | `cmd/factory/main.go`, `internal/factorycli/command.go`, `internal/factorycli/client.go` |
 | Server startup and config | `cmd/factory-server/main.go`, `cmd/factory-server/config.go` |
 | HTTP routes and auth | `internal/controlplane/http.go`, `internal/controlplane/worker_auth.go` |
 | Task and Run model | `internal/controlplane/tasks.go`, `internal/protocol/tasks.go` |
@@ -353,3 +351,14 @@ outbound control, least-privilege identity, failure recovery, and rollout.
 | Protocol limits and types | `internal/protocol/types.go`, `internal/protocol/prompt.go` |
 | Schema | `migrations/027_routines_work.sql`, `migrations/028_work_claim_protocol.sql`, `migrations/030_task_run_session.sql` |
 | Browser UI | `web/src/App.tsx`, `web/src/Tasks.tsx`, `web/src/Runs.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |
+
+## Verification
+
+- `go test ./cmd/... ./internal/...` covers entry points, CLI routing and output,
+  API contracts, storage, Worker lifecycle, and release construction.
+- `just boundary` proves Worker code does not import control-plane code.
+- `just test-tooling` proves the Node-free build produces the complete operator
+  binary set.
+- `just test-launcher` proves server and Worker readiness and signal handling.
+- `just test-release` proves archive contents, metadata, reproducibility, and
+  native execution.

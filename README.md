@@ -59,6 +59,8 @@ just run
 
 Open [http://127.0.0.1:7337](http://127.0.0.1:7337). Edit
 `~/.factory/worker.toml` to enable the agent runtimes installed on your machine.
+Use `~/.factory/bin/factory status` to read current Runs or
+`~/.factory/bin/factory workers` to check the Worker pool from the terminal.
 The [local guide](docs/local.md) covers authentication, repository setup, and
 the complete first Run.
 

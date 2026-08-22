@@ -124,6 +124,30 @@ Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
 
 Stop both processes with Ctrl+C.
 
+The build also installs a unified command beside the compatibility binaries.
+It can start either existing process without changing its configuration or
+signal behavior:
+
+```sh
+~/.factory/bin/factory server start
+~/.factory/bin/factory worker start
+```
+
+Use `--config PATH` with either `start` command to select the corresponding
+server or Worker TOML file. In another terminal, finite commands read only the
+loopback API:
+
+```sh
+~/.factory/bin/factory status
+~/.factory/bin/factory show RUN_ID
+~/.factory/bin/factory workers
+```
+
+Add the global `--json` option for one JSON value on stdout. Set
+`FACTORY_SERVER=http://127.0.0.1:PORT` or pass `--server URL` when the operator
+API does not use the default port. These commands never open SQLite or Worker
+directories.
+
 Add a GitHub repository to the central fleet once:
 
 ```sh
