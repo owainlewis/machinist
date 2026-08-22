@@ -33,6 +33,15 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 		State: protocol.SessionRunning, AssignedWorkerID: "worker-1",
 		Attempts: []protocol.Attempt{{ID: "attempt-1"}}, Result: "safe\x1b[2Junsafe\x00end\n" + strings.Repeat("🙂", 100),
 	}}}
+	summary := protocol.RunSummary{
+		ID: run.ID, TaskName: run.Task.Name, State: run.State, Source: run.Source,
+		AdmittedAt: run.AdmittedAt, UpdatedAt: run.UpdatedAt,
+		Sessions: []protocol.RunSessionSummary{{
+			ID: detail.Sessions[0].ID, RepositoryIdentity: detail.Sessions[0].RepositoryIdentity,
+			State: detail.Sessions[0].State, AssignedWorkerID: detail.Sessions[0].AssignedWorkerID,
+			AttemptCount: len(detail.Sessions[0].Attempts), Result: detail.Sessions[0].Result,
+		}},
+	}
 	worker := protocol.Worker{
 		ID: "worker-1", Name: "local", Online: true, Health: "healthy",
 		Runtime: "codex\x1b[2J", ActiveCount: 1, Capacity: 10, LastHeartbeat: now,
@@ -45,7 +54,11 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 		case "/api/v1/runs":
 			json.NewEncoder(output).Encode(protocol.RunPage{Runs: []protocol.Run{run}, NextCursor: "cursor\x1b[2J"})
 		case "/api/v1/runs/run-1":
-			json.NewEncoder(output).Encode(detail)
+			if request.URL.Query().Get("view") == "summary" {
+				json.NewEncoder(output).Encode(summary)
+			} else {
+				json.NewEncoder(output).Encode(detail)
+			}
 		case "/api/v1/workers":
 			json.NewEncoder(output).Encode(workerPage{Workers: []protocol.Worker{worker}})
 		default:
@@ -91,7 +104,15 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &page); err != nil || len(page.Runs) != 1 || page.Runs[0].ID != "run-\x1b[2J1" {
 		t.Fatalf("JSON status = %#v, error %v", page, err)
 	}
-	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50,/api/v1/runs/run-1,/api/v1/workers,/api/v1/runs?limit=50"; got != want {
+	stdout.Reset()
+	if code := Run(Options{Arguments: []string{"--server", server.URL, "--json", "show", "run-1"}, Stdout: &stdout, Stderr: &stderr}); code != 0 {
+		t.Fatalf("JSON show = %d, stderr %q", code, stderr.String())
+	}
+	var shown protocol.RunDetail
+	if err := json.Unmarshal(stdout.Bytes(), &shown); err != nil || len(shown.Sessions) != 1 || len(shown.Sessions[0].Attempts) != 1 {
+		t.Fatalf("JSON show = %#v, error %v", shown, err)
+	}
+	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50,/api/v1/runs/run-1?view=summary,/api/v1/workers,/api/v1/runs?limit=50,/api/v1/runs/run-1"; got != want {
 		t.Fatalf("API paths = %q, want %q", got, want)
 	}
 }
@@ -198,7 +219,7 @@ func TestFiniteCommandsNormalizeLocalhostBeforeProxySelection(t *testing.T) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = func(request *http.Request) (*url.URL, error) {
-		if request.URL.Hostname() == "localhost" {
+		if address := net.ParseIP(request.URL.Hostname()); address != nil && address.IsLoopback() {
 			return nil, nil
 		}
 		return proxyURL, nil
@@ -216,13 +237,16 @@ func TestFiniteCommandsNormalizeLocalhostBeforeProxySelection(t *testing.T) {
 	}
 }
 
-func TestShowAllowsRunDetailsLargerThanListLimit(t *testing.T) {
+func TestShowAllowsSummariesLargerThanListLimit(t *testing.T) {
 	result := strings.Repeat("x", maxResponseBytes)
-	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("view") != "summary" {
+			t.Errorf("show query = %q", request.URL.RawQuery)
+		}
 		output.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(output).Encode(protocol.RunDetail{
-			Run: protocol.Run{ID: "run-large", Task: protocol.TaskSnapshot{Name: "Large run"}},
-			Sessions: []protocol.Session{{
+		if err := json.NewEncoder(output).Encode(protocol.RunSummary{
+			ID: "run-large", TaskName: "Large run",
+			Sessions: []protocol.RunSessionSummary{{
 				ID: "session-large", RepositoryIdentity: "github.com/owainlewis/factory",
 				State: protocol.SessionSucceeded, Result: result,
 			}},

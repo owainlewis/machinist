@@ -19,7 +19,11 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
-const maxResponseBytes = 16 << 20
+const (
+	maxResponseBytes           = 16 << 20
+	maxRunSummaryResponseBytes = 64 << 20
+	maxRunDetailResponseBytes  = 256 << 20
+)
 
 type apiClient struct {
 	endpoint *url.URL
@@ -46,13 +50,13 @@ func newAPIClient(ctx context.Context, value string, client *http.Client) (apiCl
 	if host == "" || err != nil || port == 0 {
 		return apiClient{}, errors.New("server URL must include a loopback host and nonzero port")
 	}
-	if err := validateLoopbackHost(ctx, host); err != nil {
+	pinnedHost, err := validateLoopbackHost(ctx, host)
+	if err != nil {
 		return apiClient{}, err
 	}
-	if strings.EqualFold(host, "localhost") {
-		// ProxyFromEnvironment exempts exact lowercase localhost only.
-		parsed.Host = net.JoinHostPort("localhost", parsed.Port())
-	}
+	// Use the validated literal address so proxies and a second DNS lookup
+	// cannot move a loopback-only command away from the local machine.
+	parsed.Host = net.JoinHostPort(pinnedHost, parsed.Port())
 	parsed.Path = ""
 	clientCopy := *client
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -61,29 +65,33 @@ func newAPIClient(ctx context.Context, value string, client *http.Client) (apiCl
 	return apiClient{endpoint: parsed, client: &clientCopy}, nil
 }
 
-func validateLoopbackHost(ctx context.Context, host string) error {
+func validateLoopbackHost(ctx context.Context, host string) (string, error) {
 	if address := net.ParseIP(host); address != nil {
 		if address.IsLoopback() {
-			return nil
+			return address.String(), nil
 		}
-		return errors.New("server URL host must be loopback")
+		return "", errors.New("server URL host must be loopback")
 	}
 	if !strings.EqualFold(host, "localhost") {
-		return errors.New("server URL host must be a loopback IP or localhost")
+		return "", errors.New("server URL host must be a loopback IP or localhost")
 	}
 	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return fmt.Errorf("resolve server URL host: %w", err)
+		return "", fmt.Errorf("resolve server URL host: %w", err)
 	}
 	if len(addresses) == 0 {
-		return errors.New("server URL host resolved to no addresses")
+		return "", errors.New("server URL host resolved to no addresses")
 	}
+	var pinned net.IP
 	for _, address := range addresses {
 		if !address.IP.IsLoopback() {
-			return errors.New("server URL host must resolve only to loopback")
+			return "", errors.New("server URL host must resolve only to loopback")
+		}
+		if pinned == nil || pinned.To4() == nil && address.IP.To4() != nil {
+			pinned = address.IP
 		}
 	}
-	return nil
+	return pinned.String(), nil
 }
 
 func (c apiClient) get(ctx context.Context, path string, target any, responseLimit int64) error {
@@ -167,33 +175,35 @@ func (c command) status(ctx context.Context, client apiClient, jsonOutput bool) 
 }
 
 func (c command) show(ctx context.Context, client apiClient, runID string, jsonOutput bool) error {
-	var detail protocol.RunDetail
-	// Run details include an unbounded retry history, so no finite byte cap can
-	// cover every valid response. The command deadline still bounds the read.
-	if err := client.get(ctx, "/api/v1/runs/"+url.PathEscape(runID), &detail, 0); err != nil {
-		return err
-	}
 	if jsonOutput {
+		var detail protocol.RunDetail
+		if err := client.get(ctx, "/api/v1/runs/"+url.PathEscape(runID), &detail, maxRunDetailResponseBytes); err != nil {
+			return err
+		}
 		return writeJSON(c.stdout, detail)
 	}
-	run := detail.Run
+	var summary protocol.RunSummary
+	path := "/api/v1/runs/" + url.PathEscape(runID) + "?view=summary"
+	if err := client.get(ctx, path, &summary, maxRunSummaryResponseBytes); err != nil {
+		return err
+	}
 	fmt.Fprintf(c.stdout, "Run: %s\nTask: %s\nState: %s\nSource: %s\nAdmitted: %s\nUpdated: %s\n",
-		oneLine(run.ID), oneLine(run.Task.Name), oneLine(string(run.State)), oneLine(run.Source), formatTime(run.AdmittedAt), formatTime(run.UpdatedAt))
-	if len(detail.Sessions) == 0 {
+		oneLine(summary.ID), oneLine(summary.TaskName), oneLine(string(summary.State)), oneLine(summary.Source), formatTime(summary.AdmittedAt), formatTime(summary.UpdatedAt))
+	if len(summary.Sessions) == 0 {
 		fmt.Fprintln(c.stdout, "\nNo Sessions.")
 		return nil
 	}
 	fmt.Fprintln(c.stdout)
 	writer := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(writer, "SESSION ID\tREPOSITORY\tSTATE\tWORKER\tATTEMPTS\tRESULT")
-	for _, session := range detail.Sessions {
+	for _, session := range summary.Sessions {
 		result := session.Result
 		if result == "" {
 			result = session.FailureReason
 		}
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%s\n",
 			oneLine(session.ID), oneLine(session.RepositoryIdentity), oneLine(string(session.State)),
-			oneLine(session.AssignedWorkerID), len(session.Attempts), oneLine(result))
+			oneLine(session.AssignedWorkerID), session.AttemptCount, oneLine(result))
 	}
 	return writer.Flush()
 }

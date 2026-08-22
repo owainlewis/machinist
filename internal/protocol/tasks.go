@@ -255,6 +255,26 @@ type RunDetail struct {
 	Sessions         []Session       `json:"sessions"`
 }
 
+type RunSummary struct {
+	ID         string              `json:"id"`
+	TaskName   string              `json:"task_name"`
+	State      RunState            `json:"state"`
+	Source     string              `json:"source"`
+	AdmittedAt time.Time           `json:"admitted_at"`
+	UpdatedAt  time.Time           `json:"updated_at"`
+	Sessions   []RunSessionSummary `json:"sessions"`
+}
+
+type RunSessionSummary struct {
+	ID                 string       `json:"id"`
+	RepositoryIdentity string       `json:"repository_identity"`
+	State              SessionState `json:"state"`
+	AssignedWorkerID   string       `json:"assigned_worker_id,omitempty"`
+	AttemptCount       int          `json:"attempt_count"`
+	Result             string       `json:"result,omitempty"`
+	FailureReason      string       `json:"failure_reason,omitempty"`
+}
+
 type RunPage struct {
 	Runs       []Run  `json:"runs"`
 	NextCursor string `json:"next_cursor,omitempty"`
