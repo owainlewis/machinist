@@ -252,6 +252,15 @@ protocol. V1 does not treat the agent process as isolated from other files and
 services available to the Worker operating-system user. The Worker does not
 decide whether the engineering task is semantically complete.
 
+The implementation increments `ClaimProtocolVersion` from 2 to 3 because the
+claim and completion contract now includes frozen outcome behavior, scoped
+updates, checkpoints, and post-stop validation. The control plane rejects an
+older registration or claim with `worker_upgrade_required`; an old Worker can
+never claim `agent_update` Work. V1 requires the server and all Workers to be
+upgraded together. A server-first upgrade pauses claims from older Workers,
+including legacy `process_exit` Work, until those Workers are upgraded. Rolling
+mixed-version operation is not supported.
+
 #### Agent runtime
 
 The agent runtime owns model interaction, repository exploration, planning,
@@ -845,18 +854,23 @@ only after an Attempt successfully starts from that commit; the historical
 Runs but does not cancel admitted Work.
 
 Every assembled agent prompt remains within the existing 72 KiB byte limit.
-Admission requires the frozen Procedure, original context, fixed wrapper, and
-bounded recovery metadata to fit while reserving the maximum 8 KiB question and
-8 KiB answer. Before accepting `needs-input` or an answer, Factory also proves
-the actual mandatory continuation sections fit; rejection leaves the current
-state unchanged. The continuation always includes the Procedure, original
-context, current question and answer, checkpoint and branch identity, PR
-metadata, and an omission marker. It fills remaining bytes with the newest
-prior updates, prioritizing Attempt outcomes over progress and displaying the
-selected records chronologically. If history is omitted or one message must be
-UTF-8-boundary truncated, the marker includes stored and inserted counts and a
-SHA-256 digest of the complete omitted serialized history. All full updates
-remain stored and visible outside the prompt.
+For `agent_update` Work, admission requires the frozen Procedure, original
+context, fixed wrapper, and bounded recovery metadata to fit while reserving
+the maximum 8 KiB question and 8 KiB answer. Before accepting `needs-input` or
+an answer, Factory also proves the actual mandatory continuation sections fit;
+rejection leaves the current state unchanged. The continuation always includes
+the Procedure, original context, current question and answer, checkpoint and
+branch identity, PR metadata, and an omission marker. It fills remaining bytes
+with the newest prior updates, prioritizing Attempt outcomes over progress and
+displaying the selected records chronologically. If history is omitted or one
+message must be UTF-8-boundary truncated, the marker includes stored and
+inserted counts and a SHA-256 digest of the complete omitted serialized history.
+All full updates remain stored and visible outside the prompt.
+
+`process_exit` Work has no question or answer reserve and keeps the current
+prompt-fit rules: its resolved prompt may use the existing 64 KiB limit as long
+as the final assembled prompt fits within 72 KiB. Migration and the protocol
+upgrade do not make a previously valid legacy prompt inadmissible.
 
 Control-plane shutdown stops admission before HTTP shutdown. Workers continue
 until lease renewal fails, then stop active processes. Restart sweeps expired
@@ -942,7 +956,8 @@ remains visible and never silently drops an outcome.
   stored agent update is retried after its lease expires.
 - `AC-12`: Local and enrolled VM Workers use the same scoped update protocol
   without transmitting the operator credential, Worker credential, or Attempt
-  lease token in that protocol.
+  lease token in that protocol. Claim protocol version 3 is required; older
+  Workers receive `worker_upgrade_required` and cannot claim Work.
 - `AC-13`: Restarting the control plane or Worker preserves Work, updates,
   questions, results, and retained recovery state.
 - `AC-14`: Existing Task, Run, Session, Attempt, event, schedule, and repository
@@ -972,9 +987,11 @@ remains visible and never silently drops an outcome.
   Work with retry guards and no intermediate queued race.
 - `AC-23`: Cancelling queued, needs-input, or operator-owned Work with no active
   Worker Attempt completes synchronously and cannot wait for a heartbeat.
-- `AC-24`: Initial and continuation prompts cannot exceed 72 KiB; mandatory
-  recovery context is preserved while omitted update history is counted and
-  digested without deleting the stored events.
+- `AC-24`: Initial and continuation `agent_update` prompts cannot exceed 72 KiB;
+  mandatory recovery context is preserved while omitted update history is
+  counted and digested without deleting the stored events. `process_exit`
+  prompts keep their existing 64 KiB resolved and 72 KiB assembled limits with
+  no continuation reserve.
 - `AC-25`: `factory replace WORK_ID` admits exactly the named terminal Work's
   frozen Procedure and target as a new one-Work Run, records that predecessor,
   requires its current Procedure and repository to be eligible on first
@@ -1002,7 +1019,8 @@ limit with a reserved outcome slot, dirty needs-input rejection, pushed and
 unchanged checkpoints, answer continuation, answer then cancellation or failed
 preparation then retry with moved and missing refs, maximum question and answer
 sizes, bounded multi-Attempt history with UTF-8 truncation and omission digests,
-and cleanup.
+claim protocol version 3 acceptance, older-Worker rejection before any Work
+claim, and cleanup.
 They verify `AC-5`, `AC-7`, `AC-8`, `AC-10`, `AC-12`, and `AC-13`, including
 the race detector.
 They also prove that every valid semantic outcome completes the Attempt while
@@ -1036,10 +1054,11 @@ accessibility at desktop and 390-pixel widths.
 
 Migration tests open supported historical databases and prove `AC-14` and
 `AC-16` without dropping, relabelling, or changing the next scheduled outcome.
-They prove that existing Procedures default to `process_exit` and conversion
-increments generation for `AC-17`. One end-to-end smoke test runs a fake agent
-executable that reports progress and each Attempt-ending outcome through the
-real Worker-local update endpoint.
+They prove that an existing maximum-size valid prompt remains admissible without
+question or answer reserves, existing Procedures default to `process_exit`, and
+conversion increments generation for `AC-17`. One end-to-end smoke test runs a
+fake agent executable that reports progress and each Attempt-ending outcome
+through the real Worker-local update endpoint.
 
 ## 11. Risks and tradeoffs
 
