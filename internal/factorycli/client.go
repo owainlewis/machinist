@@ -41,12 +41,17 @@ func newAPIClient(ctx context.Context, value string, client *http.Client) (apiCl
 	if parsed.Path != "" && parsed.Path != "/" {
 		return apiClient{}, errors.New("server URL must not contain a path")
 	}
+	host := parsed.Hostname()
 	port, err := strconv.ParseUint(parsed.Port(), 10, 16)
-	if parsed.Hostname() == "" || err != nil || port == 0 {
+	if host == "" || err != nil || port == 0 {
 		return apiClient{}, errors.New("server URL must include a loopback host and nonzero port")
 	}
-	if err := validateLoopbackHost(ctx, parsed.Hostname()); err != nil {
+	if err := validateLoopbackHost(ctx, host); err != nil {
 		return apiClient{}, err
+	}
+	if strings.EqualFold(host, "localhost") {
+		// ProxyFromEnvironment exempts exact lowercase localhost only.
+		parsed.Host = net.JoinHostPort("localhost", parsed.Port())
 	}
 	parsed.Path = ""
 	clientCopy := *client
@@ -63,7 +68,7 @@ func validateLoopbackHost(ctx context.Context, host string) error {
 		}
 		return errors.New("server URL host must be loopback")
 	}
-	if !strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+	if !strings.EqualFold(host, "localhost") {
 		return errors.New("server URL host must be a loopback IP or localhost")
 	}
 	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
@@ -81,7 +86,7 @@ func validateLoopbackHost(ctx context.Context, host string) error {
 	return nil
 }
 
-func (c apiClient) get(ctx context.Context, path string, target any) error {
+func (c apiClient) get(ctx context.Context, path string, target any, responseLimit int64) error {
 	requestURL := *c.endpoint
 	reference, err := url.Parse(path)
 	if err != nil {
@@ -99,12 +104,20 @@ func (c apiClient) get(ctx context.Context, path string, target any) error {
 		return fmt.Errorf("connect to %s: %w", c.endpoint.String(), err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	limit := responseLimit
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		limit = maxResponseBytes
+	}
+	reader := io.Reader(response.Body)
+	if limit > 0 {
+		reader = io.LimitReader(response.Body, limit+1)
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return fmt.Errorf("read server response: %w", err)
 	}
-	if len(body) > maxResponseBytes {
-		return fmt.Errorf("server response exceeds %d bytes", maxResponseBytes)
+	if limit > 0 && int64(len(body)) > limit {
+		return fmt.Errorf("server response exceeds %d bytes", limit)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		status := oneLine(response.Status)
@@ -130,7 +143,7 @@ func (c apiClient) get(ctx context.Context, path string, target any) error {
 
 func (c command) status(ctx context.Context, client apiClient, jsonOutput bool) error {
 	var page protocol.RunPage
-	if err := client.get(ctx, "/api/v1/runs?limit=50", &page); err != nil {
+	if err := client.get(ctx, "/api/v1/runs?limit=50", &page, maxResponseBytes); err != nil {
 		return err
 	}
 	if jsonOutput {
@@ -155,7 +168,9 @@ func (c command) status(ctx context.Context, client apiClient, jsonOutput bool) 
 
 func (c command) show(ctx context.Context, client apiClient, runID string, jsonOutput bool) error {
 	var detail protocol.RunDetail
-	if err := client.get(ctx, "/api/v1/runs/"+url.PathEscape(runID), &detail); err != nil {
+	// Run details include an unbounded retry history, so no finite byte cap can
+	// cover every valid response. The command deadline still bounds the read.
+	if err := client.get(ctx, "/api/v1/runs/"+url.PathEscape(runID), &detail, 0); err != nil {
 		return err
 	}
 	if jsonOutput {
@@ -185,7 +200,7 @@ func (c command) show(ctx context.Context, client apiClient, runID string, jsonO
 
 func (c command) workers(ctx context.Context, client apiClient, jsonOutput bool) error {
 	var page workerPage
-	if err := client.get(ctx, "/api/v1/workers", &page); err != nil {
+	if err := client.get(ctx, "/api/v1/workers", &page, maxResponseBytes); err != nil {
 		return err
 	}
 	if jsonOutput {

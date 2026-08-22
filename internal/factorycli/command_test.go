@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,7 +160,7 @@ func TestFiniteCommandsReportEmptyResultsAndServerErrors(t *testing.T) {
 func TestFiniteCommandsRejectUnsafeEndpointsAndMalformedResponses(t *testing.T) {
 	for _, endpoint := range []string{
 		"https://127.0.0.1:7337", "http://example.com:7337", "http://127.0.0.1:0", "http://127.0.0.1:00", "http://127.0.0.1:65536",
-		"http://127.0.0.1:7337/path", "http://user@127.0.0.1:7337",
+		"http://127.0.0.1:7337/path", "http://user@127.0.0.1:7337", "http://localhost.:7337",
 	} {
 		var stderr bytes.Buffer
 		if code := Run(Options{Arguments: []string{"--server", endpoint, "status"}, Stderr: &stderr}); code != 1 {
@@ -173,6 +174,72 @@ func TestFiniteCommandsRejectUnsafeEndpointsAndMalformedResponses(t *testing.T) 
 	var stderr bytes.Buffer
 	if code := Run(Options{Arguments: []string{"--server", server.URL, "status"}, Stderr: &stderr}); code != 1 || !strings.Contains(stderr.String(), "decode server response") {
 		t.Fatalf("malformed response = %d, stderr %q", code, stderr.String())
+	}
+}
+
+func TestFiniteCommandsNormalizeLocalhostBeforeProxySelection(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
+		output.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(output).Encode(protocol.RunPage{})
+	}))
+	t.Cleanup(target.Close)
+	targetURL, err := url.Parse(target.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyHits := 0
+	proxy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		proxyHits++
+	}))
+	t.Cleanup(proxy.Close)
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = func(request *http.Request) (*url.URL, error) {
+		if request.URL.Hostname() == "localhost" {
+			return nil, nil
+		}
+		return proxyURL, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run(Options{
+		Arguments:  []string{"--server", "http://LOCALHOST:" + targetURL.Port(), "status"},
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		HTTPClient: &http.Client{Transport: transport},
+	})
+	if code != 0 || !strings.Contains(stdout.String(), "No Runs.") || proxyHits != 0 {
+		t.Fatalf("uppercase localhost = %d, stdout %q, stderr %q, proxy hits %d", code, stdout.String(), stderr.String(), proxyHits)
+	}
+}
+
+func TestShowAllowsRunDetailsLargerThanListLimit(t *testing.T) {
+	result := strings.Repeat("x", maxResponseBytes)
+	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
+		output.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(output).Encode(protocol.RunDetail{
+			Run: protocol.Run{ID: "run-large", Task: protocol.TaskSnapshot{Name: "Large run"}},
+			Sessions: []protocol.Session{{
+				ID: "session-large", RepositoryIdentity: "github.com/owainlewis/factory",
+				State: protocol.SessionSucceeded, Result: result,
+			}},
+		}); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var stderr bytes.Buffer
+	code := Run(Options{
+		Arguments: []string{"--server", server.URL, "show", "run-large"},
+		Stdout:    io.Discard,
+		Stderr:    &stderr,
+	})
+	if code != 0 {
+		t.Fatalf("large show = %d, stderr %q", code, stderr.String())
 	}
 }
 
