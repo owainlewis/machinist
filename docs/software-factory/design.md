@@ -572,11 +572,19 @@ connection loss, malformed response, or server error remains
 pending because it may have happened after commit. The control plane returns
 `rejected_before_commit` only when the transaction created no Run.
 This lets a new CLI process replay a request whose response was lost without
-turning all future identical commands into replays. Journal access is locked,
-it retains at most 100 pending entries, and its directory and file use `0700`
-and `0600` modes. At the limit, implicit key creation fails with the journal path
-and asks the operator to recover pending requests or supply an explicit key; it
-never silently evicts an uncertain request.
+turning all future identical commands into replays. Before journal lookup, the
+CLI acquires a nonblocking exclusive OS lock scoped to the endpoint and caller
+fingerprint and holds it through the final output flush and journal cleanup.
+A concurrent command with that same scope exits before sending any request,
+prints that the admission is already in progress, and may be retried after the
+owner finishes. Unrelated fingerprints use independent locks. If the owner
+process exits, the OS releases its lock and the still-pending record lets the
+next process reuse the same key. Journal mutations also use a short global lock;
+the journal retains at most 100 pending entries. Its directory uses mode `0700`;
+its data and lock files use mode `0600`. At the limit, implicit
+key creation fails with the journal path and asks the operator to recover
+pending requests or supply an explicit key; it never silently evicts an
+uncertain request.
 
 `--wait` streams status and returns as soon as any Work needs input, using exit
 code 2, even while independent siblings continue. Otherwise it returns when the
@@ -1038,9 +1046,11 @@ admission works when `--repo` is absent.
 
 CLI tests use a real loopback server to prove multi-reference admission,
 explicit and generated-key replay across separate CLI processes, pending-journal
-locking, cleanup only after flushed authoritative output, interruption after an
-admission response and during `--wait`, uncertain-response retention, human and
-JSON output, `--wait`, opaque-reference repository
+locking, fail-fast concurrent invocation for the same endpoint and fingerprint,
+independent concurrent fingerprints, owner-process exit and key recovery,
+cleanup only after flushed authoritative output, interruption after an admission
+response and during `--wait`, uncertain-response retention, human and JSON
+output, `--wait`, opaque-reference repository
 requirements, runtime default and override, rebuild key conflicts,
 Build and Procedure Run rebuild identity, needs-input duplicate rejection,
 exact older-Work replacement, replay after a rebuild becomes terminal, wait
