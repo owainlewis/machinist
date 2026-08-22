@@ -532,6 +532,7 @@ factory status [--run RUN_ID]
 factory show WORK_ID
 factory answer WORK_ID MESSAGE
 factory retry WORK_ID
+factory replace WORK_ID [--request-key KEY] [--wait]
 factory cancel WORK_ID
 factory update [--id WORK_ID] --status STATUS --message MESSAGE [--pr URL] [--head-branch BRANCH] [--head-sha SHA]
 
@@ -727,6 +728,15 @@ retry with the same new key and caller fingerprint returns that stored rebuild
 Run even when a repository is disabled or deleted, configuration changes, or
 newer terminal Work now exists.
 
+`factory replace WORK_ID` is the exact-predecessor recovery path. It requires a
+new admission key and creates one new Run and one replacement Work by copying
+the named terminal Work's frozen Procedure snapshot, runtime, target, source
+reference, repository identity, and original context. The transaction stores
+that exact `predecessor_work_id` and rejects a nonterminal predecessor, an
+existing replacement, or matching nonterminal Work. Its fingerprint contains
+the operation and Work ID, and exact replay is checked before reading the named
+Work or current configuration. It never selects the newest Work by target.
+
 An agent update request is unique by `(attempt_id, request_id)`. An operator
 update request is unique by `(work_id, request_id)`. The CLI generates the
 request ID once per invocation and reuses it for its internal retry. A repeated
@@ -759,9 +769,11 @@ A missing publish branch for known PR Work fails preparation with a fixed
 recovery message that identifies the PR, ref, and recorded trusted PR head SHA.
 It tells the operator to restore the ref to exactly that SHA or admit warned
 replacement Work with the matching command's `--rebuild`; a missing trusted SHA
-permits only the latter. Work-item recovery uses `factory build --rebuild`.
-Repository-target recovery uses `factory run PROCEDURE --repos REPOSITORY
---rebuild`, whose predecessor lookup is scoped to that Procedure identity.
+permits only an exact `factory replace WORK_ID`. An operator may also choose
+exact replacement instead of restoring a known SHA. Common target rebuilds use
+`factory build --rebuild` or `factory run PROCEDURE --repos REPOSITORY
+--rebuild`; only `factory replace` guarantees a particular older Work is the
+predecessor.
 Preparation re-fetches and proves the restored ref equals the recorded SHA. It
 does not create a resumable question without a checkpoint. The retry prompt
 identifies prior updates, known PR, publish ref, and duplicate-effect risk.
@@ -955,6 +967,9 @@ remains visible and never silently drops an outcome.
 - `AC-24`: Initial and continuation prompts cannot exceed 72 KiB; mandatory
   recovery context is preserved while omitted update history is counted and
   digested without deleting the stored events.
+- `AC-25`: `factory replace WORK_ID` admits exactly the named terminal Work's
+  frozen Procedure and target as a new one-Work Run, records that predecessor,
+  and replays without consulting later Work or configuration.
 
 ## 10. Test approach
 
@@ -1000,7 +1015,7 @@ locking, typed-response cleanup, uncertain-response retention, human and JSON
 output, `--wait`, opaque-reference repository
 requirements, runtime default and override, rebuild key conflicts,
 Build and Procedure Run rebuild identity, needs-input duplicate rejection,
-replay after a rebuild becomes terminal, wait
+exact older-Work replacement, replay after a rebuild becomes terminal, wait
 exit codes, missing-PR-ref recovery, and agent-context routing. Replay tests also
 disable or delete the repository and change configured defaults before retrying
 the stored key. Browser
