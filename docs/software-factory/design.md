@@ -222,12 +222,17 @@ keep the same IDs, generations, repository selection, and schedules. They may
 appear as legacy Procedures in operator surfaces, but do not require
 `factory update` until an operator explicitly converts them to the new outcome
 contract. `outcome_contract` is `process_exit` or `agent_update`; conversion
-increments the Procedure generation. Their next scheduled occurrence behaves
-exactly as it does today.
+increments the Procedure generation. Conversion requires the persistent
+execution backend. A Task configured with `fake_cloud_run` is rejected with
+`agent_update_backend_unsupported` without changing its generation or contract;
+the synthetic dispatcher does not launch an agent or implement scoped updates.
+Its next scheduled occurrence behaves exactly as it does today.
 
 New Procedures default to `agent_update`. `process_exit` exists only to retain
 unconverted legacy behavior. Every Run snapshot stores the selected contract,
-so later conversion cannot change admitted or historical Work.
+so later conversion cannot change admitted or historical Work. Admission of
+new `agent_update` Work likewise requires a frozen persistent execution snapshot
+and rejects any other backend with `agent_update_backend_unsupported`.
 
 #### Admission service
 
@@ -662,7 +667,7 @@ worktree under the existing failure-retention limits.
 | Resource | New or changed ownership |
 | --- | --- |
 | Procedure | trusted instructions, runtime, timeout, concurrency, outcome contract, generation |
-| Run | Procedure snapshot including outcome contract, resolved runtime, source, ordered frozen targets, aggregate state |
+| Run | Procedure snapshot including outcome contract, complete execution snapshot, source, ordered frozen targets, aggregate state |
 | Work | target identity, repository, source context, publish branch, user state, execution owner, waiting reason, question, result |
 | Work update | Work, optional Attempt, request ID, sequence, status, message, PR URL, accepted time, actor |
 | Attempt | Worker lease, process identity, local branch, lifecycle and events |
@@ -754,11 +759,15 @@ newer terminal Work now exists.
 
 `factory replace WORK_ID` is the exact-predecessor recovery path. It requires a
 new admission key and creates one new Run and one replacement Work by copying
-the named terminal Work's frozen Procedure snapshot, runtime, target, source
-reference, repository identity, and original context. The transaction stores
-that exact `predecessor_work_id` and rejects a nonterminal predecessor, an
-existing replacement, matching nonterminal Work, an archived current Procedure,
-or a disabled or deleted current repository. Current eligibility is checked
+the named terminal Work's frozen Procedure snapshot, complete execution
+snapshot, target, source reference, repository identity, and original context.
+The execution snapshot includes profile ID and version, backend, runtime,
+provider, model, timeout, resource class, and commit-resolution policy; exact
+replacement never re-resolves a current or default profile. The transaction
+stores that exact `predecessor_work_id` and rejects a nonterminal predecessor,
+an existing replacement, matching nonterminal Work, an archived current
+Procedure, a disabled or deleted current repository, or an execution snapshot
+incompatible with its frozen outcome contract. Current eligibility is checked
 only on first admission; it does not replace any frozen field copied from the
 predecessor. Its fingerprint contains the operation and Work ID. Exact replay
 is checked before reading the named Work or current configuration and returns
@@ -984,7 +993,9 @@ remains visible and never silently drops an outcome.
   their existing repository selection and exit-based success behavior without
   receiving or accepting agent or operator semantic `factory update` calls.
 - `AC-17`: Every Run freezes `outcome_contract`; converting a legacy Procedure
-  increments its generation and cannot change admitted Runs.
+  increments its generation and cannot change admitted Runs. Conversion or new
+  admission rejects a non-persistent backend for `agent_update` without state
+  change, while legacy `fake_cloud_run` process-exit schedules remain unchanged.
 - `AC-18`: A manual ready update resolves or accepts operator PR head evidence,
   succeeds without control-plane GitHub credentials, and replays idempotently
   by Work and request ID.
@@ -1009,9 +1020,10 @@ remains visible and never silently drops an outcome.
   prompts keep their existing 64 KiB resolved and 72 KiB assembled limits with
   no continuation reserve.
 - `AC-25`: `factory replace WORK_ID` admits exactly the named terminal Work's
-  frozen Procedure and target as a new one-Work Run, records that predecessor,
-  requires its current Procedure and repository to be eligible on first
-  admission, and replays without consulting later Work or configuration.
+  frozen Procedure, complete execution snapshot, and target as a new one-Work
+  Run, records that predecessor, requires its current Procedure and repository
+  to be eligible on first admission, and replays without consulting later Work
+  or configuration.
 - `AC-26`: An agent-reported `failed` outcome completes the Attempt as succeeded
   but retains its worktree under failure-retention limits and exposes its Worker
   and local path; successful-Attempt cleanup cannot delete it.
@@ -1077,9 +1089,13 @@ Migration tests open supported historical databases and prove `AC-14` and
 `AC-16` without dropping, relabelling, or changing the next scheduled outcome.
 They prove that an existing maximum-size valid prompt remains admissible without
 question or answer reserves, existing Procedures default to `process_exit`, and
-conversion increments generation for `AC-17`. One end-to-end smoke test runs a
-fake agent executable that reports progress and each Attempt-ending outcome
-through the real Worker-local update endpoint.
+conversion increments generation for `AC-17`. Conversion tests reject
+`fake_cloud_run` with no state change and prove its next legacy schedule still
+uses synthetic exit completion. Exact-replacement tests preserve every field of
+a predecessor's manually overridden execution snapshot and never resolve the
+current profile. One end-to-end smoke test runs a fake agent executable that
+reports progress and each Attempt-ending outcome through the real Worker-local
+update endpoint.
 
 ## 11. Risks and tradeoffs
 
