@@ -1126,7 +1126,8 @@ func (s *Store) SetManagedRepositoryEnabled(
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE sessions SET state = 'blocked', assigned_worker_id = NULL,
-			       blocked_reason = 'Repository is disabled.'
+			       blocked_reason = 'Repository is disabled.',
+			       waiting_reason = 'Repository is disabled.', execution_owner = 'none'
 			WHERE repository_id = ? AND state = 'queued'
 		`, repositoryID); err != nil {
 			return protocol.ManagedRepository{}, unavailable(err)

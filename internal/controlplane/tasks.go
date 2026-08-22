@@ -72,6 +72,7 @@ type normalizedTask struct {
 	cron               string
 	timezone           string
 	nextDueAt          *time.Time
+	outcomeContract    protocol.OutcomeContract
 }
 
 func normalizeTask(input protocol.SaveTaskRequest, now time.Time) (normalizedTask, error) {
@@ -86,6 +87,7 @@ func normalizeTask(input protocol.SaveTaskRequest, now time.Time) (normalizedTas
 		scheduleEnabled:    input.Schedule.Enabled,
 		cron:               strings.TrimSpace(input.Schedule.Cron),
 		timezone:           strings.TrimSpace(input.Schedule.Timezone),
+		outcomeContract:    protocol.OutcomeContract(strings.TrimSpace(string(input.OutcomeContract))),
 	}
 	value.nameKey = normalizeTitleKey(value.name)
 	if value.executionProfileID == protocol.PersistentAutoProfileID {
@@ -102,6 +104,10 @@ func normalizeTask(input protocol.SaveTaskRequest, now time.Time) (normalizedTas
 	}
 	if !protocol.SupportedRuntime(value.runtime) {
 		return value, invalid("invalid_task_runtime", "runtime is not supported")
+	}
+	if value.outcomeContract != "" && value.outcomeContract != protocol.OutcomeProcessExit &&
+		value.outcomeContract != protocol.OutcomeAgentUpdate {
+		return value, invalid("invalid_outcome_contract", "outcome_contract must be process_exit or agent_update")
 	}
 	if value.timeoutSeconds == 0 {
 		value.timeoutSeconds = int(defaultTaskTimeout.Seconds())
@@ -168,6 +174,9 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.SaveTaskRequest) 
 		return protocol.Task{}, unavailable(err)
 	}
 	defer tx.Rollback()
+	if value.outcomeContract == "" {
+		value.outcomeContract = protocol.OutcomeProcessExit
+	}
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE migration_only = 0 AND read_only = 0`).Scan(&count); err != nil {
 		return protocol.Task{}, unavailable(err)
@@ -179,6 +188,9 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.SaveTaskRequest) 
 		return protocol.Task{}, err
 	}
 	if err := validateTaskExecutionProfile(ctx, tx, value.executionProfileID); err != nil {
+		return protocol.Task{}, err
+	}
+	if err := validateOutcomeContractBackend(ctx, tx, value.outcomeContract, value.executionProfileID); err != nil {
 		return protocol.Task{}, err
 	}
 	id, err := newID()
@@ -193,11 +205,11 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.SaveTaskRequest) 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO tasks(
 			id, name, name_key, prompt, runtime, timeout_seconds,
-			concurrency_limit, execution_profile_id, generation, archived, migration_only, schedule_enabled,
+			concurrency_limit, execution_profile_id, outcome_contract, generation, archived, migration_only, schedule_enabled,
 			cron, timezone, next_due_at, schedule_health_status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)
 	`, id, value.name, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
-		value.concurrencyLimit, nullableString(value.executionProfileID), value.scheduleEnabled, nullableString(value.cron), nullableString(value.timezone),
+		value.concurrencyLimit, nullableString(value.executionProfileID), value.outcomeContract, value.scheduleEnabled, nullableString(value.cron), nullableString(value.timezone),
 		next, taskScheduleHealth(value.scheduleEnabled), now, now)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -234,13 +246,14 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 		return protocol.Task{}, err
 	}
 	var archived, migrationOnly, readOnly int
+	var currentOutcome protocol.OutcomeContract
 	var pendingDue, scheduleRetry sql.NullInt64
 	var scheduleHealthStatus, scheduleHealthCode string
 	err = tx.QueryRowContext(ctx, `
-		SELECT archived, migration_only, read_only, pending_due_at, schedule_retry_at,
+		SELECT archived, migration_only, read_only, outcome_contract, pending_due_at, schedule_retry_at,
 		       schedule_health_status, schedule_health_code
 		FROM tasks WHERE id = ?
-	`, id).Scan(&archived, &migrationOnly, &readOnly, &pendingDue, &scheduleRetry,
+	`, id).Scan(&archived, &migrationOnly, &readOnly, &currentOutcome, &pendingDue, &scheduleRetry,
 		&scheduleHealthStatus, &scheduleHealthCode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.Task{}, ErrNotFound
@@ -257,6 +270,18 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 	if archived != 0 && value.scheduleEnabled {
 		return protocol.Task{}, conflict("task_archived", "an archived Task cannot be scheduled")
 	}
+	if value.outcomeContract == "" {
+		value.outcomeContract = currentOutcome
+	}
+	if currentOutcome == protocol.OutcomeAgentUpdate && value.outcomeContract == protocol.OutcomeProcessExit {
+		return protocol.Task{}, conflict(
+			"outcome_contract_conversion_invalid",
+			"agent_update cannot be converted back to process_exit",
+		)
+	}
+	if err := validateOutcomeContractBackend(ctx, tx, value.outcomeContract, value.executionProfileID); err != nil {
+		return protocol.Task{}, err
+	}
 	now := s.now().UnixMilli()
 	var next any
 	if value.scheduleEnabled && value.nextDueAt != nil && !pendingDue.Valid {
@@ -267,7 +292,7 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 	result, err := tx.ExecContext(ctx, `
 		UPDATE tasks SET
 			name = ?, name_key = ?, prompt = ?, runtime = ?, timeout_seconds = ?,
-			concurrency_limit = ?, execution_profile_id = ?, generation = generation + 1, schedule_enabled = ?,
+			concurrency_limit = ?, execution_profile_id = ?, outcome_contract = ?, generation = generation + 1, schedule_enabled = ?,
 			cron = CASE WHEN pending_due_at IS NOT NULL AND ? = 0 THEN cron ELSE ? END,
 			timezone = CASE WHEN pending_due_at IS NOT NULL AND ? = 0 THEN timezone ELSE ? END,
 			next_due_at = CASE WHEN pending_due_at IS NULL THEN ? ELSE next_due_at END,
@@ -283,7 +308,7 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 			updated_at = ?
 		WHERE id = ? AND generation = ?
 	`, value.name, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
-		value.concurrencyLimit, nullableString(value.executionProfileID), value.scheduleEnabled, value.scheduleEnabled, nullableString(value.cron),
+		value.concurrencyLimit, nullableString(value.executionProfileID), value.outcomeContract, value.scheduleEnabled, value.scheduleEnabled, nullableString(value.cron),
 		value.scheduleEnabled, nullableString(value.timezone),
 		next, value.scheduleEnabled, preserveBlockedOccurrence, value.scheduleEnabled,
 		preserveBlockedOccurrence, preserveBlockedOccurrence, now, id, input.ExpectedGeneration)
@@ -348,6 +373,38 @@ func validateTaskExecutionProfile(ctx context.Context, tx *sql.Tx, id string) er
 	return nil
 }
 
+func validateOutcomeContractBackend(
+	ctx context.Context,
+	tx *sql.Tx,
+	contract protocol.OutcomeContract,
+	profileID string,
+) error {
+	if contract != protocol.OutcomeAgentUpdate || profileID == "" || profileID == protocol.PersistentAutoProfileID {
+		return nil
+	}
+	var backend string
+	err := tx.QueryRowContext(ctx, `
+		SELECT version.kind
+		FROM execution_profiles profile
+		JOIN execution_profile_versions version
+		  ON version.profile_id = profile.id AND version.version = profile.current_version
+		WHERE profile.id = ?
+	`, profileID).Scan(&backend)
+	if errors.Is(err, sql.ErrNoRows) {
+		return invalid("execution_profile_not_found", "the selected execution profile does not exist")
+	}
+	if err != nil {
+		return unavailable(err)
+	}
+	if backend != protocol.BackendPersistent {
+		return conflict(
+			"agent_update_backend_unsupported",
+			"agent_update requires the persistent execution backend",
+		)
+	}
+	return nil
+}
+
 func replaceTaskRepositories(ctx context.Context, tx *sql.Tx, taskID string, ids []string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM task_repositories WHERE task_id = ?`, taskID); err != nil {
 		return unavailable(err)
@@ -390,6 +447,73 @@ func (s *Store) SetTaskArchived(ctx context.Context, id string, input protocol.S
 			return protocol.Task{}, conflict("task_read_only", "historical Task revisions are read-only")
 		}
 		return protocol.Task{}, conflict("task_generation_conflict", "the Task changed; refresh and try again")
+	}
+	return s.Task(ctx, id)
+}
+
+func (s *Store) SetTaskOutcomeContract(
+	ctx context.Context,
+	id string,
+	input protocol.SetTaskOutcomeContractRequest,
+) (protocol.Task, error) {
+	if input.OutcomeContract != protocol.OutcomeProcessExit && input.OutcomeContract != protocol.OutcomeAgentUpdate {
+		return protocol.Task{}, invalid("invalid_outcome_contract", "outcome_contract must be process_exit or agent_update")
+	}
+	if input.ExpectedGeneration < 1 {
+		return protocol.Task{}, invalid("task_generation_required", "expected_generation is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.Task{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	var generation, archived, migrationOnly, readOnly int
+	var current protocol.OutcomeContract
+	var profileID sql.NullString
+	err = tx.QueryRowContext(ctx, `
+		SELECT generation, outcome_contract, execution_profile_id, archived, migration_only, read_only
+		FROM tasks WHERE id = ?
+	`, id).Scan(&generation, &current, &profileID, &archived, &migrationOnly, &readOnly)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.Task{}, ErrNotFound
+	}
+	if err != nil {
+		return protocol.Task{}, unavailable(err)
+	}
+	if generation != input.ExpectedGeneration {
+		return protocol.Task{}, conflict("task_generation_conflict", "the Task changed; refresh and try again")
+	}
+	if archived != 0 || migrationOnly != 0 || readOnly != 0 {
+		return protocol.Task{}, conflict("task_read_only", "only an active editable Task can change outcome contract")
+	}
+	if current == input.OutcomeContract {
+		if err := tx.Commit(); err != nil {
+			return protocol.Task{}, unavailable(err)
+		}
+		return s.Task(ctx, id)
+	}
+	if current == protocol.OutcomeAgentUpdate && input.OutcomeContract == protocol.OutcomeProcessExit {
+		return protocol.Task{}, conflict(
+			"outcome_contract_conversion_invalid",
+			"agent_update cannot be converted back to process_exit",
+		)
+	}
+	if err := validateOutcomeContractBackend(ctx, tx, input.OutcomeContract, profileID.String); err != nil {
+		return protocol.Task{}, err
+	}
+	now := s.now().UnixMilli()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE tasks SET outcome_contract = ?, generation = generation + 1, updated_at = ?
+		WHERE id = ? AND generation = ?
+	`, input.OutcomeContract, now, id, input.ExpectedGeneration)
+	if err != nil {
+		return protocol.Task{}, unavailable(err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return protocol.Task{}, conflict("task_generation_conflict", "the Task changed; refresh and try again")
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.Task{}, unavailable(err)
 	}
 	return s.Task(ctx, id)
 }
@@ -475,11 +599,11 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.Task, error) {
 	var created, updated int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit,
-		       generation, archived, read_only, schedule_enabled, cron, timezone, next_due_at, pending_due_at,
+		       generation, outcome_contract, archived, read_only, schedule_enabled, cron, timezone, next_due_at, pending_due_at,
 		       schedule_health_status, schedule_health_code, schedule_health_message, created_at, updated_at
 		FROM tasks WHERE id = ? AND migration_only = 0
 	`, id).Scan(&task.ID, &task.Name, &task.Prompt, &task.Runtime, &task.ExecutionProfileID,
-		&task.TimeoutSeconds, &task.ConcurrencyLimit, &task.Generation, &archived, &readOnly,
+		&task.TimeoutSeconds, &task.ConcurrencyLimit, &task.Generation, &task.OutcomeContract, &archived, &readOnly,
 		&scheduleEnabled, &cron, &timezone, &nextDue, &pendingDue, &task.Schedule.HealthStatus,
 		&task.Schedule.HealthCode, &task.Schedule.HealthMessage, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -524,14 +648,14 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.Task, error) {
 	task.RepositoryCount = len(task.Repositories)
 	_ = s.db.QueryRowContext(ctx, `
 		SELECT COALESCE((SELECT CASE
-			WHEN SUM(session.state IN ('blocked','queued','preparing','running')) = 0 THEN CASE
-				WHEN SUM(session.state = 'succeeded') = COUNT(*) THEN 'succeeded'
+			WHEN SUM(session.state IN ('blocked','queued','preparing','running','needs-input')) = 0 THEN CASE
+				WHEN SUM(session.state IN ('ready','succeeded','no-change')) = COUNT(*) THEN 'succeeded'
 				WHEN SUM(session.state = 'cancelled') = COUNT(*) THEN 'cancelled'
-				WHEN SUM(session.state = 'succeeded') = 0 AND SUM(session.state = 'failed') > 0 THEN 'failed'
+				WHEN SUM(session.state IN ('ready','succeeded','no-change')) = 0 AND SUM(session.state = 'failed') > 0 THEN 'failed'
 				ELSE 'partial' END
 			WHEN SUM(session.state IN ('preparing','running')) > 0
-			  OR SUM(session.state IN ('succeeded','failed','cancelled')) > 0 THEN 'running'
-			WHEN SUM(session.state = 'blocked') = SUM(session.state IN ('blocked','queued','preparing','running')) THEN 'blocked'
+			  OR SUM(session.state IN ('ready','succeeded','failed','no-change','cancelled')) > 0 THEN 'running'
+			WHEN SUM(session.state IN ('blocked','needs-input')) = SUM(session.state IN ('blocked','queued','preparing','running','needs-input')) THEN 'blocked'
 			ELSE 'queued' END
 		FROM runs recent JOIN sessions session ON session.run_id = recent.id
 		WHERE recent.task_id = ? GROUP BY recent.id ORDER BY recent.admitted_at DESC LIMIT 1), '')
@@ -589,6 +713,9 @@ func (s *Store) admitTask(
 	snapshot := protocol.TaskSnapshot{}
 	if frozen != nil {
 		snapshot = *frozen
+		if snapshot.OutcomeContract == "" {
+			snapshot.OutcomeContract = protocol.OutcomeProcessExit
+		}
 		var archived, migrationOnly, readOnly, scheduleEnabled int
 		var pendingDue sql.NullInt64
 		err := tx.QueryRowContext(ctx, `
@@ -617,10 +744,11 @@ func (s *Store) admitTask(
 		var archived, migrationOnly, readOnly int
 		err := tx.QueryRowContext(ctx, `
 			SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit,
-			       generation, archived, migration_only, read_only
+			       generation, outcome_contract, archived, migration_only, read_only
 			FROM tasks WHERE id = ?
 		`, taskID).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
-			&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation, &archived, &migrationOnly, &readOnly)
+			&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation,
+			&snapshot.OutcomeContract, &archived, &migrationOnly, &readOnly)
 		if errors.Is(err, sql.ErrNoRows) {
 			return protocol.RunDetail{}, false, ErrNotFound
 		}
@@ -661,6 +789,12 @@ func (s *Store) admitTask(
 	if err != nil {
 		return protocol.RunDetail{}, false, err
 	}
+	if snapshot.OutcomeContract == protocol.OutcomeAgentUpdate && execution.Backend != protocol.BackendPersistent {
+		return protocol.RunDetail{}, false, conflict(
+			"agent_update_backend_unsupported",
+			"agent_update requires the persistent execution backend",
+		)
+	}
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
@@ -693,10 +827,11 @@ func (s *Store) admitTask(
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO runs(id, request_key, request_digest, task_id, task_snapshot, source,
-		                 scheduled_at, requested_execution_profile_id, execution_snapshot, admitted_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                 scheduled_at, requested_execution_profile_id, execution_snapshot,
+		                 outcome_contract, admitted_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, runID, requestKey, digest, taskID, snapshotJSON, source, scheduled,
-		nullableString(requestedProfileID), executionJSON, now, now); err != nil {
+		nullableString(requestedProfileID), executionJSON, snapshot.OutcomeContract, now, now); err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
 	resolvedPrompt := snapshot.Prompt
@@ -716,13 +851,21 @@ func (s *Store) admitTask(
 		return protocol.RunDetail{}, false, conflict("resolved_prompt_too_large", "the frozen Task prompt exceeds 64 KiB")
 	}
 	materialized := 0
-	for _, repository := range snapshot.Repositories {
+	targets := make([]protocol.WorkTarget, 0, len(snapshot.Repositories))
+	for position, repository := range snapshot.Repositories {
 		if !protocol.AgentPromptFits(snapshot.Name, repository.RemoteIdentity, resolvedPrompt) {
 			return protocol.RunDetail{}, false, conflict("agent_prompt_too_large", "the frozen Task prompt cannot fit the Worker request")
 		}
 		sessionID, err := newID()
 		if err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
+		}
+		target := protocol.WorkTarget{
+			ID: sessionID, Position: position, TargetKey: "repository:" + repository.ID,
+			TargetKind: "repository", RepositoryID: repository.ID,
+			RepositoryIdentity: repository.RemoteIdentity, SourceKind: "repository",
+			SourceKey: repository.ID, SourceReference: repository.RemoteIdentity,
+			PublishBranch: workPublishBranch(sessionID),
 		}
 		state, blockedReason := "blocked", taskConcurrencyBlockedReason
 		var assigned any
@@ -750,14 +893,20 @@ func (s *Store) admitTask(
 				id, run_id, repository_id, repository_identity, resolved_prompt, required_runtime,
 				timeout_seconds, state, blocked_reason, assigned_worker_id, admitted_at,
 				execution_profile_id, execution_profile_version, execution_backend, execution_provider,
-				execution_model, resource_class, commit_resolution_policy
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, sessionID, runID, repository.ID, repository.RemoteIdentity, resolvedPrompt, snapshot.Runtime,
+					execution_model, resource_class, commit_resolution_policy
+					, target_position, target_key, target_kind, source_kind, source_key,
+					source_reference, context_snapshot, publish_branch, execution_owner, waiting_reason
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, sessionID, runID, repository.ID, repository.RemoteIdentity, resolvedPrompt, snapshot.Runtime,
 			execution.TimeoutSeconds, state, nullableString(blockedReason), assigned, now,
 			execution.ProfileID, execution.ProfileVersion, execution.Backend, execution.Provider,
-			execution.Model, execution.ResourceClass, execution.CommitResolutionPolicy); err != nil {
+			execution.Model, execution.ResourceClass, execution.CommitResolutionPolicy,
+			target.Position, target.TargetKey, target.TargetKind, target.SourceKind, target.SourceKey,
+			target.SourceReference, target.ContextSnapshot, target.PublishBranch, protocol.ExecutionOwnerNone,
+			boundedUTF8Bytes(blockedReason, protocol.MaxWaitingReasonBytes)); err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
 		}
+		targets = append(targets, target)
 		if state == "queued" {
 			executionID, err := newID()
 			if err != nil {
@@ -771,11 +920,37 @@ func (s *Store) admitTask(
 			}
 		}
 	}
+	targetsJSON, err := json.Marshal(targets)
+	if err != nil {
+		return protocol.RunDetail{}, false, unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET targets_snapshot = ? WHERE id = ?`, targetsJSON, runID); err != nil {
+		return protocol.RunDetail{}, false, unavailable(err)
+	}
 	if err := tx.Commit(); err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
 	detail, err := s.Run(ctx, runID)
 	return detail, true, err
+}
+
+func workPublishBranch(workID string) string {
+	compact := strings.ReplaceAll(workID, "-", "")
+	if len(compact) > 16 {
+		compact = compact[:16]
+	}
+	return "factory/work-" + compact
+}
+
+func boundedUTF8Bytes(value string, maximum int) string {
+	if len(value) <= maximum {
+		return value
+	}
+	value = value[:maximum]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func loadExecutionSnapshot(
@@ -936,15 +1111,17 @@ func (s *Store) RunPage(ctx context.Context, limit int, cursor string) (protocol
 
 func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) {
 	var detail protocol.RunDetail
-	var snapshot, executionSnapshot []byte
+	var snapshot, executionSnapshot, targetsSnapshot []byte
 	var scheduledAt, terminalAt sql.NullInt64
 	var providerSnapshot sql.NullString
 	var admittedAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, task_id, task_snapshot, execution_snapshot, source, scheduled_at, provider_snapshot,
+		SELECT id, task_id, task_snapshot, execution_snapshot, outcome_contract, targets_snapshot,
+		       source, scheduled_at, provider_snapshot,
 		       admitted_at, updated_at, terminal_at
 		FROM runs run WHERE id = ?
-	`, id).Scan(&detail.Run.ID, &detail.Run.TaskID, &snapshot, &executionSnapshot, &detail.Run.Source,
+	`, id).Scan(&detail.Run.ID, &detail.Run.TaskID, &snapshot, &executionSnapshot,
+		&detail.Run.OutcomeContract, &targetsSnapshot, &detail.Run.Source,
 		&scheduledAt, &providerSnapshot, &admittedAt, &updatedAt, &terminalAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return detail, ErrNotFound
@@ -956,6 +1133,9 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 		return detail, unavailable(err)
 	}
 	if err := json.Unmarshal(executionSnapshot, &detail.Run.Execution); err != nil {
+		return detail, unavailable(err)
+	}
+	if err := json.Unmarshal(targetsSnapshot, &detail.Run.Targets); err != nil {
 		return detail, unavailable(err)
 	}
 	if providerSnapshot.Valid {
@@ -977,8 +1157,14 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 		       session.execution_provider, session.execution_model, session.resource_class, session.commit_resolution_policy,
 		       session.state, session.blocked_reason, session.assigned_worker_id,
 		       session.cancellation_requested, session.retry_may_repeat_effects,
-		       session.admitted_at, session.started_at, session.terminal_at, session.result, session.failure_reason
-		FROM sessions session WHERE session.run_id = ? ORDER BY session.admitted_at, session.id
+		       session.admitted_at, session.started_at, session.terminal_at, session.result, session.failure_reason,
+		       session.target_position, session.target_key, session.target_kind, session.source_kind,
+		       session.source_key, session.source_reference, session.context_snapshot, session.publish_branch,
+		       COALESCE(session.predecessor_work_id, ''), session.execution_owner, session.waiting_reason,
+		       session.latest_progress, session.question, session.checkpoint_sha, session.pending_resume_sha,
+		       session.pull_request_url, session.pull_request_head_branch, session.pull_request_head_sha,
+		       session.terminal_message
+		FROM sessions session WHERE session.run_id = ? ORDER BY session.target_position, session.id
 	`, id)
 	if err != nil {
 		return detail, unavailable(err)
@@ -994,13 +1180,21 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 			&session.Execution.ProfileID, &session.Execution.ProfileVersion, &session.Execution.Backend,
 			&session.Execution.Provider, &session.Execution.Model, &session.Execution.ResourceClass,
 			&session.Execution.CommitResolutionPolicy, &session.State,
-			&blockedReason, &workerID, &cancellation, &retry, &admitted, &started, &terminal, &result, &failure); err != nil {
+			&blockedReason, &workerID, &cancellation, &retry, &admitted, &started, &terminal, &result, &failure,
+			&session.Target.Position, &session.Target.TargetKey, &session.Target.TargetKind,
+			&session.Target.SourceKind, &session.Target.SourceKey, &session.Target.SourceReference,
+			&session.Target.ContextSnapshot, &session.Target.PublishBranch, &session.PredecessorWorkID,
+			&session.ExecutionOwner, &session.WaitingReason, &session.LatestProgress, &session.Question,
+			&session.CheckpointSHA, &session.PendingResumeSHA, &session.PullRequestURL,
+			&session.PullRequestHeadBranch, &session.PullRequestHeadSHA, &session.TerminalMessage); err != nil {
 			rows.Close()
 			return detail, unavailable(err)
 		}
 		session.BlockedReason, session.AssignedWorkerID = blockedReason.String, workerID.String
 		session.Execution.Runtime, session.Execution.TimeoutSeconds = session.RequiredRuntime, session.TimeoutSeconds
 		session.CancellationRequested, session.RetryMayRepeatEffects = cancellation != 0, retry != 0
+		session.Target.ID, session.Target.RepositoryID = session.ID, session.RepositoryID
+		session.Target.RepositoryIdentity = session.RepositoryIdentity
 		session.AdmittedAt, session.Result, session.FailureReason = fromMillis(admitted), result.String, failure.String
 		if started.Valid {
 			value := fromMillis(started.Int64)
@@ -1065,7 +1259,8 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 
 func applyRunAggregate(run *protocol.Run, sessions []protocol.Session, now time.Time) {
 	run.SessionCount = len(sessions)
-	run.SucceededCount, run.FailedCount, run.CancelledCount, run.ActiveCount = 0, 0, 0, 0
+	run.SucceededCount, run.ReadyCount, run.NeedsInputCount, run.NoChangeCount = 0, 0, 0, 0
+	run.FailedCount, run.CancelledCount, run.ActiveCount = 0, 0, 0
 	blocked, actionableBlocked, queued, running := 0, 0, 0, 0
 	for _, session := range sessions {
 		switch session.State {
@@ -1078,10 +1273,18 @@ func applyRunAggregate(run *protocol.Run, sessions []protocol.Session, now time.
 			queued++
 		case protocol.SessionPreparing, protocol.SessionRunning:
 			running++
+		case protocol.SessionNeedsInput:
+			blocked++
+			actionableBlocked++
+			run.NeedsInputCount++
+		case protocol.SessionReady:
+			run.ReadyCount++
 		case protocol.SessionSucceeded:
 			run.SucceededCount++
 		case protocol.SessionFailed:
 			run.FailedCount++
+		case protocol.SessionNoChange:
+			run.NoChangeCount++
 		case protocol.SessionCancelled:
 			run.CancelledCount++
 		}
@@ -1089,7 +1292,8 @@ func applyRunAggregate(run *protocol.Run, sessions []protocol.Session, now time.
 	run.ActiveCount = blocked + queued + running
 	if run.ActiveCount > 0 {
 		switch {
-		case running > 0 || run.SucceededCount+run.FailedCount+run.CancelledCount > 0:
+		case running > 0 || run.SucceededCount+run.ReadyCount+run.NoChangeCount+
+			run.FailedCount+run.CancelledCount > 0:
 			run.State = protocol.RunRunning
 		case blocked == run.ActiveCount:
 			run.State = protocol.RunBlocked
@@ -1097,10 +1301,11 @@ func applyRunAggregate(run *protocol.Run, sessions []protocol.Session, now time.
 			run.State = protocol.RunQueued
 		}
 	} else {
+		successful := run.SucceededCount + run.ReadyCount + run.NoChangeCount
 		switch {
-		case run.SucceededCount == run.SessionCount:
+		case successful == run.SessionCount:
 			run.State = protocol.RunSucceeded
-		case run.SucceededCount == 0 && run.FailedCount > 0:
+		case successful == 0 && run.FailedCount > 0:
 			run.State = protocol.RunFailed
 		case run.CancelledCount == run.SessionCount:
 			run.State = protocol.RunCancelled
@@ -1128,10 +1333,12 @@ func (s *Store) CancelRun(ctx context.Context, runID string) (protocol.RunDetail
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET
-			state = CASE WHEN state IN ('blocked','queued') THEN 'cancelled' ELSE state END,
+			state = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'cancelled' ELSE state END,
 			cancellation_requested = CASE WHEN state IN ('preparing','running') THEN 1 ELSE cancellation_requested END,
-			terminal_at = CASE WHEN state IN ('blocked','queued') THEN ? ELSE terminal_at END
-		WHERE run_id = ? AND state IN ('blocked','queued','preparing','running')
+			terminal_at = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN ? ELSE terminal_at END,
+			execution_owner = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'none' ELSE execution_owner END,
+			terminal_message = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'Cancelled by operator.' ELSE terminal_message END
+		WHERE run_id = ? AND state IN ('blocked','queued','preparing','running','needs-input')
 	`, now, runID); err != nil {
 		return protocol.RunDetail{}, unavailable(err)
 	}
@@ -1149,7 +1356,7 @@ func (s *Store) CancelRun(ctx context.Context, runID string) (protocol.RunDetail
 		UPDATE runs SET updated_at = ?, terminal_at = CASE
 			WHEN NOT EXISTS (
 				SELECT 1 FROM sessions session WHERE session.run_id = runs.id
-				  AND session.state IN ('blocked','queued','preparing','running')
+				  AND session.state IN ('blocked','queued','preparing','running','needs-input')
 			) THEN ? ELSE NULL END
 		WHERE id = ?
 	`, now, now, runID); err != nil {
@@ -1176,14 +1383,16 @@ func (s *Store) CancelSession(ctx context.Context, runID, sessionID string) (pro
 	} else if err != nil {
 		return protocol.RunDetail{}, unavailable(err)
 	}
-	if state != "blocked" && state != "queued" && state != "preparing" && state != "running" {
+	if state != "blocked" && state != "queued" && state != "preparing" && state != "running" && state != "needs-input" {
 		return protocol.RunDetail{}, conflict("session_cancel_not_allowed", "only active Sessions can be cancelled")
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET
-			state = CASE WHEN state IN ('blocked','queued') THEN 'cancelled' ELSE state END,
+			state = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'cancelled' ELSE state END,
 			cancellation_requested = CASE WHEN state IN ('preparing','running') THEN 1 ELSE cancellation_requested END,
-			terminal_at = CASE WHEN state IN ('blocked','queued') THEN ? ELSE terminal_at END
+			terminal_at = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN ? ELSE terminal_at END,
+			execution_owner = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'none' ELSE execution_owner END,
+			terminal_message = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'Cancelled by operator.' ELSE terminal_message END
 		WHERE id = ? AND run_id = ?
 	`, now, sessionID, runID); err != nil {
 		return protocol.RunDetail{}, unavailable(err)
@@ -1201,7 +1410,7 @@ func (s *Store) CancelSession(ctx context.Context, runID, sessionID string) (pro
 		UPDATE runs SET updated_at = ?, terminal_at = CASE
 			WHEN NOT EXISTS (
 				SELECT 1 FROM sessions session WHERE session.run_id = runs.id
-				  AND session.state IN ('blocked','queued','preparing','running')
+				  AND session.state IN ('blocked','queued','preparing','running','needs-input')
 			) THEN ? ELSE NULL END
 		WHERE id = ?
 	`, now, now, runID); err != nil {
@@ -1221,13 +1430,16 @@ func (s *Store) RetrySession(ctx context.Context, expectedRunID, sessionID strin
 	}
 	defer tx.Rollback()
 	var runID, state, repositoryID, identity, runtime, backend, profileID string
+	var targetKind, sourceKind, sourceKey string
+	var owner protocol.ExecutionOwner
 	var profileVersion int
 	err = tx.QueryRowContext(ctx, `
 		SELECT run_id, state, repository_id, repository_identity, required_runtime,
-		       execution_backend, execution_profile_id, execution_profile_version
+		       execution_backend, execution_profile_id, execution_profile_version,
+		       target_kind, source_kind, source_key, execution_owner
 		FROM sessions WHERE id = ? AND run_id = ?
 	`, sessionID, expectedRunID).Scan(&runID, &state, &repositoryID, &identity, &runtime,
-		&backend, &profileID, &profileVersion)
+		&backend, &profileID, &profileVersion, &targetKind, &sourceKind, &sourceKey, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.RunDetail{}, ErrNotFound
 	}
@@ -1236,6 +1448,12 @@ func (s *Store) RetrySession(ctx context.Context, expectedRunID, sessionID strin
 	}
 	if state != "failed" && state != "cancelled" {
 		return protocol.RunDetail{}, conflict("session_retry_not_allowed", "only failed or cancelled Sessions can be retried")
+	}
+	if owner != protocol.ExecutionOwnerNone {
+		return protocol.RunDetail{}, conflict("work_owned", "owned Work cannot be retried")
+	}
+	if err := validateWorkRetryGuards(ctx, tx, sessionID, repositoryID, targetKind, sourceKind, sourceKey); err != nil {
+		return protocol.RunDetail{}, err
 	}
 	var activeSessions, concurrencyLimit int
 	if err := tx.QueryRowContext(ctx, `
@@ -1315,7 +1533,8 @@ func (s *Store) RetrySession(ctx context.Context, expectedRunID, sessionID strin
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ?,
 		       cancellation_requested = 0, retry_may_repeat_effects = 1,
-		       started_at = NULL, terminal_at = NULL, result = NULL, failure_reason = NULL
+		       started_at = NULL, terminal_at = NULL, result = NULL, failure_reason = NULL,
+		       terminal_message = '', waiting_reason = '', execution_owner = 'none'
 		WHERE id = ?
 	`, assignedWorkerID, sessionID); err != nil {
 		return protocol.RunDetail{}, unavailable(err)
@@ -1343,13 +1562,16 @@ func (s *Store) Overview(ctx context.Context) (protocol.Overview, error) {
 		SELECT
 			COALESCE(SUM(EXISTS (
 				SELECT 1 FROM sessions session
-				WHERE session.run_id = run.id AND session.state IN ('blocked','queued','preparing','running')
+				WHERE session.run_id = run.id AND session.state IN ('blocked','queued','preparing','running','needs-input')
 			)), 0),
 			COALESCE(SUM(
 				(terminal_at IS NULL AND EXISTS (
 					SELECT 1 FROM sessions session
-					WHERE session.run_id = run.id AND session.state = 'blocked'
-					  AND COALESCE(session.blocked_reason, '') != ?
+					WHERE session.run_id = run.id AND (
+					  session.state = 'needs-input' OR (
+					    session.state = 'blocked' AND COALESCE(session.blocked_reason, '') != ?
+					  )
+					)
 				)) OR
 				(terminal_at >= ? AND EXISTS (
 					SELECT 1 FROM sessions session

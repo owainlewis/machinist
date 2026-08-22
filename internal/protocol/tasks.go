@@ -6,9 +6,25 @@ import (
 )
 
 const (
-	MaxTasks            = 500
-	MaxTaskRepositories = 100
-	MaxTaskPromptBytes  = 64 * 1024
+	MaxTasks                = 500
+	MaxTaskRepositories     = 100
+	MaxTaskPromptBytes      = 64 * 1024
+	MaxWorkTargets          = 100
+	MaxProgressBytes        = 2 * 1024
+	MaxOutcomeBytes         = 8 * 1024
+	MaxWaitingReasonBytes   = 2 * 1024
+	MaxTerminalMessageBytes = 8 * 1024
+	MaxQuestionBytes        = 8 * 1024
+	MaxAnswerBytes          = 8 * 1024
+	MaxUpdatesPerAttempt    = 200
+	MaxProgressPerAttempt   = 199
+)
+
+type OutcomeContract string
+
+const (
+	OutcomeProcessExit OutcomeContract = "process_exit"
+	OutcomeAgentUpdate OutcomeContract = "agent_update"
 )
 
 type TaskSchedule struct {
@@ -37,6 +53,7 @@ type Task struct {
 	TimeoutSeconds     int              `json:"timeout_seconds"`
 	ConcurrencyLimit   int              `json:"concurrency_limit"`
 	Generation         int              `json:"generation"`
+	OutcomeContract    OutcomeContract  `json:"outcome_contract"`
 	Archived           bool             `json:"archived"`
 	ReadOnly           bool             `json:"read_only"`
 	Repositories       []TaskRepository `json:"repositories"`
@@ -62,16 +79,18 @@ type SessionExecution struct {
 // ClaimedSession contains the immutable input a Worker needs to execute a
 // single repository session. It intentionally uses only the Tasks model.
 type ClaimedSession struct {
-	ID              string    `json:"id"`
-	RunID           string    `json:"run_id"`
-	TaskName        string    `json:"task_name"`
-	Prompt          string    `json:"prompt"`
-	WorkerID        string    `json:"worker_id"`
-	RepositoryID    string    `json:"repository_id"`
-	RequiredRuntime string    `json:"required_runtime"`
-	TimeoutSeconds  int       `json:"timeout_seconds"`
-	State           string    `json:"state"`
-	AdmittedAt      time.Time `json:"admitted_at"`
+	ID              string          `json:"id"`
+	RunID           string          `json:"run_id"`
+	TaskName        string          `json:"task_name"`
+	Prompt          string          `json:"prompt"`
+	WorkerID        string          `json:"worker_id"`
+	RepositoryID    string          `json:"repository_id"`
+	RequiredRuntime string          `json:"required_runtime"`
+	TimeoutSeconds  int             `json:"timeout_seconds"`
+	OutcomeContract OutcomeContract `json:"outcome_contract"`
+	Target          WorkTarget      `json:"target"`
+	State           string          `json:"state"`
+	AdmittedAt      time.Time       `json:"admitted_at"`
 }
 
 type TaskPage struct {
@@ -80,21 +99,27 @@ type TaskPage struct {
 }
 
 type SaveTaskRequest struct {
-	RequestKey         string       `json:"request_key,omitempty"`
-	Name               string       `json:"name"`
-	Prompt             string       `json:"prompt"`
-	Runtime            string       `json:"runtime"`
-	ExecutionProfileID string       `json:"execution_profile_id,omitempty"`
-	TimeoutSeconds     int          `json:"timeout_seconds"`
-	ConcurrencyLimit   int          `json:"concurrency_limit"`
-	RepositoryIDs      []string     `json:"repository_ids"`
-	Schedule           TaskSchedule `json:"schedule"`
-	ExpectedGeneration int          `json:"expected_generation,omitempty"`
+	RequestKey         string          `json:"request_key,omitempty"`
+	Name               string          `json:"name"`
+	Prompt             string          `json:"prompt"`
+	Runtime            string          `json:"runtime"`
+	ExecutionProfileID string          `json:"execution_profile_id,omitempty"`
+	TimeoutSeconds     int             `json:"timeout_seconds"`
+	ConcurrencyLimit   int             `json:"concurrency_limit"`
+	RepositoryIDs      []string        `json:"repository_ids"`
+	Schedule           TaskSchedule    `json:"schedule"`
+	ExpectedGeneration int             `json:"expected_generation,omitempty"`
+	OutcomeContract    OutcomeContract `json:"outcome_contract,omitempty"`
 }
 
 type SetTaskArchivedRequest struct {
 	Archived           *bool `json:"archived"`
 	ExpectedGeneration int   `json:"expected_generation"`
+}
+
+type SetTaskOutcomeContractRequest struct {
+	OutcomeContract    OutcomeContract `json:"outcome_contract"`
+	ExpectedGeneration int             `json:"expected_generation"`
 }
 
 type RunTaskRequest struct {
@@ -109,14 +134,65 @@ type DiscardTaskOccurrenceRequest struct {
 type SessionState string
 
 const (
-	SessionBlocked   SessionState = "blocked"
-	SessionQueued    SessionState = "queued"
-	SessionPreparing SessionState = "preparing"
-	SessionRunning   SessionState = "running"
-	SessionSucceeded SessionState = "succeeded"
-	SessionFailed    SessionState = "failed"
-	SessionCancelled SessionState = "cancelled"
+	SessionBlocked    SessionState = "blocked"
+	SessionQueued     SessionState = "queued"
+	SessionPreparing  SessionState = "preparing"
+	SessionRunning    SessionState = "running"
+	SessionNeedsInput SessionState = "needs-input"
+	SessionReady      SessionState = "ready"
+	SessionSucceeded  SessionState = "succeeded"
+	SessionFailed     SessionState = "failed"
+	SessionNoChange   SessionState = "no-change"
+	SessionCancelled  SessionState = "cancelled"
 )
+
+type WorkState = SessionState
+
+const (
+	WorkQueued     WorkState = SessionQueued
+	WorkRunning    WorkState = SessionRunning
+	WorkNeedsInput WorkState = SessionNeedsInput
+	WorkReady      WorkState = SessionReady
+	WorkSucceeded  WorkState = SessionSucceeded
+	WorkFailed     WorkState = SessionFailed
+	WorkNoChange   WorkState = SessionNoChange
+	WorkCancelled  WorkState = SessionCancelled
+)
+
+type ExecutionOwner string
+
+const (
+	ExecutionOwnerNone          ExecutionOwner = "none"
+	ExecutionOwnerWorkerAttempt ExecutionOwner = "worker_attempt"
+	ExecutionOwnerOperator      ExecutionOwner = "operator"
+)
+
+type WorkUpdateStatus string
+
+const (
+	WorkUpdateRunning    WorkUpdateStatus = "running"
+	WorkUpdateReady      WorkUpdateStatus = "ready"
+	WorkUpdateNeedsInput WorkUpdateStatus = "needs-input"
+	WorkUpdateFailed     WorkUpdateStatus = "failed"
+	WorkUpdateNoChange   WorkUpdateStatus = "no-change"
+)
+
+func SupportedWorkUpdateStatus(status WorkUpdateStatus) bool {
+	return status == WorkUpdateRunning || status == WorkUpdateReady ||
+		status == WorkUpdateNeedsInput || status == WorkUpdateFailed || status == WorkUpdateNoChange
+}
+
+type WorkUpdateActor string
+
+const (
+	WorkUpdateActorAgent    WorkUpdateActor = "agent"
+	WorkUpdateActorOperator WorkUpdateActor = "operator"
+	WorkUpdateActorSystem   WorkUpdateActor = "system"
+)
+
+func SupportedWorkUpdateActor(actor WorkUpdateActor) bool {
+	return actor == WorkUpdateActorAgent || actor == WorkUpdateActorOperator || actor == WorkUpdateActorSystem
+}
 
 type RunState string
 
@@ -139,9 +215,50 @@ type TaskSnapshot struct {
 	TimeoutSeconds     int              `json:"timeout_seconds,omitempty"`
 	ConcurrencyLimit   int              `json:"concurrency_limit,omitempty"`
 	Generation         int              `json:"generation"`
+	OutcomeContract    OutcomeContract  `json:"outcome_contract"`
 	Repositories       []TaskRepository `json:"repositories,omitempty"`
 	ScheduleCron       string           `json:"cron,omitempty"`
 	ScheduleTimezone   string           `json:"timezone,omitempty"`
+}
+
+// ProcedureSnapshot is the product name for the immutable Task snapshot.
+// The alias keeps existing Task and scheduled Run clients source compatible.
+type ProcedureSnapshot = TaskSnapshot
+
+type WorkTarget struct {
+	ID                 string `json:"id"`
+	Position           int    `json:"position"`
+	TargetKey          string `json:"target_key"`
+	TargetKind         string `json:"target_kind"`
+	RepositoryID       string `json:"repository_id"`
+	RepositoryIdentity string `json:"repository_identity"`
+	SourceKind         string `json:"source_kind"`
+	SourceKey          string `json:"source_key"`
+	SourceReference    string `json:"source_reference"`
+	ContextSnapshot    string `json:"context_snapshot,omitempty"`
+	PublishBranch      string `json:"publish_branch"`
+}
+
+type WorkUpdate struct {
+	ID                    string           `json:"id"`
+	WorkID                string           `json:"work_id"`
+	AttemptID             string           `json:"attempt_id,omitempty"`
+	RequestID             string           `json:"request_id"`
+	Sequence              int              `json:"sequence"`
+	Status                WorkUpdateStatus `json:"status"`
+	Message               string           `json:"message"`
+	PullRequestURL        string           `json:"pull_request_url,omitempty"`
+	PullRequestHeadBranch string           `json:"pull_request_head_branch,omitempty"`
+	PullRequestHeadSHA    string           `json:"pull_request_head_sha,omitempty"`
+	CheckpointSHA         string           `json:"checkpoint_sha,omitempty"`
+	Actor                 WorkUpdateActor  `json:"actor"`
+	AcceptedAt            time.Time        `json:"accepted_at"`
+}
+
+type WorkUpdatePage struct {
+	Updates   []WorkUpdate `json:"updates"`
+	NextAfter int          `json:"next_after,omitempty"`
+	HasMore   bool         `json:"has_more"`
 }
 
 const (
@@ -227,26 +344,47 @@ type Session struct {
 	TerminalAt            *time.Time        `json:"terminal_at,omitempty"`
 	Result                string            `json:"result,omitempty"`
 	FailureReason         string            `json:"failure_reason,omitempty"`
+	Target                WorkTarget        `json:"target"`
+	PredecessorWorkID     string            `json:"predecessor_work_id,omitempty"`
+	ExecutionOwner        ExecutionOwner    `json:"execution_owner"`
+	WaitingReason         string            `json:"waiting_reason,omitempty"`
+	LatestProgress        string            `json:"latest_progress,omitempty"`
+	Question              string            `json:"question,omitempty"`
+	CheckpointSHA         string            `json:"checkpoint_sha,omitempty"`
+	PendingResumeSHA      string            `json:"pending_resume_sha,omitempty"`
+	PullRequestURL        string            `json:"pull_request_url,omitempty"`
+	PullRequestHeadBranch string            `json:"pull_request_head_branch,omitempty"`
+	PullRequestHeadSHA    string            `json:"pull_request_head_sha,omitempty"`
+	TerminalMessage       string            `json:"terminal_message,omitempty"`
+	Updates               []WorkUpdate      `json:"updates,omitempty"`
 	Attempts              []Attempt         `json:"attempts,omitempty"`
 }
 
+// Work is the product-facing name for the durable Session-backed lifecycle.
+type Work = Session
+
 type Run struct {
-	ID             string            `json:"id"`
-	TaskID         string            `json:"task_id"`
-	Task           TaskSnapshot      `json:"task"`
-	Execution      ExecutionSnapshot `json:"execution"`
-	Source         string            `json:"source"`
-	ScheduledAt    *time.Time        `json:"scheduled_at,omitempty"`
-	State          RunState          `json:"state"`
-	NeedsAttention bool              `json:"needs_attention"`
-	SessionCount   int               `json:"session_count"`
-	SucceededCount int               `json:"succeeded_count"`
-	FailedCount    int               `json:"failed_count"`
-	CancelledCount int               `json:"cancelled_count"`
-	ActiveCount    int               `json:"active_count"`
-	AdmittedAt     time.Time         `json:"admitted_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
-	TerminalAt     *time.Time        `json:"terminal_at,omitempty"`
+	ID              string            `json:"id"`
+	TaskID          string            `json:"task_id"`
+	Task            TaskSnapshot      `json:"task"`
+	Execution       ExecutionSnapshot `json:"execution"`
+	OutcomeContract OutcomeContract   `json:"outcome_contract"`
+	Targets         []WorkTarget      `json:"targets"`
+	Source          string            `json:"source"`
+	ScheduledAt     *time.Time        `json:"scheduled_at,omitempty"`
+	State           RunState          `json:"state"`
+	NeedsAttention  bool              `json:"needs_attention"`
+	SessionCount    int               `json:"session_count"`
+	SucceededCount  int               `json:"succeeded_count"`
+	ReadyCount      int               `json:"ready_count"`
+	NeedsInputCount int               `json:"needs_input_count"`
+	NoChangeCount   int               `json:"no_change_count"`
+	FailedCount     int               `json:"failed_count"`
+	CancelledCount  int               `json:"cancelled_count"`
+	ActiveCount     int               `json:"active_count"`
+	AdmittedAt      time.Time         `json:"admitted_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	TerminalAt      *time.Time        `json:"terminal_at,omitempty"`
 }
 
 type RunDetail struct {

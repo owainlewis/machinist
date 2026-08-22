@@ -127,10 +127,11 @@ func loadCurrentTaskSnapshot(ctx context.Context, tx *sql.Tx, id string) (protoc
 	var snapshot protocol.TaskSnapshot
 	err := tx.QueryRowContext(ctx, `
 		SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit, generation,
-		       cron, timezone
+		       outcome_contract, cron, timezone
 		FROM tasks WHERE id = ?
 	`, id).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
 		&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation,
+		&snapshot.OutcomeContract,
 		&snapshot.ScheduleCron, &snapshot.ScheduleTimezone)
 	if err != nil {
 		return snapshot, unavailable(err)
@@ -165,6 +166,9 @@ func loadPendingTaskSnapshot(ctx context.Context, tx *sql.Tx, id string, encoded
 	}
 	if snapshot.ID == "" {
 		snapshot.ID = id
+	}
+	if snapshot.OutcomeContract == "" {
+		snapshot.OutcomeContract = protocol.OutcomeProcessExit
 	}
 	if len(snapshot.Repositories) != 0 {
 		return snapshot, nil

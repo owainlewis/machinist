@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/owainlewis/factory/internal/protocol"
 	"github.com/owainlewis/factory/migrations"
@@ -44,6 +45,19 @@ func TestTasksMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	}
 	if taskCount != 4 || distinctNames != 4 {
 		t.Fatalf("operator Tasks = %d, distinct names = %d", taskCount, distinctNames)
+	}
+	var incompatibleTasks, incompatibleRuns int
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM tasks WHERE outcome_contract != 'process_exit'),
+			(SELECT COUNT(*) FROM runs
+			 WHERE outcome_contract != 'process_exit'
+			    OR json_extract(task_snapshot, '$.outcome_contract') != 'process_exit')
+	`).Scan(&incompatibleTasks, &incompatibleRuns); err != nil {
+		t.Fatal(err)
+	}
+	if incompatibleTasks != 0 || incompatibleRuns != 0 {
+		t.Fatalf("legacy outcome contracts changed: Tasks %d, Runs %d", incompatibleTasks, incompatibleRuns)
 	}
 	var taskToolColumns, sessionToolColumns int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'allowed_tools'`).
@@ -201,6 +215,100 @@ func TestTasksMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 		scheduleKind != "scheduled" || scheduleCron != "0 9 * * *" || scheduleTimezone != "UTC" || legacyTool != "git" {
 		t.Fatalf("admitted schedule snapshot = %d, %q, %q, %q, %q, tool %q",
 			scheduledAt, scheduleOccurrence, scheduleKind, scheduleCron, scheduleTimezone, legacyTool)
+	}
+	migratedScheduled, err := store.Run(ctx, "run-scheduled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migratedScheduled.Run.OutcomeContract != protocol.OutcomeProcessExit ||
+		len(migratedScheduled.Run.Targets) != len(migratedScheduled.Sessions) ||
+		migratedScheduled.Run.State != protocol.RunSucceeded ||
+		migratedScheduled.Sessions[0].State != protocol.SessionSucceeded ||
+		len(migratedScheduled.Sessions[0].Attempts) != 1 ||
+		migratedScheduled.Sessions[0].Attempts[0].State != "succeeded" {
+		t.Fatalf("migrated scheduled process-exit Run = %#v", migratedScheduled)
+	}
+	legacyWorker, err := store.Worker(ctx, "worker-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scheduledRepositoryIdentity string
+	if err := db.QueryRowContext(ctx, `SELECT remote_identity FROM repositories WHERE id = 'repo-1'`).
+		Scan(&scheduledRepositoryIdentity); err != nil {
+		t.Fatal(err)
+	}
+	repositories := []protocol.RepositoryRegistration{{
+		Key: "factory", RemoteIdentity: scheduledRepositoryIdentity,
+	}}
+	if _, err := store.RegisterWorker(ctx, legacyWorker.ID, protocol.WorkerRegistration{
+		Name: legacyWorker.Name, Labels: legacyWorker.Labels, WorkerVersion: "test-v3",
+		ClaimProtocolVersion: protocol.ClaimProtocolVersion, Runtime: legacyWorker.Runtime,
+		RuntimeVersion: "codex-test-v3", Capacity: legacyWorker.Capacity,
+		ActiveCount: 0, Health: "healthy", Repositories: repositories,
+		RetainedWorktrees: legacyWorker.RetainedWorktrees,
+	}); err != nil {
+		t.Fatalf("re-register migrated Worker: %v", err)
+	}
+	var pendingSnapshot []byte
+	if err := db.QueryRowContext(ctx, `
+		SELECT pending_snapshot_json FROM tasks WHERE id = 'automation-schedule'
+	`).Scan(&pendingSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozenPending, err := loadPendingTaskSnapshot(ctx, tx, "automation-schedule", pendingSnapshot)
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	pendingAt := fromMillis(pendingDue)
+	nextScheduled, created, err := store.admitTask(
+		ctx,
+		"automation-schedule",
+		"schedule",
+		fmt.Sprintf("schedule:automation-schedule:%d:%d", frozenPending.Generation, pendingDue),
+		&pendingAt,
+		&frozenPending,
+		"",
+	)
+	if err != nil || !created {
+		t.Fatalf("admit migrated pending schedule = %#v, created %v, err %v", nextScheduled, created, err)
+	}
+	if err := store.finishTaskOccurrence(ctx, "automation-schedule", pendingAt, true, nil); err != nil {
+		t.Fatalf("finish migrated pending occurrence: %v", err)
+	}
+	claim, err := store.Claim(ctx, legacyWorker.ID, protocol.ClaimRequest{
+		RequestID: "migrated-next-schedule", LeaseToken: tokenA,
+	})
+	if err != nil || claim == nil || claim.Session.RunID != nextScheduled.Run.ID {
+		t.Fatalf("claim migrated next schedule = %#v, err %v", claim, err)
+	}
+	if claim.Session.OutcomeContract != protocol.OutcomeProcessExit {
+		t.Fatalf("migrated pending claim contract = %q", claim.Session.OutcomeContract)
+	}
+	if _, err := store.StartAttempt(ctx, claim.Attempt.ID, protocol.StartAttemptRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteAttempt(ctx, claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "succeeded", Result: "next legacy schedule completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	nextScheduled, err = store.Run(ctx, nextScheduled.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextScheduled.Run.OutcomeContract != protocol.OutcomeProcessExit ||
+		nextScheduled.Run.State != protocol.RunSucceeded ||
+		len(nextScheduled.Sessions) != 1 || nextScheduled.Sessions[0].State != protocol.SessionSucceeded ||
+		nextScheduled.Sessions[0].Result != "next legacy schedule completed" {
+		t.Fatalf("completed migrated next schedule = %#v", nextScheduled)
 	}
 	throttled, err := store.Run(ctx, "run-throttled")
 	if err != nil {
@@ -878,6 +986,106 @@ func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
 			Scan(&exists); err != nil || exists != 1 {
 			t.Fatalf("renamed index %s exists = %d, err %v", name, exists, err)
 		}
+	}
+}
+
+func TestWorkLifecycleMigrationPreservesFrozenTargetOrder(t *testing.T) {
+	ctx := context.Background()
+	db := openMigrationTestDatabase(t, t.TempDir()+"/pre-work-lifecycle.sqlite3")
+	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
+	t.Cleanup(func() { _ = db.Close() })
+	applyMigrationsBefore(t, ctx, store, "030_task_run_session.sql")
+	if _, err := db.ExecContext(ctx, preRenameFixture); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE work SET routine_snapshot = '{
+		  "id":"routine-1",
+		  "name":"Weekly scan",
+		  "runtime":"codex",
+		  "timeout_seconds":3600,
+		  "concurrency_limit":10,
+		  "generation":1,
+		  "repositories":[
+		    {"id":"repo-2","remote_identity":"github.com/example/neo"},
+		    {"id":"repo-1","remote_identity":"github.com/example/factory"}
+		  ]
+		}' WHERE id = 'work-1';
+		INSERT INTO routine_repositories(routine_id, position, repository_id)
+		VALUES ('routine-1', 1, 'repo-2');
+		INSERT INTO work_targets(
+		  id, work_id, repository_id, repository_identity, resolved_prompt,
+		  required_runtime, timeout_seconds, state, blocked_reason, admitted_at
+		) VALUES (
+		  'zzz-target-2', 'work-1', 'repo-2', 'github.com/example/neo', 'Review.',
+		  'codex', 3600, 'blocked', 'Waiting for an available Routine concurrency slot.', 10
+		);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	legacyResult := strings.Repeat("r", protocol.MaxResultBytes)
+	legacyError := strings.Repeat("e", protocol.MaxErrorBytes)
+	legacyBlockedReason := strings.Repeat("🧪", protocol.MaxWaitingReasonBytes/2+1)
+	if _, err := db.ExecContext(ctx, `
+		UPDATE work_targets
+		SET result = ?, failure_reason = ?, blocked_reason = ?
+		WHERE id = 'target-1'
+	`, legacyResult, legacyError, legacyBlockedReason); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var result, failure, blockedReason, waitingReason, terminalMessage string
+	if err := db.QueryRowContext(ctx, `
+		SELECT result, failure_reason, blocked_reason, waiting_reason, terminal_message
+		FROM sessions WHERE id = 'target-1'
+	`).Scan(&result, &failure, &blockedReason, &waitingReason, &terminalMessage); err != nil {
+		t.Fatal(err)
+	}
+	if result != legacyResult || failure != legacyError || blockedReason != legacyBlockedReason {
+		t.Fatal("migration did not preserve full legacy outcome or blocked payloads")
+	}
+	if len([]byte(waitingReason)) > protocol.MaxWaitingReasonBytes || !utf8.ValidString(waitingReason) ||
+		waitingReason != strings.Repeat("🧪", 512) {
+		t.Fatalf("migrated waiting reason is not a safe bounded projection: bytes=%d valid=%v",
+			len([]byte(waitingReason)), utf8.ValidString(waitingReason))
+	}
+	if terminalMessage != "" {
+		t.Fatalf("legacy process-exit outcome copied to terminal message: bytes=%d", len(terminalMessage))
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, target_position FROM sessions WHERE run_id = 'work-1' ORDER BY target_position
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		var position int
+		if err := rows.Scan(&id, &position); err != nil {
+			t.Fatal(err)
+		}
+		if position != len(ids) {
+			t.Fatalf("target %q position = %d, want %d", id, position, len(ids))
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != "zzz-target-2" || ids[1] != "target-1" {
+		t.Fatalf("migrated target order = %#v", ids)
+	}
+	detail, err := store.Run(ctx, "work-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Run.Targets) != 2 || detail.Run.Targets[0].ID != "zzz-target-2" ||
+		detail.Run.Targets[1].ID != "target-1" {
+		t.Fatalf("frozen target snapshot order = %#v", detail.Run.Targets)
 	}
 }
 

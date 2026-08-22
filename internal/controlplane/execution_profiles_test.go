@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
@@ -493,9 +494,10 @@ func TestUnhealthyAndIncompatibleProfilesBlockWithoutAttempt(t *testing.T) {
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
+	healthReason := strings.Repeat("🧪", protocol.MaxWaitingReasonBytes/2+1)
 	unhealthy, err := store.CreateExecutionProfile(context.Background(), protocol.SaveExecutionProfileRequest{
 		Name: "Unhealthy cloud", Kind: protocol.BackendFakeCloudRun, Runtime: protocol.RuntimeCodex,
-		Provider: "openrouter", Model: "test", Enabled: true, Healthy: false, HealthReason: "model secret missing",
+		Provider: "openrouter", Model: "test", Enabled: true, Healthy: false, HealthReason: healthReason,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -505,7 +507,7 @@ func TestUnhealthyAndIncompatibleProfilesBlockWithoutAttempt(t *testing.T) {
 	for _, test := range []struct {
 		key, profile, reason string
 	}{
-		{key: "unhealthy", profile: unhealthy.ID, reason: "model secret missing"},
+		{key: "unhealthy", profile: unhealthy.ID, reason: healthReason},
 		{key: "incompatible", profile: incompatible.ID, reason: "does not support runtime codex"},
 	} {
 		run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
@@ -517,6 +519,11 @@ func TestUnhealthyAndIncompatibleProfilesBlockWithoutAttempt(t *testing.T) {
 		if run.Run.State != protocol.RunBlocked || len(run.Sessions[0].Attempts) != 0 ||
 			run.Sessions[0].AssignedWorkerID != "" || !strings.Contains(run.Sessions[0].BlockedReason, test.reason) {
 			t.Fatalf("blocked profile Run = %#v", run)
+		}
+		if len([]byte(run.Sessions[0].WaitingReason)) > protocol.MaxWaitingReasonBytes ||
+			!utf8.ValidString(run.Sessions[0].WaitingReason) {
+			t.Fatalf("waiting reason bytes=%d valid=%v", len([]byte(run.Sessions[0].WaitingReason)),
+				utf8.ValidString(run.Sessions[0].WaitingReason))
 		}
 	}
 }
