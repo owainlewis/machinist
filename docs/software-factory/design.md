@@ -653,6 +653,9 @@ and its reported Work outcome. A ready report maps to succeeded and ready only
 after post-stop delivery revalidation. No report, an infrastructure error, or
 failed post-stop validation maps to a `failed` Attempt and failed Work. This
 keeps process execution evidence separate from the agent's semantic judgment.
+Worktree cleanup uses the final Work outcome as well as Attempt execution state:
+a `succeeded` Attempt whose reported Work outcome is `failed` retains its
+worktree under the existing failure-retention limits.
 
 ### Stored resources
 
@@ -840,6 +843,11 @@ uncertain.
 A valid `failed` report still completes the Attempt successfully because the
 agent fulfilled the reporting contract; the Work outcome is failed. This
 distinction lets operators tell an engineering blocker from a broken runtime.
+The Worker retains that Attempt worktree even though the Attempt succeeded and
+records its Worker and local path for operator inspection. Retry still creates
+a fresh worktree from `pending_resume_sha`, the publish ref, or repository base
+under the normal rules; it never silently treats unpushed files as durable or
+deletes them through successful-Attempt cleanup.
 
 Cancellation of Work with no active Worker Attempt is immediate and
 transactional. This includes queued, needs-input, and operator-owned running
@@ -1004,6 +1012,9 @@ remains visible and never silently drops an outcome.
   frozen Procedure and target as a new one-Work Run, records that predecessor,
   requires its current Procedure and repository to be eligible on first
   admission, and replays without consulting later Work or configuration.
+- `AC-26`: An agent-reported `failed` outcome completes the Attempt as succeeded
+  but retains its worktree under failure-retention limits and exposes its Worker
+  and local path; successful-Attempt cleanup cannot delete it.
 
 ## 10. Test approach
 
@@ -1028,7 +1039,7 @@ unchanged checkpoints, answer continuation, answer then cancellation or failed
 preparation then retry with moved and missing refs, maximum question and answer
 sizes, bounded multi-Attempt history with UTF-8 truncation and omission digests,
 claim protocol version 3 acceptance, older-Worker rejection before any Work
-claim, and cleanup.
+claim, outcome-aware worktree retention and cleanup.
 They verify `AC-5`, `AC-7`, `AC-8`, `AC-10`, `AC-12`, and `AC-13`, including
 the race detector.
 They also prove that every valid semantic outcome completes the Attempt while
