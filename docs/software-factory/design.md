@@ -554,8 +554,12 @@ endpoint and canonical caller-input fingerprint in its private operator state
 directory before the first request. A later invocation with the same pending
 fingerprint reuses that key. The CLI removes the pending record only after it
 receives a typed admission response that says `admitted`, `replayed`, or
-`rejected_before_commit`, and prints the key with every result. A timeout,
-connection loss, interruption, malformed response, or server error remains
+`rejected_before_commit`, renders the command's authoritative result, writes it
+to the selected human or JSON output, and successfully flushes that output.
+For `--wait`, the authoritative result is the terminal or needs-input result,
+not the initial admission response. The CLI prints the key with every result.
+A process exit or interruption before the final output is flushed, timeout,
+connection loss, malformed response, or server error remains
 pending because it may have happened after commit. The control plane returns
 `rejected_before_commit` only when the transaction created no Run.
 This lets a new CLI process replay a request whose response was lost without
@@ -733,9 +737,13 @@ new admission key and creates one new Run and one replacement Work by copying
 the named terminal Work's frozen Procedure snapshot, runtime, target, source
 reference, repository identity, and original context. The transaction stores
 that exact `predecessor_work_id` and rejects a nonterminal predecessor, an
-existing replacement, or matching nonterminal Work. Its fingerprint contains
-the operation and Work ID, and exact replay is checked before reading the named
-Work or current configuration. It never selects the newest Work by target.
+existing replacement, matching nonterminal Work, an archived current Procedure,
+or a disabled or deleted current repository. Current eligibility is checked
+only on first admission; it does not replace any frozen field copied from the
+predecessor. Its fingerprint contains the operation and Work ID. Exact replay
+is checked before reading the named Work or current configuration and returns
+the stored replacement even if later configuration becomes ineligible. It
+never selects the newest Work by target.
 
 An agent update request is unique by `(attempt_id, request_id)`. An operator
 update request is unique by `(work_id, request_id)`. The CLI generates the
@@ -969,7 +977,8 @@ remains visible and never silently drops an outcome.
   digested without deleting the stored events.
 - `AC-25`: `factory replace WORK_ID` admits exactly the named terminal Work's
   frozen Procedure and target as a new one-Work Run, records that predecessor,
-  and replays without consulting later Work or configuration.
+  requires its current Procedure and repository to be eligible on first
+  admission, and replays without consulting later Work or configuration.
 
 ## 10. Test approach
 
@@ -1011,14 +1020,17 @@ admission works when `--repo` is absent.
 
 CLI tests use a real loopback server to prove multi-reference admission,
 explicit and generated-key replay across separate CLI processes, pending-journal
-locking, typed-response cleanup, uncertain-response retention, human and JSON
-output, `--wait`, opaque-reference repository
+locking, cleanup only after flushed authoritative output, interruption after an
+admission response and during `--wait`, uncertain-response retention, human and
+JSON output, `--wait`, opaque-reference repository
 requirements, runtime default and override, rebuild key conflicts,
 Build and Procedure Run rebuild identity, needs-input duplicate rejection,
 exact older-Work replacement, replay after a rebuild becomes terminal, wait
 exit codes, missing-PR-ref recovery, and agent-context routing. Replay tests also
 disable or delete the repository and change configured defaults before retrying
-the stored key. Browser
+the stored key. Exact-replacement tests reject first admission after Procedure
+archive or repository disablement or deletion, then prove a previously admitted
+replacement still replays after those changes. Browser
 component tests and a real browser flow prove `AC-2`, `AC-6`, `AC-9`, and
 accessibility at desktop and 390-pixel widths.
 
