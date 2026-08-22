@@ -365,7 +365,26 @@ func (a *API) listWorkers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workers": workers})
+	switch r.URL.Query().Get("view") {
+	case "":
+		writeJSON(w, http.StatusOK, map[string]any{"workers": workers})
+	case "summary":
+		writeJSON(w, http.StatusOK, summarizeWorkers(workers))
+	default:
+		writeError(w, invalid("invalid_view", "view must be summary when provided"))
+	}
+}
+
+func summarizeWorkers(workers []protocol.Worker) protocol.WorkerSummaryPage {
+	page := protocol.WorkerSummaryPage{Workers: make([]protocol.WorkerSummary, 0, len(workers))}
+	for _, worker := range workers {
+		page.Workers = append(page.Workers, protocol.WorkerSummary{
+			ID: worker.ID, Name: worker.Name, Runtime: worker.Runtime, Capacity: worker.Capacity,
+			ActiveCount: worker.ActiveCount, Health: worker.Health, Online: worker.Online,
+			LastHeartbeat: worker.LastHeartbeat,
+		})
+	}
+	return page
 }
 
 func (a *API) getWorker(w http.ResponseWriter, r *http.Request) {

@@ -172,6 +172,21 @@ type Worker struct {
 	LastHeartbeat              time.Time          `json:"last_heartbeat"`
 }
 
+type WorkerSummary struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Runtime       string    `json:"runtime"`
+	Capacity      int       `json:"capacity"`
+	ActiveCount   int       `json:"active_count"`
+	Health        string    `json:"health"`
+	Online        bool      `json:"online"`
+	LastHeartbeat time.Time `json:"last_heartbeat"`
+}
+
+type WorkerSummaryPage struct {
+	Workers []WorkerSummary `json:"workers"`
+}
+
 type WorkerEnrollment struct {
 	WorkerID        string    `json:"worker_id"`
 	EnrollmentToken string    `json:"enrollment_token"`

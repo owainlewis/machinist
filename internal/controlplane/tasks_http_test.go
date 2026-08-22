@@ -30,3 +30,22 @@ func TestSummarizeRunOmitsUnboundedAttemptHistory(t *testing.T) {
 		t.Fatalf("Session summary = %#v", session)
 	}
 }
+
+func TestSummarizeWorkersOmitsLargeOperationalState(t *testing.T) {
+	now := time.Date(2026, time.August, 23, 12, 0, 0, 0, time.UTC)
+	workers := []protocol.Worker{{
+		ID: "worker-1", Name: "local", Runtime: "codex", Capacity: 10, ActiveCount: 2,
+		Health: "healthy", Online: true, LastHeartbeat: now,
+		Repositories:      []protocol.Repository{{ID: "repository-1", RemoteIdentity: "github.com/owainlewis/factory"}},
+		RetainedWorktrees: []protocol.RetainedWorktree{{AttemptID: "attempt-1"}},
+	}}
+
+	page := summarizeWorkers(workers)
+	if len(page.Workers) != 1 {
+		t.Fatalf("Worker summary page = %#v", page)
+	}
+	summary := page.Workers[0]
+	if summary.ID != workers[0].ID || summary.ActiveCount != 2 || summary.LastHeartbeat != now {
+		t.Fatalf("Worker summary = %#v", summary)
+	}
+}

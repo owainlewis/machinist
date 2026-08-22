@@ -3,6 +3,7 @@ package factorycli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,6 +47,11 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 		ID: "worker-1", Name: "local", Online: true, Health: "healthy",
 		Runtime: "codex\x1b[2J", ActiveCount: 1, Capacity: 10, LastHeartbeat: now,
 	}
+	workerSummary := protocol.WorkerSummaryPage{Workers: []protocol.WorkerSummary{{
+		ID: worker.ID, Name: worker.Name, Online: worker.Online, Health: worker.Health,
+		Runtime: worker.Runtime, ActiveCount: worker.ActiveCount, Capacity: worker.Capacity,
+		LastHeartbeat: worker.LastHeartbeat,
+	}}}
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
 		paths = append(paths, request.URL.RequestURI())
@@ -60,7 +66,11 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 				json.NewEncoder(output).Encode(detail)
 			}
 		case "/api/v1/workers":
-			json.NewEncoder(output).Encode(workerPage{Workers: []protocol.Worker{worker}})
+			if request.URL.Query().Get("view") == "summary" {
+				json.NewEncoder(output).Encode(workerSummary)
+			} else {
+				json.NewEncoder(output).Encode(workerPage{Workers: []protocol.Worker{worker}})
+			}
 		default:
 			http.NotFound(output, request)
 		}
@@ -112,7 +122,15 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &shown); err != nil || len(shown.Sessions) != 1 || len(shown.Sessions[0].Attempts) != 1 {
 		t.Fatalf("JSON show = %#v, error %v", shown, err)
 	}
-	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50,/api/v1/runs/run-1?view=summary,/api/v1/workers,/api/v1/runs?limit=50,/api/v1/runs/run-1"; got != want {
+	stdout.Reset()
+	if code := Run(Options{Arguments: []string{"--server", server.URL, "--json", "workers"}, Stdout: &stdout, Stderr: &stderr}); code != 0 {
+		t.Fatalf("JSON workers = %d, stderr %q", code, stderr.String())
+	}
+	var workers workerPage
+	if err := json.Unmarshal(stdout.Bytes(), &workers); err != nil || len(workers.Workers) != 1 || workers.Workers[0].ID != worker.ID {
+		t.Fatalf("JSON workers = %#v, error %v", workers, err)
+	}
+	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50,/api/v1/runs/run-1?view=summary,/api/v1/workers?view=summary,/api/v1/runs?limit=50,/api/v1/runs/run-1,/api/v1/workers"; got != want {
 		t.Fatalf("API paths = %q, want %q", got, want)
 	}
 }
@@ -234,6 +252,32 @@ func TestFiniteCommandsNormalizeLocalhostBeforeProxySelection(t *testing.T) {
 	})
 	if code != 0 || !strings.Contains(stdout.String(), "No Runs.") || proxyHits != 0 {
 		t.Fatalf("uppercase localhost = %d, stdout %q, stderr %q, proxy hits %d", code, stdout.String(), stderr.String(), proxyHits)
+	}
+}
+
+func TestPinnedTransportTriesEveryValidatedLoopbackAddress(t *testing.T) {
+	var attempts []string
+	transport := &http.Transport{DialContext: func(_ context.Context, _, address string) (net.Conn, error) {
+		attempts = append(attempts, address)
+		if address == "[::1]:7337" {
+			client, server := net.Pipe()
+			server.Close()
+			return client, nil
+		}
+		return nil, errors.New("not listening")
+	}}
+	client := &http.Client{Transport: transport}
+	if err := pinLoopbackTransport(client, []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}); err != nil {
+		t.Fatal(err)
+	}
+	pinned := client.Transport.(*http.Transport)
+	connection, err := pinned.DialContext(context.Background(), "tcp", "127.0.0.1:7337")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection.Close()
+	if got, want := strings.Join(attempts, ","), "127.0.0.1:7337,[::1]:7337"; got != want {
+		t.Fatalf("dial attempts = %q, want %q", got, want)
 	}
 }
 
