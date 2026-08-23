@@ -57,7 +57,21 @@ cp examples/worker.toml ~/.factory/worker.toml
 just run
 ```
 
-Open [http://127.0.0.1:7337](http://127.0.0.1:7337). Edit
+Open [http://127.0.0.1:7337](http://127.0.0.1:7337). Dispatch work from the
+command line with a versioned prompt:
+
+```sh
+factory phases                                       # list this repo's phases
+factory run 412 --repo acme/api --phase build --dry-run
+factory run 412 --repo acme/api --phase build
+factory ps
+factory logs <run-id> --follow
+```
+
+A phase is one markdown file in `.factory/phases`. See the
+[phases guide](docs/phases.md).
+
+Edit
 `~/.factory/worker.toml` to enable the agent runtimes installed on your machine.
 The [local guide](docs/local.md) covers authentication, repository setup, and
 the complete first Run.

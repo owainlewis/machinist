@@ -7,6 +7,7 @@ Start with the root [README](../README.md) to run Factory.
 - [Architecture](../ARCHITECTURE.md): system boundaries, flows, contracts,
   security, limits, and source map.
 - [Local guide](local.md): build, configure, start, delegate, and troubleshoot.
+- [Phases](phases.md): versioned prompt files and the `factory` command line.
 - [Worker contract](worker.md): identity, runtimes, claiming, process safety,
   and worktree cleanup.
 - [Remote VM Workers](remote-workers.md): TLS listener, one-time enrollment,

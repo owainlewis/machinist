@@ -63,7 +63,8 @@ mkdir -p "$temporary/home"
 
 test -x "$temporary/home/.factory/bin/factory-server"
 test -x "$temporary/home/.factory/bin/factory-worker"
-test "$(wc -l <"$temporary/default-go.log" | tr -d ' ')" = "2"
+test -x "$temporary/home/.factory/bin/factory"
+test "$(wc -l <"$temporary/default-go.log" | tr -d ' ')" = "3"
 
 set +e
 output=$(
@@ -170,10 +171,12 @@ PATH="$temporary/bin:/usr/bin:/bin" \
 
 test -x "$temporary/output/factory-server"
 test -x "$temporary/output/factory-worker"
+test -x "$temporary/output/factory"
 test ! -e "$temporary/output/factory-poller"
-test "$(wc -l <"$temporary/go.log" | tr -d ' ')" = "2"
+test "$(wc -l <"$temporary/go.log" | tr -d ' ')" = "3"
 grep -q 'build -o .*factory-server ./cmd/factory-server' "$temporary/go.log"
 grep -q 'build -o .*factory-worker ./cmd/factory-worker' "$temporary/go.log"
+grep -q 'build -o .*factory ./cmd/factory' "$temporary/go.log"
 
 commands=$(
   "$just_binary" --justfile "$root/Justfile" --working-directory "$root" --list
@@ -211,7 +214,7 @@ if ! printf '%s\n' "$output" |
   echo "$output" >&2
   exit 1
 fi
-test "$(wc -l <"$temporary/go.log" | tr -d ' ')" = "2"
+test "$(wc -l <"$temporary/go.log" | tr -d ' ')" = "3"
 
 mkdir -p "$temporary/ui-bin"
 cat >"$temporary/ui-bin/node" <<'EOF'
