@@ -74,6 +74,28 @@ func TestBuildAdmissionHTTPReturnsTypedCommitStatus(t *testing.T) {
 	}
 }
 
+func TestBuildAdmissionHTTPLogsTypedRejectionClass(t *testing.T) {
+	store := newTestStore(t)
+	var logs bytes.Buffer
+	handler := NewHandler(store, slog.New(slog.NewTextHandler(&logs, nil)))
+	body := strings.NewReader(`{
+		"request_key":"unmanaged-build",
+		"references":["https://github.com/acme/missing/issues/1"]
+	}`)
+	request := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/builds", body)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body %s", response.Code, response.Body.Bytes())
+	}
+	if !strings.Contains(logs.String(), "error_class=repository_not_managed") {
+		t.Fatalf("request log omitted Build rejection class: %q", logs.String())
+	}
+}
+
 func TestStandardBuildBackingProcedureDoesNotCollideWithExistingTaskName(t *testing.T) {
 	store := newTestStore(t)
 	if _, err := store.db.Exec(`DELETE FROM tasks WHERE id = ?`, protocol.StandardBuildProcedureID); err != nil {

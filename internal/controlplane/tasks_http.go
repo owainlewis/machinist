@@ -20,6 +20,9 @@ func (a *API) admitBuild(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var service *ServiceError
 		if errors.As(err, &service) && service.Status < http.StatusInternalServerError {
+			if recorder, ok := w.(*responseRecorder); ok {
+				recorder.errorClass = service.Code
+			}
 			writeJSON(w, service.Status, protocol.ErrorBody{Error: protocol.APIError{
 				Code: service.Code, Message: service.Message,
 				AdmissionResult: protocol.AdmissionRejectedBeforeCommit,
