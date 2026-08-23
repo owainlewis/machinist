@@ -77,7 +77,8 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		ORDER BY attempt.created_at, attempt.id LIMIT 1
 	`).Scan(&cancelledAttempt, &cancelledExecution)
 	if err == nil {
-		if err := completeFakeCloudAttempt(ctx, tx, cancelledAttempt, cancelledExecution, "cancelled", "", "Cancelled by operator.", now); err != nil {
+		if err := completeFakeCloudAttempt(ctx, tx, cancelledAttempt, cancelledExecution,
+			"cancelled", "", "Cancelled by operator.", "Cancelled by operator.", now); err != nil {
 			return false, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -103,7 +104,8 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		ORDER BY attempt.started_at, attempt.id LIMIT 1
 	`, now).Scan(&timedOutAttempt, &timedOutExecution)
 	if err == nil {
-		if err := completeFakeCloudAttempt(ctx, tx, timedOutAttempt, timedOutExecution, "failed", "", fakeCloudTimeoutReason, now); err != nil {
+		if err := completeFakeCloudAttempt(ctx, tx, timedOutAttempt, timedOutExecution,
+			"failed", "", fakeCloudTimeoutReason, fakeCloudTimeoutReason, now); err != nil {
 			return false, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -169,7 +171,8 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 			return false, unavailable(err)
 		}
 		released, err := tx.ExecContext(ctx, `
-			UPDATE sessions SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ? WHERE id = ?
+				UPDATE sessions SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ?,
+				       waiting_reason = '', execution_owner = 'none' WHERE id = ?
 			  AND state = 'blocked'
 		`, workerID, blockedSession)
 		if err != nil {
@@ -244,11 +247,15 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 	if _, err := tx.ExecContext(ctx, `UPDATE executions SET state = 'running', updated_at = ? WHERE id = ? AND state = 'queued'`, now, executionID); err != nil {
 		return false, unavailable(err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ? AND state = 'queued'`, now, sessionID); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE sessions SET state = 'running', started_at = COALESCE(started_at, ?),
+		       execution_owner = 'worker_attempt'
+		WHERE id = ? AND state = 'queued'
+	`, now, sessionID); err != nil {
 		return false, unavailable(err)
 	}
 	if outcome == "succeeded" || outcome == "failed" {
-		if err := completeFakeCloudAttempt(ctx, tx, attemptID, executionID, outcome, result, failure, now); err != nil {
+		if err := completeFakeCloudAttempt(ctx, tx, attemptID, executionID, outcome, result, failure, "", now); err != nil {
 			return false, err
 		}
 	}
@@ -268,7 +275,7 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 func completeFakeCloudAttempt(
 	ctx context.Context,
 	tx *sql.Tx,
-	attemptID, executionID, state, result, failure string,
+	attemptID, executionID, state, result, failure, terminalMessage string,
 	now int64,
 ) error {
 	if _, err := tx.ExecContext(ctx, `
@@ -285,10 +292,11 @@ func completeFakeCloudAttempt(
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET state = ?, cancellation_requested = CASE WHEN ? = 'cancelled' THEN 1 ELSE cancellation_requested END,
-		       terminal_at = ?, result = ?, failure_reason = ?
+		       terminal_at = ?, result = ?, failure_reason = ?,
+		       terminal_message = ?, execution_owner = 'none'
 		WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 		  AND state IN ('preparing','running')
-	`, state, state, now, nullString(result), nullString(failure), executionID); err != nil {
+	`, state, state, now, nullString(result), nullString(failure), terminalMessage, executionID); err != nil {
 		return unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `

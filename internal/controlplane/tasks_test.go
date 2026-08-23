@@ -98,6 +98,10 @@ func TestRunPagePreservesRepositorySummaryWithoutPrompt(t *testing.T) {
 	if len(summary.Repositories) != 1 || summary.Repositories[0].RemoteIdentity != "github.com/owainlewis/factory" {
 		t.Fatalf("Run page repository summary = %#v", summary.Repositories)
 	}
+	if page.Runs[0].OutcomeContract != protocol.OutcomeProcessExit || len(page.Runs[0].Targets) != 1 ||
+		page.Runs[0].Targets[0].RepositoryID != worker.Repositories[0].ID {
+		t.Fatalf("Run page frozen Work fields = %#v", page.Runs[0])
+	}
 }
 
 func TestTaskRunReplayReturnsCommittedRunAfterTaskChanges(t *testing.T) {
@@ -325,6 +329,8 @@ func TestRunAggregateUsesCanonicalPrecedence(t *testing.T) {
 		{name: "blocked", states: []protocol.SessionState{protocol.SessionBlocked}, expect: protocol.RunBlocked, active: 1},
 		{name: "queued", states: []protocol.SessionState{protocol.SessionQueued}, expect: protocol.RunQueued, active: 1},
 		{name: "mixed active", states: []protocol.SessionState{protocol.SessionSucceeded, protocol.SessionQueued}, expect: protocol.RunRunning, active: 1},
+		{name: "ready and queued", states: []protocol.SessionState{protocol.SessionReady, protocol.SessionQueued}, expect: protocol.RunRunning, active: 1},
+		{name: "no change and blocked", states: []protocol.SessionState{protocol.SessionNoChange, protocol.SessionBlocked}, expect: protocol.RunRunning, active: 1},
 		{name: "failed and cancelled", states: []protocol.SessionState{protocol.SessionFailed, protocol.SessionCancelled}, expect: protocol.RunFailed},
 		{name: "partial", states: []protocol.SessionState{protocol.SessionSucceeded, protocol.SessionFailed}, expect: protocol.RunPartial},
 	}
@@ -763,6 +769,36 @@ func TestIncompatibleWorkerCannotReceiveOrClaimTaskRun(t *testing.T) {
 		RequestID: "legacy-claim", LeaseToken: tokenA,
 	}); !serviceErrorCode(err, "worker_upgrade_required") {
 		t.Fatalf("legacy claim error = %v", err)
+	}
+}
+
+func TestClaimReplayRequiresCurrentProtocolVersion(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
+		Name: "Replay protocol fence", Prompt: "Review.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
+		RequestKey: "replay-protocol-fence",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	input := protocol.ClaimRequest{RequestID: "replay-protocol-fence", LeaseToken: tokenA}
+	claim, err := store.Claim(context.Background(), worker.ID, input)
+	if err != nil || claim == nil {
+		t.Fatalf("initial claim = %#v, err %v", claim, err)
+	}
+	if _, err := store.db.Exec(`UPDATE workers SET claim_protocol_version = 2 WHERE id = ?`, worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(context.Background(), worker.ID, input); !serviceErrorCode(err, "worker_upgrade_required") {
+		t.Fatalf("incompatible replay error = %v, want worker_upgrade_required", err)
 	}
 }
 

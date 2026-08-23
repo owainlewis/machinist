@@ -1,5 +1,9 @@
 # Factory architecture
 
+> **Status:** Current implementation
+>
+> **Verification basis:** implementation and tests in this repository
+
 ## Executive summary
 
 Factory is a local-first control plane for repeatable software-engineering
@@ -17,8 +21,8 @@ The implementation has four main parts:
   the embedded browser UI.
 - `factory-worker` owns runtime health, repository caches, worktrees, agent
   processes, and cleanup or retention.
-- SQLite stores Tasks, Runs, Sessions, executions, Attempts, events, Workers,
-  and repositories.
+- SQLite stores Tasks, Runs, Session-backed Work, durable Work updates,
+  executions, Attempts, events, Workers, and repositories.
 
 The operator API is loopback-only. Workers make outbound polling requests to
 the server. Remote VM Workers use a separate TLS listener and per-Worker bearer
@@ -65,12 +69,18 @@ cmd/factory         -> internal/factorycli   -> internal/protocol
 cmd/factory-server  -> internal/controlplane -> internal/protocol
                     -> web
 cmd/factory-worker  -> internal/worker       -> internal/protocol
+commands and browser -> HTTP API -> control-plane store -> SQLite
+factory-worker       -> typed protocol -> control-plane store
+factory-worker       -> runtime adapters -> agent child processes
 ```
 
 Entry points depend on their runtime package, and both long-running runtime
-packages share only protocol types. Worker code must never import control-plane
-implementation code. Finite CLI commands depend on the HTTP protocol and cannot
-read control-plane or Worker state directly.
+packages share only protocol types. Product and Worker code depend on
+`internal/protocol`; Worker code must never import `internal/controlplane`.
+Commands and the browser use the HTTP API, and only the control plane writes
+lifecycle state to SQLite. Work is user-facing lifecycle truth. Execution and
+Attempt remain process and lease truth. Finite CLI commands cannot read
+control-plane or Worker state directly.
 
 ## Current product model
 
@@ -83,29 +93,43 @@ A Task is a reusable definition containing:
 - timeout and per-Run concurrency limit;
 - one or more managed repositories;
 - optional cron schedule and IANA timezone;
-- mutable generation and archived state.
+- mutable generation and archived state;
+- an outcome contract: `process_exit` or `agent_update`.
 
 A Task may also save an execution-profile ID. Missing profile data means
 `persistent-auto`, so existing rows need no migration. Manual Run requests may
 override the saved profile; scheduled Runs use the saved default.
 
-Updates use an expected generation. Admission snapshots the Task so later
-edits do not change existing Runs. A manual run uses an idempotency key.
+Existing and newly created Tasks default to `process_exit`. An explicit
+conversion to `agent_update` increments the generation and requires the
+persistent backend. Updates use an expected generation. Admission snapshots
+the Task and outcome contract so later edits do not change existing Runs. A
+manual run uses an idempotency key.
 Scheduled admission polls every ten seconds and preserves the frozen pending
 snapshot while retrying a failed admission.
 
 ### Run and Session
 
-One Task admission creates one Run and one Session per selected repository.
-A Run stores the Task snapshot, immutable execution-profile version, backend,
-runtime, provider, model, timeout, resource class, commit-resolution policy,
-source (`manual` or `schedule`), schedule time, and aggregate state. A Session
-stores the same frozen execution choice with its resolved prompt, repository
-identity, assigned Worker, result, and failure state.
+One Task admission creates one Run and one Session-backed Work record per
+selected repository. A Run stores the Task snapshot, immutable execution
+profile version, backend, runtime, provider, model, timeout, resource class,
+commit-resolution policy, outcome contract, ordered target snapshot, source
+(`manual` or `schedule`), schedule time, and aggregate state. Work stores the
+same frozen execution choice with target identity, source reference, context,
+stable publish branch, repository identity, ownership, waiting reason,
+progress, checkpoint, pending resume, pull-request evidence, predecessor,
+result, and terminal fields.
 
-Session states are `blocked`, `queued`, `preparing`, `running`, `succeeded`,
-`failed`, and `cancelled`. Run state is derived from all Sessions as `blocked`,
-`queued`, `running`, `succeeded`, `failed`, `partial`, or `cancelled`.
+Work can represent `queued`, `running`, `needs-input`, `ready`, `succeeded`,
+`failed`, `no-change`, and `cancelled`. The backing Session table also retains
+the compatibility routing states `blocked` and `preparing`. Run state and
+counts are derived from Work as `blocked`, `queued`, `running`, `succeeded`,
+`failed`, `partial`, or `cancelled`.
+
+Work updates store typed status, actor, request, Attempt, sequence, message,
+checkpoint, and pull-request fields. Storage allows at most 199 progress
+updates and reserves one outcome update per Attempt. Progress messages are at
+most 2 KiB and outcome messages are at most 8 KiB.
 
 A Session starts blocked when no eligible Worker can currently accept it. A
 later claim can route it when a healthy Worker advertises the runtime and
@@ -161,12 +185,15 @@ static repository paths remain readable through Worker configuration.
 8. Plain HTTP accepts loopback clients only. Remote Workers require TLS,
    one-time enrollment bound to a stable Worker ID, and a stored bearer
    credential.
-9. Task admission snapshots prompt, runtime, repositories, timeout,
-   concurrency, generation, and schedule context.
+9. Task admission snapshots prompt, runtime, ordered targets, timeout,
+   concurrency, generation, outcome contract, execution choice, and schedule
+   context.
 10. Operator builds embed committed `web/dist` assets and do not require Node.js
     at runtime.
 11. Finite `factory` commands accept only an explicit-port plain HTTP loopback
     endpoint and read current state through bounded API routes.
+12. Claim protocol version 3 gates every persistent Worker claim. Older Workers
+    receive `worker_upgrade_required`, including for process-exit Work.
 
 ## Components
 
@@ -250,8 +277,10 @@ security headers. Node.js is needed only when UI source changes.
 
 1. The operator runs a Task with a request key, or the scheduler claims a
    due occurrence.
-2. The server freezes the Task generation and repository list.
-3. One Run and one Session per repository are inserted transactionally.
+2. The server freezes the Task generation, outcome contract, execution choice,
+   and ordered target list.
+3. One Run and one Session-backed Work record per repository are inserted
+   transactionally.
 4. Routing selects compatible Workers where possible. Unroutable Sessions stay
    blocked with a reason.
 5. The same manual request key or scheduled occurrence cannot admit duplicate
@@ -306,18 +335,19 @@ describe a Worker as a security sandbox.
 ## Persistence and migration
 
 Migrations are embedded from `migrations/` and applied in order. Migration 27
-introduces the current lifecycle model. Migration 28 adds the current
-single-claim protocol and rejects incompatible old Workers; that protocol is at
-version 2, because the claim payload replaced its target field with a Session.
-Migration 30 renames the operator model to Tasks, Runs, and Sessions without
-changing behaviour, and refuses to apply if the new table names are already in
-use. Supported legacy
+introduces the current lifecycle model. Migration 28 adds the single-claim
+protocol and rejects incompatible old Workers. Migration 30 renames the
+operator model to Tasks, Runs, and Sessions without changing behaviour, and
+refuses to apply if the new table names are already in use. Migration 31 adds
+the durable Work lifecycle, ordered Run targets, outcome contracts, bounded
+Work updates, and claim protocol version 3. It preserves existing rows as
+`process_exit`. Supported legacy
 Definitions, schedules, repositories, and execution history are converted;
 unsupported legacy provider admission is blocked and reported rather than
 silently discarded.
 
 Current lifecycle tables include `tasks`, `task_repositories`, `runs`,
-`sessions`, `executions`, `attempts`, `attempt_events`, `workers`,
+`sessions`, `work_updates`, `executions`, `attempts`, `attempt_events`, `workers`,
 `repositories`, Worker repository state, claim request deduplication, and
 Worker enrollment or credentials. Older migration tables may remain for
 history and upgrade compatibility but are not part of the current UI or
@@ -326,6 +356,13 @@ admission path.
 ## Known limitations
 
 - Only the embedded SQLite orchestration path exists.
+- Cloud Run execution profiles and elastic dispatch are designed but not
+  implemented.
+- Durable agent-update fields, persistent-backend admission, and missing-outcome
+  failure enforcement exist. Worker-local Work-update transport, write
+  endpoints, successful semantic completion, resumable questions, and operator
+  Work commands are not implemented yet. Existing execution remains
+  process-exit-based.
 - Managed repository acquisition supports GitHub through `gh`.
 - The current Worker resolves a repository's base commit during Attempt
   preparation, so a later retry can observe a newer default branch commit.
@@ -341,7 +378,7 @@ admission path.
 | Operator CLI | `cmd/factory/main.go`, `internal/factorycli/command.go`, `internal/factorycli/client.go` |
 | Server startup and config | `cmd/factory-server/main.go`, `cmd/factory-server/config.go` |
 | HTTP routes and auth | `internal/controlplane/http.go`, `internal/controlplane/worker_auth.go` |
-| Task and Run model | `internal/controlplane/tasks.go`, `internal/protocol/tasks.go` |
+| Task, Run, and Work model | `internal/controlplane/tasks.go`, `internal/controlplane/work.go`, `internal/protocol/tasks.go` |
 | Schedule admission | `internal/controlplane/task_scheduler.go`, `internal/controlplane/schedule_cron.go` |
 | Routing and claims | `internal/controlplane/task_claim.go`, `internal/controlplane/state.go` |
 | Lease sweep and recovery | `internal/controlplane/server.go`, `internal/controlplane/recovery.go` |
@@ -349,14 +386,21 @@ admission path.
 | Attempt execution | `internal/worker/attempt_lifecycle.go`, `internal/worker/supervisor.go`, `internal/worker/events.go` |
 | Git and worktrees | `internal/worker/git.go`, `internal/worker/repository_cache.go`, `internal/worker/reconcile.go` |
 | Protocol limits and types | `internal/protocol/types.go`, `internal/protocol/prompt.go` |
-| Schema | `migrations/027_routines_work.sql`, `migrations/028_work_claim_protocol.sql`, `migrations/030_task_run_session.sql` |
+| Schema | `migrations/027_routines_work.sql`, `migrations/030_task_run_session.sql`, `migrations/031_work_lifecycle.sql` |
 | Browser UI | `web/src/App.tsx`, `web/src/Tasks.tsx`, `web/src/Runs.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |
 
 ## Verification
 
+- `internal/controlplane/work_lifecycle_test.go` proves outcome-contract
+  freezing, backend compatibility, Work states, bounded update history,
+  replacement guards, ordered targets, and legacy prompt limits.
+- `internal/controlplane/tasks_migration_test.go` opens populated historical
+  databases and proves identity, lifecycle, scheduled process-exit completion,
+  and foreign-key preservation.
 - `go test ./cmd/... ./internal/...` covers entry points, CLI routing and output,
   API contracts, storage, Worker lifecycle, and release construction.
-- `just boundary` proves Worker code does not import control-plane code.
+- `just format-check`, `just vet`, `just boundary`, and `just test` provide the
+  repository-wide formatting, static-analysis, dependency, and test proof.
 - `just test-tooling` proves the Node-free build produces the complete operator
   binary set.
 - `just test-launcher` proves server and Worker readiness and signal handling.

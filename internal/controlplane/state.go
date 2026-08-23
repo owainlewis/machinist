@@ -27,6 +27,27 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		return nil, unavailable(err)
 	}
 	defer tx.Rollback()
+	var capacity, healthy, claimProtocolVersion, synthetic int
+	var lastHeartbeat int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT capacity, health = 'healthy', last_heartbeat, claim_protocol_version, synthetic
+		FROM workers WHERE id = ?
+	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat, &claimProtocolVersion, &synthetic)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	if synthetic != 0 {
+		return nil, conflict("synthetic_worker_isolated", "synthetic cloud Workers cannot use Worker claim routes")
+	}
+	if claimProtocolVersion != protocol.ClaimProtocolVersion {
+		return nil, conflict(
+			"worker_upgrade_required",
+			"the Worker uses an incompatible claim protocol; upgrade it before claiming a Session",
+		)
+	}
 
 	var storedDigest []byte
 	var storedAttempt sql.NullString
@@ -72,27 +93,6 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		return nil, unavailable(err)
 	}
 
-	var capacity, healthy, claimProtocolVersion, synthetic int
-	var lastHeartbeat int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT capacity, health = 'healthy', last_heartbeat, claim_protocol_version, synthetic
-		FROM workers WHERE id = ?
-	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat, &claimProtocolVersion, &synthetic)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, unavailable(err)
-	}
-	if synthetic != 0 {
-		return nil, conflict("synthetic_worker_isolated", "synthetic cloud Workers cannot use Worker claim routes")
-	}
-	if claimProtocolVersion != protocol.ClaimProtocolVersion {
-		return nil, conflict(
-			"worker_upgrade_required",
-			"the Worker uses an incompatible claim protocol; upgrade it before claiming a Session",
-		)
-	}
 	var active int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM attempts
@@ -212,7 +212,8 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		return nil, conflict("claim_conflict", "execution is no longer queued")
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE sessions SET state = 'preparing', assigned_worker_id = ?, blocked_reason = NULL
+		UPDATE sessions SET state = 'preparing', assigned_worker_id = ?, blocked_reason = NULL,
+		       waiting_reason = '', execution_owner = 'worker_attempt'
 		WHERE id = (SELECT session_id FROM executions WHERE id = ?) AND state = 'queued'
 	`, workerID, executionID); err != nil {
 		return nil, unavailable(err)
@@ -274,7 +275,11 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 	row = s.db.QueryRowContext(ctx, `
 		SELECT session.id, session.run_id, json_extract(run.task_snapshot, '$.name'),
 		       session.resolved_prompt, session.repository_id, session.timeout_seconds,
-		       e.assigned_worker_id, e.required_runtime, e.state, session.admitted_at
+		       e.assigned_worker_id, e.required_runtime, e.state, session.admitted_at,
+		       run.outcome_contract, session.target_position, session.target_key,
+		       session.target_kind, session.repository_identity, session.source_kind,
+		       session.source_key, session.source_reference, session.context_snapshot,
+		       session.publish_branch
 		FROM sessions session
 		JOIN runs run ON run.id = session.run_id
 		JOIN executions e ON e.session_id = session.id
@@ -284,10 +289,16 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 	if err = row.Scan(&claim.Session.ID, &claim.Session.RunID, &claim.Session.TaskName,
 		&claim.Session.Prompt, &claim.Session.RepositoryID, &claim.Session.TimeoutSeconds,
 		&claim.Session.WorkerID, &claim.Session.RequiredRuntime, &claim.Session.State,
-		&admittedAt); err != nil {
+		&admittedAt, &claim.Session.OutcomeContract, &claim.Session.Target.Position,
+		&claim.Session.Target.TargetKey, &claim.Session.Target.TargetKind,
+		&claim.Session.Target.RepositoryIdentity, &claim.Session.Target.SourceKind,
+		&claim.Session.Target.SourceKey, &claim.Session.Target.SourceReference,
+		&claim.Session.Target.ContextSnapshot, &claim.Session.Target.PublishBranch); err != nil {
 		return claim, unavailable(err)
 	}
 	claim.Session.AdmittedAt = fromMillis(admittedAt)
+	claim.Session.Target.ID = claim.Session.ID
+	claim.Session.Target.RepositoryID = claim.Session.RepositoryID
 	err = s.db.QueryRowContext(ctx, `
 		SELECT r.id, wr.display_key,
 		       COALESCE(
@@ -309,22 +320,28 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 }
 
 type leaseState struct {
-	attemptState   string
-	executionID    string
-	executionState string
-	digest         []byte
-	expiry         int64
-	cancel         bool
+	attemptState    string
+	executionID     string
+	executionState  string
+	outcomeContract protocol.OutcomeContract
+	digest          []byte
+	expiry          int64
+	cancel          bool
 }
 
 func loadLease(ctx context.Context, tx *sql.Tx, attemptID string) (leaseState, error) {
 	var value leaseState
 	var cancel int
 	err := tx.QueryRowContext(ctx, `
-		SELECT a.state, a.execution_id, e.state, a.lease_digest, a.lease_expires_at, e.cancellation_requested
-		FROM attempts a JOIN executions e ON e.id = a.execution_id
+		SELECT a.state, a.execution_id, e.state, run.outcome_contract,
+		       a.lease_digest, a.lease_expires_at, e.cancellation_requested
+		FROM attempts a
+		JOIN executions e ON e.id = a.execution_id
+		JOIN sessions session ON session.id = e.session_id
+		JOIN runs run ON run.id = session.run_id
 		WHERE a.id = ?
-	`, attemptID).Scan(&value.attemptState, &value.executionID, &value.executionState, &value.digest, &value.expiry, &cancel)
+	`, attemptID).Scan(&value.attemptState, &value.executionID, &value.executionState,
+		&value.outcomeContract, &value.digest, &value.expiry, &cancel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return value, ErrNotFound
 	}
@@ -378,7 +395,8 @@ func (s *Store) StartAttempt(ctx context.Context, attemptID string, input protoc
 			return protocol.Attempt{}, unavailable(err)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE sessions SET state = 'running', started_at = COALESCE(started_at, ?)
+			UPDATE sessions SET state = 'running', started_at = COALESCE(started_at, ?),
+			       execution_owner = 'worker_attempt'
 			WHERE id = (SELECT session_id FROM executions WHERE id = ?) AND state = 'preparing'
 		`, now, lease.executionID); err != nil {
 			return protocol.Attempt{}, unavailable(err)
@@ -596,6 +614,15 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 	if err := verifyActiveLease(lease, input.LeaseToken, now); err != nil {
 		return protocol.Attempt{}, err
 	}
+	terminalMessage := ""
+	if lease.cancel {
+		input.State, input.Result, input.Error = "cancelled", "", ""
+		terminalMessage = "Cancelled by operator."
+	} else if lease.outcomeContract == protocol.OutcomeAgentUpdate && input.State == "succeeded" {
+		const missingOutcome = "Agent exited without reporting an outcome."
+		input.State, input.Result, input.Error = "failed", "", missingOutcome
+		terminalMessage = missingOutcome
+	}
 	if input.State == "succeeded" && lease.attemptState != "running" {
 		return protocol.Attempt{}, conflict("invalid_transition", "only a running attempt can succeed")
 	}
@@ -612,10 +639,12 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 		return protocol.Attempt{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE sessions SET state = ?, terminal_at = ?, result = ?, failure_reason = ?
+		UPDATE sessions SET state = ?, terminal_at = ?, result = ?, failure_reason = ?,
+		       terminal_message = ?,
+		       execution_owner = 'none'
 		WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 		  AND state IN ('preparing', 'running')
-	`, input.State, now, nullString(input.Result), nullString(input.Error), lease.executionID); err != nil {
+	`, input.State, now, nullString(input.Result), nullString(input.Error), terminalMessage, lease.executionID); err != nil {
 		return protocol.Attempt{}, unavailable(err)
 	}
 	if err := updateRunLifecycle(ctx, tx, lease.executionID, now); err != nil {
@@ -709,7 +738,8 @@ func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
 				return nil, unavailable(err)
 			}
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE sessions SET state = 'failed', terminal_at = ?, failure_reason = 'lease expired'
+				UPDATE sessions SET state = 'failed', terminal_at = ?, failure_reason = 'lease expired',
+				       terminal_message = 'lease expired', execution_owner = 'none'
 				WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 				  AND state IN ('preparing', 'running')
 			`, now, value.ExecutionID); err != nil {

@@ -75,7 +75,8 @@ func (s *Store) materializeBlockedSessionForWorker(
 				return unavailable(err)
 			}
 			result, err := tx.ExecContext(ctx, `
-				UPDATE sessions SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ?
+				UPDATE sessions SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ?,
+				       waiting_reason = '', execution_owner = 'none'
 				WHERE id = ? AND state = 'blocked'
 			`, selection.workerID, value.id)
 			if err != nil {
@@ -190,7 +191,7 @@ func updateRunLifecycle(ctx context.Context, tx *sql.Tx, executionID string, now
 			WHEN NOT EXISTS (
 				SELECT 1 FROM sessions session
 				WHERE session.run_id = runs.id
-				  AND session.state IN ('blocked','queued','preparing','running')
+				  AND session.state IN ('blocked','queued','preparing','running','needs-input')
 			) THEN ? ELSE NULL END
 		WHERE id = ?
 	`, now, now, runID); err != nil {
