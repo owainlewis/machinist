@@ -93,6 +93,8 @@ func (manager *Manager) startAgentUpdateServer(
 	updateServer.server = &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      35 * time.Second,
 		IdleTimeout:       5 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}

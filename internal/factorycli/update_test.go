@@ -2,6 +2,7 @@ package factorycli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -21,7 +22,8 @@ func TestAgentUpdateUsesOnlyInjectedUnixSocketContext(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(directory) })
 	socket := filepath.Join(directory, "update.sock")
-	listener, err := net.Listen("unix", socket)
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(context.Background(), "unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}

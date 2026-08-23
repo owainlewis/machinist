@@ -113,7 +113,7 @@ func sendAgentUpdate(
 		return protocol.WorkUpdate{}, fmt.Errorf("inspect Factory update socket: %w", err)
 	}
 	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0o077 != 0 {
-		return protocol.WorkUpdate{}, errors.New("Factory update socket must be a private Unix socket")
+		return protocol.WorkUpdate{}, errors.New("update socket must be a private Unix socket")
 	}
 	body, err := json.Marshal(input)
 	if err != nil {

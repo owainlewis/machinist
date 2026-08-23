@@ -89,7 +89,7 @@ func TestAgentUpdateExactReplayPrecedesLeaseExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`UPDATE attempts SET lease_expires_at = ? WHERE id = ?`,
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE attempts SET lease_expires_at = ? WHERE id = ?`,
 		time.Now().Add(-time.Minute).UnixMilli(), claim.Attempt.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestReadyAgentUpdateReplayNeedsNoFreshDeliveryEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`UPDATE attempts SET lease_expires_at = ? WHERE id = ?`,
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE attempts SET lease_expires_at = ? WHERE id = ?`,
 		time.Now().Add(-time.Minute).UnixMilli(), claim.Attempt.ID); err != nil {
 		t.Fatal(err)
 	}

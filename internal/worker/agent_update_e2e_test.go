@@ -27,7 +27,7 @@ func TestAgentUpdateSupervisorHelper(t *testing.T) {
 }
 
 func TestFakeAgentReportsProgressAndOutcomeThroughRealWorkerEndpoint(t *testing.T) {
-	if _, err := execLookPath("curl"); err != nil {
+	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl is required for the fake-agent endpoint smoke test")
 	}
 	root, err := os.MkdirTemp("/tmp", "factory-agent-e2e-")
@@ -137,10 +137,6 @@ func TestFakeAgentReportsProgressAndOutcomeThroughRealWorkerEndpoint(t *testing.
 	if len(work.Attempts) != 1 || work.Attempts[0].State != "succeeded" {
 		t.Fatalf("fake-agent Attempt = %#v", work.Attempts)
 	}
-}
-
-var execLookPath = func(name string) (string, error) {
-	return exec.LookPath(name)
 }
 
 func writeEndpointFakeCodex(t *testing.T, path string) {
