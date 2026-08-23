@@ -597,6 +597,7 @@ func (a *API) startStage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.logStateChange("stage", r.PathValue("attempt_id")+":"+strconv.Itoa(position), string(stage.State))
 	writeJSON(w, http.StatusOK, stage)
 }
 
@@ -618,6 +619,7 @@ func (a *API) completeStage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.logStateChange("stage", r.PathValue("attempt_id")+":"+strconv.Itoa(position), string(stage.State))
 	writeJSON(w, http.StatusOK, stage)
 }
 
@@ -732,12 +734,8 @@ func (a *API) completeAttempt(w http.ResponseWriter, r *http.Request) {
 }
 
 func prepareMutation(w http.ResponseWriter, r *http.Request, limit int64) bool {
-	if origin := r.Header.Get("Origin"); origin != "" {
-		parsed, err := url.Parse(origin)
-		if err != nil || parsed.Scheme != "http" || !sameAuthority(parsed.Host, r.Host) {
-			writeError(w, &ServiceError{Code: "cross_origin_request", Message: "browser mutations must be same-origin", Status: 403})
-			return false
-		}
+	if !validateMutationOrigin(w, r) {
+		return false
 	}
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || contentType != "application/json" {
@@ -745,6 +743,17 @@ func prepareMutation(w http.ResponseWriter, r *http.Request, limit int64) bool {
 		return false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	return true
+}
+
+func validateMutationOrigin(w http.ResponseWriter, r *http.Request) bool {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Scheme != "http" || !sameAuthority(parsed.Host, r.Host) {
+			writeError(w, &ServiceError{Code: "cross_origin_request", Message: "browser mutations must be same-origin", Status: 403})
+			return false
+		}
+	}
 	return true
 }
 

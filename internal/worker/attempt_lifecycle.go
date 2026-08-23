@@ -166,6 +166,13 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	lastResult := ""
 	var finalMessage supervisorMessage
 	for index, stage := range stages {
+		if reason := handle.stopReasonAt(time.Now()); reason != "" {
+			sender.closeAndWait(5 * time.Second)
+			err := stoppedAttemptError(handle, errors.New("Attempt stopped before the next Pipeline stage."))
+			manager.finishWithWorktree(claim, token, handle, repository, value,
+				terminalForStop(handle), "", err.Error())
+			return
+		}
 		finalStage := index == len(stages)-1
 		prompt := buildStagePrompt(claim, value, stage, finalStage)
 		if len([]byte(value.Branch)) > protocol.MaxAgentBranchBytes ||

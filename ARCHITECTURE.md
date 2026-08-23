@@ -436,8 +436,9 @@ Attempt when claimed.
 ## API and security boundaries
 
 The local listener exposes health plus operator and Worker routes under
-`/api/v1`: Builds, Workers, repositories, Tasks, Runs, overview, Attempts, and
-event history. It rejects non-loopback clients before route handling.
+`/api/v1`: Builds, Workers, repositories, Pipelines, Tasks, Runs, overview,
+Attempts, and event history. It rejects non-loopback clients before route
+handling.
 
 The optional remote listener exposes only health, enrollment exchange, Worker
 registration and claims, and the active Attempt lifecycle. Creating an
@@ -482,11 +483,10 @@ admission path.
   Workers. Multi-stage Pipelines currently require a persistent Worker.
 - Cloud Run execution profiles and elastic dispatch are designed but not
   implemented.
-- Durable agent-update fields, persistent-backend admission, and missing-outcome
-  failure enforcement exist. Worker-local Work-update transport, write
-  endpoints, successful semantic completion, resumable questions, and operator
-  Work commands are not implemented yet. Existing execution remains
-  process-exit-based.
+- Agent-directed Work updates, semantic completion, and the Worker-local update
+  transport are implemented for running, ready, failed, and no-change outcomes.
+  The durable `needs-input` model exists, but the Worker rejects it until
+  verified checkpoint and operator-resume support is implemented.
 - Managed repository acquisition supports GitHub through `gh`.
 - The current Worker resolves a repository's base commit during Attempt
   preparation, so a later retry can observe a newer default branch commit.

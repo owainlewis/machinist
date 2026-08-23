@@ -60,6 +60,23 @@ describe("Runs", () => {
     expect(card).toHaveTextContent("2/2");
   });
 
+  it("counts a needs-input Session as finished progress", async () => {
+    const needsInput = {
+      ...run("run-needs-input", "Answer required", "blocked"),
+      needs_attention: true,
+      succeeded_count: 0,
+      needs_input_count: 1,
+      active_count: 1,
+    };
+    vi.spyOn(api, "runs").mockResolvedValue({ runs: [needsInput], next_cursor: null });
+    const client = testClient();
+
+    render(<QueryClientProvider client={client}><RunsView mode="table" onMode={() => undefined} onRun={() => undefined} /></QueryClientProvider>);
+
+    const row = (await screen.findByText("Answer required")).closest("button");
+    expect(row).toHaveTextContent("1/1");
+  });
+
   it("uses the same successful Session total in Run detail stats", async () => {
     const detail = runDetail("succeeded");
     detail.run = {

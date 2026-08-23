@@ -320,6 +320,10 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 		}
 		claim.Session.Stages = append(claim.Session.Stages, stage)
 	}
+	if err := stageRows.Err(); err != nil {
+		stageRows.Close()
+		return claim, unavailable(err)
+	}
 	if err := stageRows.Close(); err != nil {
 		return claim, unavailable(err)
 	}

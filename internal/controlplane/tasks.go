@@ -1481,6 +1481,10 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 			}
 			session.Stages = append(session.Stages, stage)
 		}
+		if err := stageRows.Err(); err != nil {
+			stageRows.Close()
+			return detail, unavailable(err)
+		}
 		if err := stageRows.Close(); err != nil {
 			return detail, unavailable(err)
 		}

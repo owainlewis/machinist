@@ -170,32 +170,56 @@ func replacePipelineStages(ctx context.Context, tx *sql.Tx, id string, stages []
 }
 
 func (s *Store) Pipelines(ctx context.Context) (protocol.PipelinePage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM pipelines ORDER BY updated_at DESC, id DESC`)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, generation, created_at, updated_at
+		FROM pipelines ORDER BY updated_at DESC, id DESC
+	`)
 	if err != nil {
 		return protocol.PipelinePage{}, unavailable(err)
 	}
-	defer rows.Close()
-	var ids []string
+	page := protocol.PipelinePage{Pipelines: make([]protocol.Pipeline, 0)}
+	byID := make(map[string]int)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var pipeline protocol.Pipeline
+		var created, updated int64
+		if err := rows.Scan(&pipeline.ID, &pipeline.Name, &pipeline.Generation, &created, &updated); err != nil {
+			rows.Close()
 			return protocol.PipelinePage{}, unavailable(err)
 		}
-		ids = append(ids, id)
+		pipeline.CreatedAt, pipeline.UpdatedAt = fromMillis(created), fromMillis(updated)
+		byID[pipeline.ID] = len(page.Pipelines)
+		page.Pipelines = append(page.Pipelines, pipeline)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return protocol.PipelinePage{}, unavailable(err)
 	}
-	page := protocol.PipelinePage{Pipelines: make([]protocol.Pipeline, 0, len(ids))}
-	for _, id := range ids {
-		pipeline, err := s.Pipeline(ctx, id)
-		if err != nil {
-			return protocol.PipelinePage{}, err
+	if err := rows.Close(); err != nil {
+		return protocol.PipelinePage{}, unavailable(err)
+	}
+	stageRows, err := s.db.QueryContext(ctx, `
+		SELECT pipeline_id, position, name FROM pipeline_stages ORDER BY pipeline_id, position
+	`)
+	if err != nil {
+		return protocol.PipelinePage{}, unavailable(err)
+	}
+	for stageRows.Next() {
+		var pipelineID string
+		var stage protocol.PipelineStage
+		if err := stageRows.Scan(&pipelineID, &stage.Position, &stage.Name); err != nil {
+			stageRows.Close()
+			return protocol.PipelinePage{}, unavailable(err)
 		}
-		for index := range pipeline.Stages {
-			pipeline.Stages[index].Prompt = ""
+		if index, ok := byID[pipelineID]; ok {
+			page.Pipelines[index].Stages = append(page.Pipelines[index].Stages, stage)
 		}
-		page.Pipelines = append(page.Pipelines, pipeline)
+	}
+	if err := stageRows.Err(); err != nil {
+		stageRows.Close()
+		return protocol.PipelinePage{}, unavailable(err)
+	}
+	if err := stageRows.Close(); err != nil {
+		return protocol.PipelinePage{}, unavailable(err)
 	}
 	return page, nil
 }
@@ -216,15 +240,19 @@ func (s *Store) Pipeline(ctx context.Context, id string) (protocol.Pipeline, err
 	if err != nil {
 		return pipeline, unavailable(err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var stage protocol.PipelineStage
 		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Prompt); err != nil {
+			rows.Close()
 			return pipeline, unavailable(err)
 		}
 		pipeline.Stages = append(pipeline.Stages, stage)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
+		return pipeline, unavailable(err)
+	}
+	if err := rows.Close(); err != nil {
 		return pipeline, unavailable(err)
 	}
 	return pipeline, nil
@@ -245,15 +273,19 @@ func loadPipelineSnapshot(ctx context.Context, tx *sql.Tx, id string) (protocol.
 	if err != nil {
 		return snapshot, unavailable(err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var stage protocol.PipelineStage
 		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Prompt); err != nil {
+			rows.Close()
 			return snapshot, unavailable(err)
 		}
 		snapshot.Stages = append(snapshot.Stages, stage)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
+		return snapshot, unavailable(err)
+	}
+	if err := rows.Close(); err != nil {
 		return snapshot, unavailable(err)
 	}
 	if len(snapshot.Stages) == 0 {

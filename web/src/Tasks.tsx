@@ -3,7 +3,7 @@ import { Archive, CalendarClock, Eye, GitBranch, Pencil, Play, Plus, X } from "l
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { timeAgo } from "./format";
-import type { ExecutionProfile, ManagedRepository, Task, Runtime, SaveTaskInput } from "./types";
+import type { ExecutionProfile, ManagedRepository, Pipeline, Task, Runtime, SaveTaskInput } from "./types";
 import { EmptyState, ErrorState, InlineError, LoadingState, StatusBadge, ViewHeader } from "./ui";
 
 const persistentAutoProfileID = "persistent-auto";
@@ -12,19 +12,20 @@ function profileName(profile: ExecutionProfile): string {
   return profile.id === persistentAutoProfileID ? "Automatic persistent Worker" : profile.name;
 }
 
-function profileIssue(profile: ExecutionProfile | undefined, runtime: Runtime): string {
+function profileIssue(profile: ExecutionProfile | undefined, runtime: Runtime, pipeline?: Pipeline): string {
   if (!profile) return "The selected execution profile is no longer available.";
-  if (profile.id === persistentAutoProfileID) return "";
-  const compatibilityIssue = profileCompatibilityIssue(profile, runtime);
+  const compatibilityIssue = profileCompatibilityIssue(profile, runtime, pipeline);
   if (compatibilityIssue) return compatibilityIssue;
+  if (profile.id === persistentAutoProfileID) return "";
   if (!profile.enabled) return "This execution profile is disabled.";
   if (!profile.healthy) return profile.health_reason || "This execution profile is unhealthy.";
   return "";
 }
 
-function profileCompatibilityIssue(profile: ExecutionProfile | undefined, runtime: Runtime): string {
+function profileCompatibilityIssue(profile: ExecutionProfile | undefined, runtime: Runtime, pipeline?: Pipeline): string {
   if (!profile) return "The selected execution profile is no longer available.";
   if (profile.id !== persistentAutoProfileID && profile.runtime !== runtime) return `Requires ${profile.runtime}; this Task uses ${runtime}.`;
+  if ((pipeline?.stages.length ?? 1) > 1 && profile.kind !== "persistent") return "Multi-stage Pipelines require a persistent Worker.";
   return "";
 }
 
@@ -109,25 +110,27 @@ export function TasksView({ initialID, createOpen, onRun }: { initialID?: string
 
 function RunTaskDialog({ task, pending, error, onClose, onRun }: { task: Task; pending: boolean; error: Error | null; onClose: () => void; onRun: (profileID: string) => void }) {
   const profiles = useQuery({ queryKey: ["execution-profiles"], queryFn: api.executionProfiles });
+  const pipelines = useQuery({ queryKey: ["pipelines"], queryFn: api.pipelines });
   const [profileID, setProfileID] = useState(task.execution_profile_id || persistentAutoProfileID);
   const profile = profiles.data?.find((value) => value.id === profileID);
-  const issue = profiles.isSuccess ? profileIssue(profile, task.runtime) : "";
+  const pipeline = pipelines.data?.find((value) => value.id === task.pipeline_id);
+  const issue = profiles.isSuccess && pipelines.isSuccess ? profileIssue(profile, task.runtime, pipeline) : "";
   return <div className="modal-layer" role="presentation">
     <button className="modal-scrim" aria-label="Close Run dialog" onClick={onClose} />
     <section className="modal run-task-modal" role="dialog" aria-modal="true" aria-labelledby="run-task-title">
       <header className="modal-header"><div><h2 id="run-task-title">Run {task.name}</h2><p>Choose where this run should execute.</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={17} /></button></header>
       <div className="modal-body">
-        <label className="field"><span>Run on</span><select aria-label="Run on" value={profileID} disabled={profiles.isPending || profiles.isError || pending} onChange={(event) => setProfileID(event.target.value)}>
+        <label className="field"><span>Run on</span><select aria-label="Run on" value={profileID} disabled={profiles.isPending || profiles.isError || pipelines.isPending || pipelines.isError || pending} onChange={(event) => setProfileID(event.target.value)}>
           {!profiles.data?.some((value) => value.id === profileID) && <option value={profileID}>Loading saved destination…</option>}
           {(profiles.data ?? []).map((value) => {
-            const unavailable = profileIssue(value, task.runtime);
+            const unavailable = profileIssue(value, task.runtime, pipeline);
             return <option key={value.id} value={value.id} disabled={Boolean(unavailable)}>{profileName(value)}{unavailable ? " · unavailable" : ""}</option>;
           })}
         </select><small className={issue ? "field-error" : "field-hint"}>{issue || profileDescription(profile)}</small></label>
         <p className="run-task-note">This choice applies only to this run. Scheduled runs keep the Task default.</p>
-        <InlineError error={error ?? profiles.error} />
+        <InlineError error={error ?? profiles.error ?? pipelines.error} />
       </div>
-      <footer className="modal-footer"><button className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={pending || profiles.isPending || profiles.isError || Boolean(issue)} onClick={() => onRun(profileID)}><Play size={14} /> {pending ? "Starting…" : "Run now"}</button></footer>
+      <footer className="modal-footer"><button className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={pending || profiles.isPending || profiles.isError || pipelines.isPending || pipelines.isError || Boolean(issue)} onClick={() => onRun(profileID)}><Play size={14} /> {pending ? "Starting…" : "Run now"}</button></footer>
     </section>
   </div>;
 }
@@ -163,8 +166,10 @@ function TaskComposer({ task, onClose, onSaved, onArchive, archiveError, archive
     onSuccess: onSaved,
   });
   const selectedProfile = profiles.data?.find((profile) => profile.id === profileID);
-  const selectedProfileIssue = profiles.isSuccess ? profileIssue(selectedProfile, runtime) : "";
-  const selectedProfileCompatibilityIssue = profiles.isSuccess ? profileCompatibilityIssue(selectedProfile, runtime) : "";
+  const selectedPipeline = pipelines.data?.find((pipeline) => pipeline.id === pipelineID);
+  const selectedProfileIssue = profiles.isSuccess && pipelines.isSuccess ? profileIssue(selectedProfile, runtime, selectedPipeline) : "";
+  const selectedProfileCompatibilityIssue = profiles.isSuccess && pipelines.isSuccess ? profileCompatibilityIssue(selectedProfile, runtime, selectedPipeline) : "";
+  const dependenciesUnavailable = profiles.isPending || profiles.isError || pipelines.isPending || pipelines.isError || !selectedProfile || !selectedPipeline;
   const discard = useMutation({
     mutationFn: () => api.discardTaskOccurrence(task!.id, task!.schedule.pending_due_at!),
     onSuccess: onSaved,
@@ -188,7 +193,7 @@ function TaskComposer({ task, onClose, onSaved, onArchive, archiveError, archive
         <label className="field"><span>Run on</span><select aria-label="Run on" disabled={readOnly || profiles.isPending || profiles.isError} value={profileID} onChange={(event) => setProfileID(event.target.value)}>
           {!profiles.data?.some((profile) => profile.id === profileID) && <option value={profileID}>Loading saved destination…</option>}
           {(profiles.data ?? []).map((profile) => {
-            const issue = profileIssue(profile, runtime);
+            const issue = profileIssue(profile, runtime, selectedPipeline);
             return <option key={profile.id} value={profile.id} disabled={Boolean(issue)}>{profileName(profile)}{issue ? " · unavailable" : ""}</option>;
           })}
         </select><small className={selectedProfileIssue ? "field-error" : "field-hint"}>{selectedProfileIssue || profileDescription(selectedProfile)} This is also used by scheduled runs.</small></label>
@@ -200,7 +205,7 @@ function TaskComposer({ task, onClose, onSaved, onArchive, archiveError, archive
         </div>
         <InlineError error={save.error ?? archiveError ?? discard.error ?? repositories.error ?? profiles.error ?? pipelines.error} />
       </div>
-      <footer className="modal-footer">{task && !readOnly && <button className="button button-danger-secondary" disabled={archivePending} onClick={() => onArchive(task)}><Archive size={14} /> {archivePending ? (task.archived ? "Restoring…" : "Archiving…") : (task.archived ? "Restore" : "Archive")}</button>}<span /><button className="button button-secondary" onClick={onClose}>{readOnly ? "Close" : "Cancel"}</button>{!readOnly && <button className="button button-primary" disabled={save.isPending || !name.trim() || !prompt.trim() || (scheduled && selected.length === 0) || Boolean(selectedProfileCompatibilityIssue)} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save Task"}</button>}</footer>
+      <footer className="modal-footer">{task && !readOnly && <button className="button button-danger-secondary" disabled={archivePending} onClick={() => onArchive(task)}><Archive size={14} /> {archivePending ? (task.archived ? "Restoring…" : "Archiving…") : (task.archived ? "Restore" : "Archive")}</button>}<span /><button className="button button-secondary" onClick={onClose}>{readOnly ? "Close" : "Cancel"}</button>{!readOnly && <button className="button button-primary" disabled={save.isPending || dependenciesUnavailable || !name.trim() || !prompt.trim() || (scheduled && selected.length === 0) || Boolean(selectedProfileCompatibilityIssue)} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save Task"}</button>}</footer>
     </section>
   </div>;
 }

@@ -194,7 +194,7 @@ function repositoryName(identity: string): string {
 }
 
 function Progress({ run }: { run: Run }) {
-  const complete = successfulSessions(run) + run.failed_count + run.cancelled_count;
+  const complete = successfulSessions(run) + run.needs_input_count + run.failed_count + run.cancelled_count;
   const percent = run.session_count ? Math.round((complete / run.session_count) * 100) : 0;
   return <span className="session-progress"><span><i style={{ width: `${percent}%` }} /></span><small>{complete}/{run.session_count}</small></span>;
 }

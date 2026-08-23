@@ -59,6 +59,9 @@ func (a *API) updatePipeline(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) deletePipeline(w http.ResponseWriter, r *http.Request) {
+	if !validateMutationOrigin(w, r) {
+		return
+	}
 	if err := a.store.DeletePipeline(r.Context(), r.PathValue("pipeline_id")); err != nil {
 		writeError(w, err)
 		return

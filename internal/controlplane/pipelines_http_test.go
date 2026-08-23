@@ -91,6 +91,16 @@ func TestPipelineAPIListsSummariesAndUpdatesDetails(t *testing.T) {
 	if defaultDelete := doJSON(http.MethodDelete, "/api/v1/pipelines/"+protocol.DefaultPipelineID, nil); defaultDelete.Code != http.StatusConflict {
 		t.Fatalf("default delete status %d: %s", defaultDelete.Code, defaultDelete.Body.String())
 	}
+	crossOriginDelete := httptest.NewRequestWithContext(
+		context.Background(), http.MethodDelete, "http://localhost/api/v1/pipelines/"+created.ID, nil,
+	)
+	crossOriginDelete.Host = "localhost"
+	crossOriginDelete.Header.Set("Origin", "http://attacker.example")
+	crossOriginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(crossOriginResponse, crossOriginDelete)
+	if crossOriginResponse.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin delete status %d: %s", crossOriginResponse.Code, crossOriginResponse.Body.String())
+	}
 	if deleteResponse := doJSON(http.MethodDelete, "/api/v1/pipelines/"+created.ID, nil); deleteResponse.Code != http.StatusNoContent {
 		t.Fatalf("delete status %d: %s", deleteResponse.Code, deleteResponse.Body.String())
 	}
