@@ -444,3 +444,150 @@ func TestFakeCloudCompletionPreservesMaximumLegacyResult(t *testing.T) {
 			len(work.Result), len(work.TerminalMessage))
 	}
 }
+
+func TestAgentUpdateProcessExitWithoutOutcomeFailsVisibly(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
+		Name: "Missing semantic outcome", Prompt: "Review.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID}, OutcomeContract: protocol.OutcomeAgentUpdate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
+		RequestKey: "missing-semantic-outcome",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{
+		RequestID: "missing-semantic-outcome", LeaseToken: tokenA,
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, err %v", claim, err)
+	}
+	if _, err := store.StartAttempt(context.Background(), claim.Attempt.ID, protocol.StartAttemptRequest{
+		LeaseToken: tokenA,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "succeeded", Result: "unreported prose success",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const missingOutcome = "Agent exited without reporting an outcome."
+	work, err := store.Work(context.Background(), run.Sessions[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = store.Run(context.Background(), run.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.State != "failed" || attempt.Result != "" || attempt.Error != missingOutcome ||
+		work.State != protocol.WorkFailed || work.Result != "" || work.FailureReason != missingOutcome ||
+		work.TerminalMessage != missingOutcome || run.Run.State != protocol.RunFailed {
+		t.Fatalf("missing semantic outcome completion = attempt %#v, Work %#v, Run %#v",
+			attempt, work, run.Run)
+	}
+}
+
+func TestAgentUpdateCompletionPreservesInfrastructureFailure(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
+		Name: "Preparation failure", Prompt: "Review.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID}, OutcomeContract: protocol.OutcomeAgentUpdate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
+		RequestKey: "preparation-failure",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{
+		RequestID: "preparation-failure", LeaseToken: tokenA,
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, err %v", claim, err)
+	}
+	const preparationFailure = "repository preparation failed"
+	attempt, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: preparationFailure,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := store.Work(context.Background(), run.Sessions[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.State != "failed" || attempt.Error != preparationFailure ||
+		work.State != protocol.WorkFailed || work.FailureReason != preparationFailure {
+		t.Fatalf("agent-update infrastructure failure = Attempt %#v, Work %#v", attempt, work)
+	}
+}
+
+func TestPendingCancellationWinsAgentUpdateCompletion(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
+		Name: "Cancellation wins", Prompt: "Review.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID}, OutcomeContract: protocol.OutcomeAgentUpdate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
+		RequestKey: "cancellation-wins",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{
+		RequestID: "cancellation-wins", LeaseToken: tokenA,
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, err %v", claim, err)
+	}
+	if _, err := store.StartAttempt(context.Background(), claim.Attempt.ID, protocol.StartAttemptRequest{
+		LeaseToken: tokenA,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CancelSession(context.Background(), run.Run.ID, run.Sessions[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "succeeded", Result: "late success",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := store.Work(context.Background(), run.Sessions[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = store.Run(context.Background(), run.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.State != "cancelled" || attempt.Result != "" || attempt.Error != "" ||
+		work.State != protocol.WorkCancelled || work.Result != "" || work.FailureReason != "" ||
+		work.TerminalMessage != "Cancelled by operator." || run.Run.State != protocol.RunCancelled {
+		t.Fatalf("late completion after cancellation = Attempt %#v, Work %#v, Run %#v",
+			attempt, work, run.Run)
+	}
+}

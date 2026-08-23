@@ -320,22 +320,28 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 }
 
 type leaseState struct {
-	attemptState   string
-	executionID    string
-	executionState string
-	digest         []byte
-	expiry         int64
-	cancel         bool
+	attemptState    string
+	executionID     string
+	executionState  string
+	outcomeContract protocol.OutcomeContract
+	digest          []byte
+	expiry          int64
+	cancel          bool
 }
 
 func loadLease(ctx context.Context, tx *sql.Tx, attemptID string) (leaseState, error) {
 	var value leaseState
 	var cancel int
 	err := tx.QueryRowContext(ctx, `
-		SELECT a.state, a.execution_id, e.state, a.lease_digest, a.lease_expires_at, e.cancellation_requested
-		FROM attempts a JOIN executions e ON e.id = a.execution_id
+		SELECT a.state, a.execution_id, e.state, run.outcome_contract,
+		       a.lease_digest, a.lease_expires_at, e.cancellation_requested
+		FROM attempts a
+		JOIN executions e ON e.id = a.execution_id
+		JOIN sessions session ON session.id = e.session_id
+		JOIN runs run ON run.id = session.run_id
 		WHERE a.id = ?
-	`, attemptID).Scan(&value.attemptState, &value.executionID, &value.executionState, &value.digest, &value.expiry, &cancel)
+	`, attemptID).Scan(&value.attemptState, &value.executionID, &value.executionState,
+		&value.outcomeContract, &value.digest, &value.expiry, &cancel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return value, ErrNotFound
 	}
@@ -608,6 +614,15 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 	if err := verifyActiveLease(lease, input.LeaseToken, now); err != nil {
 		return protocol.Attempt{}, err
 	}
+	terminalMessage := ""
+	if lease.cancel {
+		input.State, input.Result, input.Error = "cancelled", "", ""
+		terminalMessage = "Cancelled by operator."
+	} else if lease.outcomeContract == protocol.OutcomeAgentUpdate && input.State == "succeeded" {
+		const missingOutcome = "Agent exited without reporting an outcome."
+		input.State, input.Result, input.Error = "failed", "", missingOutcome
+		terminalMessage = missingOutcome
+	}
 	if input.State == "succeeded" && lease.attemptState != "running" {
 		return protocol.Attempt{}, conflict("invalid_transition", "only a running attempt can succeed")
 	}
@@ -625,11 +640,11 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET state = ?, terminal_at = ?, result = ?, failure_reason = ?,
-		       terminal_message = '',
+		       terminal_message = ?,
 		       execution_owner = 'none'
 		WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 		  AND state IN ('preparing', 'running')
-	`, input.State, now, nullString(input.Result), nullString(input.Error), lease.executionID); err != nil {
+	`, input.State, now, nullString(input.Result), nullString(input.Error), terminalMessage, lease.executionID); err != nil {
 		return protocol.Attempt{}, unavailable(err)
 	}
 	if err := updateRunLifecycle(ctx, tx, lease.executionID, now); err != nil {
