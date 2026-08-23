@@ -142,35 +142,24 @@ func (a *API) listRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) getRun(w http.ResponseWriter, r *http.Request) {
-	detail, err := a.store.Run(r.Context(), r.PathValue("run_id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
 	switch r.URL.Query().Get("view") {
 	case "":
+		detail, err := a.store.Run(r.Context(), r.PathValue("run_id"))
+		if err != nil {
+			writeError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, detail)
 	case "summary":
-		writeJSON(w, http.StatusOK, summarizeRun(detail))
+		summary, err := a.store.RunSummary(r.Context(), r.PathValue("run_id"))
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
 	default:
 		writeError(w, invalid("invalid_view", "view must be summary when provided"))
 	}
-}
-
-func summarizeRun(detail protocol.RunDetail) protocol.RunSummary {
-	summary := protocol.RunSummary{
-		ID: detail.Run.ID, TaskName: detail.Run.Task.Name, State: detail.Run.State,
-		Source: detail.Run.Source, AdmittedAt: detail.Run.AdmittedAt, UpdatedAt: detail.Run.UpdatedAt,
-		Sessions: make([]protocol.RunSessionSummary, 0, len(detail.Sessions)),
-	}
-	for _, session := range detail.Sessions {
-		summary.Sessions = append(summary.Sessions, protocol.RunSessionSummary{
-			ID: session.ID, RepositoryIdentity: session.RepositoryIdentity, State: session.State,
-			AssignedWorkerID: session.AssignedWorkerID, AttemptCount: len(session.Attempts),
-			Result: session.Result, FailureReason: session.FailureReason,
-		})
-	}
-	return summary
 }
 
 func (a *API) cancelRun(w http.ResponseWriter, r *http.Request) {

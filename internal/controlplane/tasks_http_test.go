@@ -1,51 +1,78 @@
 package controlplane
 
 import (
+	"context"
+	"fmt"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
-func TestSummarizeRunOmitsUnboundedAttemptHistory(t *testing.T) {
-	now := time.Date(2026, time.August, 23, 12, 0, 0, 0, time.UTC)
-	detail := protocol.RunDetail{
-		Run: protocol.Run{
-			ID: "run-1", Task: protocol.TaskSnapshot{Name: "Review Factory", Prompt: "private"},
-			State: protocol.RunRunning, Source: "manual", AdmittedAt: now, UpdatedAt: now,
-		},
-		Sessions: []protocol.Session{{
-			ID: "session-1", RepositoryIdentity: "github.com/owainlewis/factory",
-			State: protocol.SessionSucceeded, AssignedWorkerID: "worker-1", Result: "done",
-			Attempts: []protocol.Attempt{{ID: "attempt-1", Result: "large"}, {ID: "attempt-2", Result: "large"}},
-		}},
+func TestRunSummaryCountsAttemptsWithoutReturningTheirBodies(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
+		Name: "Review Factory", Prompt: "Review the repository.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "summary-run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := detail.Sessions[0].ID
+	var executionID string
+	if err := store.db.QueryRow(`SELECT id FROM executions WHERE session_id = ?`, sessionID).Scan(&executionID); err != nil {
+		t.Fatal(err)
+	}
+	largeResult := strings.Repeat("x", protocol.MaxResultBytes)
+	for number := 1; number <= 2; number++ {
+		if _, err := store.db.Exec(`
+			INSERT INTO attempts(id, execution_id, worker_id, attempt_number, state,
+			                     lease_digest, lease_expires_at, result, created_at)
+			VALUES (?, ?, ?, ?, 'succeeded', X'01', 0, ?, ?)
+		`, fmt.Sprintf("summary-attempt-%d", number), executionID, worker.ID, number, largeResult, number); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.Exec(`UPDATE sessions SET state = 'succeeded', result = 'done', terminal_at = 2 WHERE id = ?`, sessionID); err != nil {
+		t.Fatal(err)
 	}
 
-	summary := summarizeRun(detail)
-	if summary.ID != detail.Run.ID || summary.TaskName != detail.Run.Task.Name || len(summary.Sessions) != 1 {
-		t.Fatalf("Run summary = %#v", summary)
+	summary, err := store.RunSummary(context.Background(), detail.Run.ID)
+	if err != nil || summary.ID != detail.Run.ID || summary.TaskName != task.Name || len(summary.Sessions) != 1 {
+		t.Fatalf("Run summary = %#v, error %v", summary, err)
 	}
 	session := summary.Sessions[0]
-	if session.AttemptCount != 2 || session.Result != "done" || session.ID != "session-1" {
-		t.Fatalf("Session summary = %#v", session)
+	if summary.State != protocol.RunSucceeded || session.AttemptCount != 2 || session.Result != "done" || session.ID != sessionID {
+		t.Fatalf("Run summary state = %#v", summary)
 	}
 }
 
-func TestSummarizeWorkersOmitsLargeOperationalState(t *testing.T) {
-	now := time.Date(2026, time.August, 23, 12, 0, 0, 0, time.UTC)
-	workers := []protocol.Worker{{
-		ID: "worker-1", Name: "local", Runtime: "codex", Capacity: 10, ActiveCount: 2,
-		Health: "healthy", Online: true, LastHeartbeat: now,
-		Repositories:      []protocol.Repository{{ID: "repository-1", RemoteIdentity: "github.com/owainlewis/factory"}},
-		RetainedWorktrees: []protocol.RetainedWorktree{{AttemptID: "attempt-1"}},
-	}}
+func TestWorkerSummariesDoNotReadOperationalJSON(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	if _, err := store.db.Exec(`
+		UPDATE workers
+		SET capabilities_json = 'not-json', retained_worktrees_json = 'not-json'
+		WHERE id = ?
+	`, worker.ID); err != nil {
+		t.Fatal(err)
+	}
 
-	page := summarizeWorkers(workers)
-	if len(page.Workers) != 1 {
-		t.Fatalf("Worker summary page = %#v", page)
+	page, err := store.WorkerSummaries(context.Background())
+	if err != nil || len(page.Workers) != 1 {
+		t.Fatalf("Worker summaries = %#v, error %v", page, err)
 	}
 	summary := page.Workers[0]
-	if summary.ID != workers[0].ID || summary.ActiveCount != 2 || summary.LastHeartbeat != now {
+	if summary.ID != worker.ID || summary.Name != worker.Name || summary.Capacity != worker.Capacity {
 		t.Fatalf("Worker summary = %#v", summary)
 	}
 }

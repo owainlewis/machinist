@@ -1063,6 +1063,56 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 	return detail, nil
 }
 
+func (s *Store) RunSummary(ctx context.Context, id string) (protocol.RunSummary, error) {
+	var summary protocol.RunSummary
+	var admittedAt, updatedAt int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT run.id, json_extract(run.task_snapshot, '$.name'), run.source,
+		       run.admitted_at, run.updated_at
+		FROM runs run WHERE run.id = ?
+	`, id).Scan(&summary.ID, &summary.TaskName, &summary.Source, &admittedAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return summary, ErrNotFound
+	}
+	if err != nil {
+		return summary, unavailable(err)
+	}
+	summary.AdmittedAt, summary.UpdatedAt = fromMillis(admittedAt), fromMillis(updatedAt)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session.id, session.repository_identity, session.state,
+		       session.assigned_worker_id, session.result, session.failure_reason,
+		       (SELECT COUNT(*) FROM attempts attempt
+		        JOIN executions execution ON execution.id = attempt.execution_id
+		        WHERE execution.session_id = session.id)
+		FROM sessions session
+		WHERE session.run_id = ?
+		ORDER BY session.admitted_at, session.id
+	`, id)
+	if err != nil {
+		return summary, unavailable(err)
+	}
+	defer rows.Close()
+	sessions := make([]protocol.Session, 0)
+	for rows.Next() {
+		var session protocol.RunSessionSummary
+		var workerID, result, failure sql.NullString
+		if err := rows.Scan(&session.ID, &session.RepositoryIdentity, &session.State,
+			&workerID, &result, &failure, &session.AttemptCount); err != nil {
+			return summary, unavailable(err)
+		}
+		session.AssignedWorkerID, session.Result, session.FailureReason = workerID.String, result.String, failure.String
+		summary.Sessions = append(summary.Sessions, session)
+		sessions = append(sessions, protocol.Session{State: session.State})
+	}
+	if err := rows.Err(); err != nil {
+		return summary, unavailable(err)
+	}
+	run := protocol.Run{}
+	applyRunAggregate(&run, sessions, s.now())
+	summary.State = run.State
+	return summary, nil
+}
+
 func applyRunAggregate(run *protocol.Run, sessions []protocol.Session, now time.Time) {
 	run.SessionCount = len(sessions)
 	run.SucceededCount, run.FailedCount, run.CancelledCount, run.ActiveCount = 0, 0, 0, 0

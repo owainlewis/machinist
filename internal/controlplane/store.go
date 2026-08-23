@@ -1861,6 +1861,35 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 	return workers, nil
 }
 
+func (s *Store) WorkerSummaries(ctx context.Context) (protocol.WorkerSummaryPage, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, runtime, capacity, active_count, health, synthetic, last_heartbeat
+		FROM workers ORDER BY registered_at, id
+	`)
+	if err != nil {
+		return protocol.WorkerSummaryPage{}, unavailable(err)
+	}
+	defer rows.Close()
+	page := protocol.WorkerSummaryPage{Workers: make([]protocol.WorkerSummary, 0)}
+	for rows.Next() {
+		var worker protocol.WorkerSummary
+		var synthetic int
+		var heartbeat int64
+		if err := rows.Scan(&worker.ID, &worker.Name, &worker.Runtime, &worker.Capacity,
+			&worker.ActiveCount, &worker.Health, &synthetic, &heartbeat); err != nil {
+			return protocol.WorkerSummaryPage{}, unavailable(err)
+		}
+		worker.LastHeartbeat = fromMillis(heartbeat)
+		worker.Online = synthetic != 0 && worker.Health == "healthy" ||
+			synthetic == 0 && s.now().Sub(worker.LastHeartbeat) <= protocol.WorkerOnlineWindow
+		page.Workers = append(page.Workers, worker)
+	}
+	if err := rows.Err(); err != nil {
+		return protocol.WorkerSummaryPage{}, unavailable(err)
+	}
+	return page, nil
+}
+
 func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT w.id, w.name, w.labels_json, w.worker_version, w.runtime, w.runtime_version,
