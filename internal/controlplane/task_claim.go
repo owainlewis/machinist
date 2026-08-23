@@ -14,34 +14,54 @@ func (s *Store) materializeBlockedSessionForWorker(
 ) error {
 	type candidate struct {
 		id, repositoryID, identity, runtime string
-		admittedAt                          int64
+		fairCount, runAdmitted, admittedAt  int64
 	}
-	var cursorAdmitted int64
+	var cursorFair, cursorRunAdmitted, cursorAdmitted int64
 	var cursorID string
 	for {
 		rows, err := tx.QueryContext(ctx, `
-			SELECT session.id, session.repository_id, session.repository_identity,
-			       session.required_runtime, session.admitted_at
-			FROM sessions session
-			JOIN runs run ON run.id = session.run_id
-			JOIN repositories repository ON repository.id = session.repository_id
-			WHERE session.state = 'blocked'
-			  AND session.execution_backend = 'persistent'
-			  AND (repository.centrally_managed = 0 OR repository.enabled = 1)
-			  AND (? = '' OR session.admitted_at > ? OR (session.admitted_at = ? AND session.id > ?))
-			  AND (
-			      SELECT COUNT(*) FROM sessions active
-			      WHERE active.run_id = session.run_id AND active.state IN ('queued', 'preparing', 'running')
-			  ) < json_extract(run.task_snapshot, '$.concurrency_limit')
-			ORDER BY session.admitted_at, session.id LIMIT 50
-		`, cursorID, cursorAdmitted, cursorAdmitted, cursorID)
+			SELECT candidate.id, candidate.repository_id, candidate.repository_identity,
+			       candidate.required_runtime, candidate.fair_count,
+			       candidate.run_admitted_at, candidate.admitted_at
+			FROM (
+				SELECT session.id, session.repository_id, session.repository_identity,
+				       session.required_runtime, session.admitted_at,
+				       run.admitted_at AS run_admitted_at,
+				       (
+						SELECT COUNT(*)
+						FROM attempts previous_attempt
+						JOIN executions previous_execution ON previous_execution.id = previous_attempt.execution_id
+						JOIN sessions previous_session ON previous_session.id = previous_execution.session_id
+						WHERE previous_session.run_id = session.run_id
+				       ) AS fair_count
+				FROM sessions session
+				JOIN runs run ON run.id = session.run_id
+				JOIN repositories repository ON repository.id = session.repository_id
+				WHERE session.state = 'blocked'
+				  AND session.execution_backend = 'persistent'
+				  AND (repository.centrally_managed = 0 OR repository.enabled = 1)
+				  AND (
+				      SELECT COUNT(*) FROM sessions active
+				      WHERE active.run_id = session.run_id AND active.state IN ('queued', 'preparing', 'running')
+				  ) < json_extract(run.task_snapshot, '$.concurrency_limit')
+			) candidate
+			WHERE (? = '' OR candidate.fair_count > ?
+			  OR (candidate.fair_count = ? AND (candidate.run_admitted_at > ?
+			      OR (candidate.run_admitted_at = ? AND (candidate.admitted_at > ?
+			          OR (candidate.admitted_at = ? AND candidate.id > ?))))))
+			ORDER BY candidate.fair_count, candidate.run_admitted_at, candidate.admitted_at, candidate.id LIMIT 50
+		`, cursorID, cursorFair, cursorFair, cursorRunAdmitted, cursorRunAdmitted,
+			cursorAdmitted, cursorAdmitted, cursorID)
 		if err != nil {
 			return unavailable(err)
 		}
 		var candidates []candidate
 		for rows.Next() {
 			var value candidate
-			if err := rows.Scan(&value.id, &value.repositoryID, &value.identity, &value.runtime, &value.admittedAt); err != nil {
+			if err := rows.Scan(
+				&value.id, &value.repositoryID, &value.identity, &value.runtime,
+				&value.fairCount, &value.runAdmitted, &value.admittedAt,
+			); err != nil {
 				rows.Close()
 				return unavailable(err)
 			}
@@ -91,7 +111,8 @@ func (s *Store) materializeBlockedSessionForWorker(
 			return nil
 		}
 		last := candidates[len(candidates)-1]
-		cursorAdmitted, cursorID = last.admittedAt, last.id
+		cursorFair, cursorRunAdmitted, cursorAdmitted, cursorID =
+			last.fairCount, last.runAdmitted, last.admittedAt, last.id
 	}
 }
 

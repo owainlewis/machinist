@@ -8,10 +8,11 @@
 
 Factory is a local-first control plane for repeatable software-engineering
 agents. An operator can save a prompt and execution settings as a Task, or use
-`factory build` to admit up to 100 existing work-item references in one Run.
-Each target becomes independent Session-backed Work. A persistent Worker claims
-the Work, prepares an isolated Git worktree, runs Pi, Codex, or Claude Code,
-streams events, and reports one terminal result.
+`factory build` to admit up to 100 existing work-item references in one Run, or
+run one saved Procedure across up to 100 enabled managed repositories. Each
+target becomes independent Session-backed Work. A persistent Worker claims the
+Work, prepares an isolated Git worktree, runs Pi, Codex, or Claude Code, streams
+events, and reports one terminal result.
 
 The implementation has four main parts:
 
@@ -43,7 +44,7 @@ Operator browser or `factory` CLI
       | loopback HTTP and JSON
       v
 factory-server
-  |-- Task scheduler, Build admission, and Run admission
+  |-- Task scheduler, Build admission, and Procedure fleet admission
   |-- routing and lease state machine
   |-- embedded React UI
   `-- SQLite
@@ -87,7 +88,7 @@ control-plane or Worker state directly.
 
 ### Task
 
-A Task is a reusable definition containing:
+A Task is the stored form of a saved Procedure. It contains:
 
 - name and prompt;
 - runtime: `pi`, `codex`, or `claude-code`;
@@ -134,8 +135,10 @@ most 2 KiB and outcome messages are at most 8 KiB.
 
 A Session starts blocked when no eligible Worker can currently accept it. A
 later claim can route it when a healthy Worker advertises the runtime and
-repository access. Task concurrency limits how many sibling Sessions may be
-queued or active at once.
+repository access. Procedure concurrency limits how many sibling Sessions may
+be queued or active at once. Claim ordering uses each Run's prior Attempt count,
+then admission order, so a large Run yields to an older compatible Run that has
+received less service.
 
 ### Build admission
 
@@ -157,6 +160,22 @@ comparison happen before repository, runtime-default, duplicate, or predecessor
 reads. Matching replay returns the original Run. Active matching Work blocks a
 duplicate. A rebuild requires a new key and the latest terminal predecessor for
 every target, selected in the same transaction.
+
+### Procedure fleet admission
+
+`factory procedures` reads saved Procedures, including archived entries, from
+the bounded local API. `factory run PROCEDURE --repos ...|all` selects explicit
+enabled managed repositories in command order or freezes all enabled managed
+repositories in repository-identity order. The server snapshots the current
+Procedure generation, prompt, runtime, timeout, concurrency, outcome contract,
+execution choice, and ordered targets in one transaction.
+
+The caller fingerprint covers the normalized Procedure name, ordered repository
+selectors or `all`, and the rebuild flag. Request-key replay happens before
+Procedure, repository, execution-profile, or predecessor reads. A rebuild uses
+a new key and records the latest terminal predecessor for the exact Procedure
+and repository. Existing scheduled Tasks continue to use their saved repository
+selection and schedule snapshot.
 
 ### Execution and Attempt
 
@@ -216,29 +235,31 @@ static repository paths remain readable through Worker configuration.
     endpoint and read current state through bounded API routes.
 12. Claim protocol version 3 gates every persistent Worker claim. Older Workers
     receive `worker_upgrade_required`, including for process-exit Work.
-13. Build admission is all-or-none. Exact request-key replay wins before mutable
-    configuration reads, and one Run cannot contain a duplicate target.
-14. An implicit Build key is written durably before HTTP submission and is not
-    removed until an authoritative admitted, replayed, or pre-commit rejection
-    result has been written and flushed.
+13. Build and Procedure fleet admission are all-or-none. Exact request-key
+    replay wins before mutable configuration reads, and one Run cannot contain
+    a duplicate target.
+14. An implicit admission key is written durably before HTTP submission and is
+    not removed until an authoritative admitted, replayed, or pre-commit
+    rejection result has been written and flushed.
 
 ## Components
 
 ### Operator CLI
 
 `cmd/factory` delegates parsing and finite HTTP work to `internal/factorycli`.
-The `build`, `status`, `show`, and `workers` commands use typed protocol
-resources and write either stable tabular output or one JSON value. They do not
-import SQLite or Worker packages. Build syntax normalization is local, but
-managed-state resolution belongs to the server. An injected `factory update`
-command instead connects only to a private Attempt-scoped Unix socket using the
-Work ID, Attempt ID, and update token supplied by the Worker.
+The `build`, `run`, `procedures`, `status`, `show`, and `workers` commands use
+typed protocol resources and write either stable tabular output or one JSON
+value. They do not import SQLite or Worker packages. Build and Procedure Run
+syntax normalization is local, but managed-state resolution belongs to the
+server. An injected `factory update` command instead connects only to a private
+Attempt-scoped Unix socket using the Work ID, Attempt ID, and update token
+supplied by the Worker.
 
-When no Build key is supplied, the CLI journals a random key under the private
-operator data directory before sending. A nonblocking OS lock scopes concurrent
-submissions by endpoint and caller fingerprint. Lost responses retain the key
-for replay by a later CLI process. The journal holds at most 100 uncertain
-requests and never evicts one silently.
+When no Build or Procedure Run key is supplied, the CLI journals a random key
+under the private operator data directory before sending. A nonblocking OS lock
+scopes concurrent submissions by endpoint and caller fingerprint. Lost
+responses retain the key for replay by a later CLI process. The journal holds
+at most 100 uncertain requests and never evicts one silently.
 
 The `server start` and `worker start` commands replace the CLI process with the
 matching compatibility executable beside it or on `PATH`. An explicit config
@@ -347,13 +368,30 @@ security headers. Node.js is needed only when UI source changes.
    replayed, or typed pre-commit rejection result. Transport, server, malformed
    response, timeout, interruption, and output errors leave the key pending.
 
+### Procedure fleet admission
+
+1. The CLI normalizes the Procedure name and ordered repository selectors, or
+   the `all` selector, then computes a caller fingerprint.
+2. Explicit and generated request keys use the same lock, durable journal,
+   replay, typed rejection, output flush, and cleanup contract as Build.
+3. The server checks the key and fingerprint before any mutable read. Exact
+   replay returns the frozen Run even after Procedure or repository changes.
+4. For a new key, one transaction loads the active Procedure, resolves the
+   explicit enabled repositories or complete enabled set, validates the frozen
+   execution backend, and selects exact Procedure-and-repository predecessors
+   for a rebuild.
+5. The transaction inserts one Run and one ordered repository Work target per
+   selection. Each target keeps independent scheduling, Attempts, cancellation,
+   retries, updates, and outcomes.
+
 ### Claim and execution
 
 1. A healthy Worker registers capabilities and polls with a fresh claim request
    ID and lease token.
 2. In one transaction, the server may materialize a blocked route or reroute a
-   queued Session, checks capacity and Task concurrency, creates an Attempt,
-   and moves Execution and Session to `preparing`.
+   queued Session, checks capacity and Procedure concurrency, applies run-aware
+   fair ordering, creates an Attempt, and moves Execution and Session to
+   `preparing`.
 3. The Worker acquires or refreshes the repository, resolves its base commit,
    creates a branch and worktree, writes a manifest, then starts the supervisor.
 4. The Worker reports process identity and the server moves the lifecycle to
@@ -438,6 +476,7 @@ admission path.
 | --- | --- |
 | Operator CLI | `cmd/factory/main.go`, `internal/factorycli/command.go`, `internal/factorycli/client.go` |
 | Build admission and journal | `internal/controlplane/build.go`, `internal/factorycli/build.go`, `internal/factorycli/admission_journal.go`, `internal/protocol/build.go` |
+| Procedure fleet admission | `internal/controlplane/procedures.go`, `internal/factorycli/procedures.go`, `internal/protocol/procedures.go` |
 | Server startup and config | `cmd/factory-server/main.go`, `cmd/factory-server/config.go` |
 | HTTP routes and auth | `internal/controlplane/http.go`, `internal/controlplane/worker_auth.go` |
 | Task, Run, and Work model | `internal/controlplane/tasks.go`, `internal/controlplane/work.go`, `internal/protocol/tasks.go` |
@@ -461,6 +500,11 @@ admission path.
   normalization, replay ordering, runtime freezing, duplicate and rebuild
   guards, scheduler claim, typed commit status, journal recovery, locking, and
   wait exit codes.
+- `internal/controlplane/procedures_test.go`,
+  `internal/protocol/procedures_test.go`, and
+  `internal/factorycli/procedures_test.go` prove Procedure listing, explicit and
+  all-repository selection, atomic freezing, replay before mutable reads,
+  rebuild lineage, journal recovery, and fair cross-Run claims.
 - `internal/controlplane/tasks_migration_test.go` opens populated historical
   databases and proves identity, lifecycle, scheduled process-exit completion,
   and foreign-key preservation.

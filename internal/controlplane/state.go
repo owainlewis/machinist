@@ -167,7 +167,13 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		        AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
-		ORDER BY e.created_at, e.id
+		ORDER BY (
+			SELECT COUNT(*)
+			FROM attempts previous_attempt
+			JOIN executions previous_execution ON previous_execution.id = previous_attempt.execution_id
+			JOIN sessions previous_session ON previous_session.id = previous_execution.session_id
+			WHERE previous_session.run_id = session.run_id
+		), run.admitted_at, e.created_at, e.id
 		LIMIT 1
 	`, workerID, workerID, workerID, protocol.MaxRetainedPerRepo).Scan(&executionID)
 	if errors.Is(err, sql.ErrNoRows) {
