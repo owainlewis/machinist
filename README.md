@@ -61,6 +61,8 @@ Open [http://127.0.0.1:7337](http://127.0.0.1:7337). Edit
 `~/.factory/worker.toml` to enable the agent runtimes installed on your machine.
 Use `~/.factory/bin/factory status` to read current Runs or
 `~/.factory/bin/factory workers` to check the Worker pool from the terminal.
+Use `~/.factory/bin/factory build ISSUE...` to admit up to 100 GitHub issues or
+repository-scoped opaque references as independent Work in one Run.
 The [local guide](docs/local.md) covers authentication, repository setup, and
 the complete first Run.
 
@@ -106,6 +108,7 @@ Implemented today:
 
 - Go control-plane API and embedded React UI
 - durable Tasks, Runs, Sessions, Attempts, leases, events, and cancellation
+- transactional multi-item `factory build` admission with durable replay keys
 - manual and scheduled work across one or many repositories
 - Pi, Codex, and Claude Code Worker capabilities
 - managed repository catalog, Worker caches, and isolated Git worktrees

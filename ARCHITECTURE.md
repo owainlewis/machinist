@@ -7,10 +7,11 @@
 ## Executive summary
 
 Factory is a local-first control plane for repeatable software-engineering
-agents. An operator saves a prompt and execution settings as a Task. Running
-or scheduling that Task creates a Run with one Session per repository. A
-persistent Worker claims each Session, prepares an isolated Git worktree, runs
-Pi, Codex, or Claude Code, streams events, and reports one terminal result.
+agents. An operator can save a prompt and execution settings as a Task, or use
+`factory build` to admit up to 100 existing work-item references in one Run.
+Each target becomes independent Session-backed Work. A persistent Worker claims
+the Work, prepares an isolated Git worktree, runs Pi, Codex, or Claude Code,
+streams events, and reports one terminal result.
 
 The implementation has four main parts:
 
@@ -42,7 +43,7 @@ Operator browser or `factory` CLI
       | loopback HTTP and JSON
       v
 factory-server
-  |-- Task scheduler and Run admission
+  |-- Task scheduler, Build admission, and Run admission
   |-- routing and lease state machine
   |-- embedded React UI
   `-- SQLite
@@ -136,6 +137,27 @@ later claim can route it when a healthy Worker advertises the runtime and
 repository access. Task concurrency limits how many sibling Sessions may be
 queued or active at once.
 
+### Build admission
+
+`factory build` accepts 1 to 100 ordered HTTPS GitHub issue URLs or opaque
+references. Opaque references require `--repo`. An explicit repository must
+also match every GitHub URL, while an omitted repository permits a GitHub-only
+batch across managed repositories. The server resolves repository state and
+rejects the whole batch before writing when any target is invalid.
+
+Every Build freezes generation 1 of the built-in `standard-build` Procedure,
+the configured default or explicit runtime, persistent execution settings, and
+one immutable target and publish branch per Work. The Procedure text is trusted
+policy. References are labelled as untrusted context and are not fetched by the
+CLI or control plane.
+
+The caller fingerprint covers ordered normalized references, explicit option
+presence and values, and the rebuild flag. Request-key lookup and fingerprint
+comparison happen before repository, runtime-default, duplicate, or predecessor
+reads. Matching replay returns the original Run. Active matching Work blocks a
+duplicate. A rebuild requires a new key and the latest terminal predecessor for
+every target, selected in the same transaction.
+
 ### Execution and Attempt
 
 An Execution is the durable assignment of one Session to one Worker and runtime.
@@ -194,17 +216,29 @@ static repository paths remain readable through Worker configuration.
     endpoint and read current state through bounded API routes.
 12. Claim protocol version 3 gates every persistent Worker claim. Older Workers
     receive `worker_upgrade_required`, including for process-exit Work.
+13. Build admission is all-or-none. Exact request-key replay wins before mutable
+    configuration reads, and one Run cannot contain a duplicate target.
+14. An implicit Build key is written durably before HTTP submission and is not
+    removed until an authoritative admitted, replayed, or pre-commit rejection
+    result has been written and flushed.
 
 ## Components
 
 ### Operator CLI
 
 `cmd/factory` delegates parsing and finite HTTP work to `internal/factorycli`.
-The `status`, `show`, and `workers` commands decode protocol resources and write
-either stable tabular output or one JSON value. They do not import SQLite or
-Worker packages. An injected `factory update` command instead connects only to
-a private Attempt-scoped Unix socket using the Work ID, Attempt ID, and update
-token supplied by the Worker.
+The `build`, `status`, `show`, and `workers` commands use typed protocol
+resources and write either stable tabular output or one JSON value. They do not
+import SQLite or Worker packages. Build syntax normalization is local, but
+managed-state resolution belongs to the server. An injected `factory update`
+command instead connects only to a private Attempt-scoped Unix socket using the
+Work ID, Attempt ID, and update token supplied by the Worker.
+
+When no Build key is supplied, the CLI journals a random key under the private
+operator data directory before sending. A nonblocking OS lock scopes concurrent
+submissions by endpoint and caller fingerprint. Lost responses retain the key
+for replay by a later CLI process. The journal holds at most 100 uncertain
+requests and never evicts one silently.
 
 The `server start` and `worker start` commands replace the CLI process with the
 matching compatibility executable beside it or on `PATH`. An explicit config
@@ -296,6 +330,23 @@ security headers. Node.js is needed only when UI source changes.
 5. The same manual request key or scheduled occurrence cannot admit duplicate
    Runs.
 
+### Build admission
+
+1. The CLI normalizes reference syntax and computes the caller fingerprint.
+2. For an implicit key, it acquires the endpoint/fingerprint lock and durably
+   journals a random request key before sending one HTTP request.
+3. The server checks the key and fingerprint before mutable reads. Exact replay
+   returns the stored Run and different input conflicts.
+4. For a new key, one transaction resolves every enabled managed repository,
+   rejects duplicates, applies active-Work and rebuild guards, and freezes the
+   standard Procedure and runtime.
+5. The transaction inserts one Run and ordered independent Work targets. Work
+   routes immediately when possible or remains visibly blocked for a later
+   scheduler claim. The CLI never starts agents.
+6. The CLI clears an implicit journal entry only after it flushes an admitted,
+   replayed, or typed pre-commit rejection result. Transport, server, malformed
+   response, timeout, interruption, and output errors leave the key pending.
+
 ### Claim and execution
 
 1. A healthy Worker registers capabilities and polls with a fresh claim request
@@ -328,8 +379,8 @@ Attempt when claimed.
 ## API and security boundaries
 
 The local listener exposes health plus operator and Worker routes under
-`/api/v1`: Workers, repositories, Tasks, Runs, overview, Attempts, and event
-history. It rejects non-loopback clients before route handling.
+`/api/v1`: Builds, Workers, repositories, Tasks, Runs, overview, Attempts, and
+event history. It rejects non-loopback clients before route handling.
 
 The optional remote listener exposes only health, enrollment exchange, Worker
 registration and claims, and the active Attempt lifecycle. Creating an
@@ -386,6 +437,7 @@ admission path.
 | Area | Primary files |
 | --- | --- |
 | Operator CLI | `cmd/factory/main.go`, `internal/factorycli/command.go`, `internal/factorycli/client.go` |
+| Build admission and journal | `internal/controlplane/build.go`, `internal/factorycli/build.go`, `internal/factorycli/admission_journal.go`, `internal/protocol/build.go` |
 | Server startup and config | `cmd/factory-server/main.go`, `cmd/factory-server/config.go` |
 | HTTP routes and auth | `internal/controlplane/http.go`, `internal/controlplane/worker_auth.go` |
 | Task, Run, and Work model | `internal/controlplane/tasks.go`, `internal/controlplane/work.go`, `internal/protocol/tasks.go` |
@@ -404,6 +456,11 @@ admission path.
 - `internal/controlplane/work_lifecycle_test.go` proves outcome-contract
   freezing, backend compatibility, Work states, bounded update history,
   replacement guards, ordered targets, and legacy prompt limits.
+- `internal/controlplane/build_test.go`, `internal/protocol/build_test.go`, and
+  `internal/factorycli/build_test.go` prove atomic Build admission,
+  normalization, replay ordering, runtime freezing, duplicate and rebuild
+  guards, scheduler claim, typed commit status, journal recovery, locking, and
+  wait exit codes.
 - `internal/controlplane/tasks_migration_test.go` opens populated historical
   databases and proves identity, lifecycle, scheduled process-exit completion,
   and foreign-key preservation.

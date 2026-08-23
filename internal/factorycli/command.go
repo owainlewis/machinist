@@ -47,9 +47,19 @@ type usageError struct {
 
 func (e *usageError) Error() string { return e.message }
 
+type commandExit struct {
+	code int
+}
+
+func (e *commandExit) Error() string { return "" }
+
 func Run(options Options) int {
 	operation := newCommand(options)
 	if err := operation.run(options.Arguments); err != nil {
+		var exit *commandExit
+		if errors.As(err, &exit) {
+			return exit.code
+		}
 		fmt.Fprintf(operation.stderr, "factory: %s\n", err)
 		var usage *usageError
 		if errors.As(err, &usage) {
@@ -144,6 +154,8 @@ func (c command) run(arguments []string) error {
 			return err
 		}
 		return c.status(ctx, client, *jsonOutput, *cursor)
+	case "build":
+		return c.runBuild(*server, *jsonOutput, remaining[1:])
 	case "show":
 		if len(remaining) != 2 || strings.TrimSpace(remaining[1]) == "" {
 			return &usageError{message: "show requires exactly one Run ID"}
@@ -184,7 +196,7 @@ func (c command) run(arguments []string) error {
 		return c.agentUpdate(*status, *message, *pullRequest, *jsonOutput)
 	case "server", "worker":
 		if *jsonOutput {
-			return &usageError{message: "--json is available only for status, show, and workers"}
+			return &usageError{message: "--json is available only for build, status, show, and workers"}
 		}
 		return c.startProcess(remaining[0], remaining[1:])
 	default:
@@ -276,6 +288,7 @@ func (c command) writeHelp() error {
 	_, err := fmt.Fprint(c.stdout, `Factory controls the local server and Workers and reads current operations.
 
 Usage:
+  factory [--server URL] [--json] build [options] REFERENCE...
   factory [--server URL] [--json] status [--cursor CURSOR]
   factory [--server URL] [--json] show RUN_ID
   factory [--server URL] [--json] workers
@@ -290,7 +303,8 @@ Options:
   --cursor      Continue status from a cursor printed by the previous page.
 
 Environment:
-  FACTORY_SERVER  Overrides the endpoint used by finite commands.
+  FACTORY_SERVER     Overrides the endpoint used by finite commands.
+  FACTORY_DATA_HOME  Stores durable pending Build request keys.
 `)
 	return err
 }

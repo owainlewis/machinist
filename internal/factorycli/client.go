@@ -34,6 +34,18 @@ type workerPage struct {
 	Workers []protocol.Worker `json:"workers"`
 }
 
+type apiFailure struct {
+	Status   string
+	APIError protocol.APIError
+}
+
+func (failure *apiFailure) Error() string {
+	if failure.APIError.Message != "" {
+		return fmt.Sprintf("server returned %s: %s", oneLine(failure.Status), oneLine(failure.APIError.Message))
+	}
+	return fmt.Sprintf("server returned %s", oneLine(failure.Status))
+}
+
 func newAPIClient(ctx context.Context, value string, client *http.Client) (apiClient, error) {
 	parsed, err := url.Parse(value)
 	if err != nil {
@@ -130,6 +142,18 @@ func pinLoopbackTransport(client *http.Client, addresses []net.IP) error {
 }
 
 func (c apiClient) get(ctx context.Context, path string, target any, responseLimit int64) error {
+	return c.request(ctx, http.MethodGet, path, nil, target, responseLimit)
+}
+
+func (c apiClient) post(ctx context.Context, path string, input, target any, responseLimit int64) error {
+	body, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Errorf("encode request: %w", err)
+	}
+	return c.request(ctx, http.MethodPost, path, body, target, responseLimit)
+}
+
+func (c apiClient) request(ctx context.Context, method, path string, requestBody []byte, target any, responseLimit int64) error {
 	requestURL := *c.endpoint
 	reference, err := url.Parse(path)
 	if err != nil {
@@ -137,11 +161,14 @@ func (c apiClient) get(ctx context.Context, path string, target any, responseLim
 	}
 	requestURL.Path = reference.Path
 	requestURL.RawQuery = reference.RawQuery
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, method, requestURL.String(), bytes.NewReader(requestBody))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
+	if requestBody != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	response, err := c.client.Do(request)
 	if err != nil {
 		return fmt.Errorf("connect to %s: %w", c.endpoint.String(), err)
@@ -166,9 +193,9 @@ func (c apiClient) get(ctx context.Context, path string, target any, responseLim
 		status := oneLine(response.Status)
 		var failure protocol.ErrorBody
 		if err := json.Unmarshal(body, &failure); err == nil && failure.Error.Message != "" {
-			return fmt.Errorf("server returned %s: %s", status, oneLine(failure.Error.Message))
+			return &apiFailure{Status: status, APIError: failure.Error}
 		}
-		return fmt.Errorf("server returned %s", status)
+		return &apiFailure{Status: status}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(target); err != nil {

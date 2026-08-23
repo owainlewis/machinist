@@ -49,9 +49,10 @@ func invalid(code, message string) error {
 }
 
 type Store struct {
-	db         *sql.DB
-	now        func() time.Time
-	sweepEvery time.Duration
+	db                  *sql.DB
+	now                 func() time.Time
+	sweepEvery          time.Duration
+	defaultBuildRuntime string
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -107,7 +108,10 @@ func openStore(ctx context.Context, path string, existingOnly bool) (*Store, err
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(8)
-	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
+	store := &Store{
+		db: db, now: time.Now, sweepEvery: 5 * time.Second,
+		defaultBuildRuntime: protocol.RuntimeCodex,
+	}
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
@@ -116,6 +120,12 @@ func openStore(ctx context.Context, path string, existingOnly bool) (*Store, err
 		db.Close()
 		return nil, err
 	}
+	if !existingOnly {
+		if err := store.ensureStandardBuildProcedure(ctx); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if path != ":memory:" {
 		if err := restrictDatabaseFilePermissions(path); err != nil {
 			db.Close()
@@ -123,6 +133,63 @@ func openStore(ctx context.Context, path string, existingOnly bool) (*Store, err
 		}
 	}
 	return store, nil
+}
+
+func (s *Store) SetDefaultBuildRuntime(value string) error {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if !protocol.SupportedRuntime(value) {
+		return fmt.Errorf("default Build runtime must be one of %s", strings.Join(protocol.SupportedRuntimes(), ", "))
+	}
+	s.defaultBuildRuntime = value
+	return nil
+}
+
+func (s *Store) ensureStandardBuildProcedure(ctx context.Context) error {
+	now := s.now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("install built-in standard-build Procedure: %w", err)
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?)
+	`, protocol.StandardBuildProcedureID).Scan(&exists); err != nil {
+		return fmt.Errorf("install built-in standard-build Procedure: %w", err)
+	}
+	if exists == 0 {
+		suffix, err := newID()
+		if err != nil {
+			return fmt.Errorf("install built-in standard-build Procedure: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO tasks(
+				id, name, name_key, prompt, runtime, timeout_seconds, concurrency_limit,
+				generation, outcome_contract, archived, migration_only, read_only,
+				schedule_enabled, schedule_health_status, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 0, 'disabled', ?, ?)
+		`, protocol.StandardBuildProcedureID, protocol.StandardBuildProcedureName,
+			"__factory_builtin_standard_build__:"+suffix,
+			protocol.StandardBuildProcedurePrompt, protocol.RuntimeCodex,
+			protocol.StandardBuildTimeoutSeconds, protocol.StandardBuildConcurrencyLimit,
+			protocol.StandardBuildProcedureGeneration, protocol.OutcomeAgentUpdate, now, now); err != nil {
+			return fmt.Errorf("install built-in standard-build Procedure: %w", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `
+		UPDATE tasks SET
+			prompt = ?, timeout_seconds = ?, concurrency_limit = ?, generation = ?,
+			outcome_contract = ?, archived = 1, migration_only = 1, read_only = 1,
+			schedule_enabled = 0, updated_at = ?
+		WHERE id = ?
+	`, protocol.StandardBuildProcedurePrompt, protocol.StandardBuildTimeoutSeconds,
+		protocol.StandardBuildConcurrencyLimit, protocol.StandardBuildProcedureGeneration,
+		protocol.OutcomeAgentUpdate, now, protocol.StandardBuildProcedureID); err != nil {
+		return fmt.Errorf("install built-in standard-build Procedure: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("install built-in standard-build Procedure: %w", err)
+	}
+	return nil
 }
 
 func prepareDatabasePath(path string) (string, error) {

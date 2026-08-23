@@ -89,14 +89,14 @@ func TestServerBootstrapConfigIsOptionalAndResolvesRelativeDatabase(t *testing.T
 	}
 
 	path := filepath.Join(dataRoot, "config.toml")
-	if err := os.WriteFile(path, []byte("listen = \"127.0.0.1:7447\"\ndatabase = \"state/factory.sqlite3\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("listen = \"127.0.0.1:7447\"\ndatabase = \"state/factory.sqlite3\"\ndefault_build_runtime = \"PI\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	config, err = loadServerBootstrapConfig(dataRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Listen != "127.0.0.1:7447" || config.Database != filepath.Join(dataRoot, "state", "factory.sqlite3") {
+	if config.Listen != "127.0.0.1:7447" || config.Database != filepath.Join(dataRoot, "state", "factory.sqlite3") || config.DefaultBuildRuntime != "pi" {
 		t.Fatalf("loaded config = %#v", config)
 	}
 }

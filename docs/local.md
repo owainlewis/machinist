@@ -31,6 +31,7 @@ needed before SQLite opens:
 ```toml
 listen = "127.0.0.1:7337"
 database = "server/factory.sqlite3"
+default_build_runtime = "codex"
 ```
 
 Relative database paths resolve from the config file directory. Unknown fields,
@@ -148,6 +149,30 @@ Add the global `--json` option for one JSON value on stdout. Set
 `FACTORY_SERVER=http://127.0.0.1:PORT` or pass `--server URL` when the operator
 API does not use the default port. These commands never open SQLite or Worker
 directories.
+
+Admit one or more work items with one command:
+
+```sh
+~/.factory/bin/factory build \
+  https://github.com/OWNER/REPOSITORY/issues/123 \
+  https://github.com/OWNER/REPOSITORY/issues/124
+
+~/.factory/bin/factory build \
+  --repo github.com/OWNER/REPOSITORY \
+  LINEAR-123 LINEAR-124
+```
+
+Use `--runtime`, `--request-key`, `--rebuild`, or `--wait` when needed. An
+opaque reference requires `--repo`. Without `--repo`, a GitHub-only batch may
+span several enabled managed repositories. The server admits the complete
+batch or none of it. `--wait` exits 2 when any Work needs input, 0 when every
+Work is ready, no-change, or legacy succeeded, and 1 when terminal Work includes
+a failure or cancellation.
+
+When `--request-key` is omitted, the CLI stores an uncertain admission under
+`~/.factory/operator/admissions` before sending. A lost response or failed
+output keeps that key for the next identical command. The journal uses
+owner-only permissions and retains at most 100 pending requests.
 
 Add a GitHub repository to the central fleet once:
 

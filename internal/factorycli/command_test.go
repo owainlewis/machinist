@@ -485,17 +485,17 @@ func TestStartCommandsReturnUsefulUsageAndLookupErrors(t *testing.T) {
 	}
 }
 
-func TestHelpIsConciseAndDoesNotAdvertiseFutureCommands(t *testing.T) {
+func TestHelpIsConciseAndAdvertisesImplementedCommandsOnly(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := Run(Options{Arguments: []string{"help"}, Stdout: &stdout, Stderr: &stderr}); code != 0 {
 		t.Fatalf("help = %d, stderr %q", code, stderr.String())
 	}
-	for _, want := range []string{"factory server start", "factory worker start", "factory [--server URL] [--json] status [--cursor CURSOR]", "FACTORY_SERVER"} {
+	for _, want := range []string{"factory server start", "factory worker start", "factory [--server URL] [--json] build", "factory [--server URL] [--json] status [--cursor CURSOR]", "FACTORY_SERVER"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("help %q does not contain %q", stdout.String(), want)
 		}
 	}
-	for _, forbidden := range []string{"factory build", "factory run", "factory update", "factory answer"} {
+	for _, forbidden := range []string{"factory run", "factory update", "factory answer"} {
 		if strings.Contains(stdout.String(), forbidden) {
 			t.Fatalf("help advertises %q: %q", forbidden, stdout.String())
 		}

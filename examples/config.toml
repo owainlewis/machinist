@@ -2,6 +2,7 @@
 # Automations are created in the Factory UI and stored in SQLite.
 listen = "127.0.0.1:7337"
 database = "server/factory.sqlite3"
+default_build_runtime = "codex"
 
 # Optional remote VM Worker endpoint. Configure all three values together.
 # worker_listen = "0.0.0.0:7443"
