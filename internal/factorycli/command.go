@@ -96,8 +96,8 @@ func newCommand(options Options) command {
 
 func (c command) run(arguments []string) error {
 	if buildinfo.Requested(arguments) {
-		fmt.Fprintln(c.stdout, buildinfo.String("factory"))
-		return nil
+		_, err := fmt.Fprintln(c.stdout, buildinfo.String("factory"))
+		return err
 	}
 	root := flag.NewFlagSet("factory", flag.ContinueOnError)
 	root.SetOutput(io.Discard)
@@ -105,8 +105,7 @@ func (c command) run(arguments []string) error {
 	server := root.String("server", c.serverEndpoint(), "loopback Factory server URL")
 	if err := root.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			c.writeHelp()
-			return nil
+			return c.writeHelp()
 		}
 		return &usageError{message: err.Error()}
 	}
@@ -119,8 +118,7 @@ func (c command) run(arguments []string) error {
 		if len(remaining) != 1 {
 			return &usageError{message: "help does not accept arguments"}
 		}
-		c.writeHelp()
-		return nil
+		return c.writeHelp()
 	case "status":
 		if len(remaining) != 1 {
 			return &usageError{message: "status does not accept arguments"}
@@ -247,8 +245,8 @@ func setEnvironment(environment []string, key, value string) []string {
 	return append(result, prefix+value)
 }
 
-func (c command) writeHelp() {
-	fmt.Fprint(c.stdout, `Factory controls the local server and Workers and reads current operations.
+func (c command) writeHelp() error {
+	_, err := fmt.Fprint(c.stdout, `Factory controls the local server and Workers and reads current operations.
 
 Usage:
   factory [--server URL] [--json] status
@@ -265,4 +263,5 @@ Options:
 Environment:
   FACTORY_SERVER  Overrides the endpoint used by finite commands.
 `)
+	return err
 }

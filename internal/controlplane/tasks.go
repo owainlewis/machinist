@@ -918,20 +918,83 @@ func (s *Store) RunPage(ctx context.Context, limit int, cursor string) (protocol
 	}
 	page := protocol.RunPage{Runs: make([]protocol.Run, 0, len(keys))}
 	for _, key := range keys {
-		detail, err := s.Run(ctx, key.id)
+		run, err := s.runListEntry(ctx, key.id)
 		if err != nil {
 			return protocol.RunPage{}, err
 		}
-		detail.Run.Task.Prompt = ""
-		detail.Run.Task.TimeoutSeconds = 0
-		detail.Run.Task.ConcurrencyLimit = 0
-		page.Runs = append(page.Runs, detail.Run)
+		page.Runs = append(page.Runs, run)
 	}
 	if hasMore {
 		last := keys[len(keys)-1]
 		page.NextCursor = encodeRunCursor(last.admitted, last.id)
 	}
 	return page, nil
+}
+
+func (s *Store) runListEntry(ctx context.Context, id string) (protocol.Run, error) {
+	var run protocol.Run
+	var snapshot, executionSnapshot []byte
+	var scheduledAt, terminalAt sql.NullInt64
+	var admittedAt, updatedAt int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, task_id, task_snapshot, execution_snapshot, source, scheduled_at,
+		       admitted_at, updated_at, terminal_at
+		FROM runs WHERE id = ?
+	`, id).Scan(&run.ID, &run.TaskID, &snapshot, &executionSnapshot, &run.Source,
+		&scheduledAt, &admittedAt, &updatedAt, &terminalAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return run, ErrNotFound
+	}
+	if err != nil {
+		return run, unavailable(err)
+	}
+	if err := json.Unmarshal(snapshot, &run.Task); err != nil {
+		return run, unavailable(err)
+	}
+	if err := json.Unmarshal(executionSnapshot, &run.Execution); err != nil {
+		return run, unavailable(err)
+	}
+	run.Task.Prompt, run.Task.TimeoutSeconds, run.Task.ConcurrencyLimit = "", 0, 0
+	run.AdmittedAt, run.UpdatedAt = fromMillis(admittedAt), fromMillis(updatedAt)
+	if scheduledAt.Valid {
+		value := fromMillis(scheduledAt.Int64)
+		run.ScheduledAt = &value
+	}
+	if terminalAt.Valid {
+		value := fromMillis(terminalAt.Int64)
+		run.TerminalAt = &value
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT repository_id, repository_identity, state, blocked_reason
+		FROM sessions WHERE run_id = ? ORDER BY admitted_at, id
+	`, id)
+	if err != nil {
+		return run, unavailable(err)
+	}
+	defer rows.Close()
+	var sessions []protocol.Session
+	seenRepositories := make(map[string]bool)
+	rebuildRepositories := len(run.Task.Repositories) == 0
+	for rows.Next() {
+		var session protocol.Session
+		var blockedReason sql.NullString
+		if err := rows.Scan(&session.RepositoryID, &session.RepositoryIdentity, &session.State, &blockedReason); err != nil {
+			return run, unavailable(err)
+		}
+		session.BlockedReason = blockedReason.String
+		sessions = append(sessions, session)
+		if rebuildRepositories && session.RepositoryID != "" && session.RepositoryIdentity != "" && !seenRepositories[session.RepositoryID] {
+			seenRepositories[session.RepositoryID] = true
+			run.Task.Repositories = append(run.Task.Repositories, protocol.TaskRepository{
+				ID: session.RepositoryID, RemoteIdentity: session.RepositoryIdentity,
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return run, unavailable(err)
+	}
+	applyRunAggregate(&run, sessions, s.now())
+	return run, nil
 }
 
 func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) {
@@ -1079,7 +1142,7 @@ func (s *Store) RunSummary(ctx context.Context, id string) (protocol.RunSummary,
 	}
 	summary.AdmittedAt, summary.UpdatedAt = fromMillis(admittedAt), fromMillis(updatedAt)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session.id, session.repository_identity, session.state,
+		SELECT session.id, session.repository_identity, session.state, session.blocked_reason,
 		       session.assigned_worker_id, session.result, session.failure_reason,
 		       (SELECT COUNT(*) FROM attempts attempt
 		        JOIN executions execution ON execution.id = attempt.execution_id
@@ -1095,14 +1158,15 @@ func (s *Store) RunSummary(ctx context.Context, id string) (protocol.RunSummary,
 	sessions := make([]protocol.Session, 0)
 	for rows.Next() {
 		var session protocol.RunSessionSummary
-		var workerID, result, failure sql.NullString
+		var blockedReason, workerID, result, failure sql.NullString
 		if err := rows.Scan(&session.ID, &session.RepositoryIdentity, &session.State,
-			&workerID, &result, &failure, &session.AttemptCount); err != nil {
+			&blockedReason, &workerID, &result, &failure, &session.AttemptCount); err != nil {
 			return summary, unavailable(err)
 		}
-		session.AssignedWorkerID, session.Result, session.FailureReason = workerID.String, result.String, failure.String
+		session.BlockedReason, session.AssignedWorkerID = blockedReason.String, workerID.String
+		session.Result, session.FailureReason = result.String, failure.String
 		summary.Sessions = append(summary.Sessions, session)
-		sessions = append(sessions, protocol.Session{State: session.State})
+		sessions = append(sessions, protocol.Session{State: session.State, BlockedReason: session.BlockedReason})
 	}
 	if err := rows.Err(); err != nil {
 		return summary, unavailable(err)

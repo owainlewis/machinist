@@ -193,8 +193,8 @@ func (c command) status(ctx context.Context, client apiClient, jsonOutput bool) 
 		return writeJSON(c.stdout, page)
 	}
 	if len(page.Runs) == 0 {
-		fmt.Fprintln(c.stdout, "No Runs.")
-		return nil
+		_, err := fmt.Fprintln(c.stdout, "No Runs.")
+		return err
 	}
 	writer := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(writer, "RUN ID\tTASK\tSTATE\tSESSIONS\tACTIVE\tSUCCEEDED\tFAILED\tCANCELLED\tUPDATED")
@@ -222,19 +222,28 @@ func (c command) show(ctx context.Context, client apiClient, runID string, jsonO
 	if err := client.get(ctx, path, &summary, maxSummaryResponseBytes); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.stdout, "Run: %s\nTask: %s\nState: %s\nSource: %s\nAdmitted: %s\nUpdated: %s\n",
-		oneLine(summary.ID), oneLine(summary.TaskName), oneLine(string(summary.State)), oneLine(summary.Source), formatTime(summary.AdmittedAt), formatTime(summary.UpdatedAt))
+	if _, err := fmt.Fprintf(c.stdout, "Run: %s\nTask: %s\nState: %s\nSource: %s\nAdmitted: %s\nUpdated: %s\n",
+		oneLine(summary.ID), oneLine(summary.TaskName), oneLine(string(summary.State)), oneLine(summary.Source), formatTime(summary.AdmittedAt), formatTime(summary.UpdatedAt)); err != nil {
+		return fmt.Errorf("write show output: %w", err)
+	}
 	if len(summary.Sessions) == 0 {
-		fmt.Fprintln(c.stdout, "\nNo Sessions.")
+		if _, err := fmt.Fprintln(c.stdout, "\nNo Sessions."); err != nil {
+			return fmt.Errorf("write show output: %w", err)
+		}
 		return nil
 	}
-	fmt.Fprintln(c.stdout)
+	if _, err := fmt.Fprintln(c.stdout); err != nil {
+		return fmt.Errorf("write show output: %w", err)
+	}
 	writer := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(writer, "SESSION ID\tREPOSITORY\tSTATE\tWORKER\tATTEMPTS\tRESULT")
 	for _, session := range summary.Sessions {
 		result := session.Result
 		if result == "" {
 			result = session.FailureReason
+		}
+		if result == "" {
+			result = session.BlockedReason
 		}
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%s\n",
 			oneLine(session.ID), oneLine(session.RepositoryIdentity), oneLine(string(session.State)),
@@ -256,8 +265,8 @@ func (c command) workers(ctx context.Context, client apiClient, jsonOutput bool)
 		return err
 	}
 	if len(page.Workers) == 0 {
-		fmt.Fprintln(c.stdout, "No Workers.")
-		return nil
+		_, err := fmt.Fprintln(c.stdout, "No Workers.")
+		return err
 	}
 	writer := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(writer, "WORKER ID\tNAME\tONLINE\tHEALTH\tRUNTIME\tACTIVE\tCAPACITY\tLAST HEARTBEAT")

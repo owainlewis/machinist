@@ -269,6 +269,7 @@ type RunSessionSummary struct {
 	ID                 string       `json:"id"`
 	RepositoryIdentity string       `json:"repository_identity"`
 	State              SessionState `json:"state"`
+	BlockedReason      string       `json:"blocked_reason,omitempty"`
 	AssignedWorkerID   string       `json:"assigned_worker_id,omitempty"`
 	AttemptCount       int          `json:"attempt_count"`
 	Result             string       `json:"result,omitempty"`

@@ -58,18 +58,28 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 		output.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/v1/runs":
-			json.NewEncoder(output).Encode(protocol.RunPage{Runs: []protocol.Run{run}, NextCursor: "cursor\x1b[2J"})
+			if err := json.NewEncoder(output).Encode(protocol.RunPage{Runs: []protocol.Run{run}, NextCursor: "cursor\x1b[2J"}); err != nil {
+				t.Error(err)
+			}
 		case "/api/v1/runs/run-1":
 			if request.URL.Query().Get("view") == "summary" {
-				json.NewEncoder(output).Encode(summary)
+				if err := json.NewEncoder(output).Encode(summary); err != nil {
+					t.Error(err)
+				}
 			} else {
-				json.NewEncoder(output).Encode(detail)
+				if err := json.NewEncoder(output).Encode(detail); err != nil {
+					t.Error(err)
+				}
 			}
 		case "/api/v1/workers":
 			if request.URL.Query().Get("view") == "summary" {
-				json.NewEncoder(output).Encode(workerSummary)
+				if err := json.NewEncoder(output).Encode(workerSummary); err != nil {
+					t.Error(err)
+				}
 			} else {
-				json.NewEncoder(output).Encode(workerPage{Workers: []protocol.Worker{worker}})
+				if err := json.NewEncoder(output).Encode(workerPage{Workers: []protocol.Worker{worker}}); err != nil {
+					t.Error(err)
+				}
 			}
 		default:
 			http.NotFound(output, request)
@@ -139,7 +149,9 @@ func TestFiniteCommandsRejectRedirectsWithoutMutatingTheHTTPClient(t *testing.T)
 	targetCalled := false
 	target := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
 		targetCalled = true
-		json.NewEncoder(output).Encode(protocol.RunPage{})
+		if err := json.NewEncoder(output).Encode(protocol.RunPage{}); err != nil {
+			t.Error(err)
+		}
 	}))
 	t.Cleanup(target.Close)
 	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
@@ -168,12 +180,18 @@ func TestFiniteCommandsReportEmptyResultsAndServerErrors(t *testing.T) {
 		output.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/v1/runs":
-			json.NewEncoder(output).Encode(protocol.RunPage{})
+			if err := json.NewEncoder(output).Encode(protocol.RunPage{}); err != nil {
+				t.Error(err)
+			}
 		case "/api/v1/workers":
-			json.NewEncoder(output).Encode(workerPage{})
+			if err := json.NewEncoder(output).Encode(workerPage{}); err != nil {
+				t.Error(err)
+			}
 		default:
 			output.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(output).Encode(protocol.ErrorBody{Error: protocol.APIError{Code: "not_found", Message: "Run was not found"}})
+			if err := json.NewEncoder(output).Encode(protocol.ErrorBody{Error: protocol.APIError{Code: "not_found", Message: "Run was not found"}}); err != nil {
+				t.Error(err)
+			}
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -219,7 +237,9 @@ func TestFiniteCommandsRejectUnsafeEndpointsAndMalformedResponses(t *testing.T) 
 func TestFiniteCommandsNormalizeLocalhostBeforeProxySelection(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
 		output.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(output).Encode(protocol.RunPage{})
+		if err := json.NewEncoder(output).Encode(protocol.RunPage{}); err != nil {
+			t.Error(err)
+		}
 	}))
 	t.Cleanup(target.Close)
 	targetURL, err := url.Parse(target.URL)
@@ -308,6 +328,32 @@ func TestShowAllowsSummariesLargerThanListLimit(t *testing.T) {
 	})
 	if code != 0 {
 		t.Fatalf("large show = %d, stderr %q", code, stderr.String())
+	}
+}
+
+func TestShowUsesBlockedReasonAndReturnsOutputErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
+		output.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(output).Encode(protocol.RunSummary{
+			ID: "run-blocked", TaskName: "Blocked run", State: protocol.RunBlocked,
+			Sessions: []protocol.RunSessionSummary{{
+				ID: "session-blocked", RepositoryIdentity: "github.com/owainlewis/factory",
+				State: protocol.SessionBlocked, BlockedReason: "Repository is disabled.",
+			}},
+		}); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var stdout, stderr bytes.Buffer
+	arguments := []string{"--server", server.URL, "show", "run-blocked"}
+	if code := Run(Options{Arguments: arguments, Stdout: &stdout, Stderr: &stderr}); code != 0 || !strings.Contains(stdout.String(), "Repository is disabled.") {
+		t.Fatalf("blocked show = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	stderr.Reset()
+	if code := Run(Options{Arguments: arguments, Stdout: failingWriter{}, Stderr: &stderr}); code != 1 || !strings.Contains(stderr.String(), "write show output") {
+		t.Fatalf("failed show output = %d, stderr %q", code, stderr.String())
 	}
 }
 
@@ -447,7 +493,9 @@ func TestHelpIsConciseAndDoesNotAdvertiseFutureCommands(t *testing.T) {
 
 func TestFactoryServerEnvironmentOverridesDefault(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(output).Encode(protocol.RunPage{})
+		if err := json.NewEncoder(output).Encode(protocol.RunPage{}); err != nil {
+			t.Error(err)
+		}
 	}))
 	t.Cleanup(server.Close)
 	var stdout, stderr bytes.Buffer
@@ -463,4 +511,10 @@ func TestFactoryServerEnvironmentOverridesDefault(t *testing.T) {
 	if code != 0 || stdout.String() != "No Runs.\n" {
 		t.Fatalf("environment endpoint = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("output is closed")
 }
