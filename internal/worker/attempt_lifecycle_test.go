@@ -1,8 +1,10 @@
 package worker
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
@@ -86,5 +88,25 @@ func TestCompletedWorktreeCleanupUsesAuthoritativeAttemptState(t *testing.T) {
 				t.Fatalf("shouldCleanCompletedWorktree() = %t, want %t", got, testCase.want)
 			}
 		})
+	}
+}
+
+func TestFinalStopReasonIsRecheckedAfterPostflight(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handle := &attemptHandle{context: ctx, cancel: cancel, deadline: time.Now().Add(-time.Second)}
+	if got := handle.stopReasonAt(time.Now()); got != "timeout" {
+		t.Fatalf("expired finalization stop reason = %q", got)
+	}
+	state, result, errorText := terminalForFinalStop(
+		handle.stopReason(), "succeeded", "ready result", "",
+	)
+	if state != "failed" || result != "" || errorText != "Session timeout reached" {
+		t.Fatalf("timeout terminal = %q, %q, %q", state, result, errorText)
+	}
+
+	state, result, errorText = terminalForFinalStop("cancelled", "succeeded", "ready result", "")
+	if state != "cancelled" || result != "" || errorText != "attempt cancelled" {
+		t.Fatalf("cancellation terminal = %q, %q, %q", state, result, errorText)
 	}
 }

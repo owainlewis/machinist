@@ -79,6 +79,17 @@ func TestOutcomeCompletionSuppressesOnlyVerifiedSignalExit(t *testing.T) {
 	}
 }
 
+func TestOutcomeReportedDefersToPendingLeaseLoss(t *testing.T) {
+	leaseTimer := make(chan time.Time, 1)
+	leaseTimer <- time.Now()
+	if got := supervisorOutcomeReason(leaseTimer); got != "lease_lost" {
+		t.Fatalf("pending lease timer outcome = %q", got)
+	}
+	if got := supervisorOutcomeReason(make(chan time.Time)); got != "outcome_reported" {
+		t.Fatalf("active lease outcome = %q", got)
+	}
+}
+
 func TestParseControlCommand(t *testing.T) {
 	cases := []struct {
 		name         string

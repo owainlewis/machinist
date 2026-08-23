@@ -28,13 +28,15 @@ type attemptHandle struct {
 	supervisor    *supervisorProcess
 	manifestReady bool
 	outcome       *protocol.WorkUpdate
+	deadline      time.Time
 }
 
 func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim, token string) {
+	sessionDeadline := claim.Attempt.CreatedAt.Add(time.Duration(claim.Session.TimeoutSeconds) * time.Second)
 	attemptContext, cancel := context.WithCancel(parent)
 	handle := &attemptHandle{
 		context: attemptContext, cancel: cancel, done: make(chan struct{}),
-		heartbeatDone: make(chan struct{}), expiry: claim.Attempt.LeaseExpiresAt,
+		heartbeatDone: make(chan struct{}), expiry: claim.Attempt.LeaseExpiresAt, deadline: sessionDeadline,
 	}
 	manager.stateMutex.Lock()
 	manager.active[claim.Attempt.ID] = handle
@@ -51,7 +53,6 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	}()
 	go manager.heartbeatAttempt(handle, claim.Attempt.ID, token)
 
-	sessionDeadline := claim.Attempt.CreatedAt.Add(time.Duration(claim.Session.TimeoutSeconds) * time.Second)
 	sessionTimer := time.AfterFunc(time.Until(sessionDeadline), func() {
 		handle.stop("timeout")
 	})
@@ -565,7 +566,7 @@ func (manager *Manager) finishWithWorktree(
 	}
 
 	outcome, reported := handle.reportedOutcome()
-	if reported && handle.stopReason() == "" {
+	if reported && handle.stopReasonAt(time.Now()) == "" {
 		state, result, errorText = "succeeded", "", ""
 		if outcome.Status == protocol.WorkUpdateReady {
 			validationContext, cancelValidation := context.WithTimeout(context.Background(), 2*gitCommandTimeout)
@@ -580,6 +581,9 @@ func (manager *Manager) finishWithWorktree(
 			}
 		}
 	}
+	state, result, errorText = terminalForFinalStop(
+		handle.stopReasonAt(time.Now()), state, result, errorText,
+	)
 	result = boundedText(result, protocol.MaxResultBytes)
 	errorText = boundedText(errorText, protocol.MaxErrorBytes)
 	if err := manager.persistLifecycle(claim.Attempt.ID, manifestCompleted, func(manifest *attemptManifest) {
@@ -647,6 +651,17 @@ func (handle *attemptHandle) processStillActive() bool {
 	process := handle.supervisor
 	handle.mutex.Unlock()
 	return process != nil && !process.isStopped()
+}
+
+func (handle *attemptHandle) stopReasonAt(now time.Time) string {
+	handle.mutex.Lock()
+	reason := handle.reason
+	deadline := handle.deadline
+	handle.mutex.Unlock()
+	if reason == "" && !deadline.IsZero() && !now.Before(deadline) {
+		handle.stop("timeout")
+	}
+	return handle.stopReason()
 }
 
 func (manager *Manager) complete(
@@ -764,6 +779,21 @@ func terminalState(message supervisorMessage) string {
 		return "succeeded"
 	}
 	return "failed"
+}
+
+func terminalForFinalStop(reason, state, result, errorText string) (string, string, string) {
+	switch reason {
+	case "cancelled":
+		return "cancelled", "", "attempt cancelled"
+	case "timeout":
+		return "failed", "", "Session timeout reached"
+	case "lease_lost":
+		return "failed", "", "control-plane lease was lost"
+	case "failed":
+		return "failed", result, firstNonEmpty(errorText, "attempt stopped before completion")
+	default:
+		return state, result, errorText
+	}
 }
 
 func attemptStopReasonForSupervisor(reason string) string {

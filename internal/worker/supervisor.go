@@ -326,7 +326,7 @@ func superviseRuntime(
 				reason = "timeout"
 				running = false
 			case "outcome_reported":
-				reason = "outcome_reported"
+				reason = supervisorOutcomeReason(leaseTimer.C)
 				running = false
 			case "start":
 			}
@@ -435,6 +435,15 @@ func superviseRuntime(
 		}
 	}
 	return writer.send(message)
+}
+
+func supervisorOutcomeReason(leaseTimer <-chan time.Time) string {
+	select {
+	case <-leaseTimer:
+		return "lease_lost"
+	default:
+		return "outcome_reported"
+	}
 }
 
 func supervisorCompletionError(reason string, initial, stop, child, anchor, readers error) error {
