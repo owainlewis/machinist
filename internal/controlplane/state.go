@@ -615,13 +615,42 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 		return protocol.Attempt{}, err
 	}
 	terminalMessage := ""
+	workState := protocol.WorkState(input.State)
+	failureReason := input.Error
+	var outcome protocol.WorkUpdate
+	hasOutcome := false
 	if lease.cancel {
 		input.State, input.Result, input.Error = "cancelled", "", ""
+		workState, failureReason = protocol.WorkCancelled, ""
 		terminalMessage = "Cancelled by operator."
 	} else if lease.outcomeContract == protocol.OutcomeAgentUpdate && input.State == "succeeded" {
-		const missingOutcome = "Agent exited without reporting an outcome."
-		input.State, input.Result, input.Error = "failed", "", missingOutcome
-		terminalMessage = missingOutcome
+		outcome, hasOutcome, err = attemptOutcome(ctx, tx, attemptID)
+		if err != nil {
+			return protocol.Attempt{}, err
+		}
+		if !hasOutcome {
+			const missingOutcome = "Agent exited without reporting an outcome."
+			input.State, input.Result, input.Error = "failed", "", missingOutcome
+			workState, failureReason, terminalMessage = protocol.WorkFailed, missingOutcome, missingOutcome
+		} else {
+			// The Attempt succeeded because the agent completed its reporting
+			// contract. Work state remains the semantic outcome reported by the
+			// agent, and arbitrary final runtime prose is not interpreted.
+			input.Result, input.Error = "", ""
+			terminalMessage = outcome.Message
+			switch outcome.Status {
+			case protocol.WorkUpdateReady:
+				workState = protocol.WorkReady
+			case protocol.WorkUpdateNeedsInput:
+				workState = protocol.WorkNeedsInput
+			case protocol.WorkUpdateFailed:
+				workState, failureReason = protocol.WorkFailed, outcome.Message
+			case protocol.WorkUpdateNoChange:
+				workState = protocol.WorkNoChange
+			default:
+				return protocol.Attempt{}, conflict("outcome_missing", "the Attempt has no ending outcome report")
+			}
+		}
 	}
 	if input.State == "succeeded" && lease.attemptState != "running" {
 		return protocol.Attempt{}, conflict("invalid_transition", "only a running attempt can succeed")
@@ -638,13 +667,33 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 	`, input.State, now, lease.executionID); err != nil {
 		return protocol.Attempt{}, unavailable(err)
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if hasOutcome && workState == protocol.WorkNeedsInput {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sessions SET state = 'needs-input', terminal_at = NULL, result = NULL,
+			       failure_reason = NULL, terminal_message = ?, question = ?,
+			       checkpoint_sha = ?, pending_resume_sha = ?, execution_owner = 'none'
+			WHERE id = (SELECT session_id FROM executions WHERE id = ?)
+			  AND state = 'running'
+		`, terminalMessage, outcome.Message, outcome.CheckpointSHA, outcome.CheckpointSHA, lease.executionID); err != nil {
+			return protocol.Attempt{}, unavailable(err)
+		}
+	} else if hasOutcome {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sessions SET state = ?, terminal_at = ?, result = NULL, failure_reason = ?,
+			       terminal_message = ?, pull_request_url = ?, pull_request_head_branch = ?,
+			       pull_request_head_sha = ?, execution_owner = 'none'
+			WHERE id = (SELECT session_id FROM executions WHERE id = ?)
+			  AND state = 'running'
+		`, workState, now, nullString(failureReason), terminalMessage, outcome.PullRequestURL,
+			outcome.PullRequestHeadBranch, outcome.PullRequestHeadSHA, lease.executionID); err != nil {
+			return protocol.Attempt{}, unavailable(err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET state = ?, terminal_at = ?, result = ?, failure_reason = ?,
-		       terminal_message = ?,
-		       execution_owner = 'none'
+		       terminal_message = ?, execution_owner = 'none'
 		WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 		  AND state IN ('preparing', 'running')
-	`, input.State, now, nullString(input.Result), nullString(input.Error), terminalMessage, lease.executionID); err != nil {
+	`, workState, now, nullString(input.Result), nullString(failureReason), terminalMessage, lease.executionID); err != nil {
 		return protocol.Attempt{}, unavailable(err)
 	}
 	if err := updateRunLifecycle(ctx, tx, lease.executionID, now); err != nil {

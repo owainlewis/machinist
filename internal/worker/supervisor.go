@@ -37,6 +37,9 @@ type supervisorInit struct {
 	TimeoutSeconds    int    `json:"timeout_seconds"`
 	RunID             string `json:"run_id,omitempty"`
 	SessionID         string `json:"session_id,omitempty"`
+	AttemptID         string `json:"attempt_id,omitempty"`
+	UpdateSocket      string `json:"update_socket,omitempty"`
+	UpdateToken       string `json:"update_token,omitempty"`
 }
 
 type supervisorMessage struct {
@@ -52,6 +55,7 @@ type supervisorMessage struct {
 	Result          string `json:"result,omitempty"`
 	Error           string `json:"error,omitempty"`
 	Truncated       bool   `json:"truncated,omitempty"`
+	StopUnverified  bool   `json:"stop_unverified,omitempty"`
 }
 
 type supervisorProcess struct {
@@ -96,6 +100,9 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 	}
 	if (init.RunID == "") != (init.SessionID == "") {
 		return errors.New("supervisor Run and Session identities must be supplied together")
+	}
+	if (init.AttemptID == "") != (init.UpdateSocket == "") || (init.AttemptID == "") != (init.UpdateToken == "") {
+		return errors.New("supervisor agent update context must be supplied together")
 	}
 	if init.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
 		return errors.New("supervisor timeout exceeds eight hours")
@@ -231,7 +238,7 @@ func superviseRuntime(
 	displayName := runtimeDisplayName(init.Runtime)
 	command := exec.Command(init.RuntimeExecutable, arguments...)
 	command.Dir = init.Worktree
-	command.Env = runtimeEnvironment(init.RunID, init.SessionID)
+	command.Env = runtimeEnvironment(init.RunID, init.SessionID, init.AttemptID, init.UpdateSocket, init.UpdateToken)
 	configureExistingProcessGroup(command, groupID)
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -318,6 +325,9 @@ func superviseRuntime(
 			case "timeout":
 				reason = "timeout"
 				running = false
+			case "outcome_reported":
+				reason = "outcome_reported"
+				running = false
 			case "start":
 			}
 		case controlErr := <-controlErrors:
@@ -340,28 +350,27 @@ func superviseRuntime(
 	grace := terminationGrace
 	if reason == "exited" {
 		grace = 0
+	} else if reason == "outcome_reported" {
+		grace = 10 * time.Second
 	}
 	stopErr := stopStartedSupervisorGroup(anchor, anchorIdentity, grace)
-	if stopErr != nil && waitErr == nil {
-		waitErr = stopErr
-	}
+	var childErr error
+	childReaped := reason == "exited"
 	if reason != "exited" {
 		select {
-		case childErr := <-wait:
-			if waitErr == nil {
-				waitErr = childErr
-			}
+		case childErr = <-wait:
+			childReaped = true
 		case <-time.After(2 * time.Second):
-			if waitErr == nil {
-				waitErr = fmt.Errorf("%s process did not reap after group termination", displayName)
-			}
+			childErr = fmt.Errorf("%s process did not reap after group termination", displayName)
 		}
 	}
-	if anchorErr := waitForSupervisorCommand(anchor, supervisorCleanupWait); anchorErr != nil && waitErr == nil {
-		waitErr = fmt.Errorf("reap process-group anchor: %w", anchorErr)
-	}
-	if readersErr := waitForSupervisorReaders(&readers, stdout, stderr, supervisorCleanupWait); readersErr != nil && waitErr == nil {
-		waitErr = readersErr
+	anchorErr := waitForSupervisorCommand(anchor, supervisorCleanupWait)
+	readersErr := waitForSupervisorReaders(&readers, stdout, stderr, supervisorCleanupWait)
+	stopUnverified := stopErr != nil || !childReaped || anchorErr != nil || readersErr != nil
+	waitErr = supervisorCompletionError(reason, waitErr, stopErr, childErr, anchorErr, readersErr)
+	outcomeStopFailed := reason == "outcome_reported" && waitErr != nil
+	if outcomeStopFailed {
+		reason = "supervisor_error"
 	}
 	select {
 	case promptErr := <-promptErrors:
@@ -398,19 +407,21 @@ func superviseRuntime(
 	}
 	_ = os.Remove(init.ResultPath)
 	message := supervisorMessage{
-		Type:      "exit",
-		ExitCode:  exitCode(waitErr),
-		Reason:    reason,
-		Result:    result,
-		Truncated: truncated,
+		Type:           "exit",
+		ExitCode:       exitCode(waitErr),
+		Reason:         reason,
+		Result:         result,
+		Truncated:      truncated,
+		StopUnverified: stopUnverified,
 	}
-	if reason != "exited" {
+	if reason != "exited" && !outcomeStopFailed {
 		message.Error = map[string]string{
 			"cancelled":        "attempt cancelled",
 			"parent_lost":      "worker parent process exited",
 			"lease_lost":       "control-plane lease renewal deadline passed",
 			"timeout":          "Session timeout reached",
 			"supervisor_error": "attempt supervisor failed",
+			"outcome_reported": "",
 		}[reason]
 	}
 	if message.Error == "" && waitErr != nil {
@@ -426,16 +437,43 @@ func superviseRuntime(
 	return writer.send(message)
 }
 
-func runtimeEnvironment(runID, sessionID string) []string {
-	environment := make([]string, 0, len(os.Environ())+2)
+func supervisorCompletionError(reason string, initial, stop, child, anchor, readers error) error {
+	if reason == "outcome_reported" && stop == nil && expectedOutcomeTerminationError(child) {
+		// A signal from the verified process-group stop is expected. All other
+		// stop, reap, anchor, and reader errors remain terminal failures.
+		child = nil
+	}
+	if anchor != nil {
+		anchor = fmt.Errorf("reap process-group anchor: %w", anchor)
+	}
+	return errors.Join(initial, stop, child, anchor, readers)
+}
+
+func expectedOutcomeTerminationError(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ProcessState != nil && exitErr.ProcessState.ExitCode() == -1
+}
+
+func runtimeEnvironment(runID, sessionID, attemptID, updateSocket, updateToken string) []string {
+	environment := make([]string, 0, len(os.Environ())+6)
 	for _, value := range os.Environ() {
 		key, _, _ := strings.Cut(value, "=")
-		if key != "FACTORY_RUN_ID" && key != "FACTORY_SESSION_ID" {
+		if key != "FACTORY_RUN_ID" && key != "FACTORY_SESSION_ID" &&
+			key != "FACTORY_WORK_ID" && key != "FACTORY_ATTEMPT_ID" &&
+			key != "FACTORY_UPDATE_SOCKET" && key != "FACTORY_UPDATE_TOKEN" {
 			environment = append(environment, value)
 		}
 	}
 	if runID != "" {
 		environment = append(environment, "FACTORY_RUN_ID="+runID, "FACTORY_SESSION_ID="+sessionID)
+	}
+	if attemptID != "" {
+		environment = append(environment,
+			"FACTORY_WORK_ID="+sessionID,
+			"FACTORY_ATTEMPT_ID="+attemptID,
+			"FACTORY_UPDATE_SOCKET="+updateSocket,
+			"FACTORY_UPDATE_TOKEN="+updateToken,
+		)
 	}
 	return environment
 }
@@ -552,7 +590,7 @@ func parseControlCommand(command string) (string, time.Duration, error) {
 	fields := strings.Fields(command)
 	if len(fields) == 1 {
 		switch fields[0] {
-		case "start", "cancel", "lease_lost", "fail", "timeout":
+		case "start", "cancel", "lease_lost", "fail", "timeout", "outcome_reported":
 			return fields[0], 0, nil
 		}
 	}

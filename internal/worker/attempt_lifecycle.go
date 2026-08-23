@@ -27,6 +27,7 @@ type attemptHandle struct {
 	expiry        time.Time
 	supervisor    *supervisorProcess
 	manifestReady bool
+	outcome       *protocol.WorkUpdate
 }
 
 func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim, token string) {
@@ -156,6 +157,15 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		return
 	}
 	defer os.Remove(path)
+	var updateServer *agentUpdateServer
+	if claim.Session.OutcomeContract == protocol.OutcomeAgentUpdate {
+		updateServer, err = manager.startAgentUpdateServer(claim, token, handle, repository, value)
+		if err != nil {
+			manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
+			return
+		}
+		defer updateServer.close()
+	}
 	process, err := startSupervisor(manager.options.SupervisorCommand, supervisorInit{
 		Runtime:           claim.Execution.RequiredRuntime,
 		RuntimeExecutable: manager.runtimeExecutable(claim.Execution.RequiredRuntime),
@@ -165,6 +175,9 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		TimeoutSeconds:    remainingTimeoutSeconds(sessionDeadline),
 		RunID:             claim.Session.RunID,
 		SessionID:         claim.Session.ID,
+		AttemptID:         updateServerAttemptID(updateServer, claim.Attempt.ID),
+		UpdateSocket:      updateServerSocket(updateServer),
+		UpdateToken:       updateServerToken(updateServer),
 	}, os.Stderr)
 	if err != nil {
 		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
@@ -237,6 +250,9 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	sender := newEventSender(handle.context, manager.client, claim.Attempt.ID, token, claim.Execution.RequiredRuntime)
 	message := manager.waitForSupervisorWithEvents(process, sender)
 	sender.closeAndWait(5 * time.Second)
+	if message.Reason == "supervisor_error" {
+		handle.stop("failed")
+	}
 	manager.finishWithWorktree(claim, token, handle, repository, value,
 		terminalState(message), message.Result, message.Error)
 }
@@ -396,6 +412,33 @@ func (handle *attemptHandle) stopReason() string {
 	return handle.reason
 }
 
+func (handle *attemptHandle) recordOutcome(update protocol.WorkUpdate) {
+	handle.mutex.Lock()
+	if handle.outcome == nil {
+		copy := update
+		handle.outcome = &copy
+	}
+	handle.mutex.Unlock()
+}
+
+func (handle *attemptHandle) stopForOutcome() {
+	handle.mutex.Lock()
+	process := handle.supervisor
+	handle.mutex.Unlock()
+	if process != nil {
+		_ = process.send("outcome_reported")
+	}
+}
+
+func (handle *attemptHandle) reportedOutcome() (protocol.WorkUpdate, bool) {
+	handle.mutex.Lock()
+	defer handle.mutex.Unlock()
+	if handle.outcome == nil {
+		return protocol.WorkUpdate{}, false
+	}
+	return *handle.outcome, true
+}
+
 func (manager *Manager) waitForSupervisorWithEvents(
 	process *supervisorProcess,
 	sender *eventSender,
@@ -426,7 +469,11 @@ func (manager *Manager) waitForSupervisorMessage(process *supervisorProcess) sup
 			if message.Type == "exit" || message.Type == "output" {
 				if message.Type == "exit" {
 					_ = process.closeControl()
-					process.markStopped()
+					if message.StopUnverified {
+						manager.emergencyStop(process, errors.New(firstNonEmpty(message.Error, "process stop was not verified")))
+					} else {
+						process.markStopped()
+					}
 				}
 				return message
 			}
@@ -435,7 +482,11 @@ func (manager *Manager) waitForSupervisorMessage(process *supervisorProcess) sup
 			case message := <-process.messages:
 				if message.Type == "exit" || message.Type == "output" {
 					if message.Type == "exit" {
-						process.markStopped()
+						if message.StopUnverified {
+							manager.emergencyStop(process, errors.New(firstNonEmpty(message.Error, "process stop was not verified")))
+						} else {
+							process.markStopped()
+						}
 					}
 					return message
 				}
@@ -506,7 +557,29 @@ func (manager *Manager) finishWithWorktree(
 ) {
 	manager.beginCapacityHandoff()
 	defer manager.finishCapacityHandoff(handle)
+	if handle.processStillActive() {
+		reason := firstNonEmpty(errorText, "Attempt process-group shutdown could not be verified.")
+		manager.markUnhealthy("process_group_stop", errors.New(reason))
+		manager.retain(claim, repository, value, reason)
+		return
+	}
 
+	outcome, reported := handle.reportedOutcome()
+	if reported && handle.stopReason() == "" {
+		state, result, errorText = "succeeded", "", ""
+		if outcome.Status == protocol.WorkUpdateReady {
+			validationContext, cancelValidation := context.WithTimeout(context.Background(), 2*gitCommandTimeout)
+			evidence, validationErr := manager.validateReadyDelivery(
+				validationContext, claim, repository, value, outcome.PullRequestURL,
+			)
+			cancelValidation()
+			if validationErr != nil || evidence.HeadBranch != outcome.PullRequestHeadBranch ||
+				evidence.HeadSHA != outcome.PullRequestHeadSHA {
+				state = "failed"
+				errorText = "Delivery evidence could not be revalidated after the agent process stopped."
+			}
+		}
+	}
 	result = boundedText(result, protocol.MaxResultBytes)
 	errorText = boundedText(errorText, protocol.MaxErrorBytes)
 	if err := manager.persistLifecycle(claim.Attempt.ID, manifestCompleted, func(manifest *attemptManifest) {
@@ -517,7 +590,8 @@ func (manager *Manager) finishWithWorktree(
 		errorText = firstNonEmpty(errorText, err.Error())
 	}
 	completed := manager.complete(claim.Attempt.ID, token, state, result, errorText, handle)
-	if completed && state == "succeeded" {
+	retainReportedFailure := reported && outcome.Status == protocol.WorkUpdateFailed
+	if completed && state == "succeeded" && !retainReportedFailure {
 		err := manager.cleanCompletedWorktree(claim.Attempt.ID)
 		if err == nil {
 			if err := manager.recordDisposed(claim.Attempt.ID); err != nil {
@@ -682,17 +756,49 @@ func terminalState(message supervisorMessage) string {
 	if message.Reason == "exited" && message.ExitCode == 0 {
 		return "succeeded"
 	}
+	if message.Reason == "outcome_reported" {
+		return "succeeded"
+	}
 	return "failed"
 }
 
 func buildPrompt(claim protocol.Claim, value worktree) string {
-	return protocol.FormatAgentPrompt(
+	prompt := protocol.FormatAgentPrompt(
 		claim.Session.TaskName,
 		claim.Repository.RemoteIdentity,
 		value.Branch,
 		value.BaseBranch,
 		claim.Session.Prompt,
 	)
+	if claim.Session.OutcomeContract != protocol.OutcomeAgentUpdate {
+		return prompt
+	}
+	return prompt + "\n\nFactory update contract:\n" +
+		"This Work is unfinished until you call factory update. Use status running for useful progress only. " +
+		"Before exiting, report exactly one outcome: ready, needs-input, failed, or no-change. " +
+		"Ready requires --pr with the GitHub pull request URL. Needs-input ends this Attempt and requires committed, pushed partial work. " +
+		"Always include a concise non-empty --message."
+}
+
+func updateServerSocket(server *agentUpdateServer) string {
+	if server == nil {
+		return ""
+	}
+	return server.socketPath
+}
+
+func updateServerAttemptID(server *agentUpdateServer, attemptID string) string {
+	if server == nil {
+		return ""
+	}
+	return attemptID
+}
+
+func updateServerToken(server *agentUpdateServer) string {
+	if server == nil {
+		return ""
+	}
+	return server.token
 }
 
 func apiErrorClass(err error) string {

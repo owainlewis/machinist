@@ -202,7 +202,9 @@ static repository paths remain readable through Worker configuration.
 `cmd/factory` delegates parsing and finite HTTP work to `internal/factorycli`.
 The `status`, `show`, and `workers` commands decode protocol resources and write
 either stable tabular output or one JSON value. They do not import SQLite or
-Worker packages.
+Worker packages. An injected `factory update` command instead connects only to
+a private Attempt-scoped Unix socket using the Work ID, Attempt ID, and update
+token supplied by the Worker.
 
 The `server start` and `worker start` commands replace the CLI process with the
 matching compatibility executable beside it or on `PATH`. An explicit config
@@ -242,6 +244,14 @@ manager:
 - renews active leases every ten seconds;
 - starts up to the configured number of isolated sessions;
 - reconciles manifests, worktrees, and owned process groups after restart.
+
+Only a frozen `agent_update` Attempt receives a private update socket and
+token. The Worker validates that capability locally, resolves ready pull
+request evidence with GitHub and Git, and forwards a typed update under its own
+lease. The agent-facing request never contains an operator credential, Worker
+credential, or Attempt lease token. Outcome reports ask the supervisor to stop
+the process group, then the Worker completes the Attempt only after verified
+process stop and any required delivery postflight check.
 
 The supervisor is a subprocess of `factory-worker`. It anchors ownership of the
 runtime process group. Unix process-group behavior is required, so Windows

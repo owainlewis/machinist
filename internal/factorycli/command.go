@@ -169,6 +169,19 @@ func (c command) run(arguments []string) error {
 			return err
 		}
 		return c.workers(ctx, client, *jsonOutput)
+	case "update":
+		flags := flag.NewFlagSet("factory update", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		status := flags.String("status", "", "progress or outcome status")
+		message := flags.String("message", "", "bounded update message")
+		pullRequest := flags.String("pr", "", "GitHub pull request URL for ready")
+		if err := flags.Parse(remaining[1:]); err != nil {
+			return &usageError{message: err.Error()}
+		}
+		if flags.NArg() != 0 {
+			return &usageError{message: "unexpected update arguments: " + strings.Join(flags.Args(), " ")}
+		}
+		return c.agentUpdate(*status, *message, *pullRequest, *jsonOutput)
 	case "server", "worker":
 		if *jsonOutput {
 			return &usageError{message: "--json is available only for status, show, and workers"}
@@ -266,6 +279,7 @@ Usage:
   factory [--server URL] [--json] status [--cursor CURSOR]
   factory [--server URL] [--json] show RUN_ID
   factory [--server URL] [--json] workers
+  factory [--json] update --status STATUS --message MESSAGE [--pr URL]
   factory server start [--config PATH]
   factory worker start [--config PATH]
   factory version

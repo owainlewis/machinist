@@ -255,6 +255,36 @@ type WorkUpdate struct {
 	AcceptedAt            time.Time        `json:"accepted_at"`
 }
 
+// AgentUpdateRequest is the credential-free request sent from the injected
+// factory helper to the Worker-local socket. The token scopes the request to
+// one Attempt; Worker and lease credentials are deliberately absent.
+type AgentUpdateRequest struct {
+	WorkID         string           `json:"work_id"`
+	AttemptID      string           `json:"attempt_id"`
+	UpdateToken    string           `json:"update_token"`
+	RequestID      string           `json:"request_id"`
+	Status         WorkUpdateStatus `json:"status"`
+	Message        string           `json:"message"`
+	PullRequestURL string           `json:"pull_request_url,omitempty"`
+}
+
+// AttemptUpdateRequest is the Worker-to-control-plane form of an agent
+// update. Delivery evidence has already been checked by the Worker for new
+// requests. ReplayOnly asks for a durable exact-request lookup before mutable
+// delivery state is checked again. The lease token never crosses the
+// Worker-local update protocol.
+type AttemptUpdateRequest struct {
+	LeaseToken            string           `json:"lease_token"`
+	ReplayOnly            bool             `json:"replay_only,omitempty"`
+	RequestID             string           `json:"request_id"`
+	Status                WorkUpdateStatus `json:"status"`
+	Message               string           `json:"message"`
+	PullRequestURL        string           `json:"pull_request_url,omitempty"`
+	PullRequestHeadBranch string           `json:"pull_request_head_branch,omitempty"`
+	PullRequestHeadSHA    string           `json:"pull_request_head_sha,omitempty"`
+	CheckpointSHA         string           `json:"checkpoint_sha,omitempty"`
+}
+
 type WorkUpdatePage struct {
 	Updates   []WorkUpdate `json:"updates"`
 	NextAfter int          `json:"next_after,omitempty"`

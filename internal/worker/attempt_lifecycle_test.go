@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -27,5 +28,27 @@ func TestBuildPromptIncludesGrammaticalSafetyInstruction(t *testing.T) {
 
 	if got := buildPrompt(claim, value); got != want {
 		t.Fatalf("buildPrompt() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildPromptAddsUpdateContractOnlyForAgentUpdateWork(t *testing.T) {
+	claim := protocol.Claim{
+		Session: protocol.ClaimedSession{
+			TaskName: "Report progress", Prompt: "Do the work.", OutcomeContract: protocol.OutcomeAgentUpdate,
+		},
+		Repository: protocol.Repository{RemoteIdentity: "github.com/owainlewis/factory"},
+	}
+	prompt := buildPrompt(claim, worktree{Branch: "factory/local", BaseBranch: "main"})
+	for _, expected := range []string{
+		"This Work is unfinished until you call factory update.",
+		"running", "ready", "needs-input", "failed", "no-change", "Ready requires --pr",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("agent-update prompt missing %q: %s", expected, prompt)
+		}
+	}
+	claim.Session.OutcomeContract = protocol.OutcomeProcessExit
+	if legacy := buildPrompt(claim, worktree{Branch: "factory/local", BaseBranch: "main"}); strings.Contains(legacy, "factory update") {
+		t.Fatalf("legacy prompt received update contract: %s", legacy)
 	}
 }
