@@ -250,8 +250,8 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	sender := newEventSender(handle.context, manager.client, claim.Attempt.ID, token, claim.Execution.RequiredRuntime)
 	message := manager.waitForSupervisorWithEvents(process, sender)
 	sender.closeAndWait(5 * time.Second)
-	if message.Reason == "supervisor_error" {
-		handle.stop("failed")
+	if reason := attemptStopReasonForSupervisor(message.Reason); reason != "" {
+		handle.stop(reason)
 	}
 	manager.finishWithWorktree(claim, token, handle, repository, value,
 		terminalState(message), message.Result, message.Error)
@@ -589,9 +589,9 @@ func (manager *Manager) finishWithWorktree(
 		manager.markUnhealthy("manifest_write", err)
 		errorText = firstNonEmpty(errorText, err.Error())
 	}
-	completed := manager.complete(claim.Attempt.ID, token, state, result, errorText, handle)
+	completedAttempt, completed := manager.complete(claim.Attempt.ID, token, state, result, errorText, handle)
 	retainReportedFailure := reported && outcome.Status == protocol.WorkUpdateFailed
-	if completed && state == "succeeded" && !retainReportedFailure {
+	if shouldCleanCompletedWorktree(completed, completedAttempt.State, retainReportedFailure) {
 		err := manager.cleanCompletedWorktree(claim.Attempt.ID)
 		if err == nil {
 			if err := manager.recordDisposed(claim.Attempt.ID); err != nil {
@@ -613,6 +613,10 @@ func (manager *Manager) finishWithWorktree(
 	}
 	reason := firstNonEmpty(errorText, state+" attempt retained for inspection")
 	manager.retain(claim, repository, value, reason)
+}
+
+func shouldCleanCompletedWorktree(completed bool, authoritativeState string, retainReportedFailure bool) bool {
+	return completed && authoritativeState == "succeeded" && !retainReportedFailure
 }
 
 func (manager *Manager) registerAfterAttempt(handle *attemptHandle) {
@@ -652,7 +656,7 @@ func (manager *Manager) complete(
 	result string,
 	errorText string,
 	handle *attemptHandle,
-) bool {
+) (protocol.Attempt, bool) {
 	timeout := requestTimeout
 	if remaining := time.Until(handle.leaseExpiry()); remaining > 0 && remaining < timeout {
 		timeout = remaining
@@ -663,11 +667,11 @@ func (manager *Manager) complete(
 			"attempt_id", attemptID,
 			"error_class", "lease_expired",
 		)
-		return false
+		return protocol.Attempt{}, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	_, err := manager.client.complete(ctx, attemptID, protocol.CompleteAttemptRequest{
+	completed, err := manager.client.complete(ctx, attemptID, protocol.CompleteAttemptRequest{
 		LeaseToken: token, State: state, Result: result, Error: errorText,
 	})
 	if err != nil {
@@ -676,10 +680,10 @@ func (manager *Manager) complete(
 			"attempt_id", attemptID,
 			"error_class", apiErrorClass(err),
 		)
-		return false
+		return protocol.Attempt{}, false
 	}
 	manager.logger.Info("attempt_completed", "attempt_id", attemptID, "state", state)
-	return true
+	return completed, true
 }
 
 func (manager *Manager) retain(claim protocol.Claim, repository Repository, value worktree, reason string) {
@@ -762,6 +766,17 @@ func terminalState(message supervisorMessage) string {
 	return "failed"
 }
 
+func attemptStopReasonForSupervisor(reason string) string {
+	switch reason {
+	case "cancelled", "lease_lost", "timeout":
+		return reason
+	case "parent_lost", "supervisor_error":
+		return "failed"
+	default:
+		return ""
+	}
+}
+
 func buildPrompt(claim protocol.Claim, value worktree) string {
 	prompt := protocol.FormatAgentPrompt(
 		claim.Session.TaskName,
@@ -775,8 +790,8 @@ func buildPrompt(claim protocol.Claim, value worktree) string {
 	}
 	return prompt + "\n\nFactory update contract:\n" +
 		"This Work is unfinished until you call factory update. Use status running for useful progress only. " +
-		"Before exiting, report exactly one outcome: ready, needs-input, failed, or no-change. " +
-		"Ready requires --pr with the GitHub pull request URL. Needs-input ends this Attempt and requires committed, pushed partial work. " +
+		"Before exiting, report exactly one available outcome: ready, failed, or no-change. " +
+		"Ready requires --pr with the GitHub pull request URL. Needs-input is unavailable until verified checkpoint support is enabled. " +
 		"Always include a concise non-empty --message."
 }
 

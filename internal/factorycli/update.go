@@ -49,6 +49,9 @@ func (c command) agentUpdate(status, message, pullRequest string, jsonOutput boo
 	if !protocol.SupportedWorkUpdateStatus(updateStatus) {
 		return &usageError{message: "--status must be running, ready, needs-input, failed, or no-change"}
 	}
+	if updateStatus == protocol.WorkUpdateNeedsInput {
+		return &usageError{message: "needs-input is unavailable until verified checkpoint support is enabled"}
+	}
 	if !utf8.ValidString(message) || strings.TrimSpace(message) == "" {
 		return &usageError{message: "--message must be non-empty UTF-8 text"}
 	}

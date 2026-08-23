@@ -94,4 +94,17 @@ func TestAgentUpdateRequiresContextAndReadyEvidence(t *testing.T) {
 	}); code != 2 || !strings.Contains(stderr.String(), "ready requires --pr") {
 		t.Fatalf("missing ready PR = %d, stderr %q", code, stderr.String())
 	}
+	stderr.Reset()
+	if code := Run(Options{
+		Arguments: []string{"update", "--status", "needs-input", "--message", "Need a decision."},
+		Stderr:    &stderr,
+		Getenv: func(key string) string {
+			return map[string]string{
+				"FACTORY_WORK_ID": "work", "FACTORY_ATTEMPT_ID": "attempt",
+				"FACTORY_UPDATE_SOCKET": "/tmp/update", "FACTORY_UPDATE_TOKEN": "token",
+			}[key]
+		},
+	}); code != 2 || !strings.Contains(stderr.String(), "needs-input is unavailable") {
+		t.Fatalf("needs-input availability = %d, stderr %q", code, stderr.String())
+	}
 }

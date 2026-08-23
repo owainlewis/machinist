@@ -41,7 +41,8 @@ func TestBuildPromptAddsUpdateContractOnlyForAgentUpdateWork(t *testing.T) {
 	prompt := buildPrompt(claim, worktree{Branch: "factory/local", BaseBranch: "main"})
 	for _, expected := range []string{
 		"This Work is unfinished until you call factory update.",
-		"running", "ready", "needs-input", "failed", "no-change", "Ready requires --pr",
+		"running", "ready", "failed", "no-change", "Ready requires --pr",
+		"Needs-input is unavailable until verified checkpoint support is enabled",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("agent-update prompt missing %q: %s", expected, prompt)
@@ -50,5 +51,40 @@ func TestBuildPromptAddsUpdateContractOnlyForAgentUpdateWork(t *testing.T) {
 	claim.Session.OutcomeContract = protocol.OutcomeProcessExit
 	if legacy := buildPrompt(claim, worktree{Branch: "factory/local", BaseBranch: "main"}); strings.Contains(legacy, "factory update") {
 		t.Fatalf("legacy prompt received update contract: %s", legacy)
+	}
+}
+
+func TestSupervisorStopReasonPreservesLeaseLossAndCancellation(t *testing.T) {
+	for reason, want := range map[string]string{
+		"lease_lost": "lease_lost", "cancelled": "cancelled", "timeout": "timeout",
+		"supervisor_error": "failed", "parent_lost": "failed", "outcome_reported": "", "exited": "",
+	} {
+		if got := attemptStopReasonForSupervisor(reason); got != want {
+			t.Errorf("attemptStopReasonForSupervisor(%q) = %q, want %q", reason, got, want)
+		}
+	}
+}
+
+func TestCompletedWorktreeCleanupUsesAuthoritativeAttemptState(t *testing.T) {
+	for _, testCase := range []struct {
+		name                  string
+		completed             bool
+		authoritativeState    string
+		retainReportedFailure bool
+		want                  bool
+	}{
+		{name: "successful completion", completed: true, authoritativeState: "succeeded", want: true},
+		{name: "cancellation wins", completed: true, authoritativeState: "cancelled"},
+		{name: "reported failure retention", completed: true, authoritativeState: "succeeded", retainReportedFailure: true},
+		{name: "completion rejected", authoritativeState: "succeeded"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := shouldCleanCompletedWorktree(
+				testCase.completed, testCase.authoritativeState, testCase.retainReportedFailure,
+			)
+			if got != testCase.want {
+				t.Fatalf("shouldCleanCompletedWorktree() = %t, want %t", got, testCase.want)
+			}
+		})
 	}
 }
