@@ -2,7 +2,12 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -56,6 +61,55 @@ func TestRunSummaryCountsAttemptsWithoutReturningTheirBodies(t *testing.T) {
 	page, err := store.RunPage(ctx, 50, "")
 	if err != nil || len(page.Runs) != 1 || page.Runs[0].State != protocol.RunSucceeded {
 		t.Fatalf("Run page = %#v, error %v", page, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		UPDATE runs SET
+			task_snapshot = json_set(task_snapshot, '$.prompt', ?),
+			targets_snapshot = json_array(json_object('context_snapshot', ?))
+		WHERE id = ?
+	`, strings.Repeat("p", protocol.MaxTaskPromptBytes), strings.Repeat("c", protocol.MaxResolvedPromptBytes), detail.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+	list, err := store.RunSummaryPage(ctx, 50, "")
+	if err != nil || len(list.Runs) != 1 || list.Runs[0].ID != detail.Run.ID || list.Runs[0].TaskName != task.Name {
+		t.Fatalf("Run summary page = %#v, error %v", list, err)
+	}
+	encoded, err := json.Marshal(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > 4096 || strings.Contains(string(encoded), strings.Repeat("c", 100)) {
+		t.Fatalf("Run summary page includes frozen payloads: %d bytes", len(encoded))
+	}
+	handler := NewHandler(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/api/v1/runs?limit=50&view=summary", nil)
+	request.Host = "localhost"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var apiList protocol.RunListPage
+	if response.Code != http.StatusOK {
+		t.Fatalf("Run summary API status = %d: %s", response.Code, response.Body.String())
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &apiList); err != nil || len(apiList.Runs) != 1 || apiList.Runs[0].ID != detail.Run.ID {
+		t.Fatalf("Run summary API = %#v, error %v", apiList, err)
+	}
+	terminalAt := store.now().UnixMilli()
+	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state = 'failed', terminal_at = ? WHERE id = ?`, terminalAt, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE runs SET terminal_at = ?, updated_at = ? WHERE id = ?`, terminalAt, terminalAt, detail.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+	fullFailed, err := store.RunPage(ctx, 50, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactFailed, err := store.RunSummaryPage(ctx, 50, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fullFailed.Runs[0].NeedsAttention || compactFailed.Runs[0].NeedsAttention != fullFailed.Runs[0].NeedsAttention {
+		t.Fatalf("Run summary attention parity: full=%t compact=%t", fullFailed.Runs[0].NeedsAttention, compactFailed.Runs[0].NeedsAttention)
 	}
 	if _, err := store.db.ExecContext(ctx, `
 		UPDATE sessions SET state = 'blocked', result = NULL, blocked_reason = 'Repository is disabled.'

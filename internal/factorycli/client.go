@@ -185,8 +185,8 @@ func (c apiClient) get(ctx context.Context, path string, target any, responseLim
 }
 
 func (c command) status(ctx context.Context, client apiClient, jsonOutput bool) error {
-	var page protocol.RunPage
-	if err := client.get(ctx, "/api/v1/runs?limit=50", &page, maxResponseBytes); err != nil {
+	var page protocol.RunListPage
+	if err := client.get(ctx, "/api/v1/runs?limit=50&view=summary", &page, maxResponseBytes); err != nil {
 		return err
 	}
 	if jsonOutput {
@@ -200,7 +200,7 @@ func (c command) status(ctx context.Context, client apiClient, jsonOutput bool) 
 	fmt.Fprintln(writer, "RUN ID\tTASK\tSTATE\tSESSIONS\tACTIVE\tSUCCEEDED\tFAILED\tCANCELLED\tUPDATED")
 	for _, run := range page.Runs {
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
-			oneLine(run.ID), oneLine(run.Task.Name), oneLine(string(run.State)), run.SessionCount, run.ActiveCount,
+			oneLine(run.ID), oneLine(run.TaskName), oneLine(string(run.State)), run.SessionCount, run.ActiveCount,
 			run.SucceededCount, run.FailedCount, run.CancelledCount, formatTime(run.UpdatedAt))
 	}
 	if page.NextCursor != "" {

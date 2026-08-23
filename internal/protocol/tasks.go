@@ -403,6 +403,30 @@ type RunSummary struct {
 	Sessions   []RunSessionSummary `json:"sessions"`
 }
 
+type RunListSummary struct {
+	ID              string     `json:"id"`
+	TaskName        string     `json:"task_name"`
+	State           RunState   `json:"state"`
+	Source          string     `json:"source"`
+	NeedsAttention  bool       `json:"needs_attention"`
+	SessionCount    int        `json:"session_count"`
+	SucceededCount  int        `json:"succeeded_count"`
+	ReadyCount      int        `json:"ready_count"`
+	NeedsInputCount int        `json:"needs_input_count"`
+	NoChangeCount   int        `json:"no_change_count"`
+	FailedCount     int        `json:"failed_count"`
+	CancelledCount  int        `json:"cancelled_count"`
+	ActiveCount     int        `json:"active_count"`
+	AdmittedAt      time.Time  `json:"admitted_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	TerminalAt      *time.Time `json:"terminal_at,omitempty"`
+}
+
+type RunListPage struct {
+	Runs       []RunListSummary `json:"runs"`
+	NextCursor string           `json:"next_cursor,omitempty"`
+}
+
 type RunSessionSummary struct {
 	ID                 string       `json:"id"`
 	RepositoryIdentity string       `json:"repository_identity"`

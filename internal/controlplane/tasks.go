@@ -1106,6 +1106,102 @@ func (s *Store) RunPage(ctx context.Context, limit int, cursor string) (protocol
 	return page, nil
 }
 
+func (s *Store) RunSummaryPage(ctx context.Context, limit int, cursor string) (protocol.RunListPage, error) {
+	if limit == 0 {
+		limit = defaultTaskPageSize
+	}
+	if limit < 1 || limit > maxTaskPageSize {
+		return protocol.RunListPage{}, invalid("invalid_limit", "limit must be between 1 and 200")
+	}
+	admitted, cursorID, err := decodeRunCursor(cursor)
+	if err != nil {
+		return protocol.RunListPage{}, err
+	}
+	query := `
+		SELECT id, json_extract(task_snapshot, '$.name'), source, admitted_at, updated_at, terminal_at
+		FROM runs WHERE 1 = 1
+	`
+	args := make([]any, 0, 5)
+	if admitted != 0 {
+		query += ` AND (admitted_at < ? OR (admitted_at = ? AND id < ?))`
+		args = append(args, admitted, admitted, cursorID)
+	}
+	query += ` ORDER BY admitted_at DESC, id DESC LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return protocol.RunListPage{}, unavailable(err)
+	}
+	page := protocol.RunListPage{Runs: make([]protocol.RunListSummary, 0, limit)}
+	var admittedMillis []int64
+	for rows.Next() {
+		var summary protocol.RunListSummary
+		var admittedAt, updatedAt int64
+		var terminalAt sql.NullInt64
+		if err := rows.Scan(&summary.ID, &summary.TaskName, &summary.Source, &admittedAt, &updatedAt, &terminalAt); err != nil {
+			rows.Close()
+			return protocol.RunListPage{}, unavailable(err)
+		}
+		summary.AdmittedAt, summary.UpdatedAt = fromMillis(admittedAt), fromMillis(updatedAt)
+		if terminalAt.Valid {
+			value := fromMillis(terminalAt.Int64)
+			summary.TerminalAt = &value
+		}
+		page.Runs = append(page.Runs, summary)
+		admittedMillis = append(admittedMillis, admittedAt)
+	}
+	if err := rows.Close(); err != nil {
+		return protocol.RunListPage{}, unavailable(err)
+	}
+	hasMore := len(page.Runs) > limit
+	if hasMore {
+		page.Runs = page.Runs[:limit]
+		admittedMillis = admittedMillis[:limit]
+	}
+	for index := range page.Runs {
+		if err := s.applyRunListSummary(ctx, &page.Runs[index]); err != nil {
+			return protocol.RunListPage{}, err
+		}
+	}
+	if hasMore {
+		last := page.Runs[len(page.Runs)-1]
+		page.NextCursor = encodeRunCursor(admittedMillis[len(admittedMillis)-1], last.ID)
+	}
+	return page, nil
+}
+
+func (s *Store) applyRunListSummary(ctx context.Context, summary *protocol.RunListSummary) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT state, blocked_reason
+		FROM sessions WHERE run_id = ? ORDER BY target_position, id
+	`, summary.ID)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer rows.Close()
+	sessions := make([]protocol.Session, 0)
+	for rows.Next() {
+		var session protocol.Session
+		var blockedReason sql.NullString
+		if err := rows.Scan(&session.State, &blockedReason); err != nil {
+			return unavailable(err)
+		}
+		session.BlockedReason = blockedReason.String
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return unavailable(err)
+	}
+	run := protocol.Run{TerminalAt: summary.TerminalAt}
+	applyRunAggregate(&run, sessions, s.now())
+	summary.State, summary.NeedsAttention = run.State, run.NeedsAttention
+	summary.SessionCount, summary.SucceededCount = run.SessionCount, run.SucceededCount
+	summary.ReadyCount, summary.NeedsInputCount = run.ReadyCount, run.NeedsInputCount
+	summary.NoChangeCount, summary.FailedCount = run.NoChangeCount, run.FailedCount
+	summary.CancelledCount, summary.ActiveCount = run.CancelledCount, run.ActiveCount
+	return nil
+}
+
 func (s *Store) runListEntry(ctx context.Context, id string) (protocol.Run, error) {
 	var run protocol.Run
 	var snapshot, executionSnapshot, targetsSnapshot []byte

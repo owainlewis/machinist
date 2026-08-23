@@ -29,6 +29,11 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 		State: protocol.RunState("running\x00"), Source: "manual", SessionCount: 1, ActiveCount: 1,
 		AdmittedAt: now, UpdatedAt: now,
 	}
+	runList := protocol.RunListSummary{
+		ID: run.ID, TaskName: run.Task.Name, State: run.State, Source: run.Source,
+		SessionCount: run.SessionCount, ActiveCount: run.ActiveCount,
+		AdmittedAt: run.AdmittedAt, UpdatedAt: run.UpdatedAt,
+	}
 	detail := protocol.RunDetail{Run: run, Sessions: []protocol.Session{{
 		ID: "session-1", RepositoryIdentity: "github.com/owainlewis/factory",
 		State: protocol.SessionRunning, AssignedWorkerID: "worker-1",
@@ -58,7 +63,7 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 		output.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/v1/runs":
-			if err := json.NewEncoder(output).Encode(protocol.RunPage{Runs: []protocol.Run{run}, NextCursor: "cursor\x1b[2J"}); err != nil {
+			if err := json.NewEncoder(output).Encode(protocol.RunListPage{Runs: []protocol.RunListSummary{runList}, NextCursor: "cursor\x1b[2J"}); err != nil {
 				t.Error(err)
 			}
 		case "/api/v1/runs/run-1":
@@ -120,7 +125,7 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 	if code := Run(Options{Arguments: []string{"--server", server.URL, "--json", "status"}, Stdout: &stdout, Stderr: &stderr}); code != 0 {
 		t.Fatalf("JSON status = %d, stderr %q", code, stderr.String())
 	}
-	var page protocol.RunPage
+	var page protocol.RunListPage
 	if err := json.Unmarshal(stdout.Bytes(), &page); err != nil || len(page.Runs) != 1 || page.Runs[0].ID != "run-\x1b[2J1" {
 		t.Fatalf("JSON status = %#v, error %v", page, err)
 	}
@@ -140,7 +145,7 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &workers); err != nil || len(workers.Workers) != 1 || workers.Workers[0].ID != worker.ID {
 		t.Fatalf("JSON workers = %#v, error %v", workers, err)
 	}
-	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50,/api/v1/runs/run-1?view=summary,/api/v1/workers?view=summary,/api/v1/runs?limit=50,/api/v1/runs/run-1,/api/v1/workers"; got != want {
+	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50&view=summary,/api/v1/runs/run-1?view=summary,/api/v1/workers?view=summary,/api/v1/runs?limit=50&view=summary,/api/v1/runs/run-1,/api/v1/workers"; got != want {
 		t.Fatalf("API paths = %q, want %q", got, want)
 	}
 }
@@ -149,7 +154,7 @@ func TestFiniteCommandsRejectRedirectsWithoutMutatingTheHTTPClient(t *testing.T)
 	targetCalled := false
 	target := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
 		targetCalled = true
-		if err := json.NewEncoder(output).Encode(protocol.RunPage{}); err != nil {
+		if err := json.NewEncoder(output).Encode(protocol.RunListPage{}); err != nil {
 			t.Error(err)
 		}
 	}))
@@ -180,7 +185,7 @@ func TestFiniteCommandsReportEmptyResultsAndServerErrors(t *testing.T) {
 		output.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/v1/runs":
-			if err := json.NewEncoder(output).Encode(protocol.RunPage{}); err != nil {
+			if err := json.NewEncoder(output).Encode(protocol.RunListPage{}); err != nil {
 				t.Error(err)
 			}
 		case "/api/v1/workers":
@@ -237,7 +242,7 @@ func TestFiniteCommandsRejectUnsafeEndpointsAndMalformedResponses(t *testing.T) 
 func TestFiniteCommandsNormalizeLocalhostBeforeProxySelection(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
 		output.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(output).Encode(protocol.RunPage{}); err != nil {
+		if err := json.NewEncoder(output).Encode(protocol.RunListPage{}); err != nil {
 			t.Error(err)
 		}
 	}))
@@ -493,7 +498,7 @@ func TestHelpIsConciseAndDoesNotAdvertiseFutureCommands(t *testing.T) {
 
 func TestFactoryServerEnvironmentOverridesDefault(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, _ *http.Request) {
-		if err := json.NewEncoder(output).Encode(protocol.RunPage{}); err != nil {
+		if err := json.NewEncoder(output).Encode(protocol.RunListPage{}); err != nil {
 			t.Error(err)
 		}
 	}))
