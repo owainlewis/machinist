@@ -251,11 +251,18 @@ func TestFakeCloudSchedulingAlternatesEligibleRuns(t *testing.T) {
 
 func TestProcedureRunHTTPReturnsTypedAdmissionAndProcedures(t *testing.T) {
 	store := newTestStore(t)
+	ctx := context.Background()
 	repository := createManagedRepositoryForProcedure(t, store, "github.com/acme/api")
 	procedure := createProcedureForTest(t, store, "Bug fix")
 	server := httptest.NewServer(NewHandler(store, slog.New(slog.NewTextHandler(io.Discard, nil))))
 	t.Cleanup(server.Close)
-	response, err := http.Get(server.URL + "/api/v1/procedures?limit=200")
+	listRequest, err := http.NewRequestWithContext(
+		ctx, http.MethodGet, server.URL+"/api/v1/procedures?limit=200", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(listRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +276,14 @@ func TestProcedureRunHTTPReturnsTypedAdmissionAndProcedures(t *testing.T) {
 		RequestKey: "http-fleet", Procedure: procedure.Name,
 		Repositories: []string{repository.RemoteIdentity},
 	})
-	response, err = http.Post(server.URL+"/api/v1/procedure-runs", "application/json", bytes.NewReader(body))
+	runRequest, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, server.URL+"/api/v1/procedure-runs", bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRequest.Header.Set("Content-Type", "application/json")
+	response, err = http.DefaultClient.Do(runRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
