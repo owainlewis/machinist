@@ -66,8 +66,10 @@ test("creates a Task and completes its Run", async ({ page }) => {
 
   await expect(page).toHaveURL(/\/work\/[0-9a-f-]+$/);
   await expect(page.getByRole("heading", { name: taskName })).toBeVisible();
-  await expect(page.getByText("Succeeded", { exact: true })).toBeVisible({ timeout: 45_000 });
-  await expect(page.locator(".run-summary-strip")).toContainText(pipelineName);
+  await expect(page.locator(".run-detail-heading").getByText("Succeeded", { exact: true })).toBeVisible({ timeout: 45_000 });
+  const runSummary = page.locator(".run-summary-strip");
+  await expect(runSummary).toContainText(pipelineName);
+  await expect(runSummary.locator("div").filter({ hasText: "Completed" })).toContainText("1");
   await page.locator(".session-row summary").click();
   await expect(page.locator(".stage-run")).toHaveCount(3);
   await expect(page.locator(".stage-run").nth(0)).toContainText("Plan");
@@ -87,6 +89,7 @@ test("makes the board the primary Work view and preserves the table view", async
   const completedRun = page.getByRole("region", { name: "Done" }).getByRole("button", { name: new RegExp(taskName) });
   await expect(completedRun).toBeVisible();
   await expect(completedRun).toContainText("factory-demo");
+  await expect(completedRun).toContainText("1/1");
   expect(await page.evaluate<boolean>("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
 
   await expect(page.getByRole("button", { name: "List", exact: true })).toHaveCount(0);

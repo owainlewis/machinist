@@ -1,6 +1,6 @@
 export type Runtime = "pi" | "codex" | "claude-code";
 export type ExecutionBackend = "persistent" | "fake_cloud_run";
-export type SessionState = "blocked" | "queued" | "preparing" | "running" | "succeeded" | "failed" | "cancelled";
+export type SessionState = "blocked" | "queued" | "preparing" | "running" | "needs-input" | "ready" | "succeeded" | "failed" | "no-change" | "cancelled";
 export type RunState = "blocked" | "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled";
 
 export interface ExecutionProfile {
@@ -180,6 +180,9 @@ export interface Run {
   needs_attention: boolean;
   session_count: number;
   succeeded_count: number;
+  ready_count: number;
+  needs_input_count: number;
+  no_change_count: number;
   failed_count: number;
   cancelled_count: number;
   active_count: number;

@@ -194,9 +194,13 @@ function repositoryName(identity: string): string {
 }
 
 function Progress({ run }: { run: Run }) {
-  const complete = run.succeeded_count + run.failed_count + run.cancelled_count;
+  const complete = successfulSessions(run) + run.failed_count + run.cancelled_count;
   const percent = run.session_count ? Math.round((complete / run.session_count) * 100) : 0;
   return <span className="session-progress"><span><i style={{ width: `${percent}%` }} /></span><small>{complete}/{run.session_count}</small></span>;
+}
+
+function successfulSessions(run: Run): number {
+  return run.succeeded_count + run.ready_count + run.no_change_count;
 }
 
 export function RunDetailView({ id, onBack }: { id: string; onBack: () => void }) {
@@ -215,7 +219,7 @@ export function RunDetailView({ id, onBack }: { id: string; onBack: () => void }
     <button className="back-link" onClick={onBack}><ArrowLeft size={14} /> Work</button>
     <div className="detail-heading run-detail-heading"><div><span className="eyebrow">{run.source.replace("_", " ")} · {run.id.slice(0, 8)}</span><h1>{run.task.name}</h1><p>{run.session_count} repository session{run.session_count === 1 ? "" : "s"} · {execution} · started {timeAgo(run.admitted_at)}</p></div><div className="detail-actions"><StatusBadge state={run.state} />{run.active_count > 0 && <button className="button button-danger-secondary" disabled={cancel.isPending} onClick={() => cancel.mutate()}><StopCircle size={14} /> Cancel</button>}</div></div>
     <InlineError error={cancel.error ?? retry.error ?? cancelSession.error} />
-    <section className="run-summary-strip"><div><span>Pipeline</span><strong>{run.task.pipeline?.name ?? "Single agent"}</strong></div><div><span>Stages</span><strong>{run.task.pipeline?.stages.length ?? 1}</strong></div><div><span>Succeeded</span><strong>{run.succeeded_count}</strong></div><div><span>Duration</span><strong>{run.terminal_at ? duration(run.admitted_at, run.terminal_at) : "Active"}</strong></div></section>
+    <section className="run-summary-strip"><div><span>Pipeline</span><strong>{run.task.pipeline?.name ?? "Single agent"}</strong></div><div><span>Stages</span><strong>{run.task.pipeline?.stages.length ?? 1}</strong></div><div><span>Completed</span><strong>{successfulSessions(run)}</strong></div><div><span>Duration</span><strong>{run.terminal_at ? duration(run.admitted_at, run.terminal_at) : "Active"}</strong></div></section>
     <section className="panel session-panel"><div className="panel-heading"><h2>Sessions</h2><span>{sessions?.length ?? 0}</span></div>{(sessions ?? []).map((session) => <SessionRow key={session.id} session={session} onRetry={() => retry.mutate(session.id)} onCancel={() => cancelSession.mutate(session.id)} />)}</section>
     <details className="prompt-panel"><summary>Task snapshot</summary><pre>{run.task.prompt}</pre></details>
   </div>;

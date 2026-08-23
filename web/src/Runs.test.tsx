@@ -42,6 +42,43 @@ describe("Runs", () => {
     expect(onRun).toHaveBeenCalledWith("run-blocked");
   });
 
+  it("counts every successful Session outcome as completed on Run cards", async () => {
+    const completed = {
+      ...run("run-completed", "Review complete", "succeeded"),
+      session_count: 2,
+      succeeded_count: 0,
+      ready_count: 1,
+      no_change_count: 1,
+    };
+    vi.spyOn(api, "runs").mockResolvedValue({ runs: [completed], next_cursor: null });
+    const client = testClient();
+
+    render(<QueryClientProvider client={client}><RunsView mode="kanban" onMode={() => undefined} onRun={() => undefined} /></QueryClientProvider>);
+
+    const done = await screen.findByRole("region", { name: "Done" });
+    const card = within(done).getByRole("button", { name: /Review complete, succeeded/ });
+    expect(card).toHaveTextContent("2/2");
+  });
+
+  it("uses the same successful Session total in Run detail stats", async () => {
+    const detail = runDetail("succeeded");
+    detail.run = {
+      ...run("run-completed", "Review complete", "succeeded"),
+      session_count: 2,
+      succeeded_count: 0,
+      ready_count: 1,
+      no_change_count: 1,
+      terminal_at: "2026-08-11T12:05:00Z",
+    };
+    vi.spyOn(api, "run").mockResolvedValue(detail);
+    const client = testClient();
+
+    render(<QueryClientProvider client={client}><RunDetailView id={detail.run.id} onBack={() => undefined} /></QueryClientProvider>);
+
+    const summary = await screen.findByText("Completed");
+    expect(summary.parentElement).toHaveTextContent("Completed2");
+  });
+
   it("expires terminal attention locally without polling Run detail", async () => {
     const attention = {
       ...run("run-attention", "Recent failed run", "failed"),
@@ -236,6 +273,9 @@ function run(id: string, name: string, state: Run["state"]): Run {
     needs_attention: false,
     session_count: 1,
     succeeded_count: state === "succeeded" ? 1 : 0,
+    ready_count: 0,
+    needs_input_count: 0,
+    no_change_count: 0,
     failed_count: 0,
     cancelled_count: 0,
     active_count: state === "succeeded" ? 0 : 1,
