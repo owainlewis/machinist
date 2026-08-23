@@ -260,3 +260,55 @@ func TestBuildAdmissionReplayWinsAndRebuildSelectsLatestTerminalPredecessor(t *t
 		t.Fatalf("active duplicate error = %v", err)
 	}
 }
+
+func TestBuildRebuildSelectsLineageLeafWhenAdmissionTimesTie(t *testing.T) {
+	store := newTestStore(t)
+	if _, _, err := store.CreateManagedRepository(context.Background(), protocol.CreateManagedRepositoryRequest{
+		RemoteIdentity: "github.com/acme/api",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reference := []string{"https://github.com/acme/api/issues/19"}
+	initial, err := store.AdmitBuild(context.Background(), protocol.BuildRequest{
+		RequestKey: "lineage-initial", References: reference,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const olderID = "zzzz-older-work"
+	if _, err := store.db.Exec(`
+		UPDATE sessions
+		SET id = ?, state = 'failed', admitted_at = 1000, terminal_at = 1000,
+		    terminal_message = 'failed'
+		WHERE id = ?
+	`, olderID, initial.Run.Sessions[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	firstRebuild, err := store.AdmitBuild(context.Background(), protocol.BuildRequest{
+		RequestKey: "lineage-first-rebuild", References: reference, Rebuild: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRebuildID := firstRebuild.Run.Sessions[0].ID
+	if firstRebuild.Run.Sessions[0].PredecessorWorkID != olderID {
+		t.Fatalf("first rebuild predecessor = %q, want %q", firstRebuild.Run.Sessions[0].PredecessorWorkID, olderID)
+	}
+	if _, err := store.db.Exec(`
+		UPDATE sessions
+		SET state = 'failed', admitted_at = 1000, terminal_at = 1000,
+		    terminal_message = 'failed'
+		WHERE id = ?
+	`, firstRebuildID); err != nil {
+		t.Fatal(err)
+	}
+	secondRebuild, err := store.AdmitBuild(context.Background(), protocol.BuildRequest{
+		RequestKey: "lineage-second-rebuild", References: reference, Rebuild: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := secondRebuild.Run.Sessions[0].PredecessorWorkID; got != firstRebuildID {
+		t.Fatalf("second rebuild predecessor = %q, want lineage leaf %q", got, firstRebuildID)
+	}
+}

@@ -288,10 +288,14 @@ func selectBuildPredecessors(
 
 		var terminalID string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id FROM sessions
-			WHERE repository_id = ? AND source_kind = ? AND source_key = ?
-			  AND state IN ('ready', 'succeeded', 'failed', 'no-change', 'cancelled')
-			ORDER BY admitted_at DESC, id DESC LIMIT 1
+			SELECT candidate.id FROM sessions AS candidate
+			WHERE candidate.repository_id = ? AND candidate.source_kind = ? AND candidate.source_key = ?
+			  AND candidate.state IN ('ready', 'succeeded', 'failed', 'no-change', 'cancelled')
+			  AND NOT EXISTS (
+				SELECT 1 FROM sessions AS child
+				WHERE child.predecessor_work_id = candidate.id
+			  )
+			ORDER BY candidate.admitted_at DESC, candidate.id DESC LIMIT 1
 		`, target.repository.ID, target.reference.SourceKind, target.reference.SourceKey).Scan(&terminalID)
 		if errors.Is(err, sql.ErrNoRows) {
 			if rebuild {
