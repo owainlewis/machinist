@@ -612,6 +612,11 @@ func applyMigrationsBefore(t *testing.T, ctx context.Context, store *Store, stop
 	if _, err := store.db.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
+	applyPendingMigrationsBefore(t, ctx, store, stopAt)
+}
+
+func applyPendingMigrationsBefore(t *testing.T, ctx context.Context, store *Store, stopAt string) {
+	t.Helper()
 	entries, err := migrations.Files.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -622,6 +627,13 @@ func applyMigrationsBefore(t *testing.T, ctx context.Context, store *Store, stop
 		}
 		if entry.Name() == stopAt {
 			return
+		}
+		var applied int
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, index+1).Scan(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if applied != 0 {
+			continue
 		}
 		body, err := migrations.Files.ReadFile(entry.Name())
 		if err != nil {
@@ -1086,6 +1098,84 @@ func TestWorkLifecycleMigrationPreservesFrozenTargetOrder(t *testing.T) {
 	if len(detail.Run.Targets) != 2 || detail.Run.Targets[0].ID != "zzz-target-2" ||
 		detail.Run.Targets[1].ID != "target-1" {
 		t.Fatalf("frozen target snapshot order = %#v", detail.Run.Targets)
+	}
+}
+
+func TestPipelineMigrationBackfillsQueuedSessionForStageProtocol(t *testing.T) {
+	ctx := context.Background()
+	db := openMigrationTestDatabase(t, t.TempDir()+"/pre-pipelines.sqlite3")
+	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
+	t.Cleanup(func() { _ = db.Close() })
+	applyMigrationsBefore(t, ctx, store, "030_task_run_session.sql")
+	if _, err := db.ExecContext(ctx, preRenameFixture); err != nil {
+		t.Fatal(err)
+	}
+	applyPendingMigrationsBefore(t, ctx, store, "032_pipeline_templates.sql")
+
+	worker, err := store.Worker(ctx, "worker-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterWorker(ctx, worker.ID, protocol.WorkerRegistration{
+		Name: worker.Name, Labels: worker.Labels, WorkerVersion: "pipeline-migration-test",
+		ClaimProtocolVersion: protocol.ClaimProtocolVersion, Runtime: worker.Runtime,
+		RuntimeVersion: "codex-test", Capacity: worker.Capacity,
+		ActiveCount: 0, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/factory",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE sessions
+		SET state = 'queued', blocked_reason = NULL, waiting_reason = '', execution_owner = 'none'
+		WHERE id = 'target-1';
+		UPDATE runs
+		SET task_snapshot = json_set(task_snapshot, '$.concurrency_limit', 10)
+		WHERE id = 'work-1';
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var stageState, stagePrompt string
+	if err := db.QueryRowContext(ctx, `
+		SELECT state, prompt FROM session_stages WHERE session_id = 'target-1' AND position = 0
+	`).Scan(&stageState, &stagePrompt); err != nil {
+		t.Fatal(err)
+	}
+	if stageState != string(protocol.StagePending) || stagePrompt != "Review." {
+		t.Fatalf("backfilled stage = state %q, prompt %q", stageState, stagePrompt)
+	}
+	claim, err := store.Claim(ctx, worker.ID, protocol.ClaimRequest{
+		RequestID: "migrated-pipeline-session", LeaseToken: tokenA,
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, error %v", claim, err)
+	}
+	if _, err := store.StartAttempt(ctx, claim.Attempt.ID, protocol.StartAttemptRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartStage(ctx, claim.Attempt.ID, 0, protocol.StartStageRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteStage(ctx, claim.Attempt.ID, 0, protocol.CompleteStageRequest{
+		LeaseToken: tokenA, State: protocol.StageSucceeded, Result: "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteAttempt(ctx, claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "succeeded", Result: "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.Run(ctx, "work-1")
+	if err != nil || detail.Run.State != protocol.RunSucceeded ||
+		len(detail.Sessions) != 1 || detail.Sessions[0].Stages[0].State != protocol.StageSucceeded {
+		t.Fatalf("completed migrated Pipeline = %#v, error %v", detail, err)
 	}
 }
 

@@ -46,6 +46,12 @@ func (s *Store) StartStage(ctx context.Context, attemptID string, position int, 
 	if err := verifyActiveLease(lease, input.LeaseToken, now); err != nil {
 		return protocol.StageRun{}, err
 	}
+	if lease.attemptState != "running" || lease.executionState != "running" {
+		return protocol.StageRun{}, conflict("attempt_not_running", "Pipeline stages require a running Attempt")
+	}
+	if lease.cancel {
+		return protocol.StageRun{}, conflict("cancellation_requested", "the Attempt is being cancelled")
+	}
 	var sessionID, state string
 	err = tx.QueryRowContext(ctx, `
 		SELECT execution.session_id, stage.state
@@ -106,6 +112,9 @@ func (s *Store) CompleteStage(ctx context.Context, attemptID string, position in
 	}
 	if err := verifyActiveLease(lease, input.LeaseToken, now); err != nil {
 		return protocol.StageRun{}, err
+	}
+	if lease.attemptState != "running" || lease.executionState != "running" {
+		return protocol.StageRun{}, conflict("attempt_not_running", "Pipeline stages require a running Attempt")
 	}
 	var sessionID, state, result, failure string
 	err = tx.QueryRowContext(ctx, `

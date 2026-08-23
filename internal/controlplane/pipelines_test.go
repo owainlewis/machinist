@@ -108,6 +108,93 @@ func TestPipelineTemplateRejectsUnknownVariables(t *testing.T) {
 	}
 }
 
+func TestPipelineTemplateRejectsMultibyteStageNamesOverStorageLimit(t *testing.T) {
+	store := newTestStore(t)
+	_, err := store.CreatePipeline(context.Background(), protocol.SavePipelineRequest{
+		Name: "Invalid stage name",
+		Stages: []protocol.PipelineStage{{
+			Name: strings.Repeat("🧪", 51), Prompt: "{{ task.prompt }}",
+		}},
+	})
+	if !serviceErrorCode(err, "invalid_pipeline_stage_name") {
+		t.Fatalf("multibyte stage name error = %v", err)
+	}
+	if _, err := store.CreatePipeline(context.Background(), protocol.SavePipelineRequest{
+		Name: "Valid stage name",
+		Stages: []protocol.PipelineStage{{
+			Name: strings.Repeat("🧪", 50), Prompt: "{{ task.prompt }}",
+		}},
+	}); err != nil {
+		t.Fatalf("200-byte stage name: %v", err)
+	}
+}
+
+func TestPipelineStagesRequireRunningAttemptAndStopAfterCancellation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	pipeline, err := store.CreatePipeline(ctx, protocol.SavePipelineRequest{
+		Name: "Two stages",
+		Stages: []protocol.PipelineStage{
+			{Name: "Build", Prompt: "{{ task.prompt }}"},
+			{Name: "Review", Prompt: "Review the work."},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(ctx, protocol.SaveTaskRequest{
+		Name: "Cancellation boundary", Prompt: "Build it.", Runtime: protocol.RuntimeCodex,
+		PipelineID: pipeline.ID, RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := store.RunTask(ctx, task.ID, protocol.RunTaskRequest{RequestKey: "stage-guards"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(ctx, worker.ID, protocol.ClaimRequest{RequestID: "stage-guards", LeaseToken: tokenA})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, error %v", claim, err)
+	}
+	if _, err := store.StartStage(ctx, claim.Attempt.ID, 0, protocol.StartStageRequest{LeaseToken: tokenA}); !serviceErrorCode(err, "attempt_not_running") {
+		t.Fatalf("pre-start stage start error = %v", err)
+	}
+	if _, err := store.CompleteStage(ctx, claim.Attempt.ID, 0, protocol.CompleteStageRequest{
+		LeaseToken: tokenA, State: protocol.StageSucceeded,
+	}); !serviceErrorCode(err, "attempt_not_running") {
+		t.Fatalf("pre-start stage completion error = %v", err)
+	}
+	detail, err := store.Run(ctx, run.Run.ID)
+	if err != nil || detail.Sessions[0].Stages[0].State != protocol.StagePending {
+		t.Fatalf("pre-start stage mutated = %#v, error %v", detail.Sessions[0].Stages, err)
+	}
+	if _, err := store.StartAttempt(ctx, claim.Attempt.ID, protocol.StartAttemptRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartStage(ctx, claim.Attempt.ID, 0, protocol.StartStageRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteStage(ctx, claim.Attempt.ID, 0, protocol.CompleteStageRequest{
+		LeaseToken: tokenA, State: protocol.StageSucceeded,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CancelSession(ctx, run.Run.ID, run.Sessions[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartStage(ctx, claim.Attempt.ID, 1, protocol.StartStageRequest{LeaseToken: tokenA}); !serviceErrorCode(err, "cancellation_requested") {
+		t.Fatalf("post-cancellation stage start error = %v", err)
+	}
+	detail, err = store.Run(ctx, run.Run.ID)
+	if err != nil || detail.Sessions[0].Stages[1].State != protocol.StagePending || detail.Sessions[0].Stages[1].StartedAt != nil {
+		t.Fatalf("cancelled next stage = %#v, error %v", detail.Sessions[0].Stages[1], err)
+	}
+}
+
 func TestPipelineDeleteRejectsTemplatesUsedByTasks(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{

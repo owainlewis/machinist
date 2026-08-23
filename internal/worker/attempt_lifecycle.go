@@ -232,14 +232,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		}
 		_, err = manager.client.startStage(handle.context, claim.Attempt.ID, stage.Position, stageStartRequest(process, token))
 		if err != nil {
-			reason := handle.stopReason()
-			var apiError *APIError
-			if errors.As(err, &apiError) && apiError.Code == "lease_not_owner" {
-				reason = "lease_lost"
-			}
-			if reason == "" {
-				reason = "failed"
-			}
+			reason := stageStartFailureReason(handle.stopReason(), err)
 			handle.stop(reason)
 			message := manager.waitForSupervisor(process)
 			sender.closeAndWait(5 * time.Second)
@@ -743,6 +736,22 @@ func terminalState(message supervisorMessage) string {
 	}
 	if message.Reason == "exited" && message.ExitCode == 0 {
 		return "succeeded"
+	}
+	return "failed"
+}
+
+func stageStartFailureReason(current string, err error) string {
+	if current != "" {
+		return current
+	}
+	var apiError *APIError
+	if errors.As(err, &apiError) {
+		switch apiError.Code {
+		case "lease_not_owner":
+			return "lease_lost"
+		case "cancellation_requested":
+			return "cancelled"
+		}
 	}
 	return "failed"
 }

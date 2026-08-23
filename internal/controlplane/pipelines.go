@@ -31,8 +31,8 @@ func normalizePipeline(input protocol.SavePipelineRequest) (string, []protocol.P
 		stage.Position = position
 		stage.Name = strings.TrimSpace(stage.Name)
 		stage.Prompt = strings.TrimSpace(stage.Prompt)
-		if stage.Name == "" || utf8.RuneCountInString(stage.Name) > 200 {
-			return "", nil, invalid("invalid_pipeline_stage_name", "each stage name is required and limited to 200 characters")
+		if stage.Name == "" || len([]byte(stage.Name)) > 200 {
+			return "", nil, invalid("invalid_pipeline_stage_name", "each stage name is required and limited to 200 bytes")
 		}
 		if stage.Prompt == "" || len([]byte(stage.Prompt)) > protocol.MaxTaskPromptBytes {
 			return "", nil, invalid("invalid_pipeline_stage_prompt", "each stage prompt is required and limited to 64 KiB")

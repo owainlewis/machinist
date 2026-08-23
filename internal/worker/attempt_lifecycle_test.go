@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -27,5 +28,29 @@ func TestBuildPromptIncludesGrammaticalSafetyInstruction(t *testing.T) {
 
 	if got := buildPrompt(claim, value); got != want {
 		t.Fatalf("buildPrompt() = %q, want %q", got, want)
+	}
+}
+
+func TestStageStartFailureReasonHonorsCancellation(t *testing.T) {
+	tests := []struct {
+		name, current, code, want string
+		err                       error
+	}{
+		{name: "cancelled by control plane", code: "cancellation_requested", want: "cancelled"},
+		{name: "lease lost", code: "lease_not_owner", want: "lease_lost"},
+		{name: "other API error", code: "stage_not_pending", want: "failed"},
+		{name: "transport error", err: errors.New("connection closed"), want: "failed"},
+		{name: "existing timeout wins", current: "timeout", code: "cancellation_requested", want: "timeout"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.err
+			if err == nil {
+				err = &APIError{Code: test.code}
+			}
+			if got := stageStartFailureReason(test.current, err); got != test.want {
+				t.Fatalf("reason = %q, want %q", got, test.want)
+			}
+		})
 	}
 }

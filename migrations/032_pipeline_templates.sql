@@ -38,5 +38,32 @@ CREATE TABLE session_stages (
     PRIMARY KEY (session_id, position)
 );
 
+-- Every Session admitted before Pipelines existed is a frozen single-stage
+-- Pipeline. Backfill that snapshot so upgraded queued and retried Sessions can
+-- use the durable stage protocol instead of relying on an in-memory fallback.
+INSERT INTO session_stages(
+    session_id, position, name, prompt, state, result, error, started_at, completed_at
+)
+SELECT
+    id,
+    0,
+    'Do the task',
+    resolved_prompt,
+    CASE
+        WHEN state IN ('ready', 'succeeded', 'no-change') THEN 'succeeded'
+        WHEN state = 'failed' THEN 'failed'
+        WHEN state = 'cancelled' THEN 'cancelled'
+        WHEN state = 'running' THEN 'running'
+        ELSE 'pending'
+    END,
+    COALESCE(result, ''),
+    COALESCE(failure_reason, ''),
+    started_at,
+    CASE
+        WHEN state IN ('ready', 'succeeded', 'failed', 'no-change', 'cancelled') THEN terminal_at
+        ELSE NULL
+    END
+FROM sessions;
+
 CREATE INDEX pipelines_list_order ON pipelines(updated_at DESC, id DESC);
 CREATE INDEX session_stages_state ON session_stages(session_id, state, position);
