@@ -139,6 +139,7 @@ loopback API:
 
 ```sh
 ~/.factory/bin/factory status
+~/.factory/bin/factory status --cursor CURSOR
 ~/.factory/bin/factory show RUN_ID
 ~/.factory/bin/factory workers
 ```

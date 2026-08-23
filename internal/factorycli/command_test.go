@@ -122,6 +122,10 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
+	if code := Run(Options{Arguments: []string{"--server", server.URL, "status", "--cursor", "next_page-2"}, Stdout: &stdout, Stderr: &stderr}); code != 0 {
+		t.Fatalf("cursor status = %d, stderr %q", code, stderr.String())
+	}
+	stdout.Reset()
 	if code := Run(Options{Arguments: []string{"--server", server.URL, "--json", "status"}, Stdout: &stdout, Stderr: &stderr}); code != 0 {
 		t.Fatalf("JSON status = %d, stderr %q", code, stderr.String())
 	}
@@ -145,7 +149,7 @@ func TestFiniteCommandsUseLoopbackAPIWithHumanAndJSONOutput(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &workers); err != nil || len(workers.Workers) != 1 || workers.Workers[0].ID != worker.ID {
 		t.Fatalf("JSON workers = %#v, error %v", workers, err)
 	}
-	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50&view=summary,/api/v1/runs/run-1?view=summary,/api/v1/workers?view=summary,/api/v1/runs?limit=50&view=summary,/api/v1/runs/run-1,/api/v1/workers"; got != want {
+	if got, want := strings.Join(paths, ","), "/api/v1/runs?limit=50&view=summary,/api/v1/runs/run-1?view=summary,/api/v1/workers?view=summary,/api/v1/runs?cursor=next_page-2&limit=50&view=summary,/api/v1/runs?limit=50&view=summary,/api/v1/runs/run-1,/api/v1/workers"; got != want {
 		t.Fatalf("API paths = %q, want %q", got, want)
 	}
 }
@@ -460,6 +464,8 @@ func TestStartCommandsReturnUsefulUsageAndLookupErrors(t *testing.T) {
 		want      string
 	}{
 		{nil, 2, "a command is required"},
+		{[]string{"status", "extra"}, 2, "unexpected status arguments"},
+		{[]string{"status", "--cursor="}, 2, "--cursor requires a non-empty value"},
 		{[]string{"server"}, 2, "server requires the start command"},
 		{[]string{"worker", "start", "extra"}, 2, "unexpected worker start arguments"},
 		{[]string{"server", "start", "--config="}, 2, "--config requires a non-empty path"},
@@ -484,7 +490,7 @@ func TestHelpIsConciseAndDoesNotAdvertiseFutureCommands(t *testing.T) {
 	if code := Run(Options{Arguments: []string{"help"}, Stdout: &stdout, Stderr: &stderr}); code != 0 {
 		t.Fatalf("help = %d, stderr %q", code, stderr.String())
 	}
-	for _, want := range []string{"factory server start", "factory worker start", "factory [--server URL] [--json] status", "FACTORY_SERVER"} {
+	for _, want := range []string{"factory server start", "factory worker start", "factory [--server URL] [--json] status [--cursor CURSOR]", "FACTORY_SERVER"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("help %q does not contain %q", stdout.String(), want)
 		}

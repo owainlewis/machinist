@@ -120,8 +120,22 @@ func (c command) run(arguments []string) error {
 		}
 		return c.writeHelp()
 	case "status":
-		if len(remaining) != 1 {
-			return &usageError{message: "status does not accept arguments"}
+		flags := flag.NewFlagSet("factory status", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		cursor := flags.String("cursor", "", "continue from a status cursor")
+		if err := flags.Parse(remaining[1:]); err != nil {
+			return &usageError{message: err.Error()}
+		}
+		if flags.NArg() != 0 {
+			return &usageError{message: "unexpected status arguments: " + strings.Join(flags.Args(), " ")}
+		}
+		cursorExplicit := false
+		flags.Visit(func(value *flag.Flag) {
+			cursorExplicit = cursorExplicit || value.Name == "cursor"
+		})
+		*cursor = strings.TrimSpace(*cursor)
+		if cursorExplicit && *cursor == "" {
+			return &usageError{message: "--cursor requires a non-empty value"}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -129,7 +143,7 @@ func (c command) run(arguments []string) error {
 		if err != nil {
 			return err
 		}
-		return c.status(ctx, client, *jsonOutput)
+		return c.status(ctx, client, *jsonOutput, *cursor)
 	case "show":
 		if len(remaining) != 2 || strings.TrimSpace(remaining[1]) == "" {
 			return &usageError{message: "show requires exactly one Run ID"}
@@ -249,7 +263,7 @@ func (c command) writeHelp() error {
 	_, err := fmt.Fprint(c.stdout, `Factory controls the local server and Workers and reads current operations.
 
 Usage:
-  factory [--server URL] [--json] status
+  factory [--server URL] [--json] status [--cursor CURSOR]
   factory [--server URL] [--json] show RUN_ID
   factory [--server URL] [--json] workers
   factory server start [--config PATH]
@@ -259,6 +273,7 @@ Usage:
 Options:
   --json        Write one JSON value to stdout.
   --server URL  Use this loopback HTTP endpoint (default http://127.0.0.1:7337).
+  --cursor      Continue status from a cursor printed by the previous page.
 
 Environment:
   FACTORY_SERVER  Overrides the endpoint used by finite commands.

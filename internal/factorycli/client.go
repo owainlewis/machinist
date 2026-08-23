@@ -184,9 +184,13 @@ func (c apiClient) get(ctx context.Context, path string, target any, responseLim
 	return nil
 }
 
-func (c command) status(ctx context.Context, client apiClient, jsonOutput bool) error {
+func (c command) status(ctx context.Context, client apiClient, jsonOutput bool, cursor string) error {
 	var page protocol.RunListPage
-	if err := client.get(ctx, "/api/v1/runs?limit=50&view=summary", &page, maxResponseBytes); err != nil {
+	query := url.Values{"limit": {"50"}, "view": {"summary"}}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	if err := client.get(ctx, "/api/v1/runs?"+query.Encode(), &page, maxResponseBytes); err != nil {
 		return err
 	}
 	if jsonOutput {
