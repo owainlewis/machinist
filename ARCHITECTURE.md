@@ -333,9 +333,11 @@ admission path.
 - Only the embedded SQLite orchestration path exists.
 - Cloud Run execution profiles and elastic dispatch are designed but not
   implemented.
-- Durable agent-update fields exist, but the Worker-local update transport,
-  semantic completion, resumable questions, and operator Work commands are not
-  implemented yet. Existing execution remains process-exit based.
+- Durable agent-update fields, persistent-backend admission, and missing-outcome
+  failure enforcement exist. Worker-local Work-update transport, write
+  endpoints, successful semantic completion, resumable questions, and operator
+  Work commands are not implemented yet. Existing execution remains
+  process-exit-based.
 - Managed repository acquisition supports GitHub through `gh`.
 - The current Worker resolves a repository's base commit during Attempt
   preparation, so a later retry can observe a newer default branch commit.

@@ -371,7 +371,8 @@ func TestFakeCloudCancellationIsFactoryOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	run, _ = store.Run(context.Background(), run.Run.ID)
-	if run.Run.State != protocol.RunCancelled || run.Sessions[0].Attempts[0].State != "cancelled" {
+	if run.Run.State != protocol.RunCancelled || run.Sessions[0].Attempts[0].State != "cancelled" ||
+		run.Sessions[0].TerminalMessage != "Cancelled by operator." {
 		t.Fatalf("cancelled fake Attempt = %#v", run)
 	}
 }
@@ -411,6 +412,7 @@ func TestFakeCloudRunningAttemptHonorsFrozenTimeout(t *testing.T) {
 	}
 	run, _ = store.Run(context.Background(), run.Run.ID)
 	if run.Run.State != protocol.RunFailed || run.Sessions[0].FailureReason != fakeCloudTimeoutReason ||
+		run.Sessions[0].TerminalMessage != fakeCloudTimeoutReason ||
 		len(run.Sessions[0].Attempts) != 1 || run.Sessions[0].Attempts[0].State != "failed" {
 		t.Fatalf("timed-out fake Attempt = %#v", run)
 	}
