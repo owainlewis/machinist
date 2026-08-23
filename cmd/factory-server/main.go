@@ -18,6 +18,7 @@ import (
 
 	"github.com/owainlewis/factory/internal/buildinfo"
 	"github.com/owainlewis/factory/internal/controlplane"
+	"github.com/owainlewis/factory/internal/protocol"
 	"github.com/owainlewis/factory/internal/statepath"
 	factoryweb "github.com/owainlewis/factory/web"
 )
@@ -41,6 +42,15 @@ func run() (returnErr error) {
 	bootstrap, err := loadServerBootstrapConfig(dataRoot)
 	if err != nil {
 		return err
+	}
+	if bootstrap.DefaultBuildRuntime == "" {
+		bootstrap.DefaultBuildRuntime = protocol.RuntimeCodex
+	}
+	if !protocol.SupportedRuntime(bootstrap.DefaultBuildRuntime) {
+		return fmt.Errorf(
+			"default_build_runtime must be one of %s",
+			strings.Join(protocol.SupportedRuntimes(), ", "),
+		)
 	}
 	defaultListen := "127.0.0.1:7337"
 	if bootstrap.Listen != "" {
@@ -112,6 +122,9 @@ func run() (returnErr error) {
 
 	store, err := controlplane.Open(rootContext, *database)
 	if err != nil {
+		return err
+	}
+	if err := store.SetDefaultBuildRuntime(bootstrap.DefaultBuildRuntime); err != nil {
 		return err
 	}
 	defer func() {

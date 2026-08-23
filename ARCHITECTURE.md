@@ -7,11 +7,13 @@
 ## Executive summary
 
 Factory is a local-first control plane for repeatable software-engineering
-agents. An operator saves ordered agent prompts as a Pipeline and selects that
-Pipeline for a Task. Running or scheduling the Task creates a Run with one
-Session per repository. A persistent Worker claims each Session, prepares one
-isolated Git worktree, and starts a fresh Pi, Codex, or Claude Code process for
-each Pipeline stage in order. All stages share that worktree and branch.
+agents. An operator saves ordered agent prompts as a Pipeline and selects it for
+a Task, uses `factory build` to admit up to 100 existing work-item references,
+or runs one saved Procedure across up to 100 enabled managed repositories. Each
+target becomes independent Session-backed Work. A persistent Worker claims the
+Work, prepares one isolated Git worktree, and starts a fresh Pi, Codex, or
+Claude Code process for each Pipeline stage in order. The stages share that
+worktree and branch, stream events, and produce one terminal result.
 
 The implementation has four main parts:
 
@@ -43,7 +45,7 @@ Operator browser or `factory` CLI
       | loopback HTTP and JSON
       v
 factory-server
-  |-- Task scheduler and Run admission
+  |-- Task scheduler, Build admission, and Procedure fleet admission
   |-- routing and lease state machine
   |-- embedded React UI
   `-- SQLite
@@ -96,7 +98,7 @@ increments its generation. Existing Runs keep their frozen Pipeline snapshot.
 The built-in Pipeline cannot be deleted, and a custom Pipeline must be removed
 from every Task before deletion.
 
-A Task is a reusable definition containing:
+A Task is the stored form of a saved Procedure. It contains:
 
 - name and input prompt;
 - selected Pipeline;
@@ -146,8 +148,49 @@ most 2 KiB and outcome messages are at most 8 KiB.
 
 A Session starts blocked when no eligible Worker can currently accept it. A
 later claim can route it when a healthy Worker advertises the runtime and
-repository access. Task concurrency limits how many sibling Sessions may be
-queued or active at once.
+repository access. Procedure concurrency limits how many sibling Sessions may
+be queued or active at once. Claim ordering uses each Run's prior Attempt count,
+then admission order, so a large Run yields to an older compatible Run that has
+received less service.
+
+### Build admission
+
+`factory build` accepts 1 to 100 ordered HTTPS GitHub issue URLs or opaque
+references. Opaque references require `--repo`. An explicit repository must
+also match every GitHub URL, while an omitted repository permits a GitHub-only
+batch across managed repositories. The server resolves repository state and
+rejects the whole batch before writing when any target is invalid.
+
+Every Build freezes generation 1 of the built-in `standard-build` Procedure,
+the current built-in Pipeline, the configured default or explicit runtime,
+persistent execution settings, and one immutable target and publish branch per
+Work. Every Work stores its rendered stages. The Procedure text is trusted
+policy. References are labelled as untrusted context and are not fetched by the
+CLI or control plane.
+
+The caller fingerprint covers ordered normalized references, explicit option
+presence and values, and the rebuild flag. Request-key lookup and fingerprint
+comparison happen before repository, runtime-default, duplicate, or predecessor
+reads. Matching replay returns the original Run. Active matching Work blocks a
+duplicate. A rebuild requires a new key and the latest terminal predecessor for
+every target, selected in the same transaction.
+
+### Procedure fleet admission
+
+`factory procedures` reads saved Procedures, including archived entries, from
+the bounded local API. `factory run PROCEDURE --repos ...|all` selects explicit
+enabled managed repositories in command order or freezes all enabled managed
+repositories in repository-identity order. The server snapshots the current
+Procedure generation, Pipeline generation and stages, prompt, runtime, timeout,
+concurrency, outcome contract, execution choice, and ordered targets in one
+transaction. Every repository Work stores its independently rendered stages.
+
+The caller fingerprint covers the normalized Procedure name, ordered repository
+selectors or `all`, and the rebuild flag. Request-key replay happens before
+Procedure, repository, execution-profile, or predecessor reads. A rebuild uses
+a new key and records the latest terminal predecessor for the exact Procedure
+and repository. Existing scheduled Tasks continue to use their saved repository
+selection and schedule snapshot.
 
 ### Execution and Attempt
 
@@ -207,15 +250,31 @@ static repository paths remain readable through Worker configuration.
     endpoint and read current state through bounded API routes.
 12. Claim protocol version 4 gates every persistent Worker claim. Older Workers
     receive `worker_upgrade_required`, including for process-exit Work.
+13. Build and Procedure fleet admission are all-or-none. Exact request-key
+    replay wins before mutable configuration reads, and one Run cannot contain
+    a duplicate target.
+14. An implicit admission key is written durably before HTTP submission and is
+    not removed until an authoritative admitted, replayed, or pre-commit
+    rejection result has been written and flushed.
 
 ## Components
 
 ### Operator CLI
 
 `cmd/factory` delegates parsing and finite HTTP work to `internal/factorycli`.
-The `status`, `show`, and `workers` commands decode protocol resources and write
-either stable tabular output or one JSON value. They do not import SQLite or
-Worker packages.
+The `build`, `run`, `procedures`, `status`, `show`, and `workers` commands use
+typed protocol resources and write either stable tabular output or one JSON
+value. They do not import SQLite or Worker packages. Build and Procedure Run
+syntax normalization is local, but managed-state resolution belongs to the
+server. An injected `factory update` command instead connects only to a private
+Attempt-scoped Unix socket using the Work ID, Attempt ID, and update token
+supplied by the Worker.
+
+When no Build or Procedure Run key is supplied, the CLI journals a random key
+under the private operator data directory before sending. A nonblocking OS lock
+scopes concurrent submissions by endpoint and caller fingerprint. Lost
+responses retain the key for replay by a later CLI process. The journal holds
+at most 100 uncertain requests and never evicts one silently.
 
 The `server start` and `worker start` commands replace the CLI process with the
 matching compatibility executable beside it or on `PATH`. An explicit config
@@ -255,6 +314,14 @@ manager:
 - renews active leases every ten seconds;
 - starts up to the configured number of isolated sessions;
 - reconciles manifests, worktrees, and owned process groups after restart.
+
+Only a frozen `agent_update` Attempt receives a private update socket and
+token. The Worker validates that capability locally, resolves ready pull
+request evidence with GitHub and Git, and forwards a typed update under its own
+lease. The agent-facing request never contains an operator credential, Worker
+credential, or Attempt lease token. Outcome reports ask the supervisor to stop
+the process group, then the Worker completes the Attempt only after verified
+process stop and any required delivery postflight check.
 
 The supervisor is a subprocess of `factory-worker`. It anchors ownership of the
 runtime process group. Unix process-group behavior is required, so Windows
@@ -299,13 +366,47 @@ security headers. Node.js is needed only when UI source changes.
 5. The same manual request key or scheduled occurrence cannot admit duplicate
    Runs.
 
+### Build admission
+
+1. The CLI normalizes reference syntax and computes the caller fingerprint.
+2. For an implicit key, it acquires the endpoint/fingerprint lock and durably
+   journals a random request key before sending one HTTP request.
+3. The server checks the key and fingerprint before mutable reads. Exact replay
+   returns the stored Run and different input conflicts.
+4. For a new key, one transaction resolves every enabled managed repository,
+   rejects duplicates, applies active-Work and rebuild guards, and freezes the
+   standard Procedure, current built-in Pipeline, and runtime.
+5. The transaction inserts one Run and ordered independent Work targets. Work
+   routes immediately when possible or remains visibly blocked for a later
+   scheduler claim. The CLI never starts agents.
+6. The CLI clears an implicit journal entry only after it flushes an admitted,
+   replayed, or typed pre-commit rejection result. Transport, server, malformed
+   response, timeout, interruption, and output errors leave the key pending.
+
+### Procedure fleet admission
+
+1. The CLI normalizes the Procedure name and ordered repository selectors, or
+   the `all` selector, then computes a caller fingerprint.
+2. Explicit and generated request keys use the same lock, durable journal,
+   replay, typed rejection, output flush, and cleanup contract as Build.
+3. The server checks the key and fingerprint before any mutable read. Exact
+   replay returns the frozen Run even after Procedure or repository changes.
+4. For a new key, one transaction loads the active Procedure, resolves the
+   explicit enabled repositories or complete enabled set, freezes the selected
+   Pipeline, validates the frozen execution backend, and selects exact
+   Procedure-and-repository predecessors for a rebuild.
+5. The transaction inserts one Run and one ordered repository Work target per
+   selection. Each target keeps independent scheduling, Attempts, cancellation,
+   retries, updates, and outcomes.
+
 ### Claim and execution
 
 1. A healthy Worker registers capabilities and polls with a fresh claim request
    ID and lease token.
 2. In one transaction, the server may materialize a blocked route or reroute a
-   queued Session, checks capacity and Task concurrency, creates an Attempt,
-   and moves Execution and Session to `preparing`.
+   queued Session, checks capacity and Procedure concurrency, applies run-aware
+   fair ordering, creates an Attempt, and moves Execution and Session to
+   `preparing`.
 3. The Worker acquires or refreshes the repository, resolves its base commit,
    creates a branch and worktree, writes a manifest, then starts the supervisor.
 4. The Worker reports process identity and the server moves the lifecycle to
@@ -335,8 +436,8 @@ Attempt when claimed.
 ## API and security boundaries
 
 The local listener exposes health plus operator and Worker routes under
-`/api/v1`: Workers, repositories, Tasks, Runs, overview, Attempts, and event
-history. It rejects non-loopback clients before route handling.
+`/api/v1`: Builds, Workers, repositories, Tasks, Runs, overview, Attempts, and
+event history. It rejects non-loopback clients before route handling.
 
 The optional remote listener exposes only health, enrollment exchange, Worker
 registration and claims, and the active Attempt lifecycle. Creating an
@@ -358,9 +459,9 @@ operator model to Tasks, Runs, and Sessions without changing behaviour, and
 refuses to apply if the new table names are already in use. Migration 31 adds
 the durable Work lifecycle, ordered Run targets, outcome contracts, bounded
 Work updates, and claim protocol version 3. It preserves existing rows as
-`process_exit`. Migration 32 adds Pipeline templates, Task selection, the
-built-in single-agent Pipeline, durable Session stages, and claim protocol
-version 4. Supported legacy
+`process_exit`. Migration 32 adds idempotent agent update requests. Migration
+33 adds Pipeline templates, Task selection, the built-in single-agent Pipeline,
+durable Session stages, and claim protocol version 4. Supported legacy
 Definitions, schedules, repositories, and execution history are converted;
 unsupported legacy provider admission is blocked and reported rather than
 silently discarded.
@@ -399,6 +500,8 @@ admission path.
 | Area | Primary files |
 | --- | --- |
 | Operator CLI | `cmd/factory/main.go`, `internal/factorycli/command.go`, `internal/factorycli/client.go` |
+| Build admission and journal | `internal/controlplane/build.go`, `internal/factorycli/build.go`, `internal/factorycli/admission_journal.go`, `internal/protocol/build.go` |
+| Procedure fleet admission | `internal/controlplane/procedures.go`, `internal/factorycli/procedures.go`, `internal/protocol/procedures.go` |
 | Server startup and config | `cmd/factory-server/main.go`, `cmd/factory-server/config.go` |
 | HTTP routes and auth | `internal/controlplane/http.go`, `internal/controlplane/worker_auth.go` |
 | Pipeline templates and stages | `internal/controlplane/pipelines.go`, `internal/controlplane/stage_runs.go`, `internal/protocol/tasks.go` |
@@ -410,7 +513,7 @@ admission path.
 | Attempt execution | `internal/worker/attempt_lifecycle.go`, `internal/worker/supervisor.go`, `internal/worker/events.go` |
 | Git and worktrees | `internal/worker/git.go`, `internal/worker/repository_cache.go`, `internal/worker/reconcile.go` |
 | Protocol limits and types | `internal/protocol/types.go`, `internal/protocol/prompt.go` |
-| Schema | `migrations/027_routines_work.sql`, `migrations/030_task_run_session.sql`, `migrations/031_work_lifecycle.sql`, `migrations/032_pipeline_templates.sql` |
+| Schema | `migrations/027_routines_work.sql`, `migrations/030_task_run_session.sql`, `migrations/031_work_lifecycle.sql`, `migrations/032_agent_update_requests.sql`, `migrations/033_pipeline_templates.sql` |
 | Browser UI | `web/src/App.tsx`, `web/src/Pipelines.tsx`, `web/src/Tasks.tsx`, `web/src/Runs.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |
 
 ## Verification
@@ -418,6 +521,16 @@ admission path.
 - `internal/controlplane/work_lifecycle_test.go` proves outcome-contract
   freezing, backend compatibility, Work states, bounded update history,
   replacement guards, ordered targets, and legacy prompt limits.
+- `internal/controlplane/build_test.go`, `internal/protocol/build_test.go`, and
+  `internal/factorycli/build_test.go` prove atomic Build admission,
+  normalization, replay ordering, runtime freezing, duplicate and rebuild
+  guards, scheduler claim, typed commit status, journal recovery, locking, and
+  wait exit codes.
+- `internal/controlplane/procedures_test.go`,
+  `internal/protocol/procedures_test.go`, and
+  `internal/factorycli/procedures_test.go` prove Procedure listing, explicit and
+  all-repository selection, atomic freezing, replay before mutable reads,
+  rebuild lineage, journal recovery, and fair cross-Run claims.
 - `internal/controlplane/tasks_migration_test.go` opens populated historical
   databases and proves identity, lifecycle, scheduled process-exit completion,
   and foreign-key preservation.

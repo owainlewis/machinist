@@ -1110,7 +1110,7 @@ func TestPipelineMigrationBackfillsQueuedSessionForStageProtocol(t *testing.T) {
 	if _, err := db.ExecContext(ctx, preRenameFixture); err != nil {
 		t.Fatal(err)
 	}
-	applyPendingMigrationsBefore(t, ctx, store, "032_pipeline_templates.sql")
+	applyPendingMigrationsBefore(t, ctx, store, "033_pipeline_templates.sql")
 
 	worker, err := store.Worker(ctx, "worker-1")
 	if err != nil {

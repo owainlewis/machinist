@@ -899,18 +899,9 @@ func (s *Store) admitTask(
 			SourceKey: repository.ID, SourceReference: repository.RemoteIdentity,
 			PublishBranch: workPublishBranch(sessionID),
 		}
-		resolvedStages := make([]protocol.StageRun, 0, len(snapshot.Pipeline.Stages))
-		for _, stage := range snapshot.Pipeline.Stages {
-			prompt := renderPipelinePrompt(stage.Prompt, map[string]string{
-				"task.id": snapshot.ID, "task.name": snapshot.Name, "task.prompt": resolvedPrompt,
-				"run.id": runID, "repository": repository.RemoteIdentity, "branch": target.PublishBranch,
-			})
-			if !protocol.AgentPromptFits(snapshot.Name, repository.RemoteIdentity, prompt) {
-				return protocol.RunDetail{}, false, conflict("agent_prompt_too_large", "one rendered Pipeline stage cannot fit the Worker request")
-			}
-			resolvedStages = append(resolvedStages, protocol.StageRun{
-				Position: stage.Position, Name: stage.Name, Prompt: prompt, State: protocol.StagePending,
-			})
+		resolvedStages, err := resolveSessionStages(snapshot, resolvedPrompt, runID, target)
+		if err != nil {
+			return protocol.RunDetail{}, false, err
 		}
 		state, blockedReason := "blocked", taskConcurrencyBlockedReason
 		var assigned any
@@ -951,13 +942,8 @@ func (s *Store) admitTask(
 			boundedUTF8Bytes(blockedReason, protocol.MaxWaitingReasonBytes)); err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
 		}
-		for _, stage := range resolvedStages {
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO session_stages(session_id, position, name, prompt, state)
-				VALUES (?, ?, ?, ?, 'pending')
-			`, sessionID, stage.Position, stage.Name, stage.Prompt); err != nil {
-				return protocol.RunDetail{}, false, unavailable(err)
-			}
+		if err := insertSessionStages(ctx, tx, sessionID, resolvedStages); err != nil {
+			return protocol.RunDetail{}, false, err
 		}
 		targets = append(targets, target)
 		if state == "queued" {
@@ -985,6 +971,40 @@ func (s *Store) admitTask(
 	}
 	detail, err := s.Run(ctx, runID)
 	return detail, true, err
+}
+
+func resolveSessionStages(
+	task protocol.TaskSnapshot,
+	resolvedPrompt string,
+	runID string,
+	target protocol.WorkTarget,
+) ([]protocol.StageRun, error) {
+	stages := make([]protocol.StageRun, 0, len(task.Pipeline.Stages))
+	for _, stage := range task.Pipeline.Stages {
+		prompt := renderPipelinePrompt(stage.Prompt, map[string]string{
+			"task.id": task.ID, "task.name": task.Name, "task.prompt": resolvedPrompt,
+			"run.id": runID, "repository": target.RepositoryIdentity, "branch": target.PublishBranch,
+		})
+		if !protocol.AgentPromptFits(task.Name, target.RepositoryIdentity, prompt) {
+			return nil, conflict("agent_prompt_too_large", "one rendered Pipeline stage cannot fit the Worker request")
+		}
+		stages = append(stages, protocol.StageRun{
+			Position: stage.Position, Name: stage.Name, Prompt: prompt, State: protocol.StagePending,
+		})
+	}
+	return stages, nil
+}
+
+func insertSessionStages(ctx context.Context, tx *sql.Tx, sessionID string, stages []protocol.StageRun) error {
+	for _, stage := range stages {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO session_stages(session_id, position, name, prompt, state)
+			VALUES (?, ?, ?, ?, 'pending')
+		`, sessionID, stage.Position, stage.Name, stage.Prompt); err != nil {
+			return unavailable(err)
+		}
+	}
+	return nil
 }
 
 func workPublishBranch(workID string) string {

@@ -443,6 +443,10 @@ func TestRunSupervisorHandlesStopCommandsWhileRunning(t *testing.T) {
 			message: "control-plane lease renewal deadline passed",
 		},
 		{
+			name: "outcome reported", command: "outcome_reported",
+			reason: "outcome_reported", message: "",
+		},
+		{
 			// A renewal this short leaves no room for the termination grace, so
 			// the lease deadline passes almost immediately.
 			name:    "renewal deadline",

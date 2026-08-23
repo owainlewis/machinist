@@ -1,11 +1,89 @@
 package controlplane
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
+
+func (a *API) admitBuild(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.BuildRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	admission, err := a.store.AdmitBuild(r.Context(), input)
+	if err != nil {
+		var service *ServiceError
+		if errors.As(err, &service) && service.Status < http.StatusInternalServerError {
+			writeJSON(w, service.Status, protocol.ErrorBody{Error: protocol.APIError{
+				Code: service.Code, Message: service.Message,
+				AdmissionResult: protocol.AdmissionRejectedBeforeCommit,
+				RequestKey:      input.RequestKey,
+			}})
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	if admission.Result == protocol.AdmissionAdmitted {
+		a.logStateChange("run", admission.Run.Run.ID, string(admission.Run.Run.State))
+		writeJSON(w, http.StatusCreated, admission)
+		return
+	}
+	writeJSON(w, http.StatusOK, admission)
+}
+
+func (a *API) admitProcedureRun(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.ProcedureRunRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	admission, err := a.store.AdmitProcedureRun(r.Context(), input)
+	if err != nil {
+		var service *ServiceError
+		if errors.As(err, &service) && service.Status < http.StatusInternalServerError {
+			writeJSON(w, service.Status, protocol.ErrorBody{Error: protocol.APIError{
+				Code: service.Code, Message: service.Message,
+				AdmissionResult: protocol.AdmissionRejectedBeforeCommit,
+				RequestKey:      input.RequestKey,
+			}})
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	if admission.Result == protocol.AdmissionAdmitted {
+		a.logStateChange("run", admission.Run.Run.ID, string(admission.Run.Run.State))
+		writeJSON(w, http.StatusCreated, admission)
+		return
+	}
+	writeJSON(w, http.StatusOK, admission)
+}
+
+func (a *API) listProcedures(w http.ResponseWriter, r *http.Request) {
+	limit, err := pageLimit(r, defaultTaskPageSize, maxTaskPageSize)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	page, err := a.store.Tasks(r.Context(), true, limit, r.URL.Query().Get("cursor"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ProcedurePage{
+		Procedures: page.Tasks,
+		NextCursor: page.NextCursor,
+	})
+}
 
 func (a *API) listTasks(w http.ResponseWriter, r *http.Request) {
 	limit, err := pageLimit(r, defaultTaskPageSize, maxTaskPageSize)

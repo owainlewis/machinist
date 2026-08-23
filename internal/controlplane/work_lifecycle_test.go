@@ -474,6 +474,14 @@ func TestAgentUpdateProcessExitWithoutOutcomeFailsVisibly(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.StartStage(context.Background(), claim.Attempt.ID, 0, protocol.StartStageRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteStage(context.Background(), claim.Attempt.ID, 0, protocol.CompleteStageRequest{
+		LeaseToken: tokenA, State: protocol.StageSucceeded, Result: "unreported prose success",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	attempt, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
 		LeaseToken: tokenA, State: "succeeded", Result: "unreported prose success",
 	})
@@ -491,7 +499,8 @@ func TestAgentUpdateProcessExitWithoutOutcomeFailsVisibly(t *testing.T) {
 	}
 	if attempt.State != "failed" || attempt.Result != "" || attempt.Error != missingOutcome ||
 		work.State != protocol.WorkFailed || work.Result != "" || work.FailureReason != missingOutcome ||
-		work.TerminalMessage != missingOutcome || run.Run.State != protocol.RunFailed {
+		work.TerminalMessage != missingOutcome || run.Run.State != protocol.RunFailed ||
+		len(work.Stages) != 1 || work.Stages[0].State != protocol.StageFailed || work.Stages[0].Error != missingOutcome {
 		t.Fatalf("missing semantic outcome completion = attempt %#v, Work %#v, Run %#v",
 			attempt, work, run.Run)
 	}

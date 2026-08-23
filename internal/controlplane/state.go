@@ -167,7 +167,13 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		        AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
-		ORDER BY e.created_at, e.id
+		ORDER BY (
+			SELECT COUNT(*)
+			FROM attempts previous_attempt
+			JOIN executions previous_execution ON previous_execution.id = previous_attempt.execution_id
+			JOIN sessions previous_session ON previous_session.id = previous_execution.session_id
+			WHERE previous_session.run_id = session.run_id
+		), run.admitted_at, e.created_at, e.id
 		LIMIT 1
 	`, workerID, workerID, workerID, protocol.MaxRetainedPerRepo).Scan(&executionID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -638,13 +644,44 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 		return protocol.Attempt{}, err
 	}
 	terminalMessage := ""
+	workState := protocol.WorkState(input.State)
+	failureReason := input.Error
+	var outcome protocol.WorkUpdate
+	hasOutcome := false
+	missingOutcomeFailure := false
 	if lease.cancel {
 		input.State, input.Result, input.Error = "cancelled", "", ""
+		workState, failureReason = protocol.WorkCancelled, ""
 		terminalMessage = "Cancelled by operator."
 	} else if lease.outcomeContract == protocol.OutcomeAgentUpdate && input.State == "succeeded" {
-		const missingOutcome = "Agent exited without reporting an outcome."
-		input.State, input.Result, input.Error = "failed", "", missingOutcome
-		terminalMessage = missingOutcome
+		outcome, hasOutcome, err = attemptOutcome(ctx, tx, attemptID)
+		if err != nil {
+			return protocol.Attempt{}, err
+		}
+		if !hasOutcome {
+			const missingOutcome = "Agent exited without reporting an outcome."
+			input.State, input.Result, input.Error = "failed", "", missingOutcome
+			workState, failureReason, terminalMessage = protocol.WorkFailed, missingOutcome, missingOutcome
+			missingOutcomeFailure = true
+		} else {
+			// The Attempt succeeded because the agent completed its reporting
+			// contract. Work state remains the semantic outcome reported by the
+			// agent, and arbitrary final runtime prose is not interpreted.
+			input.Result, input.Error = "", ""
+			terminalMessage = outcome.Message
+			switch outcome.Status {
+			case protocol.WorkUpdateReady:
+				workState = protocol.WorkReady
+			case protocol.WorkUpdateNeedsInput:
+				workState = protocol.WorkNeedsInput
+			case protocol.WorkUpdateFailed:
+				workState, failureReason = protocol.WorkFailed, outcome.Message
+			case protocol.WorkUpdateNoChange:
+				workState = protocol.WorkNoChange
+			default:
+				return protocol.Attempt{}, conflict("outcome_missing", "the Attempt has no ending outcome report")
+			}
+		}
 	}
 	if input.State == "succeeded" && lease.attemptState != "running" {
 		return protocol.Attempt{}, conflict("invalid_transition", "only a running attempt can succeed")
@@ -652,6 +689,17 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 	var sessionID string
 	if err := tx.QueryRowContext(ctx, `SELECT session_id FROM executions WHERE id = ?`, lease.executionID).Scan(&sessionID); err != nil {
 		return protocol.Attempt{}, unavailable(err)
+	}
+	if missingOutcomeFailure {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE session_stages
+			SET state = 'failed', error = ?, completed_at = ?
+			WHERE session_id = ?
+			  AND position = (SELECT MAX(position) FROM session_stages WHERE session_id = ?)
+			  AND state = 'succeeded'
+		`, input.Error, now, sessionID, sessionID); err != nil {
+			return protocol.Attempt{}, unavailable(err)
+		}
 	}
 	var stageCount, succeededStages int
 	if err := tx.QueryRowContext(ctx, `
@@ -704,13 +752,33 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 	`, input.State, now, lease.executionID); err != nil {
 		return protocol.Attempt{}, unavailable(err)
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if hasOutcome && workState == protocol.WorkNeedsInput {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sessions SET state = 'needs-input', terminal_at = NULL, result = NULL,
+			       failure_reason = NULL, terminal_message = ?, question = ?,
+			       checkpoint_sha = ?, pending_resume_sha = ?, execution_owner = 'none'
+			WHERE id = (SELECT session_id FROM executions WHERE id = ?)
+			  AND state = 'running'
+		`, terminalMessage, outcome.Message, outcome.CheckpointSHA, outcome.CheckpointSHA, lease.executionID); err != nil {
+			return protocol.Attempt{}, unavailable(err)
+		}
+	} else if hasOutcome {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sessions SET state = ?, terminal_at = ?, result = NULL, failure_reason = ?,
+			       terminal_message = ?, pull_request_url = ?, pull_request_head_branch = ?,
+			       pull_request_head_sha = ?, execution_owner = 'none'
+			WHERE id = (SELECT session_id FROM executions WHERE id = ?)
+			  AND state = 'running'
+		`, workState, now, nullString(failureReason), terminalMessage, outcome.PullRequestURL,
+			outcome.PullRequestHeadBranch, outcome.PullRequestHeadSHA, lease.executionID); err != nil {
+			return protocol.Attempt{}, unavailable(err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET state = ?, terminal_at = ?, result = ?, failure_reason = ?,
-		       terminal_message = ?,
-		       execution_owner = 'none'
+		       terminal_message = ?, execution_owner = 'none'
 		WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 		  AND state IN ('preparing', 'running')
-	`, input.State, now, nullString(input.Result), nullString(input.Error), terminalMessage, lease.executionID); err != nil {
+	`, workState, now, nullString(input.Result), nullString(failureReason), terminalMessage, lease.executionID); err != nil {
 		return protocol.Attempt{}, unavailable(err)
 	}
 	if err := updateRunLifecycle(ctx, tx, lease.executionID, now); err != nil {

@@ -38,6 +38,58 @@ func TestIsSupervisorCommand(t *testing.T) {
 	}
 }
 
+func TestOutcomeCompletionSuppressesOnlyVerifiedSignalExit(t *testing.T) {
+	command := exec.Command("/bin/sh", "-c", "kill -TERM $$")
+	signalErr := command.Run()
+	if !expectedOutcomeTerminationError(signalErr) {
+		t.Fatalf("signal error was not recognized: %v", signalErr)
+	}
+	if err := supervisorCompletionError("outcome_reported", nil, nil, signalErr, nil, nil); err != nil {
+		t.Fatalf("verified outcome termination returned %v", err)
+	}
+
+	stopErr := errors.New("stop failed")
+	anchorErr := errors.New("anchor failed")
+	readerErr := errors.New("readers failed")
+	childErr := errors.New("child exited unexpectedly")
+	for _, testCase := range []struct {
+		name    string
+		initial error
+		stop    error
+		child   error
+		anchor  error
+		readers error
+		want    error
+	}{
+		{name: "initial", initial: childErr, want: childErr},
+		{name: "stop", stop: stopErr, child: signalErr, want: stopErr},
+		{name: "unexpected child", child: childErr, want: childErr},
+		{name: "anchor", child: signalErr, anchor: anchorErr, want: anchorErr},
+		{name: "readers", child: signalErr, readers: readerErr, want: readerErr},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := supervisorCompletionError(
+				"outcome_reported", testCase.initial, testCase.stop, testCase.child,
+				testCase.anchor, testCase.readers,
+			)
+			if !errors.Is(err, testCase.want) {
+				t.Fatalf("completion error = %v, want %v", err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestOutcomeReportedDefersToPendingLeaseLoss(t *testing.T) {
+	leaseTimer := make(chan time.Time, 1)
+	leaseTimer <- time.Now()
+	if got := supervisorOutcomeReason(leaseTimer); got != "lease_lost" {
+		t.Fatalf("pending lease timer outcome = %q", got)
+	}
+	if got := supervisorOutcomeReason(make(chan time.Time)); got != "outcome_reported" {
+		t.Fatalf("active lease outcome = %q", got)
+	}
+}
+
 func TestParseControlCommand(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -51,6 +103,7 @@ func TestParseControlCommand(t *testing.T) {
 		{name: "lease lost", command: "lease_lost", wantAction: "lease_lost"},
 		{name: "fail", command: "fail", wantAction: "fail"},
 		{name: "timeout", command: "timeout", wantAction: "timeout"},
+		{name: "outcome reported", command: "outcome_reported", wantAction: "outcome_reported"},
 		{name: "surrounding space", command: "  cancel  ", wantAction: "cancel"},
 		{name: "renew", command: "renew 1500", wantAction: "renew", wantDuration: 1500 * time.Millisecond},
 		{name: "renew minimum", command: "renew 1", wantAction: "renew", wantDuration: time.Millisecond},
@@ -553,24 +606,36 @@ func TestStreamSupervisorOutputIgnoresEmptyStream(t *testing.T) {
 func TestRuntimeEnvironment(t *testing.T) {
 	t.Setenv("FACTORY_RUN_ID", "stale-run")
 	t.Setenv("FACTORY_SESSION_ID", "stale-session")
+	t.Setenv("FACTORY_WORK_ID", "stale-work")
+	t.Setenv("FACTORY_ATTEMPT_ID", "stale-attempt")
+	t.Setenv("FACTORY_UPDATE_SOCKET", "/stale/socket")
+	t.Setenv("FACTORY_UPDATE_TOKEN", "stale-token")
 	t.Setenv("FACTORY_TEST_MARKER", "kept")
 
-	withIdentity := runtimeEnvironment("run-1", "session-1")
+	withIdentity := runtimeEnvironment("run-1", "session-1", "attempt-1", "/private/update.sock", "update-token")
 	if countEnvironment(withIdentity, "FACTORY_RUN_ID=") != 1 ||
 		countEnvironment(withIdentity, "FACTORY_SESSION_ID=") != 1 {
 		t.Fatalf("environment did not replace stale identity values: %v", identityValues(withIdentity))
 	}
 	if !containsEnvironment(withIdentity, "FACTORY_RUN_ID=run-1") ||
-		!containsEnvironment(withIdentity, "FACTORY_SESSION_ID=session-1") {
+		!containsEnvironment(withIdentity, "FACTORY_SESSION_ID=session-1") ||
+		!containsEnvironment(withIdentity, "FACTORY_WORK_ID=session-1") ||
+		!containsEnvironment(withIdentity, "FACTORY_ATTEMPT_ID=attempt-1") ||
+		!containsEnvironment(withIdentity, "FACTORY_UPDATE_SOCKET=/private/update.sock") ||
+		!containsEnvironment(withIdentity, "FACTORY_UPDATE_TOKEN=update-token") {
 		t.Fatalf("environment missing supplied identity: %v", identityValues(withIdentity))
 	}
 	if !containsEnvironment(withIdentity, "FACTORY_TEST_MARKER=kept") {
 		t.Fatal("environment dropped unrelated variables")
 	}
 
-	withoutIdentity := runtimeEnvironment("", "")
+	withoutIdentity := runtimeEnvironment("", "", "", "", "")
 	if countEnvironment(withoutIdentity, "FACTORY_RUN_ID=") != 0 ||
-		countEnvironment(withoutIdentity, "FACTORY_SESSION_ID=") != 0 {
+		countEnvironment(withoutIdentity, "FACTORY_SESSION_ID=") != 0 ||
+		countEnvironment(withoutIdentity, "FACTORY_WORK_ID=") != 0 ||
+		countEnvironment(withoutIdentity, "FACTORY_ATTEMPT_ID=") != 0 ||
+		countEnvironment(withoutIdentity, "FACTORY_UPDATE_SOCKET=") != 0 ||
+		countEnvironment(withoutIdentity, "FACTORY_UPDATE_TOKEN=") != 0 {
 		t.Fatalf("environment kept identity values: %v", identityValues(withoutIdentity))
 	}
 }
@@ -721,6 +786,21 @@ func TestSupervisorProcessStoppedFlag(t *testing.T) {
 	process.markStopped()
 	if !process.isStopped() {
 		t.Fatal("markStopped did not record a verified stop")
+	}
+}
+
+func TestUnverifiedSupervisorExitDoesNotMarkProcessStopped(t *testing.T) {
+	process := newTestSupervisorProcess()
+	process.messages <- supervisorMessage{
+		Type: "exit", Reason: "supervisor_error", Error: "child did not reap", StopUnverified: true,
+	}
+	manager := &Manager{}
+	message := manager.waitForSupervisorMessage(process)
+	if message.Reason != "supervisor_error" {
+		t.Fatalf("exit message = %#v", message)
+	}
+	if process.isStopped() {
+		t.Fatal("unverified supervisor exit marked the process stopped")
 	}
 }
 

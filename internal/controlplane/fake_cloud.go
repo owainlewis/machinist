@@ -156,7 +156,13 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		      WHERE active_attempt.worker_id = 'cloud-run-' || session.execution_profile_id
 		        AND active_attempt.state IN ('preparing','running')
 		  ) < version.max_concurrent
-		ORDER BY session.admitted_at, session.id LIMIT 1
+		ORDER BY (
+			SELECT COUNT(*)
+			FROM attempts previous_attempt
+			JOIN executions previous_execution ON previous_execution.id = previous_attempt.execution_id
+			JOIN sessions previous_session ON previous_session.id = previous_execution.session_id
+			WHERE previous_session.run_id = session.run_id
+		), run.admitted_at, session.admitted_at, session.id LIMIT 1
 	`).Scan(&blockedSession, &blockedProfile, &blockedRuntime)
 	if err == nil {
 		executionID, idErr := newID()
@@ -200,6 +206,7 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		       version.fake_outcome, version.fake_result, version.fake_error
 		FROM executions execution
 		JOIN sessions session ON session.id = execution.session_id
+		JOIN runs run ON run.id = session.run_id
 		JOIN execution_profiles profile ON profile.id = session.execution_profile_id
 		JOIN execution_profile_versions version
 		  ON version.profile_id = session.execution_profile_id
@@ -212,7 +219,13 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		      WHERE active_attempt.worker_id = execution.assigned_worker_id
 		        AND active_attempt.state IN ('preparing','running')
 		  ) < version.max_concurrent
-		ORDER BY execution.created_at, execution.id LIMIT 1
+		ORDER BY (
+			SELECT COUNT(*)
+			FROM attempts previous_attempt
+			JOIN executions previous_execution ON previous_execution.id = previous_attempt.execution_id
+			JOIN sessions previous_session ON previous_session.id = previous_execution.session_id
+			WHERE previous_session.run_id = session.run_id
+		), run.admitted_at, execution.created_at, execution.id LIMIT 1
 	`).Scan(&executionID, &sessionID, &workerID, &outcome, &result, &failure)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {

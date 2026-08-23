@@ -328,6 +328,17 @@ func (client *client) events(ctx context.Context, attemptID string, input protoc
 	return err
 }
 
+func (client *client) update(
+	ctx context.Context,
+	attemptID string,
+	input protocol.AttemptUpdateRequest,
+) (protocol.WorkUpdate, error) {
+	var update protocol.WorkUpdate
+	_, err := client.request(ctx, http.MethodPost,
+		"/api/v1/attempts/"+url.PathEscape(attemptID)+"/updates", input, &update)
+	return update, err
+}
+
 func (client *client) complete(ctx context.Context, attemptID string, input protocol.CompleteAttemptRequest) (protocol.Attempt, error) {
 	input = boundedCompletionRequest(input)
 	var attempt protocol.Attempt

@@ -98,6 +98,9 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("PUT /api/v1/tasks/{task_id}/archived", api.setTaskArchived)
 	mux.HandleFunc("POST /api/v1/tasks/{task_id}/run", api.runTask)
 	mux.HandleFunc("POST /api/v1/tasks/{task_id}/discard-occurrence", api.discardTaskOccurrence)
+	mux.HandleFunc("GET /api/v1/procedures", api.listProcedures)
+	mux.HandleFunc("POST /api/v1/procedure-runs", api.admitProcedureRun)
+	mux.HandleFunc("POST /api/v1/builds", api.admitBuild)
 	mux.HandleFunc("GET /api/v1/runs", api.listRuns)
 	mux.HandleFunc("GET /api/v1/runs/{run_id}", api.getRun)
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/cancel", api.cancelRun)
@@ -111,6 +114,7 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("PUT /api/v1/attempts/{attempt_id}/heartbeat", api.heartbeat)
 	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}/events", api.getEvents)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/events", api.appendEvents)
+	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/updates", api.appendAgentUpdate)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/complete", api.completeAttempt)
 	return api.requestLog(mux, true)
 }
@@ -134,6 +138,7 @@ func NewRemoteWorkerHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.Handle("POST /api/v1/attempts/{attempt_id}/stages/{position}/complete", api.remoteAttemptAuth(http.HandlerFunc(api.completeStage)))
 	mux.Handle("PUT /api/v1/attempts/{attempt_id}/heartbeat", api.remoteAttemptAuth(http.HandlerFunc(api.heartbeat)))
 	mux.Handle("POST /api/v1/attempts/{attempt_id}/events", api.remoteAttemptAuth(http.HandlerFunc(api.appendEvents)))
+	mux.Handle("POST /api/v1/attempts/{attempt_id}/updates", api.remoteAttemptAuth(http.HandlerFunc(api.appendAgentUpdate)))
 	mux.Handle("POST /api/v1/attempts/{attempt_id}/complete", api.remoteAttemptAuth(http.HandlerFunc(api.completeAttempt)))
 	return api.requestLog(mux, false)
 }
@@ -654,6 +659,22 @@ func (a *API) appendEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) appendAgentUpdate(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.AttemptUpdateRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	update, err := a.store.AppendAgentUpdate(r.Context(), r.PathValue("attempt_id"), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, update)
 }
 
 func (a *API) getEvents(w http.ResponseWriter, r *http.Request) {

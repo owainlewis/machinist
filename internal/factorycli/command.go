@@ -47,9 +47,19 @@ type usageError struct {
 
 func (e *usageError) Error() string { return e.message }
 
+type commandExit struct {
+	code int
+}
+
+func (e *commandExit) Error() string { return "" }
+
 func Run(options Options) int {
 	operation := newCommand(options)
 	if err := operation.run(options.Arguments); err != nil {
+		var exit *commandExit
+		if errors.As(err, &exit) {
+			return exit.code
+		}
 		fmt.Fprintf(operation.stderr, "factory: %s\n", err)
 		var usage *usageError
 		if errors.As(err, &usage) {
@@ -144,6 +154,21 @@ func (c command) run(arguments []string) error {
 			return err
 		}
 		return c.status(ctx, client, *jsonOutput, *cursor)
+	case "build":
+		return c.runBuild(*server, *jsonOutput, remaining[1:])
+	case "run":
+		return c.runProcedure(*server, *jsonOutput, remaining[1:])
+	case "procedures":
+		if len(remaining) != 1 {
+			return &usageError{message: "procedures does not accept arguments"}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, err := newAPIClient(ctx, *server, c.client)
+		if err != nil {
+			return err
+		}
+		return c.procedures(ctx, client, *jsonOutput)
 	case "show":
 		if len(remaining) != 2 || strings.TrimSpace(remaining[1]) == "" {
 			return &usageError{message: "show requires exactly one Run ID"}
@@ -169,9 +194,22 @@ func (c command) run(arguments []string) error {
 			return err
 		}
 		return c.workers(ctx, client, *jsonOutput)
+	case "update":
+		flags := flag.NewFlagSet("factory update", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		status := flags.String("status", "", "progress or outcome status")
+		message := flags.String("message", "", "bounded update message")
+		pullRequest := flags.String("pr", "", "GitHub pull request URL for ready")
+		if err := flags.Parse(remaining[1:]); err != nil {
+			return &usageError{message: err.Error()}
+		}
+		if flags.NArg() != 0 {
+			return &usageError{message: "unexpected update arguments: " + strings.Join(flags.Args(), " ")}
+		}
+		return c.agentUpdate(*status, *message, *pullRequest, *jsonOutput)
 	case "server", "worker":
 		if *jsonOutput {
-			return &usageError{message: "--json is available only for status, show, and workers"}
+			return &usageError{message: "--json is available only for build, run, procedures, status, show, and workers"}
 		}
 		return c.startProcess(remaining[0], remaining[1:])
 	default:
@@ -263,9 +301,13 @@ func (c command) writeHelp() error {
 	_, err := fmt.Fprint(c.stdout, `Factory controls the local server and Workers and reads current operations.
 
 Usage:
+  factory [--server URL] [--json] build [options] REFERENCE...
+  factory [--server URL] [--json] run PROCEDURE --repos REPOSITORY...|all [options]
+  factory [--server URL] [--json] procedures
   factory [--server URL] [--json] status [--cursor CURSOR]
   factory [--server URL] [--json] show RUN_ID
   factory [--server URL] [--json] workers
+  factory [--json] update --status STATUS --message MESSAGE [--pr URL]
   factory server start [--config PATH]
   factory worker start [--config PATH]
   factory version
@@ -276,7 +318,8 @@ Options:
   --cursor      Continue status from a cursor printed by the previous page.
 
 Environment:
-  FACTORY_SERVER  Overrides the endpoint used by finite commands.
+  FACTORY_SERVER     Overrides the endpoint used by finite commands.
+  FACTORY_DATA_HOME  Stores durable pending admission request keys.
 `)
 	return err
 }
