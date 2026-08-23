@@ -3,6 +3,7 @@ package factorycli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -18,7 +20,7 @@ import (
 func TestBuildReusesDurableImplicitKeyAfterLostResponseAcrossProcesses(t *testing.T) {
 	dataHome := t.TempDir()
 	requests := make(chan protocol.BuildRequest, 2)
-	requestCount := 0
+	var requestCount atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
 		var input protocol.BuildRequest
 		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
@@ -26,8 +28,7 @@ func TestBuildReusesDurableImplicitKeyAfterLostResponseAcrossProcesses(t *testin
 			return
 		}
 		requests <- input
-		requestCount++
-		if requestCount == 1 {
+		if requestCount.Add(1) == 1 {
 			hijacker, ok := output.(http.Hijacker)
 			if !ok {
 				t.Error("response does not support hijacking")
@@ -38,7 +39,7 @@ func TestBuildReusesDurableImplicitKeyAfterLostResponseAcrossProcesses(t *testin
 				t.Error(err)
 				return
 			}
-			connection.Close()
+			_ = connection.Close()
 			return
 		}
 		output.Header().Set("Content-Type", "application/json")
@@ -194,10 +195,23 @@ func TestBuildScopeLockRejectsConcurrentDuplicateBeforeSending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Release()
+	defer func() { _ = first.Release() }()
 	if _, err := command.prepareImplicitAdmission("http://127.0.0.1:7337", fingerprint[:]); err == nil ||
 		!strings.Contains(err.Error(), "already in progress") {
 		t.Fatalf("concurrent lock error = %v", err)
+	}
+}
+
+func TestBuildAdmissionScopeUsesStableNormalizedServerURL(t *testing.T) {
+	client, err := newAPIClient(context.Background(), "http://LOCALHOST:07337/", http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := client.admissionEndpoint, "http://localhost:7337"; got != want {
+		t.Fatalf("admission endpoint = %q, want %q", got, want)
+	}
+	if client.endpoint.Hostname() == "localhost" {
+		t.Fatalf("transport endpoint was not pinned: %q", client.endpoint)
 	}
 }
 

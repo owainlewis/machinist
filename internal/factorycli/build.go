@@ -68,12 +68,12 @@ func (c command) runBuild(server string, jsonOutput bool, arguments []string) er
 	if explicit["request-key"] {
 		lease = explicitAdmissionLease(canonical.RequestKey)
 	} else {
-		lease, err = c.prepareImplicitAdmission(client.endpoint.String(), fingerprint)
+		lease, err = c.prepareImplicitAdmission(client.admissionEndpoint, fingerprint)
 		if err != nil {
 			return err
 		}
 	}
-	defer lease.Release()
+	defer func() { _ = lease.Release() }()
 	canonical.RequestKey = lease.RequestKey()
 
 	var admission protocol.BuildAdmission

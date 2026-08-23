@@ -69,7 +69,7 @@ func (c command) prepareImplicitAdmission(endpoint string, fingerprint []byte) (
 		return nil, err
 	}
 	if err := lockAdmissionFile(lock, true); err != nil {
-		lock.Close()
+		_ = lock.Close()
 		if errors.Is(err, errAdmissionLockBusy) {
 			return nil, fmt.Errorf("an identical Build admission is already in progress; retry after it finishes")
 		}
@@ -80,7 +80,7 @@ func (c command) prepareImplicitAdmission(endpoint string, fingerprint []byte) (
 		Scope: scope, Endpoint: endpoint, Fingerprint: fingerprintText,
 	})
 	if err != nil {
-		lease.Release()
+		_ = lease.Release()
 		return nil, err
 	}
 	lease.requestKey = entry.RequestKey
@@ -140,22 +140,22 @@ func openAdmissionLock(path string) (*os.File, error) {
 		return nil, fmt.Errorf("open Build admission lock %s: %w", path, err)
 	}
 	if err := file.Chmod(0o600); err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, fmt.Errorf("secure Build admission lock %s: %w", path, err)
 	}
 	return file, nil
 }
 
-func withJournalLock(directory string, operation func(string) error) error {
+func withJournalLock(directory string, operation func(string) error) (resultErr error) {
 	lock, err := openAdmissionLock(filepath.Join(directory, "journal.lock"))
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() { resultErr = errors.Join(resultErr, lock.Close()) }()
 	if err := lockAdmissionFile(lock, false); err != nil {
 		return fmt.Errorf("lock Build admission journal: %w", err)
 	}
-	defer unlockAdmissionFile(lock)
+	defer func() { resultErr = errors.Join(resultErr, unlockAdmissionFile(lock)) }()
 	return operation(filepath.Join(directory, "pending.json"))
 }
 
@@ -231,7 +231,7 @@ func readAdmissionJournal(path string) (admissionJournal, error) {
 	if err != nil {
 		return journal, fmt.Errorf("open Build admission journal: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return journal, fmt.Errorf("inspect Build admission journal: %w", err)
@@ -261,7 +261,7 @@ func writeAdmissionJournal(directory, path string, journal admissionJournal) err
 	}
 	removeTemporary := true
 	defer func() {
-		file.Close()
+		_ = file.Close()
 		if removeTemporary {
 			_ = os.Remove(temporary)
 		}

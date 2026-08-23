@@ -26,8 +26,9 @@ const (
 )
 
 type apiClient struct {
-	endpoint *url.URL
-	client   *http.Client
+	endpoint          *url.URL
+	admissionEndpoint string
+	client            *http.Client
 }
 
 type workerPage struct {
@@ -66,6 +67,14 @@ func newAPIClient(ctx context.Context, value string, client *http.Client) (apiCl
 	if err != nil {
 		return apiClient{}, err
 	}
+	stableHost := strings.ToLower(host)
+	if address := net.ParseIP(host); address != nil {
+		stableHost = address.String()
+	}
+	admissionEndpoint := (&url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort(stableHost, strconv.FormatUint(port, 10)),
+	}).String()
 	// Use the validated literal address so proxies and a second DNS lookup
 	// cannot move a loopback-only command away from the local machine.
 	parsed.Host = net.JoinHostPort(pinnedAddresses[0].String(), parsed.Port())
@@ -77,7 +86,7 @@ func newAPIClient(ctx context.Context, value string, client *http.Client) (apiCl
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return apiClient{endpoint: parsed, client: &clientCopy}, nil
+	return apiClient{endpoint: parsed, admissionEndpoint: admissionEndpoint, client: &clientCopy}, nil
 }
 
 func validateLoopbackHost(ctx context.Context, host string) ([]net.IP, error) {
