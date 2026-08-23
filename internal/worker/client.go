@@ -303,11 +303,50 @@ func (client *client) startStage(ctx context.Context, attemptID string, position
 }
 
 func (client *client) completeStage(ctx context.Context, attemptID string, position int, input protocol.CompleteStageRequest) (protocol.StageRun, error) {
+	input = boundedStageCompletionRequest(input)
 	var stage protocol.StageRun
 	_, err := client.retry(ctx, http.MethodPost,
 		fmt.Sprintf("/api/v1/attempts/%s/stages/%d/complete", url.PathEscape(attemptID), position),
 		input, &stage, time.Second, 5*time.Second)
 	return stage, err
+}
+
+func boundedStageCompletionRequest(input protocol.CompleteStageRequest) protocol.CompleteStageRequest {
+	input.Result = boundedText(strings.ToValidUTF8(input.Result, "\uFFFD"), protocol.MaxResultBytes)
+	input.Error = boundedText(strings.ToValidUTF8(input.Error, "\uFFFD"), protocol.MaxErrorBytes)
+	if stageCompletionRequestFits(input) {
+		return input
+	}
+	input.Result = largestStageCompletionField(input, input.Result, true)
+	if stageCompletionRequestFits(input) {
+		return input
+	}
+	input.Error = largestStageCompletionField(input, input.Error, false)
+	return input
+}
+
+func largestStageCompletionField(input protocol.CompleteStageRequest, value string, result bool) string {
+	low, high := 0, len(value)
+	for low < high {
+		middle := low + (high-low+1)/2
+		candidate := boundedText(value, middle)
+		if result {
+			input.Result = candidate
+		} else {
+			input.Error = candidate
+		}
+		if stageCompletionRequestFits(input) {
+			low = middle
+		} else {
+			high = middle - 1
+		}
+	}
+	return boundedText(value, low)
+}
+
+func stageCompletionRequestFits(input protocol.CompleteStageRequest) bool {
+	body, err := json.Marshal(input)
+	return err == nil && len(body) <= protocol.MaxBodyBytes
 }
 
 func (client *client) heartbeat(ctx context.Context, attemptID, token string) (protocol.HeartbeatResponse, error) {

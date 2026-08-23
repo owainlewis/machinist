@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -51,6 +52,9 @@ func TestPipelineTemplateSnapshotsAndSequencesAgentStages(t *testing.T) {
 		!strings.Contains(claim.Session.Stages[1].Prompt, admitted.Run.ID) {
 		t.Fatalf("rendered stages = %#v", claim.Session.Stages)
 	}
+	if claim.Session.Prompt != "" {
+		t.Fatalf("claim duplicated its first stage prompt in Session.prompt: %q", claim.Session.Prompt)
+	}
 	if _, err := store.StartAttempt(ctx, claim.Attempt.ID, protocol.StartAttemptRequest{LeaseToken: tokenA}); err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +87,34 @@ func TestPipelineTemplateSnapshotsAndSequencesAgentStages(t *testing.T) {
 		completed.Sessions[0].Stages[2].State != protocol.StageSucceeded {
 		t.Fatalf("completed Pipeline = %#v", completed)
 	}
+	for _, stage := range completed.Sessions[0].Stages {
+		if stage.Prompt != "" || stage.Result != "" || stage.Error != "" {
+			t.Fatalf("Run detail exposed stage payloads: %#v", stage)
+		}
+	}
+	work, err := store.Work(ctx, completed.Sessions[0].ID)
+	if err != nil || work.Stages[0].Prompt == "" || work.Stages[0].Result != "done" {
+		t.Fatalf("Work stage detail = %#v, error %v", work.Stages, err)
+	}
+	largeResult := strings.Repeat("\x00", protocol.MaxResultBytes)
+	largeError := strings.Repeat("\x00", protocol.MaxErrorBytes)
+	largePrompt := strings.Repeat("p", protocol.MaxTaskPromptBytes)
+	if _, err := store.db.ExecContext(ctx, `
+		UPDATE session_stages SET prompt = ?, result = ?, error = ? WHERE session_id = ?
+	`, largePrompt, largeResult, largeError, completed.Sessions[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	polled, err := store.Run(ctx, admitted.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(polled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) >= protocol.MaxBodyBytes {
+		t.Fatalf("Run polling response retained stage payloads: %d bytes", len(body))
+	}
 
 	if _, err := store.UpdatePipeline(ctx, pipeline.ID, protocol.SavePipelineRequest{
 		Name: "Changed later", ExpectedGeneration: pipeline.Generation,
@@ -93,6 +125,39 @@ func TestPipelineTemplateSnapshotsAndSequencesAgentStages(t *testing.T) {
 	historical, err := store.Run(ctx, admitted.Run.ID)
 	if err != nil || historical.Run.Task.Pipeline.Name != "Build and review" || len(historical.Run.Task.Pipeline.Stages) != 3 {
 		t.Fatalf("historical snapshot changed = %#v, error %v", historical.Run.Task.Pipeline, err)
+	}
+}
+
+func TestRunAdmissionRejectsRenderedPipelineThatCannotFitAClaim(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	stages := make([]protocol.PipelineStage, 9)
+	for index := range stages {
+		stages[index] = protocol.PipelineStage{Name: "Stage", Prompt: "{{ task.prompt }}"}
+	}
+	pipeline, err := store.CreatePipeline(ctx, protocol.SavePipelineRequest{Name: "Oversized claim", Stages: stages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(ctx, protocol.SaveTaskRequest{
+		Name: "Too large", Prompt: strings.Repeat("\x00", 10<<10), Runtime: protocol.RuntimeCodex,
+		PipelineID: pipeline.ID, RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.RunTask(ctx, task.ID, protocol.RunTaskRequest{RequestKey: "oversized-claim"}); !serviceErrorCode(err, "pipeline_claim_too_large") {
+		t.Fatalf("oversized claim admission error = %v", err)
+	}
+	var runCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE request_key = 'oversized-claim'`).Scan(&runCount); err != nil {
+		t.Fatal(err)
+	}
+	if runCount != 0 {
+		t.Fatalf("oversized claim created %d Runs", runCount)
 	}
 }
 

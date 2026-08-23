@@ -330,7 +330,7 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 	if len(claim.Session.Stages) == 0 {
 		claim.Session.Stages = []protocol.StageRun{{Position: 0, Name: "Do the task", Prompt: claim.Session.Prompt, State: protocol.StagePending}}
 	} else {
-		claim.Session.Prompt = claim.Session.Stages[0].Prompt
+		claim.Session.Prompt = ""
 	}
 	err = s.db.QueryRowContext(ctx, `
 		SELECT r.id, wr.display_key,

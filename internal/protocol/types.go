@@ -16,6 +16,9 @@ const (
 	RuntimeCodex              = "codex"
 	RuntimeClaudeCode         = "claude-code"
 	MaxBodyBytes              = 1 << 20
+	// MaxClaimStageBytes leaves half of a claim response available for the
+	// Attempt, execution, Session, and repository metadata around its stages.
+	MaxClaimStageBytes        = MaxBodyBytes / 2
 	MaxEventBatchBytes        = 256 << 10
 	MaxEventBytes             = 64 << 10
 	MaxEventsPerBatch         = 100

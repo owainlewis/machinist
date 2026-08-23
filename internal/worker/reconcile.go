@@ -283,12 +283,22 @@ func verifyServerAttempt(manifest attemptManifest, attempt protocol.Attempt) err
 		if manifest.SupervisorPID != *attempt.SupervisorPID ||
 			manifest.SupervisorIdentity != attempt.ProcessIdentity ||
 			attempt.ProcessGroupID == nil || manifest.ProcessGroupID != *attempt.ProcessGroupID {
+			if stoppedBetweenStageHandoff(manifest, attempt) {
+				return nil
+			}
 			return errors.New("control-plane process identity does not match the manifest")
 		}
 	} else if attempt.ProcessIdentity != "" || attempt.ProcessGroupID != nil {
 		return errors.New("control-plane process identity is partial")
 	}
 	return nil
+}
+
+func stoppedBetweenStageHandoff(manifest attemptManifest, attempt protocol.Attempt) bool {
+	return manifest.Lifecycle == manifestSupervisorReady && !manifest.ProcessActive && attempt.State == "running" &&
+		manifest.SupervisorPID > 0 && manifest.SupervisorIdentity != "" && manifest.ProcessGroupID > 0 &&
+		attempt.SupervisorPID != nil && *attempt.SupervisorPID > 0 && attempt.ProcessIdentity != "" &&
+		attempt.ProcessGroupID != nil && *attempt.ProcessGroupID > 0
 }
 
 func stopManifestProcesses(manifest attemptManifest) error {

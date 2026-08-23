@@ -407,3 +407,25 @@ func TestWorkerCredentialRejectsBroadPermissions(t *testing.T) {
 		t.Fatal("accepted broadly readable Worker credential")
 	}
 }
+
+func TestStageCompletionRequestIsBoundedAfterJSONEscaping(t *testing.T) {
+	input := protocol.CompleteStageRequest{
+		LeaseToken: strings.Repeat("a", 64), State: protocol.StageSucceeded,
+		Result: strings.Repeat("\x00", protocol.MaxResultBytes),
+		Error:  strings.Repeat("\x00", protocol.MaxErrorBytes),
+	}
+	bounded := boundedStageCompletionRequest(input)
+	body, err := json.Marshal(bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > protocol.MaxBodyBytes {
+		t.Fatalf("bounded stage completion body = %d bytes", len(body))
+	}
+	if bounded.LeaseToken != input.LeaseToken || bounded.State != input.State || bounded.Result == "" || bounded.Error == "" {
+		t.Fatalf("bounded stage completion lost required fields: %#v", bounded)
+	}
+	if len(bounded.Result) == len(input.Result) && len(bounded.Error) == len(input.Error) {
+		t.Fatal("escaped stage completion payload was not reduced")
+	}
+}

@@ -157,15 +157,25 @@ func (s *Store) CompleteStage(ctx context.Context, attemptID string, position in
 }
 
 func (s *Store) stageRun(ctx context.Context, sessionID string, position int) (protocol.StageRun, error) {
-	stage, err := scanStageRun(s.db.QueryRowContext(ctx, `
-		SELECT position, name, prompt, state, result, error, started_at, completed_at
+	var stage protocol.StageRun
+	var started, completed sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT position, name, state, started_at, completed_at
 		FROM session_stages WHERE session_id = ? AND position = ?
-	`, sessionID, position))
+	`, sessionID, position).Scan(&stage.Position, &stage.Name, &stage.State, &started, &completed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return stage, ErrNotFound
 	}
 	if err != nil {
 		return stage, unavailable(err)
+	}
+	if started.Valid {
+		value := fromMillis(started.Int64)
+		stage.StartedAt = &value
+	}
+	if completed.Valid {
+		value := fromMillis(completed.Int64)
+		stage.CompletedAt = &value
 	}
 	return stage, nil
 }

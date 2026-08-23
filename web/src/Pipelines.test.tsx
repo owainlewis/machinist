@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { api } from "./api";
@@ -9,6 +9,7 @@ import type { Pipeline } from "./types";
 function renderView() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><PipelinesView /></QueryClientProvider>);
+  return client;
 }
 
 it("creates and reorders a sequence of agent stages", async () => {
@@ -45,8 +46,9 @@ it("loads full prompt details before editing a Pipeline", async () => {
   };
   vi.spyOn(api, "pipelines").mockResolvedValue([summary]);
   vi.spyOn(api, "pipeline").mockResolvedValue({ ...summary, stages: [{ ...summary.stages[0], prompt: "Review {{ task.prompt }}" }] });
-  const update = vi.spyOn(api, "updatePipeline").mockResolvedValue(summary);
-  renderView();
+  const updated = { ...summary, generation: 3, name: "Reviewed" };
+  const update = vi.spyOn(api, "updatePipeline").mockResolvedValue(updated);
+  const client = renderView();
 
   await userEvent.click(await screen.findByRole("button", { name: /Review/ }));
   const dialog = await screen.findByRole("dialog", { name: "Edit Pipeline" });
@@ -58,6 +60,7 @@ it("loads full prompt details before editing a Pipeline", async () => {
     stages: [{ name: "Review", prompt: "Review {{ task.prompt }}" }],
     expected_generation: 2,
   });
+  await waitFor(() => expect(client.getQueryData(["pipeline", "pipeline-1"])).toEqual(updated));
 });
 
 it("requires a second click before deleting an unused Pipeline", async () => {

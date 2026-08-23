@@ -163,10 +163,14 @@ func TestBuildAdmissionCreatesIndependentAtomicWorkAndSchedulerClaimsIt(t *testi
 			!strings.Contains(work.ResolvedPrompt, protocol.StandardBuildProcedurePrompt) {
 			t.Fatalf("Work %d = %#v", index, work)
 		}
-		if len(work.Stages) != 2 || work.Stages[0].Name != "Plan" || work.Stages[1].Name != "Build" ||
-			!strings.Contains(work.Stages[0].Prompt, protocol.StandardBuildProcedurePrompt) ||
-			!strings.Contains(work.Stages[1].Prompt, work.Target.PublishBranch) {
-			t.Fatalf("Work %d stages = %#v", index, work.Stages)
+		storedWork, err := store.Work(context.Background(), work.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(storedWork.Stages) != 2 || storedWork.Stages[0].Name != "Plan" || storedWork.Stages[1].Name != "Build" ||
+			!strings.Contains(storedWork.Stages[0].Prompt, protocol.StandardBuildProcedurePrompt) ||
+			!strings.Contains(storedWork.Stages[1].Prompt, work.Target.PublishBranch) {
+			t.Fatalf("Work %d stages = %#v", index, storedWork.Stages)
 		}
 		if seenBranches[work.Target.PublishBranch] {
 			t.Fatalf("duplicate publish branch %q", work.Target.PublishBranch)

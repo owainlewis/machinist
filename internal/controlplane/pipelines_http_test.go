@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -106,5 +107,67 @@ func TestPipelineAPIListsSummariesAndUpdatesDetails(t *testing.T) {
 	}
 	if missingResponse := doJSON(http.MethodGet, "/api/v1/pipelines/"+created.ID, nil); missingResponse.Code != http.StatusNotFound {
 		t.Fatalf("deleted detail status %d: %s", missingResponse.Code, missingResponse.Body.String())
+	}
+}
+
+func TestCompleteStageHTTPReturnsMetadataWithinWorkerResponseLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	pipeline, err := store.CreatePipeline(ctx, protocol.SavePipelineRequest{
+		Name:   "Escaped output",
+		Stages: []protocol.PipelineStage{{Name: "Build", Prompt: strings.Repeat("\x00", protocol.MaxTaskPromptBytes)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(ctx, protocol.SaveTaskRequest{
+		Name: "Bound response", Prompt: "Run it.", Runtime: protocol.RuntimeCodex,
+		PipelineID: pipeline.ID, RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.RunTask(ctx, task.ID, protocol.RunTaskRequest{RequestKey: "bounded-stage-response"}); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(ctx, worker.ID, protocol.ClaimRequest{RequestID: "bounded-stage-response", LeaseToken: tokenA})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, error %v", claim, err)
+	}
+	if _, err := store.StartAttempt(ctx, claim.Attempt.ID, protocol.StartAttemptRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartStage(ctx, claim.Attempt.ID, 0, protocol.StartStageRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	input := protocol.CompleteStageRequest{
+		LeaseToken: tokenA, State: protocol.StageSucceeded,
+		Result: strings.Repeat("\x00", 100<<10), Error: strings.Repeat("\x00", 50<<10),
+	}
+	body, err := json.Marshal(input)
+	if err != nil || len(body) >= protocol.MaxBodyBytes {
+		t.Fatalf("completion request = %d bytes, error %v", len(body), err)
+	}
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost,
+		"http://localhost/api/v1/attempts/"+claim.Attempt.ID+"/stages/0/complete", bytes.NewReader(body))
+	request.Host = "localhost"
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	NewHandler(store, slog.New(slog.NewTextHandler(io.Discard, nil))).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("complete status %d: %s", response.Code, response.Body.String())
+	}
+	if response.Body.Len() >= protocol.MaxBodyBytes {
+		t.Fatalf("completion response = %d bytes", response.Body.Len())
+	}
+	var stage protocol.StageRun
+	if err := json.Unmarshal(response.Body.Bytes(), &stage); err != nil {
+		t.Fatal(err)
+	}
+	if stage.State != protocol.StageSucceeded || stage.Prompt != "" || stage.Result != "" || stage.Error != "" {
+		t.Fatalf("completion response exposed stage payloads: %#v", stage)
 	}
 }

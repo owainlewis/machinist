@@ -350,6 +350,29 @@ func (s *Store) Work(ctx context.Context, id string) (protocol.Work, error) {
 	}
 	for _, work := range detail.Sessions {
 		if work.ID == id {
+			rows, queryErr := s.db.QueryContext(ctx, `
+				SELECT position, name, prompt, state, result, error, started_at, completed_at
+				FROM session_stages WHERE session_id = ? ORDER BY position
+			`, id)
+			if queryErr != nil {
+				return protocol.Work{}, unavailable(queryErr)
+			}
+			work.Stages = nil
+			for rows.Next() {
+				stage, scanErr := scanStageRun(rows)
+				if scanErr != nil {
+					rows.Close()
+					return protocol.Work{}, unavailable(scanErr)
+				}
+				work.Stages = append(work.Stages, stage)
+			}
+			if rowsErr := rows.Err(); rowsErr != nil {
+				rows.Close()
+				return protocol.Work{}, unavailable(rowsErr)
+			}
+			if closeErr := rows.Close(); closeErr != nil {
+				return protocol.Work{}, unavailable(closeErr)
+			}
 			return work, nil
 		}
 	}

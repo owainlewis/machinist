@@ -12,6 +12,11 @@ export function PipelinesView() {
   const query = useQuery({ queryKey: ["pipelines"], queryFn: api.pipelines });
   const [editing, setEditing] = useState<string | "new" | null>(null);
   const selected = useQuery({ queryKey: ["pipeline", editing], queryFn: () => api.pipeline(editing!), enabled: editing !== null && editing !== "new" });
+  const saved = (pipeline: Pipeline) => {
+    client.setQueryData(["pipeline", pipeline.id], pipeline);
+    setEditing(null);
+    void client.invalidateQueries({ queryKey: ["pipelines"] });
+  };
   if (query.isPending) return <LoadingState label="Loading Pipelines" />;
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
   return <div className="page pipeline-page">
@@ -24,12 +29,12 @@ export function PipelinesView() {
         <small>{pipeline.stages.length} agent start{pipeline.stages.length === 1 ? "" : "s"} per repository</small>
       </button>)}</div>}
     {selected.error && <InlineError error={selected.error} />}
-    {editing === "new" && <PipelineEditor onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void client.invalidateQueries({ queryKey: ["pipelines"] }); }} />}
-    {editing !== null && editing !== "new" && selected.data && <PipelineEditor pipeline={selected.data} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void client.invalidateQueries({ queryKey: ["pipelines"] }); }} />}
+    {editing === "new" && <PipelineEditor onClose={() => setEditing(null)} onSaved={saved} />}
+    {editing !== null && editing !== "new" && selected.data && <PipelineEditor pipeline={selected.data} onClose={() => setEditing(null)} onSaved={saved} onDeleted={() => { client.removeQueries({ queryKey: ["pipeline", selected.data.id] }); setEditing(null); void client.invalidateQueries({ queryKey: ["pipelines"] }); }} />}
   </div>;
 }
 
-function PipelineEditor({ pipeline, onClose, onSaved }: { pipeline?: Pipeline; onClose: () => void; onSaved: () => void }) {
+function PipelineEditor({ pipeline, onClose, onSaved, onDeleted }: { pipeline?: Pipeline; onClose: () => void; onSaved: (saved: Pipeline) => void; onDeleted?: () => void }) {
   const [name, setName] = useState(pipeline?.name ?? "");
   const [stages, setStages] = useState<DraftStage[]>(pipeline?.stages.map(({ name, prompt }) => ({ name, prompt })) ?? [{ name: "Do the task", prompt: "{{ task.prompt }}" }]);
   const save = useMutation({
@@ -39,7 +44,7 @@ function PipelineEditor({ pipeline, onClose, onSaved }: { pipeline?: Pipeline; o
     onSuccess: onSaved,
   });
   const [deleteArmed, setDeleteArmed] = useState(false);
-  const remove = useMutation({ mutationFn: () => api.deletePipeline(pipeline!.id), onSuccess: onSaved });
+  const remove = useMutation({ mutationFn: () => api.deletePipeline(pipeline!.id), onSuccess: () => onDeleted?.() });
   const update = (index: number, field: keyof DraftStage, value: string) => setStages((current) => current.map((stage, position) => position === index ? { ...stage, [field]: value } : stage));
   const move = (index: number, offset: number) => setStages((current) => {
     const next = [...current];

@@ -992,6 +992,15 @@ func resolveSessionStages(
 			Position: stage.Position, Name: stage.Name, Prompt: prompt, State: protocol.StagePending,
 		})
 	}
+	encoded, err := json.Marshal(struct {
+		Stages []protocol.StageRun `json:"stages"`
+	}{Stages: stages})
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	if len(encoded) > protocol.MaxClaimStageBytes {
+		return nil, conflict("pipeline_claim_too_large", "the rendered Pipeline stages cannot fit in one Worker claim")
+	}
 	return stages, nil
 }
 
@@ -1466,28 +1475,11 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 	}
 	for index := range detail.Sessions {
 		session := &detail.Sessions[index]
-		stageRows, err := s.db.QueryContext(ctx, `
-			SELECT position, name, prompt, state, result, error, started_at, completed_at
-			FROM session_stages WHERE session_id = ? ORDER BY position
-		`, session.ID)
+		stages, err := s.stageRunSummaries(ctx, session.ID)
 		if err != nil {
-			return detail, unavailable(err)
+			return detail, err
 		}
-		for stageRows.Next() {
-			stage, err := scanStageRun(stageRows)
-			if err != nil {
-				stageRows.Close()
-				return detail, unavailable(err)
-			}
-			session.Stages = append(session.Stages, stage)
-		}
-		if err := stageRows.Err(); err != nil {
-			stageRows.Close()
-			return detail, unavailable(err)
-		}
-		if err := stageRows.Close(); err != nil {
-			return detail, unavailable(err)
-		}
+		session.Stages = stages
 		attemptRows, err := s.db.QueryContext(ctx, `
 			SELECT attempt.id, attempt.execution_id, attempt.worker_id, attempt.attempt_number, attempt.state,
 			       attempt.lease_expires_at, attempt.supervisor_pid, attempt.process_identity, attempt.process_group_id,
@@ -1516,6 +1508,42 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 	}
 	applyRunAggregate(&detail.Run, detail.Sessions, s.now())
 	return detail, nil
+}
+
+func (s *Store) stageRunSummaries(ctx context.Context, sessionID string) ([]protocol.StageRun, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT position, name, state, started_at, completed_at
+		FROM session_stages WHERE session_id = ? ORDER BY position
+	`, sessionID)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	var stages []protocol.StageRun
+	for rows.Next() {
+		var stage protocol.StageRun
+		var started, completed sql.NullInt64
+		if err := rows.Scan(&stage.Position, &stage.Name, &stage.State, &started, &completed); err != nil {
+			rows.Close()
+			return nil, unavailable(err)
+		}
+		if started.Valid {
+			value := fromMillis(started.Int64)
+			stage.StartedAt = &value
+		}
+		if completed.Valid {
+			value := fromMillis(completed.Int64)
+			stage.CompletedAt = &value
+		}
+		stages = append(stages, stage)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, unavailable(err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, unavailable(err)
+	}
+	return stages, nil
 }
 
 func (s *Store) RunSummary(ctx context.Context, id string) (protocol.RunSummary, error) {

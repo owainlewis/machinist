@@ -74,10 +74,14 @@ func TestProcedureRunFreezesAllEnabledRepositoriesAndReplaysBeforeChanges(t *tes
 			work.Target.SourceReference != work.RepositoryIdentity || work.Target.PublishBranch == "" {
 			t.Fatalf("Work %d = %#v", index, work)
 		}
-		if len(work.Stages) != 2 || work.Stages[0].Name != "Inspect" || work.Stages[1].Name != "Report" ||
-			!strings.Contains(work.Stages[0].Prompt, work.RepositoryIdentity) ||
-			!strings.Contains(work.Stages[1].Prompt, work.Target.PublishBranch) {
-			t.Fatalf("Work %d stages = %#v", index, work.Stages)
+		storedWork, err := store.Work(ctx, work.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(storedWork.Stages) != 2 || storedWork.Stages[0].Name != "Inspect" || storedWork.Stages[1].Name != "Report" ||
+			!strings.Contains(storedWork.Stages[0].Prompt, work.RepositoryIdentity) ||
+			!strings.Contains(storedWork.Stages[1].Prompt, work.Target.PublishBranch) {
+			t.Fatalf("Work %d stages = %#v", index, storedWork.Stages)
 		}
 	}
 	claim, err := store.Claim(ctx, worker.ID, protocol.ClaimRequest{RequestID: "fleet-stage-claim", LeaseToken: tokenA})

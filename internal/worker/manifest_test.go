@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/owainlewis/factory/internal/protocol"
 )
 
 func TestManifestStoreUpgradesVersionOneTaskIdentity(t *testing.T) {
@@ -60,6 +62,31 @@ func TestManifestStoreUpgradesVersionOneTaskIdentity(t *testing.T) {
 	if strings.Contains(string(updated), `"task_id"`) || !strings.Contains(string(updated), `"session_id"`) ||
 		!strings.Contains(string(updated), `"schema_version": 3`) {
 		t.Fatalf("persisted manifest was not upgraded: %s", updated)
+	}
+}
+
+func TestVerifyServerAttemptAllowsStoppedBetweenStageHandoff(t *testing.T) {
+	oldSupervisor, oldGroup := int64(101), int64(102)
+	manifest := attemptManifest{
+		WorkerID: "worker-a", ExecutionID: "execution-a", AttemptID: "attempt-a",
+		SupervisorPID: 201, SupervisorIdentity: "new-supervisor", ProcessGroupID: 202,
+		Lifecycle: manifestSupervisorReady, ProcessActive: false,
+	}
+	attempt := protocol.Attempt{
+		ID: "attempt-a", ExecutionID: "execution-a", WorkerID: "worker-a", State: "running",
+		SupervisorPID: &oldSupervisor, ProcessIdentity: "old-supervisor", ProcessGroupID: &oldGroup,
+	}
+	if err := verifyServerAttempt(manifest, attempt); err != nil {
+		t.Fatalf("between-stage handoff was not recoverable: %v", err)
+	}
+	manifest.Lifecycle = manifestRunning
+	if err := verifyServerAttempt(manifest, attempt); err == nil {
+		t.Fatal("running manifest accepted a process identity mismatch")
+	}
+	manifest.Lifecycle = manifestSupervisorReady
+	attempt.ProcessGroupID = nil
+	if err := verifyServerAttempt(manifest, attempt); err == nil {
+		t.Fatal("between-stage handoff accepted a partial server identity")
 	}
 }
 
