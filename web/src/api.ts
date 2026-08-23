@@ -7,6 +7,8 @@ import type {
   Task,
   Overview,
   SaveTaskInput,
+  Pipeline,
+  SavePipelineInput,
   RunDetail,
   RunPage,
   Worker,
@@ -48,6 +50,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   overview: () => request<Overview>("/api/v1/overview"),
   executionProfiles: async () => (await request<{ profiles: ExecutionProfile[] | null }>("/api/v1/execution-profiles")).profiles ?? [],
+  pipelines: async () => (await request<{ pipelines: Pipeline[] | null }>("/api/v1/pipelines")).pipelines ?? [],
+  pipeline: (id: string) => request<Pipeline>(`/api/v1/pipelines/${encodeURIComponent(id)}`),
+  createPipeline: (input: SavePipelineInput) => request<Pipeline>("/api/v1/pipelines", {
+    method: "POST", body: JSON.stringify(input),
+  }),
+  updatePipeline: (id: string, input: SavePipelineInput) => request<Pipeline>(`/api/v1/pipelines/${encodeURIComponent(id)}`, {
+    method: "PUT", body: JSON.stringify(input),
+  }),
+  deletePipeline: (id: string) => request<void>(`/api/v1/pipelines/${encodeURIComponent(id)}`, { method: "DELETE" }),
   tasks: async (includeArchived = false) => {
     const tasks: Task[] = [];
     let cursor = "";

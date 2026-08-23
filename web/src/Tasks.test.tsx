@@ -4,7 +4,26 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import { TasksView } from "./Tasks";
-import type { ExecutionProfile, Task, RunDetail } from "./types";
+import type { ExecutionProfile, Pipeline, Task, RunDetail } from "./types";
+
+const pipelines: Pipeline[] = [{
+  id: "00000000-0000-0000-0000-000000000001",
+  name: "Single agent",
+  generation: 1,
+  stages: [{ position: 0, name: "Do the task", prompt: "" }],
+  created_at: "2026-08-11T12:00:00Z",
+  updated_at: "2026-08-11T12:00:00Z",
+}, {
+  id: "pipeline-review",
+  name: "Build and review",
+  generation: 1,
+  stages: [
+    { position: 0, name: "Build", prompt: "" },
+    { position: 1, name: "Review", prompt: "" },
+  ],
+  created_at: "2026-08-11T12:00:00Z",
+  updated_at: "2026-08-11T12:00:00Z",
+}];
 
 const executionProfiles: ExecutionProfile[] = [{
   id: "persistent-auto",
@@ -57,6 +76,7 @@ const task: Task = {
 describe("TasksView", () => {
   beforeEach(() => {
     vi.spyOn(api, "executionProfiles").mockResolvedValue(executionProfiles);
+    vi.spyOn(api, "pipelines").mockResolvedValue(pipelines);
   });
 
   it("reuses the Run request key after an ambiguous failure", async () => {
@@ -212,5 +232,21 @@ describe("TasksView", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Save Task" }));
 
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ execution_profile_id: "profile-cloud-1" }));
+  });
+
+  it("saves the selected Pipeline on a new Task", async () => {
+    vi.spyOn(api, "tasks").mockResolvedValue([]);
+    vi.spyOn(api, "repositories").mockResolvedValue([]);
+    const createTask = vi.spyOn(api, "createTask").mockResolvedValue({ ...task, pipeline_id: "pipeline-review" });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><TasksView createOpen onRun={() => undefined} /></QueryClientProvider>);
+
+    const dialog = await screen.findByRole("dialog", { name: "New Task" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Reviewed build");
+    await userEvent.type(within(dialog).getByLabelText("Prompt"), "Implement the ticket.");
+    await userEvent.selectOptions(within(dialog).getByLabelText("Pipeline"), "pipeline-review");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save Task" }));
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ pipeline_id: "pipeline-review" }));
   });
 });

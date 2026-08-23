@@ -1052,6 +1052,51 @@ button.run-table-row:hover { background: var(--panel-2); color: var(--fg); }
 .prompt-panel summary { padding: 12px 14px; color: var(--fg-2); font-size: 12px; cursor: pointer; }
 .prompt-panel pre { padding: 14px; border-top: 1px solid var(--line); }
 
+.pipeline-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.pipeline-card { min-height: 210px; display: grid; align-content: start; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel-2); color: inherit; text-align: left; cursor: pointer; }
+.pipeline-card:hover { border-color: var(--line-2); background: var(--hover); }
+.pipeline-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pipeline-card-head strong { font-size: 14px; font-weight: 600; }
+.pipeline-card-head svg { color: var(--fg-3); }
+.pipeline-card > small { color: var(--fg-3); font-family: var(--mono); font-size: 10px; }
+.pipeline-mini-graph { display: grid; gap: 5px; }
+.pipeline-mini-graph > span { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 8px; position: relative; }
+.pipeline-mini-graph i { width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); color: var(--accent); font-family: var(--mono); font-size: 9px; font-style: normal; }
+.pipeline-mini-graph b { min-width: 0; overflow: hidden; color: var(--fg-2); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.pipeline-mini-graph svg { margin: 1px 0 1px 5px; color: var(--fg-3); }
+.pipeline-modal { width: min(820px, calc(100vw - 28px)); max-height: min(94vh, 960px); }
+.pipeline-modal .modal-header { height: auto; min-height: 66px; padding-block: 9px; }
+.pipeline-modal .modal-header p { margin: 3px 0 0; color: var(--fg-3); font-size: 11px; }
+.pipeline-editor { display: grid; gap: 16px; }
+.pipeline-stage-list { display: grid; gap: 0; }
+.pipeline-stage-editor { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; }
+.pipeline-stage-rail { display: flex; flex-direction: column; align-items: center; }
+.pipeline-stage-rail span { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--accent) 9%, var(--panel)); color: var(--accent); font-family: var(--mono); font-size: 10px; }
+.pipeline-stage-rail i { width: 1px; min-height: 34px; flex: 1; background: var(--line-2); }
+.pipeline-stage-fields { margin-bottom: 12px; padding: 12px; border: 1px solid var(--line-2); border-radius: var(--radius-lg); background: var(--panel); }
+.pipeline-stage-fields .field:last-child { margin-bottom: 0; }
+.pipeline-stage-fields textarea { min-height: 100px; resize: vertical; font-family: var(--mono); font-size: 11px; line-height: 1.55; }
+.pipeline-stage-toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; color: var(--fg-3); }
+.pipeline-stage-toolbar strong { color: var(--fg-2); font-size: 11px; font-weight: 550; }
+.pipeline-stage-toolbar > span { flex: 1; }
+.pipeline-stage-toolbar .icon-button { width: 26px; height: 26px; font-size: 12px; }
+.pipeline-add-stage { min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px dashed var(--line-2); border-radius: var(--radius-lg); background: transparent; color: var(--fg-2); cursor: pointer; }
+.pipeline-add-stage:hover { border-color: var(--accent); color: var(--fg); }
+.pipeline-variable-help { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--fg-3); font-size: 10px; }
+.pipeline-variable-help strong { margin-right: 4px; color: var(--fg-2); }
+.pipeline-variable-help code { padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.pipeline-modal .modal-footer > span { margin-right: auto; color: var(--fg-3); font-family: var(--mono); font-size: 10px; }
+.stage-run-list { display: grid; margin-bottom: 12px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.stage-run { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px 10px; border-top: 1px solid var(--line); }
+.stage-run:first-child { border-top: 0; }
+.stage-run > span { width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid var(--line-2); border-radius: 7px; color: var(--fg-3); font-family: var(--mono); font-size: 9px; }
+.stage-run strong, .stage-run small { display: block; }
+.stage-run strong { font-size: 11px; font-weight: 550; }
+.stage-run small { margin-top: 2px; color: var(--fg-3); font-family: var(--mono); font-size: 9px; }
+.stage-run-running > span { border-color: var(--running); color: var(--running); }
+.stage-run-succeeded > span { border-color: var(--succeeded); color: var(--succeeded); }
+.stage-run-failed > span { border-color: var(--failed); color: var(--failed); }
+
 @media (max-width: 1000px) {
   .overview-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-columns { grid-template-columns: 1fr; }

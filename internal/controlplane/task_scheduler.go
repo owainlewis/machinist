@@ -127,15 +127,20 @@ func loadCurrentTaskSnapshot(ctx context.Context, tx *sql.Tx, id string) (protoc
 	var snapshot protocol.TaskSnapshot
 	err := tx.QueryRowContext(ctx, `
 		SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit, generation,
-		       outcome_contract, cron, timezone
+		       outcome_contract, COALESCE(pipeline_id, ?), cron, timezone
 		FROM tasks WHERE id = ?
-	`, id).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
+	`, protocol.DefaultPipelineID, id).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
 		&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation,
-		&snapshot.OutcomeContract,
+		&snapshot.OutcomeContract, &snapshot.Pipeline.ID,
 		&snapshot.ScheduleCron, &snapshot.ScheduleTimezone)
 	if err != nil {
 		return snapshot, unavailable(err)
 	}
+	pipeline, err := loadPipelineSnapshot(ctx, tx, snapshot.Pipeline.ID)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Pipeline = pipeline
 	rows, err := tx.QueryContext(ctx, `
 		SELECT repository.id, repository.remote_identity
 		FROM task_repositories selected

@@ -7,6 +7,8 @@ import (
 
 const (
 	MaxTasks                = 500
+	MaxPipelines            = 200
+	MaxPipelineStages       = 20
 	MaxTaskRepositories     = 100
 	MaxTaskPromptBytes      = 64 * 1024
 	MaxWorkTargets          = 100
@@ -19,6 +21,75 @@ const (
 	MaxUpdatesPerAttempt    = 200
 	MaxProgressPerAttempt   = 199
 )
+
+const DefaultPipelineID = "00000000-0000-0000-0000-000000000001"
+
+type PipelineStage struct {
+	Position int    `json:"position"`
+	Name     string `json:"name"`
+	Prompt   string `json:"prompt"`
+}
+
+type Pipeline struct {
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Generation int             `json:"generation"`
+	Stages     []PipelineStage `json:"stages"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+}
+
+type PipelinePage struct {
+	Pipelines []Pipeline `json:"pipelines"`
+}
+
+type SavePipelineRequest struct {
+	Name               string          `json:"name"`
+	Stages             []PipelineStage `json:"stages"`
+	ExpectedGeneration int             `json:"expected_generation,omitempty"`
+}
+
+type PipelineSnapshot struct {
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Generation int             `json:"generation"`
+	Stages     []PipelineStage `json:"stages"`
+}
+
+type StageRunState string
+
+const (
+	StagePending   StageRunState = "pending"
+	StageRunning   StageRunState = "running"
+	StageSucceeded StageRunState = "succeeded"
+	StageFailed    StageRunState = "failed"
+	StageCancelled StageRunState = "cancelled"
+)
+
+type StageRun struct {
+	Position    int           `json:"position"`
+	Name        string        `json:"name"`
+	Prompt      string        `json:"prompt,omitempty"`
+	State       StageRunState `json:"state"`
+	Result      string        `json:"result,omitempty"`
+	Error       string        `json:"error,omitempty"`
+	StartedAt   *time.Time    `json:"started_at,omitempty"`
+	CompletedAt *time.Time    `json:"completed_at,omitempty"`
+}
+
+type StartStageRequest struct {
+	LeaseToken      string `json:"lease_token"`
+	SupervisorPID   *int64 `json:"supervisor_pid,omitempty"`
+	ProcessIdentity string `json:"process_identity,omitempty"`
+	ProcessGroupID  *int64 `json:"process_group_id,omitempty"`
+}
+
+type CompleteStageRequest struct {
+	LeaseToken string        `json:"lease_token"`
+	State      StageRunState `json:"state"`
+	Result     string        `json:"result,omitempty"`
+	Error      string        `json:"error,omitempty"`
+}
 
 type OutcomeContract string
 
@@ -54,6 +125,8 @@ type Task struct {
 	ConcurrencyLimit   int              `json:"concurrency_limit"`
 	Generation         int              `json:"generation"`
 	OutcomeContract    OutcomeContract  `json:"outcome_contract"`
+	PipelineID         string           `json:"pipeline_id"`
+	PipelineName       string           `json:"pipeline_name"`
 	Archived           bool             `json:"archived"`
 	ReadOnly           bool             `json:"read_only"`
 	Repositories       []TaskRepository `json:"repositories"`
@@ -83,6 +156,7 @@ type ClaimedSession struct {
 	RunID           string          `json:"run_id"`
 	TaskName        string          `json:"task_name"`
 	Prompt          string          `json:"prompt"`
+	Stages          []StageRun      `json:"stages"`
 	WorkerID        string          `json:"worker_id"`
 	RepositoryID    string          `json:"repository_id"`
 	RequiredRuntime string          `json:"required_runtime"`
@@ -110,6 +184,7 @@ type SaveTaskRequest struct {
 	Schedule           TaskSchedule    `json:"schedule"`
 	ExpectedGeneration int             `json:"expected_generation,omitempty"`
 	OutcomeContract    OutcomeContract `json:"outcome_contract,omitempty"`
+	PipelineID         string          `json:"pipeline_id,omitempty"`
 }
 
 type SetTaskArchivedRequest struct {
@@ -216,6 +291,7 @@ type TaskSnapshot struct {
 	ConcurrencyLimit   int              `json:"concurrency_limit,omitempty"`
 	Generation         int              `json:"generation"`
 	OutcomeContract    OutcomeContract  `json:"outcome_contract"`
+	Pipeline           PipelineSnapshot `json:"pipeline"`
 	Repositories       []TaskRepository `json:"repositories,omitempty"`
 	ScheduleCron       string           `json:"cron,omitempty"`
 	ScheduleTimezone   string           `json:"timezone,omitempty"`
@@ -356,6 +432,7 @@ type Session struct {
 	PullRequestHeadBranch string            `json:"pull_request_head_branch,omitempty"`
 	PullRequestHeadSHA    string            `json:"pull_request_head_sha,omitempty"`
 	TerminalMessage       string            `json:"terminal_message,omitempty"`
+	Stages                []StageRun        `json:"stages,omitempty"`
 	Updates               []WorkUpdate      `json:"updates,omitempty"`
 	Attempts              []Attempt         `json:"attempts,omitempty"`
 }

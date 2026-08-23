@@ -7,10 +7,11 @@
 ## Executive summary
 
 Factory is a local-first control plane for repeatable software-engineering
-agents. An operator saves a prompt and execution settings as a Task. Running
-or scheduling that Task creates a Run with one Session per repository. A
-persistent Worker claims each Session, prepares an isolated Git worktree, runs
-Pi, Codex, or Claude Code, streams events, and reports one terminal result.
+agents. An operator saves ordered agent prompts as a Pipeline and selects that
+Pipeline for a Task. Running or scheduling the Task creates a Run with one
+Session per repository. A persistent Worker claims each Session, prepares one
+isolated Git worktree, and starts a fresh Pi, Codex, or Claude Code process for
+each Pipeline stage in order. All stages share that worktree and branch.
 
 The implementation has four main parts:
 
@@ -21,8 +22,8 @@ The implementation has four main parts:
   the embedded browser UI.
 - `factory-worker` owns runtime health, repository caches, worktrees, agent
   processes, and cleanup or retention.
-- SQLite stores Tasks, Runs, Session-backed Work, durable Work updates,
-  executions, Attempts, events, Workers, and repositories.
+- SQLite stores Pipelines, Tasks, Runs, Session-backed Work, durable stages and
+  Work updates, executions, Attempts, events, Workers, and repositories.
 
 The operator API is loopback-only. Workers make outbound polling requests to
 the server. Remote VM Workers use a separate TLS listener and per-Worker bearer
@@ -84,11 +85,21 @@ control-plane or Worker state directly.
 
 ## Current product model
 
-### Task
+### Pipeline and Task
+
+A Pipeline is a reusable, versioned sequence of one to twenty agent stages.
+Each stage has a name and prompt template. Interpolation is limited to Task
+identity and input, Run identity, repository identity, and the managed branch.
+The built-in `Single agent` Pipeline contains one `Do the task` stage whose
+prompt is `{{ task.prompt }}`. Updating a Pipeline replaces its stages and
+increments its generation. Existing Runs keep their frozen Pipeline snapshot.
+The built-in Pipeline cannot be deleted, and a custom Pipeline must be removed
+from every Task before deletion.
 
 A Task is a reusable definition containing:
 
-- name and prompt;
+- name and input prompt;
+- selected Pipeline;
 - runtime: `pi`, `codex`, or `claude-code`;
 - timeout and per-Run concurrency limit;
 - one or more managed repositories;
@@ -103,7 +114,8 @@ override the saved profile; scheduled Runs use the saved default.
 Existing and newly created Tasks default to `process_exit`. An explicit
 conversion to `agent_update` increments the generation and requires the
 persistent backend. Updates use an expected generation. Admission snapshots
-the Task and outcome contract so later edits do not change existing Runs. A
+the Task, Pipeline, and outcome contract so later edits do not change existing
+Runs. A
 manual run uses an idempotency key.
 Scheduled admission polls every ten seconds and preserves the frozen pending
 snapshot while retrying a failed admission.
@@ -111,14 +123,15 @@ snapshot while retrying a failed admission.
 ### Run and Session
 
 One Task admission creates one Run and one Session-backed Work record per
-selected repository. A Run stores the Task snapshot, immutable execution
+selected repository. A Run stores the Task and Pipeline snapshot, immutable execution
 profile version, backend, runtime, provider, model, timeout, resource class,
 commit-resolution policy, outcome contract, ordered target snapshot, source
 (`manual` or `schedule`), schedule time, and aggregate state. Work stores the
 same frozen execution choice with target identity, source reference, context,
 stable publish branch, repository identity, ownership, waiting reason,
 progress, checkpoint, pending resume, pull-request evidence, predecessor,
-result, and terminal fields.
+result, and terminal fields. Each Session owns ordered durable stage records
+with the rendered prompt, state, result, error, and timestamps.
 
 Work can represent `queued`, `running`, `needs-input`, `ready`, `succeeded`,
 `failed`, `no-change`, and `cancelled`. The backing Session table also retains
@@ -192,7 +205,7 @@ static repository paths remain readable through Worker configuration.
     at runtime.
 11. Finite `factory` commands accept only an explicit-port plain HTTP loopback
     endpoint and read current state through bounded API routes.
-12. Claim protocol version 3 gates every persistent Worker claim. Older Workers
+12. Claim protocol version 4 gates every persistent Worker claim. Older Workers
     receive `worker_upgrade_required`, including for process-exit Work.
 
 ## Components
@@ -263,7 +276,7 @@ most 64 KiB; one Attempt stores at most 10 MiB of events. Results are at most
 ### Browser UI
 
 `web/src` is a React and TypeScript single-page application. It exposes Work,
-Tasks, Overview, Workers, and Repositories, with detail views for each
+Tasks, Pipelines, Overview, Workers, and Repositories, with detail views for each
 operational resource. Work presents Run history as a board or table and polls
 the same-origin API.
 
@@ -277,8 +290,8 @@ security headers. Node.js is needed only when UI source changes.
 
 1. The operator runs a Task with a request key, or the scheduler claims a
    due occurrence.
-2. The server freezes the Task generation, outcome contract, execution choice,
-   and ordered target list.
+2. The server freezes the Task generation, Pipeline generation and stages,
+   outcome contract, execution choice, and ordered target list.
 3. One Run and one Session-backed Work record per repository are inserted
    transactionally.
 4. Routing selects compatible Workers where possible. Unroutable Sessions stay
@@ -298,9 +311,13 @@ security headers. Node.js is needed only when UI source changes.
 4. The Worker reports process identity and the server moves the lifecycle to
    `running`.
 5. Heartbeats extend the lease by 30 seconds and return cancellation state.
-6. Ordered events are appended idempotently. Completion verifies the lease and
-   stores the terminal result once.
-7. The Worker removes proved-safe worktrees and reports retained ones back to
+6. The Worker starts each frozen stage in order as a fresh agent process. It
+   reports stage start and completion under the Attempt lease. A failed or
+   cancelled stage stops the sequence. Later stages cannot start before all
+   predecessors succeed.
+7. Ordered runtime events are appended idempotently. Attempt success requires
+   every stage to succeed, except for the one-stage compatibility path.
+8. The Worker removes proved-safe worktrees and reports retained ones back to
    the control plane.
 
 ### Cancellation, lease loss, and retry
@@ -341,13 +358,16 @@ operator model to Tasks, Runs, and Sessions without changing behaviour, and
 refuses to apply if the new table names are already in use. Migration 31 adds
 the durable Work lifecycle, ordered Run targets, outcome contracts, bounded
 Work updates, and claim protocol version 3. It preserves existing rows as
-`process_exit`. Supported legacy
+`process_exit`. Migration 32 adds Pipeline templates, Task selection, the
+built-in single-agent Pipeline, durable Session stages, and claim protocol
+version 4. Supported legacy
 Definitions, schedules, repositories, and execution history are converted;
 unsupported legacy provider admission is blocked and reported rather than
 silently discarded.
 
-Current lifecycle tables include `tasks`, `task_repositories`, `runs`,
-`sessions`, `work_updates`, `executions`, `attempts`, `attempt_events`, `workers`,
+Current lifecycle tables include `pipelines`, `pipeline_stages`, `tasks`,
+`task_repositories`, `runs`, `sessions`, `session_stages`, `work_updates`,
+`executions`, `attempts`, `attempt_events`, `workers`,
 `repositories`, Worker repository state, claim request deduplication, and
 Worker enrollment or credentials. Older migration tables may remain for
 history and upgrade compatibility but are not part of the current UI or
@@ -356,6 +376,9 @@ admission path.
 ## Known limitations
 
 - Only the embedded SQLite orchestration path exists.
+- Pipelines are linear agent stages. They do not branch, run stages in
+  parallel, contain deterministic actions, or move an active Session between
+  Workers. Multi-stage Pipelines currently require a persistent Worker.
 - Cloud Run execution profiles and elastic dispatch are designed but not
   implemented.
 - Durable agent-update fields, persistent-backend admission, and missing-outcome
@@ -378,6 +401,7 @@ admission path.
 | Operator CLI | `cmd/factory/main.go`, `internal/factorycli/command.go`, `internal/factorycli/client.go` |
 | Server startup and config | `cmd/factory-server/main.go`, `cmd/factory-server/config.go` |
 | HTTP routes and auth | `internal/controlplane/http.go`, `internal/controlplane/worker_auth.go` |
+| Pipeline templates and stages | `internal/controlplane/pipelines.go`, `internal/controlplane/stage_runs.go`, `internal/protocol/tasks.go` |
 | Task, Run, and Work model | `internal/controlplane/tasks.go`, `internal/controlplane/work.go`, `internal/protocol/tasks.go` |
 | Schedule admission | `internal/controlplane/task_scheduler.go`, `internal/controlplane/schedule_cron.go` |
 | Routing and claims | `internal/controlplane/task_claim.go`, `internal/controlplane/state.go` |
@@ -386,8 +410,8 @@ admission path.
 | Attempt execution | `internal/worker/attempt_lifecycle.go`, `internal/worker/supervisor.go`, `internal/worker/events.go` |
 | Git and worktrees | `internal/worker/git.go`, `internal/worker/repository_cache.go`, `internal/worker/reconcile.go` |
 | Protocol limits and types | `internal/protocol/types.go`, `internal/protocol/prompt.go` |
-| Schema | `migrations/027_routines_work.sql`, `migrations/030_task_run_session.sql`, `migrations/031_work_lifecycle.sql` |
-| Browser UI | `web/src/App.tsx`, `web/src/Tasks.tsx`, `web/src/Runs.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |
+| Schema | `migrations/027_routines_work.sql`, `migrations/030_task_run_session.sql`, `migrations/031_work_lifecycle.sql`, `migrations/032_pipeline_templates.sql` |
+| Browser UI | `web/src/App.tsx`, `web/src/Pipelines.tsx`, `web/src/Tasks.tsx`, `web/src/Runs.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |
 
 ## Verification
 
@@ -397,6 +421,12 @@ admission path.
 - `internal/controlplane/tasks_migration_test.go` opens populated historical
   databases and proves identity, lifecycle, scheduled process-exit completion,
   and foreign-key preservation.
+- `internal/controlplane/pipelines_test.go` proves Pipeline validation, prompt
+  interpolation, immutable snapshots, ordered stage transitions, and final Run
+  completion.
+- `web/e2e/control-plane.spec.ts` proves the visual editor, Task selection, and
+  three fresh agent processes completing in sequence through a real server and
+  Worker.
 - `go test ./cmd/... ./internal/...` covers entry points, CLI routing and output,
   API contracts, storage, Worker lifecycle, and release construction.
 - `just format-check`, `just vet`, `just boundary`, and `just test` provide the

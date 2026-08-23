@@ -86,6 +86,11 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/v1/execution-profiles", api.createExecutionProfile)
 	mux.HandleFunc("GET /api/v1/execution-profiles/{profile_id}", api.getExecutionProfile)
 	mux.HandleFunc("PUT /api/v1/execution-profiles/{profile_id}", api.updateExecutionProfile)
+	mux.HandleFunc("GET /api/v1/pipelines", api.listPipelines)
+	mux.HandleFunc("POST /api/v1/pipelines", api.createPipeline)
+	mux.HandleFunc("GET /api/v1/pipelines/{pipeline_id}", api.getPipeline)
+	mux.HandleFunc("PUT /api/v1/pipelines/{pipeline_id}", api.updatePipeline)
+	mux.HandleFunc("DELETE /api/v1/pipelines/{pipeline_id}", api.deletePipeline)
 	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
 	mux.HandleFunc("POST /api/v1/tasks", api.createTask)
 	mux.HandleFunc("GET /api/v1/tasks/{task_id}", api.getTask)
@@ -101,6 +106,8 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/overview", api.getOverview)
 	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}", api.getAttempt)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/start", api.startAttempt)
+	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/stages/{position}/start", api.startStage)
+	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/stages/{position}/complete", api.completeStage)
 	mux.HandleFunc("PUT /api/v1/attempts/{attempt_id}/heartbeat", api.heartbeat)
 	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}/events", api.getEvents)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/events", api.appendEvents)
@@ -123,6 +130,8 @@ func NewRemoteWorkerHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.Handle("POST /api/v1/workers/{worker_id}/claims", api.remoteWorkerAuth(http.HandlerFunc(api.claim)))
 	mux.Handle("GET /api/v1/attempts/{attempt_id}", api.remoteAttemptAuth(http.HandlerFunc(api.getAttempt)))
 	mux.Handle("POST /api/v1/attempts/{attempt_id}/start", api.remoteAttemptAuth(http.HandlerFunc(api.startAttempt)))
+	mux.Handle("POST /api/v1/attempts/{attempt_id}/stages/{position}/start", api.remoteAttemptAuth(http.HandlerFunc(api.startStage)))
+	mux.Handle("POST /api/v1/attempts/{attempt_id}/stages/{position}/complete", api.remoteAttemptAuth(http.HandlerFunc(api.completeStage)))
 	mux.Handle("PUT /api/v1/attempts/{attempt_id}/heartbeat", api.remoteAttemptAuth(http.HandlerFunc(api.heartbeat)))
 	mux.Handle("POST /api/v1/attempts/{attempt_id}/events", api.remoteAttemptAuth(http.HandlerFunc(api.appendEvents)))
 	mux.Handle("POST /api/v1/attempts/{attempt_id}/complete", api.remoteAttemptAuth(http.HandlerFunc(api.completeAttempt)))
@@ -555,6 +564,56 @@ func (a *API) startAttempt(w http.ResponseWriter, r *http.Request) {
 	}
 	a.logStateChange("attempt", attempt.ID, attempt.State, "execution_id", attempt.ExecutionID)
 	writeJSON(w, http.StatusOK, attempt)
+}
+
+func stagePosition(r *http.Request) (int, error) {
+	position, err := strconv.Atoi(r.PathValue("position"))
+	if err != nil || position < 0 || position >= protocol.MaxPipelineStages {
+		return 0, invalid("invalid_stage_position", "stage position must be between 0 and 19")
+	}
+	return position, nil
+}
+
+func (a *API) startStage(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	position, err := stagePosition(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input protocol.StartStageRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	stage, err := a.store.StartStage(r.Context(), r.PathValue("attempt_id"), position, input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stage)
+}
+
+func (a *API) completeStage(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	position, err := stagePosition(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input protocol.CompleteStageRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	stage, err := a.store.CompleteStage(r.Context(), r.PathValue("attempt_id"), position, input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stage)
 }
 
 func (a *API) logStateChange(resourceType, resourceID, state string, extra ...any) {

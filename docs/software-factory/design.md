@@ -1,6 +1,9 @@
 # Agent-directed software factory
 
-> **Status:** Proposed for review
+> **Status:** Proposed for review. The implemented linear Pipeline model in
+> [the current architecture](../../ARCHITECTURE.md) supersedes this proposal's
+> single-Procedure execution model. The remaining Work-item and agent-update
+> sections are still future direction.
 
 ## 1. Executive summary
 
@@ -1144,8 +1147,7 @@ validated through use:
 ## 13. Out of scope
 
 - A Factory coding agent, model loop, context manager, or subagent framework.
-- Ordered Stage graphs, arbitrary DAGs, visual pipeline editing, or workflow
-  chaining.
+- Branching or parallel Stage graphs and arbitrary DAGs.
 - Central CI polling, webhook-driven continuation, or long-lived wait state.
 - Automatic merge, release, deployment, or production monitoring.
 - Linear, Jira, or generic provider clients and plugin interfaces.

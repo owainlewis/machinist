@@ -294,6 +294,22 @@ func (client *client) start(ctx context.Context, attemptID string, input protoco
 	return attempt, err
 }
 
+func (client *client) startStage(ctx context.Context, attemptID string, position int, input protocol.StartStageRequest) (protocol.StageRun, error) {
+	var stage protocol.StageRun
+	_, err := client.retry(ctx, http.MethodPost,
+		fmt.Sprintf("/api/v1/attempts/%s/stages/%d/start", url.PathEscape(attemptID), position),
+		input, &stage, time.Second, 5*time.Second)
+	return stage, err
+}
+
+func (client *client) completeStage(ctx context.Context, attemptID string, position int, input protocol.CompleteStageRequest) (protocol.StageRun, error) {
+	var stage protocol.StageRun
+	_, err := client.retry(ctx, http.MethodPost,
+		fmt.Sprintf("/api/v1/attempts/%s/stages/%d/complete", url.PathEscape(attemptID), position),
+		input, &stage, time.Second, 5*time.Second)
+	return stage, err
+}
+
 func (client *client) heartbeat(ctx context.Context, attemptID, token string) (protocol.HeartbeatResponse, error) {
 	var heartbeat protocol.HeartbeatResponse
 	_, err := client.request(ctx, http.MethodPut, "/api/v1/attempts/"+url.PathEscape(attemptID)+"/heartbeat",

@@ -8,7 +8,7 @@
 
 Factory is the control plane for software work performed by coding agents. A
 developer gives Factory one work item or a repository fleet. Factory queues the
-work, assigns it to available machines, supplies a consistent procedure, and
+work, assigns it to available machines, supplies a consistent Pipeline, and
 shows what is queued for capacity, running, ready, needs input, failed, or
 completed under a legacy exit-based contract.
 
@@ -28,7 +28,7 @@ factory build LINEAR-123 LINEAR-124 --repo github.com/acme/api
 factory status
 ```
 
-The same system can apply one reusable engineering procedure across a managed
+The same system can apply one reusable engineering Pipeline across a managed
 repository fleet:
 
 ```sh
@@ -42,11 +42,13 @@ interpret arbitrary text.
 
 ## Core experience
 
-Factory has four operator concepts:
+Factory has five operator concepts:
 
-- A **Procedure** is trusted, reusable engineering instruction such as the
-  built-in standard Build procedure or a saved `bug-fix` procedure.
-- A **Run** is one immutable invocation of a Procedure against frozen targets.
+- A **Pipeline** is trusted, reusable engineering instruction expressed as one
+  or more ordered agent prompt stages.
+- A **Task** is the concrete work input, such as a ticket body, processed by a
+  selected Pipeline.
+- A **Run** is one immutable invocation of a Pipeline against frozen targets.
 - **Work** is one independently scheduled target inside a Run. It owns one
   repository and may also own one work-item reference.
 - A **Worker** is a local or remote machine that runs coding agents in isolated
@@ -60,7 +62,7 @@ Work item references or repository selector
                     |
                     v
                   Run
-        frozen Procedure and targets
+        frozen Pipeline and targets
                     |
            +--------+--------+
            v        v        v
@@ -77,12 +79,12 @@ Work item references or repository selector
 
 ## Agent-directed work
 
-The agent owns the meaning of the work. It decides how to refine the task,
-explore the repository, plan, use subagents, implement, test, review, open a
-pull request, and fix CI. Factory does not encode those activities as a
-pipeline graph.
+The agent owns the meaning of each stage. It decides how to explore the
+repository, use tools or subagents, and satisfy that stage's prompt. Factory
+coordinates a linear Pipeline of fresh agent processes in one shared worktree.
+It does not encode an arbitrary graph, branching, or agent reasoning loop.
 
-Factory injects a short procedure wrapper and an Attempt-scoped update tool:
+Factory injects a short stage wrapper and an Attempt-scoped update tool:
 
 ```sh
 factory update --status=running --message="Running integration tests"
@@ -102,7 +104,7 @@ they do not replace its judgment about whether the software task is complete.
 An interactive coding-agent terminal remains better for exploration, difficult
 product choices, and one high-touch task. Factory is better when a developer
 has several buildable tasks, wants work to continue without open terminals, or
-needs the same procedure applied across many repositories.
+needs the same Pipeline applied across many repositories.
 
 Factory succeeds when it reduces developer attention per ready pull request.
 It fails when a developer still has to open, prompt, and monitor every agent
@@ -113,26 +115,27 @@ session individually.
 1. Factory owns coordination; coding agents own engineering judgment.
 2. Every invocation becomes one Run and one or more independent Work targets.
 3. One Work target changes one repository by default.
-4. Every Run freezes its Procedure and complete target set.
+4. Every Run freezes its Pipeline, Task input, and complete target set.
 5. Agents update semantic Work state through bounded, scoped capabilities.
 6. Workers retain exclusive ownership of leases, processes, and worktree
    cleanup.
 7. Work-item bodies and repository content are untrusted agent context.
-   Procedures are trusted operator instructions.
+   Pipeline prompts are trusted operator instructions.
 8. Agents use the tools and credentials available on their Worker.
 9. Fleet work is bounded, observable, and retryable per target.
-10. Factory adds a durable outer loop, not another model conversation loop.
+10. Factory adds a durable outer loop and explicit agent boundaries, not a new
+    coding-agent implementation.
 
 ## First useful version
 
 The first version proves two paths through the same engine:
 
 1. `factory build` admits one or more work-item references and runs the
-   built-in standard Build procedure.
-2. `factory run` applies a saved Procedure to one or more managed repositories.
+   built-in single-agent Pipeline.
+2. `factory run` applies a saved Pipeline to one or more managed repositories.
 
 It includes local and VM Workers, bounded concurrency, isolated worktrees,
-versioned Procedure snapshots, agent progress and terminal updates, central
+versioned Pipeline snapshots, agent progress and terminal updates, central
 status, cancellation, and warned retries.
 
 It pauses Work when an agent needs input and requeues it after an answer.
@@ -151,10 +154,10 @@ Factory is moving toward this vision when a developer can:
 - stop managing separate coding-agent conversations;
 - identify every active agent, repository, branch, and latest progress update;
 - receive a precise question when an agent cannot continue;
-- run one Procedure across at least 100 frozen repository targets;
+- run one Pipeline across at least 100 frozen repository targets;
 - retry one failed target without replaying successful siblings;
-- add or remove Worker capacity without changing a Procedure;
-- identify the exact Procedure, Factory-supplied context, source reference,
+- add or remove Worker capacity without changing a Pipeline;
+- identify the exact Pipeline, Factory-supplied context, source reference,
   runtime, Worker, updates, and outcome used for historical Work;
 - measure ready pull requests and developer interventions rather than only
   process exits.
@@ -164,7 +167,7 @@ Factory is moving toward this vision when a developer can:
 - A replacement for an interactive coding-agent terminal.
 - A new coding agent, model loop, planner, or subagent framework.
 - A replacement for GitHub, Linear, Jira, or team chat.
-- A generic workflow builder, DAG, or visual pipeline editor.
+- A generic workflow builder or arbitrary DAG.
 - Deterministically deciding whether an agent's software work is correct.
 - Exactly-once GitHub or other external side effects.
 - Automatic merge in the first version.

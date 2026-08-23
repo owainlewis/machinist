@@ -254,6 +254,12 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 	`, now, sessionID); err != nil {
 		return false, unavailable(err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE session_stages SET state = 'running', started_at = COALESCE(started_at, ?)
+		WHERE session_id = ? AND position = 0 AND state = 'pending'
+	`, now, sessionID); err != nil {
+		return false, unavailable(err)
+	}
 	if outcome == "succeeded" || outcome == "failed" {
 		if err := completeFakeCloudAttempt(ctx, tx, attemptID, executionID, outcome, result, failure, "", now); err != nil {
 			return false, err
@@ -278,6 +284,16 @@ func completeFakeCloudAttempt(
 	attemptID, executionID, state, result, failure, terminalMessage string,
 	now int64,
 ) error {
+	stageState := state
+	if stageState == "cancelled" {
+		stageState = string(protocol.StageCancelled)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE session_stages SET state = ?, result = ?, error = ?, completed_at = ?
+		WHERE session_id = (SELECT session_id FROM executions WHERE id = ?) AND state = 'running'
+	`, stageState, result, failure, now, executionID); err != nil {
+		return unavailable(err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE attempts SET state = ?, result = ?, error = ?, completed_at = ?
 		WHERE id = ? AND state IN ('preparing','running')

@@ -4,6 +4,7 @@ test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
 
 const taskName = "E2E repository review";
+const pipelineName = "Plan, build, review";
 
 test.beforeAll(async ({ request }) => {
   await expect.poll(async () => {
@@ -12,6 +13,33 @@ test.beforeAll(async ({ request }) => {
     const body = await response.json() as { repositories?: unknown[] };
     return body.repositories?.length ?? 0;
   }, { timeout: 30_000 }).toBeGreaterThan(0);
+});
+
+test("creates a reusable Pipeline in the visual editor", async ({ page }) => {
+  await page.goto("/pipelines");
+  await expect(page.getByRole("heading", { name: "Pipelines", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "New Pipeline", exact: true }).first().click();
+  const dialog = page.getByRole("dialog", { name: "New Pipeline" });
+  await dialog.getByLabel("Name", { exact: true }).fill(pipelineName);
+  await dialog.getByLabel("Stage name", { exact: true }).fill("Plan");
+  await dialog.locator("textarea").fill("Plan this work:\n{{ task.prompt }}");
+  await dialog.getByRole("button", { name: "Add agent stage" }).click();
+  await dialog.getByLabel("Stage name", { exact: true }).nth(1).fill("Build");
+  await dialog.locator("textarea").nth(1).fill("Build on {{ branch }} in {{ repository }}.");
+  await dialog.getByRole("button", { name: "Add agent stage" }).click();
+  await dialog.getByLabel("Stage name", { exact: true }).nth(2).fill("Review");
+  await dialog.locator("textarea").nth(2).fill("Review {{ task.name }} and report the result.");
+  await dialog.getByRole("button", { name: "Save Pipeline" }).click();
+
+  const card = page.getByRole("button", { name: new RegExp(pipelineName) });
+  await expect(card).toContainText("3 agent starts per repository");
+  await expect(card).toContainText("Plan");
+  await expect(card).toContainText("Build");
+  await expect(card).toContainText("Review");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(card).toBeVisible();
+  expect(await page.evaluate<boolean>("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
 });
 
 test("creates a Task and completes its Run", async ({ page }) => {
@@ -25,6 +53,7 @@ test("creates a Task and completes its Run", async ({ page }) => {
   await expect(dialog.getByText("Tools", { exact: true })).toHaveCount(0);
   await dialog.getByLabel("Name").fill(taskName);
   await dialog.getByLabel("Prompt").fill("Review this repository and leave deterministic browser evidence.");
+  await dialog.getByLabel("Pipeline").selectOption({ label: `${pipelineName} · 3 stages` });
   await dialog.locator(".repository-picker button").first().click();
   await dialog.getByRole("button", { name: "Save Task" }).click();
 
@@ -38,7 +67,13 @@ test("creates a Task and completes its Run", async ({ page }) => {
   await expect(page).toHaveURL(/\/work\/[0-9a-f-]+$/);
   await expect(page.getByRole("heading", { name: taskName })).toBeVisible();
   await expect(page.getByText("Succeeded", { exact: true })).toBeVisible({ timeout: 45_000 });
+  await expect(page.locator(".run-summary-strip")).toContainText(pipelineName);
   await page.locator(".session-row summary").click();
+  await expect(page.locator(".stage-run")).toHaveCount(3);
+  await expect(page.locator(".stage-run").nth(0)).toContainText("Plan");
+  await expect(page.locator(".stage-run").nth(1)).toContainText("Build");
+  await expect(page.locator(".stage-run").nth(2)).toContainText("Review");
+  await expect(page.locator(".stage-run-succeeded")).toHaveCount(3);
   await expect(page.getByText("Completed by deterministic fake Codex.", { exact: false })).toBeVisible();
   await expect(page.getByText("Attempt 1", { exact: true })).toBeVisible();
   await expect(page.locator(".attempt-events")).toContainText("Inspected the assigned repository.");
@@ -84,7 +119,7 @@ test("keeps Overview operational and the product navigation small", async ({ pag
   await expect(performance.getByText("Average cycle time", { exact: true })).toBeVisible();
   await expect(performance).toContainText("1 completed");
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
-  await expect(navigation.getByRole("button")).toHaveCount(5);
+  await expect(navigation.getByRole("button")).toHaveCount(6);
   await expect(navigation.getByRole("group", { name: "Infrastructure" }).getByRole("button")).toHaveText([
     "Workers",
     "Repositories",

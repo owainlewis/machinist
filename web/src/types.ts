@@ -58,6 +58,8 @@ export interface Task {
   timeout_seconds: number;
   concurrency_limit: number;
   generation: number;
+  pipeline_id?: string;
+  pipeline_name?: string;
   archived: boolean;
   read_only: boolean;
   repositories: TaskRepository[] | null;
@@ -78,6 +80,36 @@ export interface SaveTaskInput {
   repository_ids: string[];
   schedule: { enabled: boolean; cron?: string; timezone?: string };
   expected_generation?: number;
+  pipeline_id?: string;
+}
+
+export interface PipelineStage {
+  position: number;
+  name: string;
+  prompt: string;
+}
+
+export interface Pipeline {
+  id: string;
+  name: string;
+  generation: number;
+  stages: PipelineStage[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavePipelineInput {
+  name: string;
+  stages: Array<{ name: string; prompt: string }>;
+  expected_generation?: number;
+}
+
+export interface StageRun extends PipelineStage {
+  state: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  result?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
 }
 
 export interface TaskSnapshot {
@@ -92,6 +124,12 @@ export interface TaskSnapshot {
   repositories: TaskRepository[] | null;
   cron?: string;
   timezone?: string;
+  pipeline?: {
+    id: string;
+    name: string;
+    generation: number;
+    stages: PipelineStage[];
+  };
 }
 
 export interface Attempt {
@@ -127,6 +165,7 @@ export interface Session {
   terminal_at?: string;
   result?: string;
   failure_reason?: string;
+  stages?: StageRun[] | null;
   attempts?: Attempt[] | null;
 }
 

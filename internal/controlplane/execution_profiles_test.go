@@ -475,6 +475,12 @@ func TestStartupLeaseSweepStillExpiresPersistentAttempts(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("claim = %#v, err %v", claim, err)
 	}
+	if _, err := store.StartAttempt(context.Background(), claim.Attempt.ID, protocol.StartAttemptRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartStage(context.Background(), claim.Attempt.ID, 0, protocol.StartStageRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
 
 	now = now.Add(protocol.LeaseDuration + time.Second)
 	expired, err := store.SweepExpired(context.Background())
@@ -486,7 +492,8 @@ func TestStartupLeaseSweepStillExpiresPersistentAttempts(t *testing.T) {
 	}
 	run, _ = store.Run(context.Background(), run.Run.ID)
 	if run.Run.State != protocol.RunFailed || run.Sessions[0].Attempts[0].State != "lost" ||
-		run.Sessions[0].FailureReason != "lease expired" {
+		run.Sessions[0].FailureReason != "lease expired" || len(run.Sessions[0].Stages) != 1 ||
+		run.Sessions[0].Stages[0].State != protocol.StageFailed || run.Sessions[0].Stages[0].Error != "lease expired" {
 		t.Fatalf("expired persistent Run = %#v", run)
 	}
 }

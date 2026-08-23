@@ -84,7 +84,7 @@ export function TasksView({ initialID, createOpen, onRun }: { initialID?: string
           <button className="task-copy" onClick={() => openTask(task.id)}>
             <span className="task-title-line"><strong>{task.name}</strong>{task.archived && <span className="subtle-pill">Archived</span>}{task.read_only && <span className="subtle-pill">Read-only</span>}</span>
             <span>{task.prompt_preview}</span>
-            <small><GitBranch size={12} /> {task.repository_count} repos · {task.runtime} · up to {task.concurrency_limit} at once</small>
+            <small><GitBranch size={12} /> {task.repository_count} repos · {task.pipeline_name ?? "Single agent"} · {task.runtime}</small>
           </button>
           <div className="task-schedule">
             <StatusBadge state={task.schedule.enabled ? task.schedule.health_status : "disabled"} />
@@ -135,11 +135,13 @@ function RunTaskDialog({ task, pending, error, onClose, onRun }: { task: Task; p
 function TaskComposer({ task, onClose, onSaved, onArchive, archiveError, archivePending }: { task?: Task; onClose: () => void; onSaved: () => void; onArchive: (task: Task) => void; archiveError: Error | null; archivePending: boolean }) {
   const repositories = useQuery({ queryKey: ["repositories"], queryFn: api.repositories });
   const profiles = useQuery({ queryKey: ["execution-profiles"], queryFn: api.executionProfiles });
+  const pipelines = useQuery({ queryKey: ["pipelines"], queryFn: api.pipelines });
   const readOnly = task?.read_only ?? false;
   const [name, setName] = useState(task?.name ?? "");
   const [prompt, setPrompt] = useState(task?.prompt ?? "");
   const [runtime, setRuntime] = useState<Runtime>(task?.runtime ?? "codex");
   const [profileID, setProfileID] = useState(task?.execution_profile_id ?? persistentAutoProfileID);
+  const [pipelineID, setPipelineID] = useState(task?.pipeline_id ?? "00000000-0000-0000-0000-000000000001");
   const [timeout, setTimeoutValue] = useState(task?.timeout_seconds ?? 7200);
   const [concurrency, setConcurrency] = useState(task?.concurrency_limit ?? 10);
   const [selected, setSelected] = useState<string[]>(task?.repositories?.map((repository) => repository.id) ?? []);
@@ -151,6 +153,7 @@ function TaskComposer({ task, onClose, onSaved, onArchive, archiveError, archive
       const input: SaveTaskInput = {
         name, prompt, runtime, timeout_seconds: timeout,
         execution_profile_id: profileID === persistentAutoProfileID ? undefined : profileID,
+        pipeline_id: pipelineID,
         concurrency_limit: concurrency, repository_ids: selected,
         schedule: { enabled: scheduled, cron: scheduled ? cron : undefined, timezone: scheduled ? timezone : undefined },
         expected_generation: task?.generation,
@@ -170,10 +173,13 @@ function TaskComposer({ task, onClose, onSaved, onArchive, archiveError, archive
   return <div className="modal-layer" role="presentation">
     <button className="modal-scrim" aria-label="Close Task editor" onClick={onClose} />
     <section className="modal task-modal" role="dialog" aria-modal="true" aria-labelledby="task-composer-title">
-      <header className="modal-header"><div><h2 id="task-composer-title">{readOnly ? "Task revision" : task ? "Edit Task" : "New Task"}</h2><p>{readOnly ? "Historical revision preserved as read-only." : "One prompt, one repository set, optional schedule."}</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={17} /></button></header>
+      <header className="modal-header"><div><h2 id="task-composer-title">{readOnly ? "Task revision" : task ? "Edit Task" : "New Task"}</h2><p>{readOnly ? "Historical revision preserved as read-only." : "Task input processed by a reusable Pipeline."}</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={17} /></button></header>
       <div className="modal-body task-form">
         <label className="field"><span>Name</span><input autoFocus={!readOnly} disabled={readOnly} value={name} onChange={(event) => setName(event.target.value)} placeholder="Weekly bug scan" /></label>
         <label className="field"><span>Prompt</span><textarea className="task-prompt" disabled={readOnly} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Review the repository and fix..." /></label>
+        <label className="field"><span>Pipeline</span><select aria-label="Pipeline" disabled={readOnly || pipelines.isPending || pipelines.isError} value={pipelineID} onChange={(event) => setPipelineID(event.target.value)}>
+          {(pipelines.data ?? []).map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name} · {pipeline.stages.length} stage{pipeline.stages.length === 1 ? "" : "s"}</option>)}
+        </select><small className="field-hint">Each stage starts a fresh agent in the same worktree.</small></label>
         <div className="task-settings">
           <div className="field"><span>Runtime</span><div className="choice-control">{[["codex", "Codex"], ["claude-code", "Claude"], ["pi", "Pi"]].map(([value, label]) => <button type="button" key={value} disabled={readOnly} aria-pressed={runtime === value} onClick={() => setRuntime(value as Runtime)}>{label}</button>)}</div></div>
           <div className="field"><span>Timeout</span><div className="choice-control timeout-control">{[[1800, "30m"], [3600, "1h"], [7200, "2h"], [14400, "4h"], [28800, "8h"]].map(([value, label]) => <button type="button" key={value} disabled={readOnly} aria-pressed={timeout === value} onClick={() => setTimeoutValue(Number(value))}>{label}</button>)}</div></div>
@@ -192,7 +198,7 @@ function TaskComposer({ task, onClose, onSaved, onArchive, archiveError, archive
           {scheduled && <div className="task-settings schedule-fields"><label className="field"><span>Cron</span><input className="mono" disabled={readOnly} value={cron} onChange={(event) => setCron(event.target.value)} /></label><label className="field"><span>Timezone</span><input disabled={readOnly} value={timezone} onChange={(event) => setTimezone(event.target.value)} /></label></div>}
           {task?.schedule.pending_due_at && <div className="pending-occurrence"><span><strong>{task.schedule.health_status === "disabled" ? "Occurrence paused" : "Occurrence blocked"}</strong><small>{task.schedule.health_message}</small></span>{!readOnly && (task.schedule.health_status === "blocked" || task.schedule.health_status === "disabled") && <button className="button button-danger-secondary" disabled={discard.isPending} onClick={() => discard.mutate()}>{discard.isPending ? "Discarding…" : "Discard occurrence"}</button>}</div>}
         </div>
-        <InlineError error={save.error ?? archiveError ?? discard.error ?? repositories.error ?? profiles.error} />
+        <InlineError error={save.error ?? archiveError ?? discard.error ?? repositories.error ?? profiles.error ?? pipelines.error} />
       </div>
       <footer className="modal-footer">{task && !readOnly && <button className="button button-danger-secondary" disabled={archivePending} onClick={() => onArchive(task)}><Archive size={14} /> {archivePending ? (task.archived ? "Restoring…" : "Archiving…") : (task.archived ? "Restore" : "Archive")}</button>}<span /><button className="button button-secondary" onClick={onClose}>{readOnly ? "Close" : "Cancel"}</button>{!readOnly && <button className="button button-primary" disabled={save.isPending || !name.trim() || !prompt.trim() || (scheduled && selected.length === 0) || Boolean(selectedProfileCompatibilityIssue)} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save Task"}</button>}</footer>
     </section>

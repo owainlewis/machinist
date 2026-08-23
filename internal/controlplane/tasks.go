@@ -73,6 +73,7 @@ type normalizedTask struct {
 	timezone           string
 	nextDueAt          *time.Time
 	outcomeContract    protocol.OutcomeContract
+	pipelineID         string
 }
 
 func normalizeTask(input protocol.SaveTaskRequest, now time.Time) (normalizedTask, error) {
@@ -88,10 +89,14 @@ func normalizeTask(input protocol.SaveTaskRequest, now time.Time) (normalizedTas
 		cron:               strings.TrimSpace(input.Schedule.Cron),
 		timezone:           strings.TrimSpace(input.Schedule.Timezone),
 		outcomeContract:    protocol.OutcomeContract(strings.TrimSpace(string(input.OutcomeContract))),
+		pipelineID:         strings.TrimSpace(input.PipelineID),
 	}
 	value.nameKey = normalizeTitleKey(value.name)
 	if value.executionProfileID == protocol.PersistentAutoProfileID {
 		value.executionProfileID = ""
+	}
+	if value.pipelineID == "" {
+		value.pipelineID = protocol.DefaultPipelineID
 	}
 	if value.name == "" || utf8.RuneCountInString(value.name) > 200 {
 		return value, invalid("invalid_task_name", "name is required and limited to 200 characters")
@@ -190,6 +195,9 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.SaveTaskRequest) 
 	if err := validateTaskExecutionProfile(ctx, tx, value.executionProfileID); err != nil {
 		return protocol.Task{}, err
 	}
+	if _, err := loadPipelineSnapshot(ctx, tx, value.pipelineID); err != nil {
+		return protocol.Task{}, err
+	}
 	if err := validateOutcomeContractBackend(ctx, tx, value.outcomeContract, value.executionProfileID); err != nil {
 		return protocol.Task{}, err
 	}
@@ -205,11 +213,11 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.SaveTaskRequest) 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO tasks(
 			id, name, name_key, prompt, runtime, timeout_seconds,
-			concurrency_limit, execution_profile_id, outcome_contract, generation, archived, migration_only, schedule_enabled,
+			concurrency_limit, execution_profile_id, outcome_contract, pipeline_id, generation, archived, migration_only, schedule_enabled,
 			cron, timezone, next_due_at, schedule_health_status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)
 	`, id, value.name, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
-		value.concurrencyLimit, nullableString(value.executionProfileID), value.outcomeContract, value.scheduleEnabled, nullableString(value.cron), nullableString(value.timezone),
+		value.concurrencyLimit, nullableString(value.executionProfileID), value.outcomeContract, value.pipelineID, value.scheduleEnabled, nullableString(value.cron), nullableString(value.timezone),
 		next, taskScheduleHealth(value.scheduleEnabled), now, now)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -247,13 +255,14 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 	}
 	var archived, migrationOnly, readOnly int
 	var currentOutcome protocol.OutcomeContract
+	var currentPipelineID string
 	var pendingDue, scheduleRetry sql.NullInt64
 	var scheduleHealthStatus, scheduleHealthCode string
 	err = tx.QueryRowContext(ctx, `
-		SELECT archived, migration_only, read_only, outcome_contract, pending_due_at, schedule_retry_at,
+		SELECT archived, migration_only, read_only, outcome_contract, COALESCE(pipeline_id, ?), pending_due_at, schedule_retry_at,
 		       schedule_health_status, schedule_health_code
 		FROM tasks WHERE id = ?
-	`, id).Scan(&archived, &migrationOnly, &readOnly, &currentOutcome, &pendingDue, &scheduleRetry,
+	`, protocol.DefaultPipelineID, id).Scan(&archived, &migrationOnly, &readOnly, &currentOutcome, &currentPipelineID, &pendingDue, &scheduleRetry,
 		&scheduleHealthStatus, &scheduleHealthCode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.Task{}, ErrNotFound
@@ -272,6 +281,12 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 	}
 	if value.outcomeContract == "" {
 		value.outcomeContract = currentOutcome
+	}
+	if strings.TrimSpace(input.PipelineID) == "" {
+		value.pipelineID = currentPipelineID
+	}
+	if _, err := loadPipelineSnapshot(ctx, tx, value.pipelineID); err != nil {
+		return protocol.Task{}, err
 	}
 	if currentOutcome == protocol.OutcomeAgentUpdate && value.outcomeContract == protocol.OutcomeProcessExit {
 		return protocol.Task{}, conflict(
@@ -292,7 +307,7 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 	result, err := tx.ExecContext(ctx, `
 		UPDATE tasks SET
 			name = ?, name_key = ?, prompt = ?, runtime = ?, timeout_seconds = ?,
-			concurrency_limit = ?, execution_profile_id = ?, outcome_contract = ?, generation = generation + 1, schedule_enabled = ?,
+			concurrency_limit = ?, execution_profile_id = ?, outcome_contract = ?, pipeline_id = ?, generation = generation + 1, schedule_enabled = ?,
 			cron = CASE WHEN pending_due_at IS NOT NULL AND ? = 0 THEN cron ELSE ? END,
 			timezone = CASE WHEN pending_due_at IS NOT NULL AND ? = 0 THEN timezone ELSE ? END,
 			next_due_at = CASE WHEN pending_due_at IS NULL THEN ? ELSE next_due_at END,
@@ -308,7 +323,7 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 			updated_at = ?
 		WHERE id = ? AND generation = ?
 	`, value.name, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
-		value.concurrencyLimit, nullableString(value.executionProfileID), value.outcomeContract, value.scheduleEnabled, value.scheduleEnabled, nullableString(value.cron),
+		value.concurrencyLimit, nullableString(value.executionProfileID), value.outcomeContract, value.pipelineID, value.scheduleEnabled, value.scheduleEnabled, nullableString(value.cron),
 		value.scheduleEnabled, nullableString(value.timezone),
 		next, value.scheduleEnabled, preserveBlockedOccurrence, value.scheduleEnabled,
 		preserveBlockedOccurrence, preserveBlockedOccurrence, now, id, input.ExpectedGeneration)
@@ -598,12 +613,14 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.Task, error) {
 	var nextDue, pendingDue sql.NullInt64
 	var created, updated int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit,
-		       generation, outcome_contract, archived, read_only, schedule_enabled, cron, timezone, next_due_at, pending_due_at,
-		       schedule_health_status, schedule_health_code, schedule_health_message, created_at, updated_at
-		FROM tasks WHERE id = ? AND migration_only = 0
-	`, id).Scan(&task.ID, &task.Name, &task.Prompt, &task.Runtime, &task.ExecutionProfileID,
-		&task.TimeoutSeconds, &task.ConcurrencyLimit, &task.Generation, &task.OutcomeContract, &archived, &readOnly,
+		SELECT task.id, task.name, task.prompt, task.runtime, COALESCE(task.execution_profile_id, ''), task.timeout_seconds, task.concurrency_limit,
+		       task.generation, task.outcome_contract, COALESCE(task.pipeline_id, ?), pipeline.name,
+		       task.archived, task.read_only, task.schedule_enabled, task.cron, task.timezone, task.next_due_at, task.pending_due_at,
+		       task.schedule_health_status, task.schedule_health_code, task.schedule_health_message, task.created_at, task.updated_at
+		FROM tasks task JOIN pipelines pipeline ON pipeline.id = COALESCE(task.pipeline_id, ?)
+		WHERE task.id = ? AND task.migration_only = 0
+	`, protocol.DefaultPipelineID, protocol.DefaultPipelineID, id).Scan(&task.ID, &task.Name, &task.Prompt, &task.Runtime, &task.ExecutionProfileID,
+		&task.TimeoutSeconds, &task.ConcurrencyLimit, &task.Generation, &task.OutcomeContract, &task.PipelineID, &task.PipelineName, &archived, &readOnly,
 		&scheduleEnabled, &cron, &timezone, &nextDue, &pendingDue, &task.Schedule.HealthStatus,
 		&task.Schedule.HealthCode, &task.Schedule.HealthMessage, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -716,6 +733,13 @@ func (s *Store) admitTask(
 		if snapshot.OutcomeContract == "" {
 			snapshot.OutcomeContract = protocol.OutcomeProcessExit
 		}
+		if snapshot.Pipeline.ID == "" || len(snapshot.Pipeline.Stages) == 0 {
+			pipeline, err := loadPipelineSnapshot(ctx, tx, protocol.DefaultPipelineID)
+			if err != nil {
+				return protocol.RunDetail{}, false, err
+			}
+			snapshot.Pipeline = pipeline
+		}
 		var archived, migrationOnly, readOnly, scheduleEnabled int
 		var pendingDue sql.NullInt64
 		err := tx.QueryRowContext(ctx, `
@@ -744,11 +768,11 @@ func (s *Store) admitTask(
 		var archived, migrationOnly, readOnly int
 		err := tx.QueryRowContext(ctx, `
 			SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit,
-			       generation, outcome_contract, archived, migration_only, read_only
+			       generation, outcome_contract, COALESCE(pipeline_id, ?), archived, migration_only, read_only
 			FROM tasks WHERE id = ?
-		`, taskID).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
+		`, protocol.DefaultPipelineID, taskID).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
 			&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation,
-			&snapshot.OutcomeContract, &archived, &migrationOnly, &readOnly)
+			&snapshot.OutcomeContract, &snapshot.Pipeline.ID, &archived, &migrationOnly, &readOnly)
 		if errors.Is(err, sql.ErrNoRows) {
 			return protocol.RunDetail{}, false, ErrNotFound
 		}
@@ -761,6 +785,11 @@ func (s *Store) admitTask(
 		if archived != 0 || migrationOnly != 0 {
 			return protocol.RunDetail{}, false, conflict("task_archived", "archived Tasks cannot start Runs")
 		}
+		pipeline, err := loadPipelineSnapshot(ctx, tx, snapshot.Pipeline.ID)
+		if err != nil {
+			return protocol.RunDetail{}, false, err
+		}
+		snapshot.Pipeline = pipeline
 		rows, err := tx.QueryContext(ctx, `
 			SELECT repository.id, repository.remote_identity
 			FROM task_repositories selected
@@ -793,6 +822,12 @@ func (s *Store) admitTask(
 		return protocol.RunDetail{}, false, conflict(
 			"agent_update_backend_unsupported",
 			"agent_update requires the persistent execution backend",
+		)
+	}
+	if execution.Backend != protocol.BackendPersistent && len(snapshot.Pipeline.Stages) > 1 {
+		return protocol.RunDetail{}, false, conflict(
+			"pipeline_backend_unsupported",
+			"multi-stage Pipelines currently require a persistent Worker",
 		)
 	}
 	snapshotJSON, err := json.Marshal(snapshot)
@@ -853,9 +888,6 @@ func (s *Store) admitTask(
 	materialized := 0
 	targets := make([]protocol.WorkTarget, 0, len(snapshot.Repositories))
 	for position, repository := range snapshot.Repositories {
-		if !protocol.AgentPromptFits(snapshot.Name, repository.RemoteIdentity, resolvedPrompt) {
-			return protocol.RunDetail{}, false, conflict("agent_prompt_too_large", "the frozen Task prompt cannot fit the Worker request")
-		}
 		sessionID, err := newID()
 		if err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
@@ -866,6 +898,19 @@ func (s *Store) admitTask(
 			RepositoryIdentity: repository.RemoteIdentity, SourceKind: "repository",
 			SourceKey: repository.ID, SourceReference: repository.RemoteIdentity,
 			PublishBranch: workPublishBranch(sessionID),
+		}
+		resolvedStages := make([]protocol.StageRun, 0, len(snapshot.Pipeline.Stages))
+		for _, stage := range snapshot.Pipeline.Stages {
+			prompt := renderPipelinePrompt(stage.Prompt, map[string]string{
+				"task.id": snapshot.ID, "task.name": snapshot.Name, "task.prompt": resolvedPrompt,
+				"run.id": runID, "repository": repository.RemoteIdentity, "branch": target.PublishBranch,
+			})
+			if !protocol.AgentPromptFits(snapshot.Name, repository.RemoteIdentity, prompt) {
+				return protocol.RunDetail{}, false, conflict("agent_prompt_too_large", "one rendered Pipeline stage cannot fit the Worker request")
+			}
+			resolvedStages = append(resolvedStages, protocol.StageRun{
+				Position: stage.Position, Name: stage.Name, Prompt: prompt, State: protocol.StagePending,
+			})
 		}
 		state, blockedReason := "blocked", taskConcurrencyBlockedReason
 		var assigned any
@@ -905,6 +950,14 @@ func (s *Store) admitTask(
 			target.SourceReference, target.ContextSnapshot, target.PublishBranch, protocol.ExecutionOwnerNone,
 			boundedUTF8Bytes(blockedReason, protocol.MaxWaitingReasonBytes)); err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
+		}
+		for _, stage := range resolvedStages {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO session_stages(session_id, position, name, prompt, state)
+				VALUES (?, ?, ?, ?, 'pending')
+			`, sessionID, stage.Position, stage.Name, stage.Prompt); err != nil {
+				return protocol.RunDetail{}, false, unavailable(err)
+			}
 		}
 		targets = append(targets, target)
 		if state == "queued" {
@@ -1230,6 +1283,9 @@ func (s *Store) runListEntry(ctx context.Context, id string) (protocol.Run, erro
 		return run, unavailable(err)
 	}
 	run.Task.Prompt, run.Task.TimeoutSeconds, run.Task.ConcurrencyLimit = "", 0, 0
+	for index := range run.Task.Pipeline.Stages {
+		run.Task.Pipeline.Stages[index].Prompt = ""
+	}
 	run.AdmittedAt, run.UpdatedAt = fromMillis(admittedAt), fromMillis(updatedAt)
 	if scheduledAt.Valid {
 		value := fromMillis(scheduledAt.Int64)
@@ -1390,6 +1446,24 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 	}
 	for index := range detail.Sessions {
 		session := &detail.Sessions[index]
+		stageRows, err := s.db.QueryContext(ctx, `
+			SELECT position, name, prompt, state, result, error, started_at, completed_at
+			FROM session_stages WHERE session_id = ? ORDER BY position
+		`, session.ID)
+		if err != nil {
+			return detail, unavailable(err)
+		}
+		for stageRows.Next() {
+			stage, err := scanStageRun(stageRows)
+			if err != nil {
+				stageRows.Close()
+				return detail, unavailable(err)
+			}
+			session.Stages = append(session.Stages, stage)
+		}
+		if err := stageRows.Close(); err != nil {
+			return detail, unavailable(err)
+		}
 		attemptRows, err := s.db.QueryContext(ctx, `
 			SELECT attempt.id, attempt.execution_id, attempt.worker_id, attempt.attempt_number, attempt.state,
 			       attempt.lease_expires_at, attempt.supervisor_pid, attempt.process_identity, attempt.process_group_id,
@@ -1567,6 +1641,13 @@ func (s *Store) CancelRun(ctx context.Context, runID string) (protocol.RunDetail
 		return protocol.RunDetail{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
+		UPDATE session_stages SET state = 'cancelled', completed_at = ?
+		WHERE session_id IN (SELECT id FROM sessions WHERE run_id = ? AND state = 'cancelled')
+		  AND state IN ('pending', 'running')
+	`, now, runID); err != nil {
+		return protocol.RunDetail{}, unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE runs SET updated_at = ?, terminal_at = CASE
 			WHEN NOT EXISTS (
 				SELECT 1 FROM sessions session WHERE session.run_id = runs.id
@@ -1618,6 +1699,13 @@ func (s *Store) CancelSession(ctx context.Context, runID, sessionID string) (pro
 			updated_at = ?
 		WHERE session_id = ? AND state IN ('queued','preparing','running')
 	`, now, sessionID); err != nil {
+		return protocol.RunDetail{}, unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE session_stages SET state = 'cancelled', completed_at = ?
+		WHERE session_id = ? AND EXISTS (SELECT 1 FROM sessions WHERE id = ? AND state = 'cancelled')
+		  AND state IN ('pending', 'running')
+	`, now, sessionID, sessionID); err != nil {
 		return protocol.RunDetail{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1751,6 +1839,12 @@ func (s *Store) RetrySession(ctx context.Context, expectedRunID, sessionID strin
 		       terminal_message = '', waiting_reason = '', execution_owner = 'none'
 		WHERE id = ?
 	`, assignedWorkerID, sessionID); err != nil {
+		return protocol.RunDetail{}, unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE session_stages SET state = 'pending', result = '', error = '', started_at = NULL, completed_at = NULL
+		WHERE session_id = ?
+	`, sessionID); err != nil {
 		return protocol.RunDetail{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE runs SET updated_at = ?, terminal_at = NULL WHERE id = ?`, now, runID); err != nil {
