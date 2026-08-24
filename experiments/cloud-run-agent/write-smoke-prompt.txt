@@ -1,5 +1,0 @@
-Create a file named cloud-run-smoke.txt in the repository root containing exactly:
-
-CLOUD_RUN_AGENT_OK
-
-Do not modify any other file. Finish after creating the file.

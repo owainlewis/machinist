@@ -1,27 +1,21 @@
-FROM node:22.19.0-bookworm-slim
+FROM node:22.22.2-bookworm-slim
 
-ARG PI_VERSION=0.80.10
+ARG CODEX_VERSION=0.149.1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
-        curl \
         git \
-        jq \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN npm install --global "@earendil-works/pi-coding-agent@${PI_VERSION}"
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global "@openai/codex@${CODEX_VERSION}"
 
 RUN mkdir -p /workspace \
     && chown node:node /workspace
 
-COPY --chown=node:node run-agent.sh /usr/local/bin/run-agent
-RUN chmod 0755 /usr/local/bin/run-agent
-
-ENV PI_SKIP_VERSION_CHECK=1 \
-    PI_TELEMETRY=0
+COPY --chown=node:node run-codex.sh /usr/local/bin/run-codex
+RUN chmod 0755 /usr/local/bin/run-codex
 
 USER node
 WORKDIR /workspace
 
-ENTRYPOINT ["/usr/local/bin/run-agent"]
+ENTRYPOINT ["/usr/local/bin/run-codex"]

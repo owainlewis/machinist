@@ -1,8 +1,0 @@
-Read README.md and ARCHITECTURE.md.
-
-Return:
-1. What Factory does.
-2. Which agent runtimes it supports.
-3. How the Worker launches Pi.
-
-Do not modify files.

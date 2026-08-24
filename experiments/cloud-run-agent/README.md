@@ -1,214 +1,199 @@
-# Cloud Run agent proof of concept
+# Codex Cloud Run agent
 
-This proof of concept runs Pi as a disposable Cloud Run Job while keeping its
-result after the container exits. It is intentionally separate from Factory's
-Worker protocol.
+This is Factory's single Cloud Run agent experiment. It runs one prompt through
+the Codex CLI in a disposable Cloud Run Job:
 
-One reusable Job handles every execution. A run freezes a public GitHub
-repository to one full commit, uploads an input document to a private GCS
-bucket, starts the Job, and verifies the returned result archive. Completed
-Cloud Run execution records are deleted by default. The reusable Job remains.
+```text
+operator -> Cloud Run Job -> Codex CLI -> OpenAI API -> Cloud Logging
+```
 
-The proof trusts the selected repository and prompt. Repository code can read
-the OpenRouter credential mounted in its container and can make outbound
-network requests. This is managed disposable compute, not a sandbox for hostile
-code.
+## Security boundary
 
-## What the operator provisions
+The operator and prompt are trusted. The prompt must not contain secrets. Cloud
+Run execution overrides are visible to project members who can inspect the Job.
+The OpenAI API key is mounted from Secret Manager as a file and is added to the
+environment only for the Codex process. A model-issued shell command can inherit
+that environment, so the read-only sandbox is not a secret-isolation boundary.
 
-`deploy.sh` performs the manual project setup:
+The smoke test runs Codex with a read-only sandbox and no repository. Do not
+reuse this setup for untrusted repository code. Before running repository
+scripts, replace the long-lived API key with OpenAI workload identity
+federation or another credential-isolating design.
 
-- one Artifact Registry repository;
-- one Cloud Run Job service account;
-- one private artifact bucket with seven-day object cleanup;
-- read and write access from that service account to the artifact bucket;
-- access to one existing OpenRouter secret;
-- one reusable Cloud Run Job with a digest-pinned image, one task, and zero
-  native retries.
-
-The OpenRouter secret must exist before deployment. Its latest enabled numeric
-version is pinned on the Job. Factory does not receive or store the secret.
-
-## Files
-
-- `Dockerfile` builds a pinned Node and Pi image.
-- `run-agent.sh` reads frozen input, checks out the exact commit, runs Pi, and
-  uploads one immutable result archive.
-- `deploy.sh` creates or updates the manually managed Google Cloud resources.
-- `validate.sh` checks the deployed profile and prints actionable failures.
-- `execute.sh` resolves a commit, starts one execution, verifies its archive,
-  and requests execution cleanup.
-- `inspect.sh` resumes polling and artifact recovery from a durable launch
-  record.
-- `resolve-git-ref.sh` freezes branches, lightweight tags, and annotated tags.
-- `cleanup.sh` lists or deletes old completed execution records.
-- `test-run-agent.sh` tests checkout, invocation, redaction, failure artifacts,
-  and input identity without a real model call.
+API-key runs use OpenAI Platform billing rather than ChatGPT subscription
+credits.
 
 ## Local checks
 
+Run the focused runner test and shell syntax checks:
+
 ```sh
 bash -n experiments/cloud-run-agent/*.sh
-experiments/cloud-run-agent/test-run-agent.sh
-experiments/cloud-run-agent/test-control.sh
-experiments/cloud-run-agent/test-validate.sh
+experiments/cloud-run-agent/test-run-codex.sh
 ```
 
-With a Docker daemon running:
+Build the same Linux image that Cloud Run will use:
 
 ```sh
 docker build --platform linux/amd64 \
-  --tag factory-agent-experiment \
+  --tag factory-codex-cloud-run-smoke \
   experiments/cloud-run-agent
 ```
 
+To make a real local model call without placing the key in the container
+environment:
+
+```sh
+key_file="$(mktemp)"
+trap 'rm -f "$key_file"' EXIT
+printf '%s' "$OPENAI_API_KEY" > "$key_file"
+
+docker run --rm --platform linux/amd64 \
+  --user "$(id -u):$(id -g)" \
+  --env HOME=/tmp \
+  --env 'PROMPT=Reply with exactly: hello from local Docker' \
+  --mount "type=bind,source=${key_file},target=/secrets/openai/api-key,readonly" \
+  factory-codex-cloud-run-smoke
+```
+
+The user override makes the container process use the host user's UID and GID,
+so it can read the mode-0600 temporary key on native Linux without making the
+file readable by other host users. `HOME=/tmp` gives that otherwise anonymous
+container identity a writable home directory. The deployed image still uses
+its default unprivileged `node` user.
+
 ## Deploy to the Factory Google Cloud project
 
-The project name is `Factory` and its project ID is `factory-505220`. Commands
-use the project ID explicitly and do not depend on the global `gcloud` project.
+The existing Factory project ID is `factory-505220`.
 
-Create the secret without placing the value in shell history:
+Set the deployment values:
 
 ```sh
 export PROJECT_ID=factory-505220
-printf '%s' "$OPENROUTER_API_KEY" | \
-  gcloud secrets create openrouter-api-key \
+export REGION=europe-west1
+export REPOSITORY=experiments
+export IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/codex-agent-smoke:0.149.1"
+export SERVICE_ACCOUNT_ID=codex-agent-smoke
+export SERVICE_ACCOUNT="${SERVICE_ACCOUNT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
+export SECRET_NAME=openai-codex-api-key
+export JOB_NAME=codex-agent-smoke
+```
+
+Enable the required APIs:
+
+```sh
+gcloud services enable \
+  artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com \
+  run.googleapis.com \
+  secretmanager.googleapis.com \
+  --project "$PROJECT_ID"
+```
+
+The existing `experiments` Artifact Registry repository can be reused. Create
+it only if it does not exist:
+
+```sh
+gcloud artifacts repositories describe "$REPOSITORY" \
+  --location "$REGION" \
+  --project "$PROJECT_ID" >/dev/null 2>&1 || \
+gcloud artifacts repositories create "$REPOSITORY" \
+  --repository-format docker \
+  --location "$REGION" \
+  --project "$PROJECT_ID"
+```
+
+Build and publish the image:
+
+```sh
+gcloud builds submit experiments/cloud-run-agent \
+  --tag "$IMAGE" \
+  --project "$PROJECT_ID"
+```
+
+Create the OpenAI Platform API key secret without putting its value in shell
+history:
+
+```sh
+printf '%s' "$OPENAI_API_KEY" | \
+  gcloud secrets create "$SECRET_NAME" \
     --data-file=- \
     --replication-policy=automatic \
     --project "$PROJECT_ID"
 ```
 
-If it already exists, add a version instead:
+If the secret already exists, add a new version instead:
 
 ```sh
-printf '%s' "$OPENROUTER_API_KEY" | \
-  gcloud secrets versions add openrouter-api-key \
+printf '%s' "$OPENAI_API_KEY" | \
+  gcloud secrets versions add "$SECRET_NAME" \
     --data-file=- \
     --project "$PROJECT_ID"
 ```
 
-Build the image and deploy the reusable Job:
+Create a dedicated service account and grant access to only that secret:
 
 ```sh
-PROJECT_ID=factory-505220 \
-REGION=europe-west1 \
-  experiments/cloud-run-agent/deploy.sh
+gcloud iam service-accounts describe "$SERVICE_ACCOUNT" \
+  --project "$PROJECT_ID" >/dev/null 2>&1 || \
+gcloud iam service-accounts create "$SERVICE_ACCOUNT_ID" \
+  --display-name 'Codex Cloud Run smoke test' \
+  --project "$PROJECT_ID"
+
+gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
+  --member "serviceAccount:${SERVICE_ACCOUNT}" \
+  --role roles/secretmanager.secretAccessor \
+  --project "$PROJECT_ID"
 ```
 
-By default, a clean experiment directory is required and the image is tagged
-with the Git commit. Set a unique `IMAGE_TAG` only for an intentional
-development deployment. The Job always uses the resolved image digest.
-
-Validate the profile:
+Create or update the reusable Job:
 
 ```sh
-PROJECT_ID=factory-505220 \
-REGION=europe-west1 \
-  experiments/cloud-run-agent/validate.sh
+gcloud run jobs deploy "$JOB_NAME" \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --project "$PROJECT_ID" \
+  --service-account "$SERVICE_ACCOUNT" \
+  --set-secrets "/secrets/openai/api-key=${SECRET_NAME}:latest" \
+  --tasks 1 \
+  --max-retries 0 \
+  --task-timeout 30m \
+  --cpu 2 \
+  --memory 2Gi
 ```
 
-## Run an agent
+## Run a prompt
 
-The safe smoke prompt uses read-only Pi tools:
+Use a non-sensitive prompt for the first execution. The alternate `@` delimiter
+keeps commas in the prompt value instead of treating them as environment-entry
+separators. Choose a different delimiter if the prompt itself contains `@`.
 
 ```sh
-PROJECT_ID=factory-505220 \
-REGION=europe-west1 \
-  experiments/cloud-run-agent/execute.sh \
-  experiments/cloud-run-agent/smoke-prompt.txt
+PROMPT='Reply with exactly: hello, from Codex on Cloud Run'
+
+gcloud run jobs execute "$JOB_NAME" \
+  --region "$REGION" \
+  --project "$PROJECT_ID" \
+  --update-env-vars "^@^PROMPT=${PROMPT}" \
+  --wait
 ```
 
-To produce a patch:
+Read the JSONL output from Cloud Logging:
 
 ```sh
-PROJECT_ID=factory-505220 \
-REGION=europe-west1 \
-AGENT_MODE=write \
-  experiments/cloud-run-agent/execute.sh \
-  experiments/cloud-run-agent/write-smoke-prompt.txt
+gcloud run jobs logs read "$JOB_NAME" \
+  --region "$REGION" \
+  --project "$PROJECT_ID" \
+  --freshness 10m
 ```
 
-The run stores verified files under
-`./factory-agent-results/<attempt-id>/`. The same archive remains in GCS until
-the bucket's lifecycle rule deletes it.
-
-`execute.sh` writes `launch.json` immediately after Cloud Run accepts the run.
-If the terminal closes or polling fails, use the printed resume command. You
-can also resume directly:
-
-```sh
-PROJECT_ID=factory-505220 \
-  experiments/cloud-run-agent/inspect.sh <attempt-id>
-```
-
-Set `DELETE_EXECUTION_ON_TERMINAL=false` to retain one execution for console
-inspection. The default requests deletion after terminal state and artifact
-verification.
-
-## Input contract
-
-The only per-execution environment overrides are `ATTEMPT_ID`, `INPUT_URI`, and
-`OUTPUT_URI`. The private input object contains:
-
-```json
-{
-  "version": 2,
-  "attempt_id": "attempt-...",
-  "dispatch_nonce": "32 lowercase hexadecimal characters",
-  "repository_url": "https://github.com/owainlewis/factory.git",
-  "git_commit": "full 40 character commit",
-  "prompt": "the agent task",
-  "agent_mode": "read-only",
-  "model": "deepseek/deepseek-v4-flash",
-  "thinking": "low"
-}
-```
-
-The first proof supports public GitHub HTTPS repositories only. `execute.sh`
-resolves a branch or tag before uploading the input. Set `GIT_COMMIT` to supply
-an already resolved full commit.
-
-## Result contract
-
-`attempt-result.tar.gz` contains exactly:
-
-```text
-manifest.json
-result.json
-changes.patch
-status.txt
-events.jsonl
-```
-
-The manifest binds the archive to the Attempt and frozen commit and includes a
-SHA-256 digest for every result file. `execute.sh` checks the paths, identity,
-and every digest before accepting the result. Raw Pi reasoning and the prompt
-are not included in the result archive or mirrored to container logs.
-
-## Clean old execution records
-
-List completed execution records without deleting them:
-
-```sh
-PROJECT_ID=factory-505220 \
-  experiments/cloud-run-agent/cleanup.sh
-```
-
-Delete every completed execution record for the reusable Job:
-
-```sh
-PROJECT_ID=factory-505220 APPLY=true \
-  experiments/cloud-run-agent/cleanup.sh
-```
-
-This does not delete the reusable Job or the GCS artifacts.
+The final response appears in an `item.completed` event whose item type is
+`agent_message`.
 
 ## Deliberate limits
 
-- Manual executions only.
-- One public repository and one Pi process per execution.
-- No Factory Work, Attempt, lease, or cancellation integration yet.
-- No private repository authentication.
-- No branch push or pull request publishing.
-- No untrusted repository isolation.
-- No automatic infrastructure provisioning from the Factory UI.
+- One manually supplied prompt per execution.
+- Read-only Codex sandbox.
+- No repository checkout or persisted filesystem.
+- No result store other than Cloud Logging.
+- No Factory Task, Run, Session, retry, or cancellation integration.
