@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -37,12 +39,20 @@ func newServer(cfg loadedConfig, github githubClient, writes bool, logger *log.L
 	if err != nil {
 		return nil, err
 	}
+	authToken, err := newAuthorityToken()
+	if err != nil {
+		return nil, err
+	}
 	state := newStore(cfg.Config.StateDirectory)
-	runner := &agentRunner{config: cfg, store: state, github: github, githubWrites: writes, executable: executable}
+	runner := &agentRunner{config: cfg, store: state, github: github, githubWrites: writes, executable: executable, authToken: authToken}
 	return &server{config: cfg, store: state, github: github, runner: runner, log: logger, running: make(map[string]struct{})}, nil
 }
 
 func (s *server) serve(ctx context.Context) error {
+	if err := s.store.activate(s.runner.authToken); err != nil {
+		return fmt.Errorf("activate local runtime authority: %w", err)
+	}
+	defer s.store.deactivate(s.runner.authToken)
 	if err := s.recoverInterrupted(); err != nil {
 		return err
 	}
@@ -52,11 +62,19 @@ func (s *server) serve(ctx context.Context) error {
 	mux.HandleFunc("GET /", s.handleHome)
 	mux.HandleFunc("GET /api/work", s.handleList)
 	mux.HandleFunc("POST /api/run", s.handleRun)
+	mux.HandleFunc("POST /api/internal", s.handleInternal)
 	mux.HandleFunc("POST /webhooks/github", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "GitHub webhooks are not enabled in this local spike; use the poller", http.StatusNotImplemented)
 	})
 
-	httpServer := &http.Server{Addr: s.config.Config.Server.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	httpServer := &http.Server{
+		Addr:              s.config.Config.Server.Listen,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		BaseContext: func(net.Listener) context.Context {
+			return serverContext
+		},
+	}
 	var loops sync.WaitGroup
 	loops.Add(2)
 	go func() {
@@ -93,6 +111,58 @@ func (s *server) serve(ctx context.Context) error {
 	return err
 }
 
+func (s *server) handleInternal(w http.ResponseWriter, request *http.Request) {
+	expected := "Bearer " + s.runner.authToken
+	provided := request.Header.Get("Authorization")
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+		http.Error(w, "unauthorized internal command", http.StatusUnauthorized)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	request.Body = http.MaxBytesReader(w, request.Body, 16<<10)
+	var input struct {
+		WorkID string   `json:"work_id"`
+		Action string   `json:"action"`
+		Args   []string `json:"args"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil || input.WorkID == "" {
+		http.Error(w, "invalid internal command", http.StatusBadRequest)
+		return
+	}
+	var output []byte
+	switch input.Action {
+	case "delegate":
+		if len(input.Args) != 1 {
+			http.Error(w, "delegate requires a role", http.StatusBadRequest)
+			return
+		}
+		output, err = s.runner.delegate(request.Context(), input.WorkID, input.Args[0])
+	case "publish-plan":
+		err = s.runner.publishPlan(request.Context(), input.WorkID)
+	case "finish":
+		err = s.runner.finish(request.Context(), input.WorkID)
+	case "block":
+		if len(input.Args) == 0 {
+			http.Error(w, "block requires a reason", http.StatusBadRequest)
+			return
+		}
+		err = s.runner.block(request.Context(), input.WorkID, strings.Join(input.Args, " "))
+	default:
+		http.Error(w, "unknown internal action", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write(output)
+}
+
 func (s *server) recoverInterrupted() error {
 	items, err := s.store.list()
 	if err != nil {
@@ -117,7 +187,11 @@ func (s *server) recoverInterrupted() error {
 }
 
 func (s *server) poll(ctx context.Context) {
-	duration, _ := time.ParseDuration(s.config.Config.Server.PollEvery)
+	duration, err := time.ParseDuration(s.config.Config.Server.PollEvery)
+	if err != nil || duration <= 0 {
+		s.log.Printf("poll: invalid interval %q", s.config.Config.Server.PollEvery)
+		return
+	}
 	ticker := time.NewTicker(duration)
 	defer ticker.Stop()
 	s.pollOnce(ctx)
@@ -133,7 +207,9 @@ func (s *server) poll(ctx context.Context) {
 
 func (s *server) pollOnce(ctx context.Context) {
 	for _, repository := range s.config.Config.Repositories {
-		issues, err := s.github.LabeledIssues(ctx, repository.GitHub, s.config.Config.Server.TriggerLabel)
+		pollContext, cancel := context.WithTimeout(ctx, time.Minute)
+		issues, err := s.github.LabeledIssues(pollContext, repository.GitHub, s.config.Config.Server.TriggerLabel)
+		cancel()
 		if err != nil {
 			s.log.Printf("poll %s: %v", repository.GitHub, err)
 			continue

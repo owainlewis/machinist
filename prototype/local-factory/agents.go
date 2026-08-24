@@ -20,6 +20,7 @@ type agentRunner struct {
 	github       githubClient
 	githubWrites bool
 	executable   string
+	authToken    string
 }
 
 func (r *agentRunner) runWork(ctx context.Context, id string) error {
@@ -74,12 +75,7 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 	var agentName, directory, artifact string
 	switch role {
 	case "plan":
-		agentName = r.config.Config.Roles.Plan
-		repository, err := repositoryFor(r.config, item.Issue.Repository)
-		if err != nil {
-			return nil, err
-		}
-		directory, artifact = repository.Path, "plan.md"
+		agentName, directory, artifact = r.config.Config.Roles.Plan, item.Workspace, "plan.md"
 	case "build":
 		agentName, directory, artifact = r.config.Config.Roles.Build, item.Workspace, "build.md"
 	case "verify":
@@ -110,9 +106,14 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 		return nil
 	})
 	if err != nil {
+		if role == "verify" {
+			cleanupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = removeVerificationWorkspace(cleanupContext, r.config, item, directory)
+			cancel()
+		}
 		return nil, err
 	}
-	prompt := r.config.Prompts[agentName] + "\n\n" + r.roleContext(item, role)
+	prompt := r.config.Prompts[agentName] + "\n\n" + r.roleContext(item, role, directory)
 	output, runErr := r.runAgent(ctx, agentName, directory, prompt, role, id)
 	if role == "verify" {
 		if verifyErr := ensureExactHead(ctx, directory, item.HeadSHA); verifyErr != nil && runErr == nil {
@@ -122,6 +123,12 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 			if _, verdictErr := verificationVerdict(output); verdictErr != nil {
 				runErr = verdictErr
 			}
+		}
+		cleanupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cleanupErr := removeVerificationWorkspace(cleanupContext, r.config, item, directory)
+		cancel()
+		if cleanupErr != nil {
+			runErr = errors.Join(runErr, cleanupErr)
 		}
 	}
 	if artifactErr := r.store.artifact(id, artifact, output); artifactErr != nil && runErr == nil {
@@ -189,7 +196,7 @@ func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, rol
 		if role == "foreman" {
 			args = append(args, "--tools", "Bash", "--allowedTools", "Bash("+r.executable+" internal *)")
 		} else if role == "plan" {
-			args = append(args, "--tools", "Read,Glob,Grep")
+			args = append(args, "--tools", "Read,Glob,Grep", "--allowedTools", "Read,Glob,Grep")
 		} else {
 			args = append(args, "--tools", "Read,Edit,Write,Glob,Grep,Bash", "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash")
 		}
@@ -203,24 +210,44 @@ func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, rol
 	command.Dir = directory
 	configureAgentCommand(command)
 	command.Stdin = strings.NewReader(prompt)
-	command.Env = append(os.Environ(),
+	command.Env = append(withoutFactoryEnvironment(os.Environ()),
 		"FACTORY_CONFIG="+r.config.Path,
 		"FACTORY_EXECUTABLE="+r.executable,
 		"FACTORY_WORK_ID="+id,
 		"FACTORY_ROLE="+role,
 		"FACTORY_WORKSPACE="+directory,
-		"FACTORY_GITHUB_WRITES="+strconv.FormatBool(r.githubWrites),
 	)
+	if role == "foreman" {
+		command.Env = append(command.Env, "FACTORY_AUTH_TOKEN="+r.authToken)
+	}
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
+	runErr := command.Run()
+	cleanupErr := cleanupAgentCommand(command)
+	if runErr != nil {
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
-			message = err.Error()
+			message = runErr.Error()
+		}
+		if cleanupErr != nil {
+			message += "; process cleanup: " + cleanupErr.Error()
 		}
 		return stdout.Bytes(), fmt.Errorf("agent %q: %s", name, message)
 	}
+	if cleanupErr != nil {
+		return stdout.Bytes(), fmt.Errorf("agent %q process cleanup: %w", name, cleanupErr)
+	}
 	return stdout.Bytes(), nil
+}
+
+func withoutFactoryEnvironment(environment []string) []string {
+	filtered := make([]string, 0, len(environment))
+	for _, value := range environment {
+		if !strings.HasPrefix(value, "FACTORY_") {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
 }
 
 func configureAgentCommand(command *exec.Cmd) {
@@ -247,8 +274,38 @@ func configureAgentCommand(command *exec.Cmd) {
 	command.WaitDelay = 2 * time.Second
 }
 
+func cleanupAgentCommand(command *exec.Cmd) error {
+	if command.Process == nil {
+		return nil
+	}
+	processGroup := -command.Process.Pid
+	err := syscall.Kill(processGroup, syscall.SIGTERM)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		err = syscall.Kill(processGroup, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	err = syscall.Kill(processGroup, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}
+
 func (r *agentRunner) foremanContext(item work) string {
-	command := fmt.Sprintf("%s internal --config %s --work %s", r.executable, shellQuote(r.config.Path), shellQuote(item.ID))
+	command := fmt.Sprintf("%s internal --config %s --work %s", shellQuote(r.executable), shellQuote(r.config.Path), shellQuote(item.ID))
 	return fmt.Sprintf(`## Assignment
 
 Work ID: %s
@@ -267,7 +324,7 @@ You can act only by running these commands with Bash:
 The delegate commands are synchronous. Their stdout is the child's natural-language report. Read it and decide what to do next.`, item.ID, item.Issue.Repository, item.Issue.Number, item.Issue.Title, command, command, command, command, command, command)
 }
 
-func (r *agentRunner) roleContext(item work, role string) string {
+func (r *agentRunner) roleContext(item work, role, directory string) string {
 	parts := []string{renderIssue(item.Issue)}
 	if plan, err := r.store.readArtifact(item.ID, "plan.md"); err == nil && role != "plan" {
 		parts = append(parts, "# Current plan\n\n"+string(plan))
@@ -275,7 +332,7 @@ func (r *agentRunner) roleContext(item work, role string) string {
 	if review, err := r.store.readArtifact(item.ID, "review.md"); err == nil && role == "build" {
 		parts = append(parts, "# Latest verification report\n\n"+string(review))
 	}
-	parts = append(parts, "# Run context\n\nRole: "+role+"\nCheckout: "+item.Workspace+"\nVerification run: "+strconv.Itoa(item.VerifyRuns+1))
+	parts = append(parts, "# Run context\n\nRole: "+role+"\nCheckout: "+directory+"\nVerification run: "+strconv.Itoa(item.VerifyRuns+1))
 	return strings.Join(parts, "\n\n")
 }
 

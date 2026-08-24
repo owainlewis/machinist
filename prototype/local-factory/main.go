@@ -124,11 +124,16 @@ func submitCommand(args []string) error {
 	}
 	body, _ := json.Marshal(map[string]string{"issue": reference})
 	client := http.Client{Timeout: 30 * time.Second}
-	response, err := client.Post(serverURL(cfg.Config.Server.Listen)+"/api/run", "application/json", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, serverURL(cfg.Config.Server.Listen)+"/api/run", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("connect to factory web: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, _ := io.ReadAll(response.Body)
 	if response.StatusCode >= 300 {
 		return fmt.Errorf("factory web returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
@@ -153,11 +158,15 @@ func statusCommand(args []string) error {
 		return err
 	}
 	client := http.Client{Timeout: 5 * time.Second}
-	response, err := client.Get(serverURL(cfg.Config.Server.Listen) + "/api/work")
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, serverURL(cfg.Config.Server.Listen)+"/api/work", nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("connect to factory web: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode >= 300 {
 		return fmt.Errorf("factory web returned %s", response.Status)
 	}
@@ -180,55 +189,66 @@ func internalCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	executable, err := executablePath()
-	if err != nil {
-		return err
+	authToken := os.Getenv("FACTORY_AUTH_TOKEN")
+	if authToken == "" {
+		return errors.New("internal command is not authorized by factory web")
 	}
-	writes, _ := strconvParseBool(os.Getenv("FACTORY_GITHUB_WRITES"))
-	runner := &agentRunner{config: cfg, store: newStore(cfg.Config.StateDirectory), github: ghClient{}, githubWrites: writes, executable: executable}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	action := flags.Arg(0)
+	actionArgs := flags.Args()[1:]
 	switch action {
 	case "delegate":
-		if flags.NArg() != 2 {
+		if len(actionArgs) != 1 {
 			return errors.New("delegate requires a role")
 		}
-		output, err := runner.delegate(ctx, *workID, flags.Arg(1))
-		if len(output) != 0 {
-			_, _ = os.Stdout.Write(output)
-		}
-		return err
 	case "publish-plan":
-		return runner.publishPlan(ctx, *workID)
+		if len(actionArgs) != 0 {
+			return errors.New("publish-plan does not accept arguments")
+		}
 	case "finish":
-		return runner.finish(ctx, *workID)
+		if len(actionArgs) != 0 {
+			return errors.New("finish does not accept arguments")
+		}
 	case "block":
-		if flags.NArg() < 2 {
+		if len(actionArgs) == 0 {
 			return errors.New("block requires a reason")
 		}
-		return runner.block(ctx, *workID, strings.Join(flags.Args()[1:], " "))
 	default:
 		return fmt.Errorf("unknown internal action %q", action)
 	}
+	payload, _ := json.Marshal(struct {
+		WorkID string   `json:"work_id"`
+		Action string   `json:"action"`
+		Args   []string `json:"args"`
+	}{WorkID: *workID, Action: action, Args: actionArgs})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL(cfg.Config.Server.Listen)+"/api/internal", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+authToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("connect to factory web: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	responseBody, readErr := io.ReadAll(response.Body)
+	if readErr != nil {
+		return readErr
+	}
+	if response.StatusCode >= 300 {
+		return fmt.Errorf("factory web returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
+	}
+	if len(responseBody) != 0 {
+		_, _ = os.Stdout.Write(responseBody)
+	}
+	return nil
 }
 
 func takeFirstArgument(args []string) (string, []string, error) {
-	for index, value := range args {
-		if !strings.HasPrefix(value, "-") {
-			return value, append(append([]string(nil), args[:index]...), args[index+1:]...), nil
-		}
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return "", args, errors.New("argument not found")
 	}
-	return "", args, errors.New("argument not found")
-}
-
-func strconvParseBool(value string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes":
-		return true, nil
-	case "", "0", "false", "no":
-		return false, nil
-	default:
-		return false, fmt.Errorf("invalid boolean %q", value)
-	}
+	return args[0], args[1:], nil
 }

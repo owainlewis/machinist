@@ -33,7 +33,21 @@ func prepareWorkspace(ctx context.Context, cfg loadedConfig, item work) (string,
 	}
 	workspace := filepath.Join(cfg.Config.StateDirectory, "checkouts", item.ID, fmt.Sprintf("attempt-%d", item.Attempt), "work")
 	branch := fmt.Sprintf("factory/%s-attempt-%d", item.ID, item.Attempt)
+	if strings.HasPrefix(repository.BaseRef, "origin/") {
+		remoteBranch := strings.TrimPrefix(repository.BaseRef, "origin/")
+		if _, err := commandOutput(ctx, repository.Path, nil, "git", "fetch", "origin", remoteBranch); err != nil {
+			return "", "", fmt.Errorf("fetch base branch: %w", err)
+		}
+	}
+	baseOutput, err := commandOutput(ctx, repository.Path, nil, "git", "rev-parse", "--verify", repository.BaseRef+"^{commit}")
+	if err != nil {
+		return "", "", fmt.Errorf("resolve base_ref %q: %w", repository.BaseRef, err)
+	}
+	baseSHA := strings.TrimSpace(string(baseOutput))
 	if _, err := os.Stat(workspace); err == nil {
+		if err := validateReusableWorkspace(ctx, workspace, branch, baseSHA); err != nil {
+			return "", "", fmt.Errorf("existing attempt workspace is not safe to reuse: %w", err)
+		}
 		return workspace, branch, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", "", err
@@ -41,19 +55,54 @@ func prepareWorkspace(ctx context.Context, cfg loadedConfig, item work) (string,
 	if err := os.MkdirAll(filepath.Dir(workspace), 0o755); err != nil {
 		return "", "", err
 	}
-	if strings.HasPrefix(repository.BaseRef, "origin/") {
-		remoteBranch := strings.TrimPrefix(repository.BaseRef, "origin/")
-		if _, err := commandOutput(ctx, repository.Path, nil, "git", "fetch", "origin", remoteBranch); err != nil {
-			return "", "", fmt.Errorf("fetch base branch: %w", err)
-		}
-	}
-	if _, err := commandOutput(ctx, repository.Path, nil, "git", "rev-parse", "--verify", repository.BaseRef+"^{commit}"); err != nil {
-		return "", "", fmt.Errorf("resolve base_ref %q: %w", repository.BaseRef, err)
-	}
-	if _, err := commandOutput(ctx, repository.Path, nil, "git", "worktree", "add", "-b", branch, workspace, repository.BaseRef); err != nil {
+	if _, err := commandOutput(ctx, repository.Path, nil, "git", "worktree", "add", "-b", branch, workspace, baseSHA); err != nil {
 		return "", "", fmt.Errorf("create worktree: %w", err)
 	}
 	return workspace, branch, nil
+}
+
+func validateReusableWorkspace(ctx context.Context, workspace, expectedBranch, expectedSHA string) error {
+	topLevel, err := commandOutput(ctx, workspace, nil, "git", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return err
+	}
+	actualTopLevel, err := filepath.Abs(strings.TrimSpace(string(topLevel)))
+	if err != nil {
+		return err
+	}
+	expectedTopLevel, err := filepath.Abs(workspace)
+	if err != nil {
+		return err
+	}
+	actualTopLevel, err = filepath.EvalSymlinks(actualTopLevel)
+	if err != nil {
+		return err
+	}
+	expectedTopLevel, err = filepath.EvalSymlinks(expectedTopLevel)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(actualTopLevel) != filepath.Clean(expectedTopLevel) {
+		return fmt.Errorf("checkout root is %q, expected %q", actualTopLevel, expectedTopLevel)
+	}
+	branch, err := commandOutput(ctx, workspace, nil, "git", "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return err
+	}
+	if actualBranch := strings.TrimSpace(string(branch)); actualBranch != expectedBranch {
+		return fmt.Errorf("branch is %q, expected %q", actualBranch, expectedBranch)
+	}
+	head, err := commandOutput(ctx, workspace, nil, "git", "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if actualSHA := strings.TrimSpace(string(head)); actualSHA != expectedSHA {
+		return fmt.Errorf("HEAD is %s, expected base %s", actualSHA, expectedSHA)
+	}
+	if err := ensureClean(ctx, workspace); err != nil {
+		return err
+	}
+	return nil
 }
 
 func checkpoint(ctx context.Context, workspace, message string) (string, error) {
@@ -86,6 +135,17 @@ func prepareVerificationWorkspace(ctx context.Context, cfg loadedConfig, item wo
 		return "", fmt.Errorf("create verification worktree: %w", err)
 	}
 	return workspace, nil
+}
+
+func removeVerificationWorkspace(ctx context.Context, cfg loadedConfig, item work, workspace string) error {
+	repository, err := repositoryFor(cfg, item.Issue.Repository)
+	if err != nil {
+		return err
+	}
+	if _, err := commandOutput(ctx, repository.Path, nil, "git", "worktree", "remove", "--force", workspace); err != nil {
+		return fmt.Errorf("remove verification worktree: %w", err)
+	}
+	return nil
 }
 
 func pushBranch(ctx context.Context, workspace, branch string) error {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -18,7 +21,83 @@ type store struct {
 	mu   sync.Mutex
 }
 
+type runtimeAuthority struct {
+	Token string `json:"token"`
+	PID   int    `json:"pid"`
+}
+
 func newStore(root string) *store { return &store{root: root} }
+
+func newAuthorityToken() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate runtime authority: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func (s *store) activate(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.root, 0o755); err != nil {
+		return err
+	}
+	body, err := json.Marshal(runtimeAuthority{Token: token, PID: os.Getpid()})
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+	path := filepath.Join(s.root, "authority.json")
+	for range 2 {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			if _, writeErr := file.Write(body); writeErr != nil {
+				_ = file.Close()
+				_ = os.Remove(path)
+				return writeErr
+			}
+			if closeErr := file.Close(); closeErr != nil {
+				_ = os.Remove(path)
+				return closeErr
+			}
+			return nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		existingBody, readErr := os.ReadFile(path)
+		var existing runtimeAuthority
+		if readErr == nil && json.Unmarshal(existingBody, &existing) == nil && processAlive(existing.PID) {
+			return fmt.Errorf("factory web is already running with PID %d", existing.PID)
+		}
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return removeErr
+		}
+	}
+	return errors.New("could not claim local runtime authority")
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func (s *store) deactivate(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.root, "authority.json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var authority runtimeAuthority
+	if json.Unmarshal(body, &authority) == nil && subtle.ConstantTimeCompare([]byte(token), []byte(authority.Token)) == 1 {
+		_ = os.Remove(path)
+	}
+}
 
 func (s *store) create(value issue) (work, bool, error) {
 	s.mu.Lock()
@@ -186,13 +265,13 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 		return err
 	}
 	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	defer func() { _ = os.Remove(temporaryPath) }()
 	if _, err := temporary.Write(body); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return err
 	}
 	if err := temporary.Chmod(mode); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return err
 	}
 	if err := temporary.Close(); err != nil {

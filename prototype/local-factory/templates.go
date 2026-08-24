@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const defaultForemanPrompt = `You are the Foreman for one software ticket. You own the result, not a fixed stage graph.
@@ -128,13 +129,17 @@ prompt = "agents/verifier.md"
 }
 
 func detectBaseRef(repositoryPath, repository string) (string, error) {
-	body, err := commandOutput(context.Background(), repositoryPath, nil, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	body, err := commandOutput(ctx, repositoryPath, nil, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	cancel()
 	if err == nil {
 		if value := strings.TrimSpace(string(body)); value != "" {
 			return value, nil
 		}
 	}
-	body, err = commandOutput(context.Background(), repositoryPath, nil, "gh", "repo", "view", repository, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+	body, err = commandOutput(ctx, repositoryPath, nil, "gh", "repo", "view", repository, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
+	cancel()
 	if err == nil {
 		if value := strings.TrimSpace(string(body)); value != "" {
 			return "origin/" + value, nil

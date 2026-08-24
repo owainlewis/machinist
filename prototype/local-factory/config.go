@@ -70,6 +70,9 @@ func loadConfig(path string) (loadedConfig, error) {
 	if undecoded := metadata.Undecoded(); len(undecoded) != 0 {
 		return loadedConfig{}, fmt.Errorf("decode config: unknown field %q", undecoded[0])
 	}
+	for index := range value.Repositories {
+		value.Repositories[index].GitHub = strings.TrimSpace(value.Repositories[index].GitHub)
+	}
 	if err := validateConfig(value); err != nil {
 		return loadedConfig{}, err
 	}
@@ -144,7 +147,6 @@ func validateConfig(value config) error {
 	}
 	seenRepositories := make(map[string]struct{}, len(value.Repositories))
 	for index, repository := range value.Repositories {
-		repository.GitHub = strings.TrimSpace(repository.GitHub)
 		if !validRepositoryName(repository.GitHub) {
 			return fmt.Errorf("repositories[%d].github must use owner/repository format", index)
 		}

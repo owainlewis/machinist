@@ -70,8 +70,23 @@ func TestInitialiseWritesEditableProject(t *testing.T) {
 			t.Fatalf("%s is empty", name)
 		}
 	}
-	if _, err := loadConfig(filepath.Join(directory, "factory.toml")); err != nil {
+	configPath := filepath.Join(directory, "factory.toml")
+	if _, err := loadConfig(configPath); err != nil {
 		t.Fatalf("generated config does not load: %v", err)
+	}
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(strings.Replace(string(body), `"acme/widgets"`, `" acme/widgets "`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.Repositories[0].GitHub != "acme/widgets" {
+		t.Fatalf("repository name was not normalized: %q", loaded.Config.Repositories[0].GitHub)
 	}
 }
 
@@ -200,6 +215,67 @@ func TestVerificationVerdictUsesMinimalMarkdownContract(t *testing.T) {
 	}
 }
 
+func TestRuntimeAuthorityIsHeldByOneServer(t *testing.T) {
+	t.Parallel()
+	state := newStore(t.TempDir())
+	if err := state.activate("server-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.activate("second-token"); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("second server claimed authority: %v", err)
+	}
+	state.deactivate("invented-token")
+	if err := state.activate("second-token"); err == nil {
+		t.Fatal("wrong token released runtime authority")
+	}
+	state.deactivate("server-token")
+	if err := state.activate("second-token"); err != nil {
+		t.Fatalf("released authority could not be reclaimed: %v", err)
+	}
+	state.deactivate("second-token")
+}
+
+func TestInternalAPIRejectsInventedAuthority(t *testing.T) {
+	t.Parallel()
+	server := server{runner: &agentRunner{authToken: "server-token"}}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/internal", strings.NewReader(`{"work_id":"work-1","action":"finish"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer invented-token")
+	response := httptest.NewRecorder()
+	server.handleInternal(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("response status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestPositionalArgumentMustComeFirst(t *testing.T) {
+	t.Parallel()
+	if _, _, err := takeFirstArgument([]string{"--config", "ticket"}); err == nil {
+		t.Fatal("flag value was consumed as the positional argument")
+	}
+	value, remaining, err := takeFirstArgument([]string{"ticket", "--config", "factory.toml"})
+	if err != nil || value != "ticket" || len(remaining) != 2 {
+		t.Fatalf("positional parse = %q, %v, %v", value, remaining, err)
+	}
+}
+
+func TestFactoryEnvironmentDoesNotLeakCapabilities(t *testing.T) {
+	t.Parallel()
+	filtered := withoutFactoryEnvironment([]string{"PATH=/bin", "FACTORY_AUTH_TOKEN=attacker", "FACTORY_ROLE=stale"})
+	if len(filtered) != 1 || filtered[0] != "PATH=/bin" {
+		t.Fatalf("filtered environment = %v", filtered)
+	}
+}
+
+func TestForemanCommandQuotesExecutable(t *testing.T) {
+	t.Parallel()
+	runner := agentRunner{executable: "/tmp/factory tools/factory", config: loadedConfig{Path: "/tmp/factory.toml"}}
+	context := runner.foremanContext(work{ID: "work", Issue: issue{Repository: "acme/widgets", Number: 1}})
+	if !strings.Contains(context, `'/tmp/factory tools/factory' internal`) {
+		t.Fatalf("executable was not shell quoted:\n%s", context)
+	}
+}
+
 func TestManagedPlanBodyReplacesOnlyFactoryBlock(t *testing.T) {
 	t.Parallel()
 	first := managedPlanBody("User description", "First plan")
@@ -223,9 +299,19 @@ func TestConfigRejectsNonPositivePollInterval(t *testing.T) {
 	}
 }
 
+func TestVerifierContextNamesDetachedCheckout(t *testing.T) {
+	t.Parallel()
+	runner := agentRunner{store: newStore(t.TempDir())}
+	item := work{ID: "work", Workspace: "/tmp/mutable-builder", Issue: issue{Repository: "acme/widgets", Number: 1}}
+	context := runner.roleContext(item, "verify", "/tmp/detached-verifier")
+	if !strings.Contains(context, "Checkout: /tmp/detached-verifier") || strings.Contains(context, item.Workspace) {
+		t.Fatalf("verifier context points at the wrong checkout:\n%s", context)
+	}
+}
+
 func TestRunAPIRejectsSimpleCrossOriginContentType(t *testing.T) {
 	t.Parallel()
-	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"issue":"acme/widgets#1"}`))
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/run", strings.NewReader(`{"issue":"acme/widgets#1"}`))
 	request.Header.Set("Content-Type", "text/plain")
 	response := httptest.NewRecorder()
 	server := server{config: loadedConfig{Config: validTestConfig()}, store: newStore(t.TempDir()), github: fakeGitHub{}}
@@ -251,7 +337,7 @@ func TestRunAPIDoesNotRetryWhileOldAttemptIsActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := server{config: cfg, store: state, github: fakeGitHub{issues: []issue{value}}, running: map[string]struct{}{item.ID: {}}}
-	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"issue":"acme/widgets#1"}`))
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/run", strings.NewReader(`{"issue":"acme/widgets#1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.handleRun(response, request)
@@ -308,6 +394,33 @@ func TestAgentCancellationKillsDescendantProcessGroup(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("descendant process %d survived cancellation: %v", childPID, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestAgentExitKillsBackgroundDescendant(t *testing.T) {
+	command := exec.CommandContext(t.Context(), "sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!; exit 0")
+	configureAgentCommand(command)
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupAgentCommand(command); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		err := syscall.Kill(childPID, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background descendant %d survived leader exit: %v", childPID, err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -442,17 +555,26 @@ command = [%q]
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	internalServer := &server{}
+	internalHTTP := httptest.NewServer(http.HandlerFunc(internalServer.handleInternal))
+	t.Cleanup(internalHTTP.Close)
+	configBody = strings.Replace(configBody, `listen = "127.0.0.1:0"`, fmt.Sprintf("listen = %q", strings.TrimPrefix(internalHTTP.URL, "http://")), 1)
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	state := newStore(cfg.Config.StateDirectory)
+	const authToken = "test-runtime-authority"
 	value := issue{Repository: "acme/widgets", Number: 1, Title: "Produce the correct result", Body: "The result must be correct.", URL: "https://github.com/acme/widgets/issues/1"}
 	item, _, err := state.create(value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := agentRunner{config: cfg, store: state, github: fakeGitHub{issues: []issue{value}}, executable: binary}
+	runner := agentRunner{config: cfg, store: state, github: fakeGitHub{issues: []issue{value}}, executable: binary, authToken: authToken}
+	internalServer.runner = &runner
 	if err := runner.runWork(context.Background(), item.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +603,16 @@ command = [%q]
 			t.Fatalf("missing %s: %v", artifact, err)
 		}
 	}
-	verificationWorkspace := filepath.Join(cfg.Config.StateDirectory, "checkouts", item.ID, "verify", "attempt-1-run-2")
+	for run := 1; run <= completed.VerifyRuns; run++ {
+		verificationPath := filepath.Join(cfg.Config.StateDirectory, "checkouts", item.ID, "verify", fmt.Sprintf("attempt-1-run-%d", run))
+		if _, err := os.Stat(verificationPath); !os.IsNotExist(err) {
+			t.Fatalf("verification worktree %q was retained: %v", verificationPath, err)
+		}
+	}
+	verificationWorkspace, err := prepareVerificationWorkspace(context.Background(), cfg, completed, completed.HeadSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(verificationWorkspace, "verifier-change.txt"), []byte("must not be accepted\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -489,6 +620,9 @@ command = [%q]
 	mustRun(t, verificationWorkspace, "git", "-c", "user.name=Verifier", "-c", "user.email=verifier@example.com", "commit", "-m", "bad verifier change")
 	if err := ensureExactHead(context.Background(), verificationWorkspace, completed.HeadSHA); err == nil || !strings.Contains(err.Error(), "HEAD changed") {
 		t.Fatalf("accepted verifier commit: %v", err)
+	}
+	if err := removeVerificationWorkspace(context.Background(), cfg, completed, verificationWorkspace); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := state.update(item.ID, func(current *work) error {
 		current.State = stateRunning
@@ -531,6 +665,15 @@ command = [%q]
 	if _, err := os.Stat(filepath.Join(retryWorkspace, "result.txt")); !os.IsNotExist(err) {
 		t.Fatalf("retry inherited result.txt: %v", err)
 	}
+	if reusedWorkspace, reusedBranch, err := prepareWorkspace(context.Background(), cfg, retried); err != nil || reusedWorkspace != retryWorkspace || reusedBranch != retryBranch {
+		t.Fatalf("clean workspace was not safely reused: %q, %q, %v", reusedWorkspace, reusedBranch, err)
+	}
+	if err := os.WriteFile(filepath.Join(retryWorkspace, "stale.txt"), []byte("stale attempt state\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := prepareWorkspace(context.Background(), cfg, retried); err == nil || !strings.Contains(err.Error(), "not safe to reuse") {
+		t.Fatalf("dirty attempt workspace was reused: %v", err)
+	}
 }
 
 func writeExecutable(t *testing.T, path, body string) {
@@ -542,7 +685,7 @@ func writeExecutable(t *testing.T, path, body string) {
 
 func mustRun(t *testing.T, directory, name string, args ...string) {
 	t.Helper()
-	command := exec.Command(name, args...)
+	command := exec.CommandContext(t.Context(), name, args...)
 	command.Dir = directory
 	output, err := command.CombinedOutput()
 	if err != nil {
