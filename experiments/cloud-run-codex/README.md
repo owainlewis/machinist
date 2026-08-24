@@ -162,13 +162,17 @@ gcloud run jobs deploy "$JOB_NAME" \
 
 ## Run a prompt
 
-Use a non-sensitive prompt for the first execution:
+Use a non-sensitive prompt for the first execution. The alternate `@` delimiter
+keeps commas in the prompt value instead of treating them as environment-entry
+separators. Choose a different delimiter if the prompt itself contains `@`.
 
 ```sh
+PROMPT='Reply with exactly: hello, from Codex on Cloud Run'
+
 gcloud run jobs execute "$JOB_NAME" \
   --region "$REGION" \
   --project "$PROJECT_ID" \
-  --update-env-vars 'PROMPT=Reply with exactly: hello from Codex on Cloud Run' \
+  --update-env-vars "^@^PROMPT=${PROMPT}" \
   --wait
 ```
 

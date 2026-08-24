@@ -22,4 +22,5 @@ CODEX_API_KEY="$api_key" \
         --skip-git-repo-check \
         --sandbox read-only \
         --json \
+        -- \
         "$prompt"

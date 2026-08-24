@@ -26,7 +26,7 @@ printf 'test-key-with-newline\n' > "$key_path"
 
 output="$({
     PATH="${fake_bin}:${PATH}" \
-    PROMPT='Reply with exactly: hello from Codex on Cloud Run' \
+    PROMPT='- Reply with exactly: hello from Codex on Cloud Run' \
     CODEX_API_KEY_FILE="$key_path" \
     FAKE_CODEX_ARGS_PATH="$args_path" \
     FAKE_CODEX_KEY_PATH="$observed_key_path" \
@@ -41,7 +41,8 @@ printf '%s\0' \
     --sandbox \
     read-only \
     --json \
-    'Reply with exactly: hello from Codex on Cloud Run' \
+    -- \
+    '- Reply with exactly: hello from Codex on Cloud Run' \
     > "$expected_args_path"
 
 if ! cmp -s "$expected_args_path" "$args_path"; then
