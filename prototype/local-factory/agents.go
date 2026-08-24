@@ -186,11 +186,21 @@ func verificationVerdict(output []byte) (string, error) {
 
 func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, role, id, workToken string) ([]byte, error) {
 	agent := r.config.Config.Agents[name]
+	timeout := 30 * time.Minute
+	if agent.Timeout != "" {
+		var err error
+		timeout, err = time.ParseDuration(agent.Timeout)
+		if err != nil || timeout <= 0 {
+			return nil, fmt.Errorf("agent %q has invalid timeout %q", name, agent.Timeout)
+		}
+	}
+	agentContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var command *exec.Cmd
 	switch agent.Runtime {
 	case "command":
 		args := append([]string(nil), agent.Command[1:]...)
-		command = exec.CommandContext(ctx, agent.Command[0], args...)
+		command = exec.CommandContext(agentContext, agent.Command[0], args...)
 	case "codex":
 		args := []string{"exec", "-C", directory, "--ephemeral", "--color", "never", "--sandbox", "read-only"}
 		if role == "build" || role == "verify" {
@@ -200,7 +210,7 @@ func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, rol
 			args = append(args, "--model", agent.Model)
 		}
 		args = append(args, "-")
-		command = exec.CommandContext(ctx, "codex", args...)
+		command = exec.CommandContext(agentContext, "codex", args...)
 	case "claude":
 		args := []string{"--print", "--safe-mode", "--no-session-persistence", "--output-format", "text", "--permission-mode", "dontAsk"}
 		if role == "foreman" {
@@ -213,7 +223,7 @@ func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, rol
 		if agent.Model != "" {
 			args = append(args, "--model", agent.Model)
 		}
-		command = exec.CommandContext(ctx, "claude", args...)
+		command = exec.CommandContext(agentContext, "claude", args...)
 	default:
 		return nil, fmt.Errorf("unsupported runtime %q", agent.Runtime)
 	}
@@ -234,6 +244,13 @@ func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, rol
 	command.Stdout, command.Stderr = &stdout, &stderr
 	runErr := command.Run()
 	cleanupErr := cleanupAgentCommand(command)
+	if errors.Is(agentContext.Err(), context.DeadlineExceeded) {
+		message := fmt.Sprintf("agent %q timed out after %s", name, timeout)
+		if cleanupErr != nil {
+			message += "; process cleanup: " + cleanupErr.Error()
+		}
+		return stdout.Bytes(), errors.New(message)
+	}
 	if runErr != nil {
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
@@ -403,6 +420,9 @@ func (r *agentRunner) finish(ctx context.Context, id string) error {
 	if sha != item.VerifiedSHA {
 		return fmt.Errorf("candidate changed after verification: verified %s, current %s", item.VerifiedSHA, sha)
 	}
+	if err := ensureCandidateBranch(ctx, item.Workspace, item.Branch, item.VerifiedSHA); err != nil {
+		return err
+	}
 	prURL := ""
 	if r.githubWrites {
 		repository, err := repositoryFor(r.config, item.Issue.Repository)
@@ -410,13 +430,13 @@ func (r *agentRunner) finish(ctx context.Context, id string) error {
 			return err
 		}
 		baseBranch := strings.TrimPrefix(repository.BaseRef, "origin/")
-		if err := pushBranch(ctx, item.Workspace, item.Branch, item.Issue.Repository); err != nil {
+		if err := pushBranch(ctx, item.Workspace, item.Branch, item.VerifiedSHA, item.Issue.Repository); err != nil {
 			return err
 		}
 		plan, _ := r.store.readArtifact(id, "plan.md")
 		review, _ := r.store.readArtifact(id, "review.md")
 		body := fmt.Sprintf("Closes #%d\n\n## Plan\n\n%s\n\n## Verification\n\n%s", item.Issue.Number, plan, review)
-		prURL, err = r.github.OpenDraftPR(ctx, item.Issue, item.Branch, baseBranch, item.Issue.Title, body)
+		prURL, err = r.github.EnsureDraftPR(ctx, item.Issue, item.Branch, item.VerifiedSHA, baseBranch, item.Issue.Title, body)
 		if err != nil {
 			return err
 		}

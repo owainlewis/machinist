@@ -35,7 +35,7 @@ my-factory/
     verifier.md
 ```
 
-Edit the TOML to select Claude, Codex, or a local command for each role. Edit the Markdown files to change the stable operating prompts.
+Edit the TOML to select Claude, Codex, or a local command for each role, and to set a deadline for every agent. The V1 Foreman must use Claude or a trusted command because Codex's read-only sandbox cannot reach the loopback control API; Codex remains supported for plan, build, and verify. Edit the Markdown files to change the stable operating prompts.
 
 `factory init` records the remote default branch as `base_ref`; every Work starts from that ref rather than whichever branch happens to be checked out. Pass `--base-ref` only when the default cannot be detected or you intentionally want another base.
 
@@ -87,7 +87,7 @@ After proving a repository and its prompts locally, opt into writes explicitly:
 /tmp/factory web --github-writes
 ```
 
-In write mode, Factory publishes the plan as a non-destructive issue comment, comments with the reason when work is blocked, pushes the candidate branch, and opens a draft pull request after verification. The durable local `plan.md` remains the authoritative plan because GitHub does not offer an atomic conditional update for issue bodies.
+In write mode, Factory publishes the plan as a non-destructive issue comment, comments with the reason when work is blocked, pushes the exact verified SHA to the candidate branch, and opens a draft pull request after verification. It validates `origin` against the configured GitHub repository and reconciles an existing open PR by exact branch and head SHA before creating another. The durable local `plan.md` remains the authoritative plan because GitHub does not offer an atomic conditional update for issue bodies.
 
 This is a trusted-local executor, not a security sandbox. A custom `command` runtime, or another local agent configured with broad shell access, runs with the operator's host permissions and could use host credentials outside Factory's adapter. Use only trusted prompts and runtimes. Credential isolation belongs in the remote-worker phase.
 
@@ -97,7 +97,7 @@ This is a trusted-local executor, not a security sandbox. A custom `command` run
 - GitHub polling works now. `POST /webhooks/github` is reserved but returns `501` until signature verification and delivery deduplication are implemented.
 - A process interruption marks an active attempt failed on restart. Automatic session resume is intentionally deferred.
 - Running the same issue explicitly requeues failed or blocked Work as a new attempt. Polling never auto-retries terminal Work.
-- The UI is read-only and local-only. The config rejects non-loopback listen addresses.
+- The UI is read-only and local-only. The config rejects non-loopback listen addresses, and the HTTP boundary rejects foreign Host and Origin values.
 - Polling assumes that configured repositories and their trigger labels are controlled by trusted collaborators. Public-repository label-actor verification is not implemented yet.
 - CI follow-up, PR review events, cloud workers, authentication, and multi-host leases are later steps. The Work and agent interfaces leave room for them without changing the prompt loop.
 

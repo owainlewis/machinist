@@ -16,7 +16,8 @@ type githubClient interface {
 	Issue(context.Context, string, int) (issue, error)
 	LabeledIssues(context.Context, string, string) ([]issue, error)
 	CommentIssue(context.Context, issue, string) error
-	OpenDraftPR(context.Context, issue, string, string, string, string) (string, error)
+	FindOpenPR(context.Context, issue, string) (pullRequest, bool, error)
+	EnsureDraftPR(context.Context, issue, string, string, string, string, string) (string, error)
 }
 
 type ghClient struct{}
@@ -31,6 +32,14 @@ type ghIssue struct {
 	Labels      []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
+}
+
+type pullRequest struct {
+	URL               string `json:"url"`
+	HeadRefName       string `json:"headRefName"`
+	HeadSHA           string `json:"headRefOid"`
+	BaseRefName       string `json:"baseRefName"`
+	IsCrossRepository bool   `json:"isCrossRepository"`
 }
 
 func (ghClient) Issue(ctx context.Context, repository string, number int) (issue, error) {
@@ -71,12 +80,64 @@ func (ghClient) CommentIssue(ctx context.Context, value issue, body string) erro
 	return err
 }
 
-func (ghClient) OpenDraftPR(ctx context.Context, value issue, branch, base, title, body string) (string, error) {
+func (client ghClient) FindOpenPR(ctx context.Context, value issue, branch string) (pullRequest, bool, error) {
+	output, err := commandOutput(ctx, "", nil, "gh", "pr", "list", "--repo", value.Repository, "--head", branch, "--state", "open", "--limit", "10", "--json", "url,headRefName,headRefOid,baseRefName,isCrossRepository")
+	if err != nil {
+		return pullRequest{}, false, err
+	}
+	var candidates []pullRequest
+	if err := json.Unmarshal(output, &candidates); err != nil {
+		return pullRequest{}, false, fmt.Errorf("decode gh pull request list: %w", err)
+	}
+	var matches []pullRequest
+	for _, candidate := range candidates {
+		if candidate.HeadRefName == branch && !candidate.IsCrossRepository {
+			matches = append(matches, candidate)
+		}
+	}
+	if len(matches) > 1 {
+		return pullRequest{}, false, fmt.Errorf("found %d open pull requests for branch %q", len(matches), branch)
+	}
+	if len(matches) == 0 {
+		return pullRequest{}, false, nil
+	}
+	return matches[0], true, nil
+}
+
+func (client ghClient) EnsureDraftPR(ctx context.Context, value issue, branch, expectedSHA, base, title, body string) (string, error) {
+	if existing, found, err := client.FindOpenPR(ctx, value, branch); err != nil {
+		return "", err
+	} else if found {
+		return verifiedPRURL(existing, expectedSHA, base)
+	}
 	output, err := commandOutput(ctx, "", []byte(body), "gh", "pr", "create", "--repo", value.Repository, "--head", branch, "--base", base, "--title", title, "--body-file", "-", "--draft")
 	if err != nil {
+		if existing, found, reconcileErr := client.FindOpenPR(ctx, value, branch); reconcileErr == nil && found {
+			return verifiedPRURL(existing, expectedSHA, base)
+		} else if reconcileErr != nil {
+			return "", fmt.Errorf("create draft pull request: %v; reconcile outcome: %w", err, reconcileErr)
+		}
 		return "", err
 	}
-	return strings.TrimSpace(string(output)), nil
+	createdURL := strings.TrimSpace(string(output))
+	created, found, err := client.FindOpenPR(ctx, value, branch)
+	if err != nil {
+		return "", fmt.Errorf("draft pull request %s was created but could not be reconciled: %w", createdURL, err)
+	}
+	if !found {
+		return "", fmt.Errorf("draft pull request %s was created but was not found by its head branch", createdURL)
+	}
+	return verifiedPRURL(created, expectedSHA, base)
+}
+
+func verifiedPRURL(value pullRequest, expectedSHA, expectedBase string) (string, error) {
+	if value.HeadSHA != expectedSHA {
+		return "", fmt.Errorf("pull request %s head is %s, expected verified SHA %s", value.URL, value.HeadSHA, expectedSHA)
+	}
+	if value.BaseRefName != expectedBase {
+		return "", fmt.Errorf("pull request %s targets %s, expected base branch %s", value.URL, value.BaseRefName, expectedBase)
+	}
+	return value.URL, nil
 }
 
 func fromGHIssue(repository string, value ghIssue) issue {

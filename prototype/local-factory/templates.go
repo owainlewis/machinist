@@ -99,18 +99,22 @@ verify = "verifier"
 [agents.foreman]
 runtime = "claude"
 prompt = "agents/foreman.md"
+timeout = "2h"
 
 [agents.planner]
 runtime = "codex"
 prompt = "agents/planner.md"
+timeout = "30m"
 
 [agents.builder]
 runtime = "codex"
 prompt = "agents/builder.md"
+timeout = "45m"
 
 [agents.verifier]
 runtime = "codex"
 prompt = "agents/verifier.md"
+timeout = "45m"
 `, strconv.Quote(repository), strconv.Quote(repositoryPath), strconv.Quote(baseRef))
 	files := map[string]string{
 		"factory.toml":       configBody,

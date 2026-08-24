@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +71,7 @@ func (s *server) serve(ctx context.Context) error {
 
 	httpServer := &http.Server{
 		Addr:              s.config.Config.Server.Listen,
-		Handler:           mux,
+		Handler:           localOnlyHandler(s.config.Config.Server.Listen, mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		BaseContext: func(net.Listener) context.Context {
 			return serverContext
@@ -110,6 +111,35 @@ func (s *server) serve(ctx context.Context) error {
 		return nil
 	}
 	return err
+}
+
+func localOnlyHandler(expectedAddress string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if !sameAuthority(request.Host, expectedAddress) {
+			http.Error(w, "forbidden request host", http.StatusForbidden)
+			return
+		}
+		if origin := request.Header.Get("Origin"); origin != "" {
+			originURL, err := url.Parse(origin)
+			if err != nil || originURL.Scheme != "http" || originURL.User != nil || originURL.Path != "" || originURL.RawQuery != "" || originURL.Fragment != "" || !sameAuthority(originURL.Host, expectedAddress) {
+				http.Error(w, "forbidden request origin", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, request)
+	})
+}
+
+func sameAuthority(actual, expected string) bool {
+	actualHost, actualPort, err := net.SplitHostPort(actual)
+	if err != nil {
+		return false
+	}
+	expectedHost, expectedPort, err := net.SplitHostPort(expected)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(actualHost, expectedHost) && actualPort == expectedPort
 }
 
 func (s *server) handleInternal(w http.ResponseWriter, request *http.Request) {
@@ -324,7 +354,7 @@ func (s *server) handleRun(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	item, created, err = s.admitRun(item, created, value)
+	item, created, err = s.admitRun(request.Context(), item, created, value)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -338,17 +368,51 @@ func (s *server) handleRun(w http.ResponseWriter, request *http.Request) {
 	_ = json.NewEncoder(w).Encode(item)
 }
 
-func (s *server) admitRun(item work, created bool, value issue) (work, bool, error) {
+func (s *server) admitRun(ctx context.Context, item work, created bool, value issue) (work, bool, error) {
 	unlock := s.lockWork(item.ID)
 	defer unlock()
 	if created {
 		return item, true, nil
 	}
-	if !s.isRunning(item.ID) {
-		return s.store.retry(item.ID, value)
-	}
 	item, err := s.store.get(item.ID)
-	return item, false, err
+	if err != nil {
+		return work{}, false, err
+	}
+	if !s.isRunning(item.ID) {
+		if item.State == stateFailed && s.runner != nil && s.runner.githubWrites && item.Branch != "" && item.VerifiedSHA != "" {
+			repository, err := repositoryFor(s.config, item.Issue.Repository)
+			if err != nil {
+				return work{}, false, err
+			}
+			baseBranch := strings.TrimPrefix(repository.BaseRef, "origin/")
+			candidate, found, err := s.github.FindOpenPR(ctx, item.Issue, item.Branch)
+			if err != nil {
+				return work{}, false, fmt.Errorf("reconcile prior pull request: %w", err)
+			}
+			if found {
+				prURL, err := verifiedPRURL(candidate, item.VerifiedSHA, baseBranch)
+				if err != nil {
+					return work{}, false, err
+				}
+				item, err = s.store.update(item.ID, func(current *work) error {
+					now := time.Now().UTC()
+					current.State = stateReady
+					current.ActiveRole = ""
+					current.PRURL = prURL
+					current.Failure = ""
+					current.CompletedAt = now
+					current.Events = append(current.Events, event{At: now, Message: "recovered existing draft pull request"})
+					return nil
+				})
+				return item, false, err
+			}
+		}
+		if item.State == stateFailed || item.State == stateBlocked {
+			return s.store.retry(item.ID, value)
+		}
+		return item, false, nil
+	}
+	return item, false, nil
 }
 
 func (s *server) lockWork(id string) func() {

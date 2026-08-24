@@ -20,7 +20,8 @@ import (
 )
 
 type fakeGitHub struct {
-	issues []issue
+	issues      []issue
+	pullRequest pullRequest
 }
 
 func (f fakeGitHub) Issue(_ context.Context, repository string, number int) (issue, error) {
@@ -37,7 +38,13 @@ func (f fakeGitHub) LabeledIssues(context.Context, string, string) ([]issue, err
 }
 
 func (fakeGitHub) CommentIssue(context.Context, issue, string) error { return nil }
-func (fakeGitHub) OpenDraftPR(context.Context, issue, string, string, string, string) (string, error) {
+func (f fakeGitHub) FindOpenPR(context.Context, issue, string) (pullRequest, bool, error) {
+	return f.pullRequest, f.pullRequest.URL != "", nil
+}
+func (f fakeGitHub) EnsureDraftPR(_ context.Context, _ issue, _, expectedSHA, base, _, _ string) (string, error) {
+	if f.pullRequest.URL != "" {
+		return verifiedPRURL(f.pullRequest, expectedSHA, base)
+	}
 	return "https://github.com/acme/widgets/pull/2", nil
 }
 
@@ -437,12 +444,97 @@ func TestAdmitRunReloadsWorkAfterWaitingForActiveAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := server{store: state, running: map[string]struct{}{stale.ID: {}}}
-	admitted, created, err := server.admitRun(stale, false, value)
+	admitted, created, err := server.admitRun(t.Context(), stale, false, value)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if created || admitted.Attempt != current.Attempt || admitted.State != stateRunning {
 		t.Fatalf("admitted stale work: %#v, created=%t; want attempt %d running", admitted, created, current.Attempt)
+	}
+}
+
+func TestAdmitRunRecoversExistingVerifiedPullRequest(t *testing.T) {
+	t.Parallel()
+	state := newStore(t.TempDir())
+	value := issue{Repository: "acme/widgets", Number: 4, Title: "Recover publication"}
+	item, _, err := state.create(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const verifiedSHA = "0123456789012345678901234567890123456789"
+	item, err = state.update(item.ID, func(current *work) error {
+		current.State = stateFailed
+		current.Branch = "factory/recovery-attempt-1"
+		current.VerifiedSHA = verifiedSHA
+		current.Failure = "factory web stopped before the attempt completed"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	github := fakeGitHub{pullRequest: pullRequest{URL: "https://github.com/acme/widgets/pull/9", HeadRefName: item.Branch, HeadSHA: verifiedSHA, BaseRefName: "main"}}
+	server := server{config: loadedConfig{Config: validTestConfig()}, store: state, github: github, runner: &agentRunner{githubWrites: true}, running: make(map[string]struct{})}
+	recovered, created, err := server.admitRun(t.Context(), item, false, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || recovered.Attempt != item.Attempt || recovered.State != stateReady || recovered.PRURL != github.pullRequest.URL || recovered.Failure != "" {
+		t.Fatalf("pull request was not recovered: %#v, created=%t", recovered, created)
+	}
+}
+
+func TestAdmitRunReturnsCompletedWorkWithoutReconciliation(t *testing.T) {
+	t.Parallel()
+	state := newStore(t.TempDir())
+	value := issue{Repository: "acme/widgets", Number: 5, Title: "Already complete"}
+	item, _, err := state.create(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedAt := time.Now().UTC().Add(-time.Hour)
+	item, err = state.update(item.ID, func(current *work) error {
+		current.State = stateReady
+		current.Branch = "factory/complete-attempt-1"
+		current.VerifiedSHA = "0123456789012345678901234567890123456789"
+		current.PRURL = "https://github.com/acme/widgets/pull/10"
+		current.CompletedAt = completedAt
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := server{config: loadedConfig{Config: validTestConfig()}, store: state, github: fakeGitHub{}, runner: &agentRunner{githubWrites: true}, running: make(map[string]struct{})}
+	admitted, created, err := server.admitRun(t.Context(), item, false, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || admitted.State != stateReady || admitted.Attempt != item.Attempt || !admitted.CompletedAt.Equal(completedAt) || len(admitted.Events) != len(item.Events) {
+		t.Fatalf("completed work changed during admission: %#v, created=%t", admitted, created)
+	}
+}
+
+func TestAdmitRunRejectsRecoveredPullRequestWithWrongBase(t *testing.T) {
+	t.Parallel()
+	state := newStore(t.TempDir())
+	value := issue{Repository: "acme/widgets", Number: 6, Title: "Wrong base"}
+	item, _, err := state.create(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const verifiedSHA = "0123456789012345678901234567890123456789"
+	item, err = state.update(item.ID, func(current *work) error {
+		current.State = stateFailed
+		current.Branch = "factory/wrong-base-attempt-1"
+		current.VerifiedSHA = verifiedSHA
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	github := fakeGitHub{pullRequest: pullRequest{URL: "https://github.com/acme/widgets/pull/11", HeadRefName: item.Branch, HeadSHA: verifiedSHA, BaseRefName: "release"}}
+	server := server{config: loadedConfig{Config: validTestConfig()}, store: state, github: github, runner: &agentRunner{githubWrites: true}, running: make(map[string]struct{})}
+	if _, _, err := server.admitRun(t.Context(), item, false, value); err == nil || !strings.Contains(err.Error(), "expected base branch main") {
+		t.Fatalf("wrong PR base was accepted: %v", err)
 	}
 }
 
@@ -453,6 +545,55 @@ func TestGitHubWritesRequireRemoteBaseRef(t *testing.T) {
 	_, err := newServer(loadedConfig{Config: value}, fakeGitHub{}, true, log.New(io.Discard, "", 0))
 	if err == nil || !strings.Contains(err.Error(), "origin/<branch>") {
 		t.Fatalf("write mode accepted local base ref: %v", err)
+	}
+}
+
+func TestConfigRejectsCodexForemanAndInvalidTimeout(t *testing.T) {
+	t.Parallel()
+	value := validTestConfig()
+	foreman := value.Agents[value.Roles.Foreman]
+	foreman.Runtime = "codex"
+	foreman.Command = nil
+	value.Agents[value.Roles.Foreman] = foreman
+	if err := validateConfig(value); err == nil || !strings.Contains(err.Error(), "cannot use runtime=codex") {
+		t.Fatalf("Codex Foreman was accepted: %v", err)
+	}
+	value = validTestConfig()
+	planner := value.Agents[value.Roles.Plan]
+	planner.Timeout = "0s"
+	value.Agents[value.Roles.Plan] = planner
+	if err := validateConfig(value); err == nil || !strings.Contains(err.Error(), "greater than zero") {
+		t.Fatalf("zero agent timeout was accepted: %v", err)
+	}
+}
+
+func TestLocalOnlyHandlerRejectsForeignAuthority(t *testing.T) {
+	t.Parallel()
+	handler := localOnlyHandler("127.0.0.1:7338", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for name, mutate := range map[string]func(*http.Request){
+		"foreign host": func(request *http.Request) { request.Host = "attacker.example:7338" },
+		"foreign origin": func(request *http.Request) {
+			request.Header.Set("Origin", "http://attacker.example:7338")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:7338/api/work", nil)
+			mutate(request)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+			}
+		})
+	}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:7338/api/work", nil)
+	request.Header.Set("Origin", "http://127.0.0.1:7338")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("same-origin status = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
 
@@ -484,7 +625,7 @@ func TestPushBranchRejectsWrongOriginRepository(t *testing.T) {
 	repository := t.TempDir()
 	mustRun(t, repository, "git", "init")
 	mustRun(t, repository, "git", "remote", "add", "origin", "https://github.com/other/widgets.git")
-	err := pushBranch(t.Context(), repository, "factory/test", "acme/widgets")
+	err := pushBranch(t.Context(), repository, "factory/test", strings.Repeat("a", 40), "acme/widgets")
 	if err == nil || !strings.Contains(err.Error(), `origin points to GitHub repository "other/widgets", expected "acme/widgets"`) {
 		t.Fatalf("push accepted wrong origin: %v", err)
 	}
@@ -523,6 +664,20 @@ func TestAgentCancellationKillsDescendantProcessGroup(t *testing.T) {
 			t.Fatalf("descendant process %d survived cancellation: %v", childPID, err)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestAgentDeadlineStopsHungCommand(t *testing.T) {
+	runner := agentRunner{config: loadedConfig{Config: config{Agents: map[string]agentConfig{
+		"slow": {Runtime: "command", Command: []string{"sh", "-c", "sleep 30"}, Timeout: "50ms"},
+	}}}}
+	started := time.Now()
+	_, err := runner.runAgent(t.Context(), "slow", t.TempDir(), "wait", "plan", "work", "")
+	if err == nil || !strings.Contains(err.Error(), "timed out after 50ms") {
+		t.Fatalf("hung agent did not report timeout: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("hung agent took %s to stop", elapsed)
 	}
 }
 
@@ -726,6 +881,11 @@ command = [%q]
 	if completed.PRURL != "" {
 		t.Fatalf("dry run unexpectedly opened PR %q", completed.PRURL)
 	}
+	mustRun(t, completed.Workspace, "git", "checkout", "--detach", completed.VerifiedSHA)
+	if err := ensureCandidateBranch(context.Background(), completed.Workspace, completed.Branch, completed.VerifiedSHA); err == nil || !strings.Contains(err.Error(), "must remain on Factory branch") {
+		t.Fatalf("detached verified checkout was accepted: %v", err)
+	}
+	mustRun(t, completed.Workspace, "git", "checkout", completed.Branch)
 	for _, artifact := range []string{"plan.md", "build.md", "review.md", "foreman.md"} {
 		if _, err := state.readArtifact(item.ID, artifact); err != nil {
 			t.Fatalf("missing %s: %v", artifact, err)

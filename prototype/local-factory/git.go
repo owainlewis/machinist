@@ -153,7 +153,7 @@ func removeVerificationWorkspace(ctx context.Context, cfg loadedConfig, item wor
 	return nil
 }
 
-func pushBranch(ctx context.Context, workspace, branch, expectedRepository string) error {
+func pushBranch(ctx context.Context, workspace, branch, verifiedSHA, expectedRepository string) error {
 	remoteOutput, err := commandOutput(ctx, workspace, nil, "git", "remote", "get-url", "--push", "origin")
 	if err != nil {
 		return fmt.Errorf("resolve origin push URL: %w", err)
@@ -166,9 +166,27 @@ func pushBranch(ctx context.Context, workspace, branch, expectedRepository strin
 		return fmt.Errorf("origin points to GitHub repository %q, expected %q", actualRepository, expectedRepository)
 	}
 	remote := strings.TrimSpace(string(remoteOutput))
-	refspec := "refs/heads/" + branch + ":refs/heads/" + branch
+	refspec := verifiedSHA + ":refs/heads/" + branch
 	_, err = commandOutput(ctx, workspace, nil, "git", "push", remote, refspec)
 	return err
+}
+
+func ensureCandidateBranch(ctx context.Context, workspace, expectedBranch, expectedSHA string) error {
+	branchOutput, err := commandOutput(ctx, workspace, nil, "git", "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return fmt.Errorf("candidate checkout must remain on Factory branch %q: %w", expectedBranch, err)
+	}
+	if actualBranch := strings.TrimSpace(string(branchOutput)); actualBranch != expectedBranch {
+		return fmt.Errorf("candidate checkout is on branch %q, expected Factory branch %q", actualBranch, expectedBranch)
+	}
+	branchSHAOutput, err := commandOutput(ctx, workspace, nil, "git", "rev-parse", "refs/heads/"+expectedBranch)
+	if err != nil {
+		return fmt.Errorf("resolve candidate branch: %w", err)
+	}
+	if branchSHA := strings.TrimSpace(string(branchSHAOutput)); branchSHA != expectedSHA {
+		return fmt.Errorf("candidate branch points to %s, expected verified SHA %s", branchSHA, expectedSHA)
+	}
+	return nil
 }
 
 func githubRepositoryFromRemote(remote string) (string, error) {

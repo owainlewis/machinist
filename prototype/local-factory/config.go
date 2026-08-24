@@ -39,6 +39,7 @@ type agentConfig struct {
 	Runtime string   `toml:"runtime"`
 	Model   string   `toml:"model"`
 	Prompt  string   `toml:"prompt"`
+	Timeout string   `toml:"timeout"`
 	Command []string `toml:"command"`
 }
 
@@ -180,6 +181,15 @@ func validateConfig(value config) error {
 		if agent.Prompt == "" {
 			return fmt.Errorf("agent %q prompt is required", name)
 		}
+		if agent.Timeout != "" {
+			timeout, err := time.ParseDuration(agent.Timeout)
+			if err != nil {
+				return fmt.Errorf("agent %q timeout: %w", name, err)
+			}
+			if timeout <= 0 {
+				return fmt.Errorf("agent %q timeout must be greater than zero", name)
+			}
+		}
 		switch agent.Runtime {
 		case "claude", "codex":
 			if len(agent.Command) != 0 {
@@ -192,6 +202,9 @@ func validateConfig(value config) error {
 		default:
 			return fmt.Errorf("agent %q runtime must be claude, codex, or command", name)
 		}
+	}
+	if value.Agents[value.Roles.Foreman].Runtime == "codex" {
+		return errors.New("roles.foreman cannot use runtime=codex in V1 because the read-only sandbox cannot reach Factory's loopback control API")
 	}
 	return nil
 }
