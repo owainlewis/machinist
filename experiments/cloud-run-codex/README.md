@@ -55,10 +55,18 @@ trap 'rm -f "$key_file"' EXIT
 printf '%s' "$OPENAI_API_KEY" > "$key_file"
 
 docker run --rm --platform linux/amd64 \
+  --user "$(id -u):$(id -g)" \
+  --env HOME=/tmp \
   --env 'PROMPT=Reply with exactly: hello from local Docker' \
   --mount "type=bind,source=${key_file},target=/secrets/openai/api-key,readonly" \
   factory-codex-cloud-run-smoke
 ```
+
+The user override makes the container process use the host user's UID and GID,
+so it can read the mode-0600 temporary key on native Linux without making the
+file readable by other host users. `HOME=/tmp` gives that otherwise anonymous
+container identity a writable home directory. The deployed image still uses
+its default unprivileged `node` user.
 
 ## Deploy to the Factory Google Cloud project
 
@@ -72,7 +80,8 @@ export PROJECT_ID=factory-505220
 export REGION=europe-west1
 export REPOSITORY=experiments
 export IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/codex-agent-smoke:0.149.1"
-export SERVICE_ACCOUNT="codex-agent-smoke@${PROJECT_ID}.iam.gserviceaccount.com"
+export SERVICE_ACCOUNT_ID=codex-agent-smoke
+export SERVICE_ACCOUNT="${SERVICE_ACCOUNT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
 export SECRET_NAME=openai-codex-api-key
 export JOB_NAME=codex-agent-smoke
 ```
@@ -134,7 +143,7 @@ Create a dedicated service account and grant access to only that secret:
 ```sh
 gcloud iam service-accounts describe "$SERVICE_ACCOUNT" \
   --project "$PROJECT_ID" >/dev/null 2>&1 || \
-gcloud iam service-accounts create codex-agent-smoke \
+gcloud iam service-accounts create "$SERVICE_ACCOUNT_ID" \
   --display-name 'Codex Cloud Run smoke test' \
   --project "$PROJECT_ID"
 
