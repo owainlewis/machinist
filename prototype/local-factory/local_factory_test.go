@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,8 +12,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 type fakeGitHub struct {
@@ -73,11 +78,12 @@ func TestInitialiseWritesEditableProject(t *testing.T) {
 func TestExplicitRetryOnlyRequeuesFailedOrBlockedWork(t *testing.T) {
 	t.Parallel()
 	state := newStore(t.TempDir())
-	item, _, err := state.create(issue{Repository: "acme/widgets", Number: 7, Title: "Retry me"})
+	originalIssue := issue{Repository: "acme/widgets", Number: 7, Title: "Retry me", Body: "Old body"}
+	item, _, err := state.create(originalIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, retried, err := state.retry(item.ID); err != nil || retried {
+	if _, retried, err := state.retry(item.ID, originalIssue); err != nil || retried {
 		t.Fatalf("queued retry = %t, %v", retried, err)
 	}
 	if _, err := state.update(item.ID, func(current *work) error {
@@ -88,12 +94,109 @@ func TestExplicitRetryOnlyRequeuesFailedOrBlockedWork(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	retried, changed, err := state.retry(item.ID)
+	refreshedIssue := originalIssue
+	refreshedIssue.Body = "New details from the user"
+	retried, changed, err := state.retry(item.ID, refreshedIssue)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !changed || retried.State != stateQueued || retried.Attempt != 2 || retried.VerifyRuns != 0 || retried.Failure != "" {
 		t.Fatalf("unexpected retry: %#v, changed=%t", retried, changed)
+	}
+	if retried.Issue.Body != refreshedIssue.Body {
+		t.Fatalf("retry retained stale issue body %q", retried.Issue.Body)
+	}
+	snapshot, err := state.readArtifact(item.ID, "issue.md")
+	if err != nil || !strings.Contains(string(snapshot), refreshedIssue.Body) {
+		t.Fatalf("retry snapshot was not refreshed: %v\n%s", err, snapshot)
+	}
+}
+
+func TestWorkIDPreservesRepositoryIdentity(t *testing.T) {
+	t.Parallel()
+	first := workID("acme/foo.bar", 1)
+	second := workID("acme/foo-bar", 1)
+	if first == second {
+		t.Fatalf("distinct repositories collided at %q", first)
+	}
+}
+
+func TestConcurrentRetryAdmitsOneFreshAttempt(t *testing.T) {
+	t.Parallel()
+	state := newStore(t.TempDir())
+	original := issue{Repository: "acme/widgets", Number: 8, Title: "Retry once", Body: "Old body"}
+	item, _, err := state.create(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.update(item.ID, func(current *work) error {
+		current.State = stateFailed
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		item    work
+		changed bool
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for _, body := range []string{"First refresh", "Second refresh"} {
+		refreshed := original
+		refreshed.Body = body
+		go func() {
+			<-start
+			value, changed, err := state.retry(item.ID, refreshed)
+			results <- result{item: value, changed: changed, err: err}
+		}()
+	}
+	close(start)
+	changedCount := 0
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.changed {
+			changedCount++
+		}
+	}
+	if changedCount != 1 {
+		t.Fatalf("concurrent retries admitted %d attempts", changedCount)
+	}
+	stored, err := state.get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Attempt != 2 {
+		t.Fatalf("attempt = %d, want 2", stored.Attempt)
+	}
+	snapshot, err := state.readArtifact(item.ID, "issue.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(snapshot), stored.Issue.Body) {
+		t.Fatalf("snapshot and stored issue diverged:\n%s\n%#v", snapshot, stored.Issue)
+	}
+}
+
+func TestVerificationVerdictUsesMinimalMarkdownContract(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		body    string
+		verdict string
+		valid   bool
+	}{
+		{"Verdict: PASS\n\nChecks passed.", "PASS", true},
+		{"Verdict: REVISE\n\nFix the bug.", "REVISE", true},
+		{"Everything looks good.", "", false},
+	} {
+		verdict, err := verificationVerdict([]byte(test.body))
+		if (err == nil) != test.valid || verdict != test.verdict {
+			t.Fatalf("verificationVerdict(%q) = %q, %v", test.body, verdict, err)
+		}
 	}
 }
 
@@ -171,6 +274,42 @@ func TestGitHubWritesRequireRemoteBaseRef(t *testing.T) {
 	_, err := newServer(loadedConfig{Config: value}, fakeGitHub{}, true, log.New(io.Discard, "", 0))
 	if err == nil || !strings.Contains(err.Error(), "origin/<branch>") {
 		t.Fatalf("write mode accepted local base ref: %v", err)
+	}
+}
+
+func TestAgentCancellationKillsDescendantProcessGroup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	command := exec.CommandContext(ctx, "sh", "-c", "sleep 30 & child=$!; echo $child; wait")
+	configureAgentCommand(command)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() {
+		t.Fatalf("read descendant PID: %v", scanner.Err())
+	}
+	childPID, err := strconv.Atoi(scanner.Text())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := command.Wait(); err == nil {
+		t.Fatal("cancelled command exited successfully")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		err := syscall.Kill(childPID, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant process %d survived cancellation: %v", childPID, err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -371,6 +510,26 @@ command = [%q]
 	}
 	if err := runner.block(context.Background(), item.ID, "stale foreman"); err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("stale foreman changed queued work: %v", err)
+	}
+	if _, err := state.update(item.ID, func(current *work) error {
+		current.State = stateFailed
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retried, changed, err := state.retry(item.ID, value)
+	if err != nil || !changed {
+		t.Fatalf("retry failed: changed=%t, err=%v", changed, err)
+	}
+	retryWorkspace, retryBranch, err := prepareWorkspace(context.Background(), cfg, retried)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryWorkspace == completed.Workspace || retryBranch == completed.Branch {
+		t.Fatalf("retry reused workspace %q or branch %q", retryWorkspace, retryBranch)
+	}
+	if _, err := os.Stat(filepath.Join(retryWorkspace, "result.txt")); !os.IsNotExist(err) {
+		t.Fatalf("retry inherited result.txt: %v", err)
 	}
 }
 

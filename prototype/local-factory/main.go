@@ -186,7 +186,8 @@ func internalCommand(args []string) error {
 	}
 	writes, _ := strconvParseBool(os.Getenv("FACTORY_GITHUB_WRITES"))
 	runner := &agentRunner{config: cfg, store: newStore(cfg.Config.StateDirectory), github: ghClient{}, githubWrites: writes, executable: executable}
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	action := flags.Arg(0)
 	switch action {
 	case "delegate":

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -117,6 +118,11 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 		if verifyErr := ensureExactHead(ctx, directory, item.HeadSHA); verifyErr != nil && runErr == nil {
 			runErr = verifyErr
 		}
+		if runErr == nil {
+			if _, verdictErr := verificationVerdict(output); verdictErr != nil {
+				runErr = verdictErr
+			}
+		}
 	}
 	if artifactErr := r.store.artifact(id, artifact, output); artifactErr != nil && runErr == nil {
 		runErr = artifactErr
@@ -127,12 +133,38 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 		if runErr != nil {
 			message = role + " agent failed: " + runErr.Error()
 		} else if role == "verify" {
-			current.VerifiedSHA = current.HeadSHA
+			verdict, _ := verificationVerdict(output)
+			if verdict == "PASS" {
+				current.VerifiedSHA = current.HeadSHA
+				message = "verify agent passed candidate"
+			} else {
+				current.VerifiedSHA = ""
+				message = "verify agent requested revision"
+			}
 		}
 		current.Events = append(current.Events, event{At: time.Now().UTC(), Message: message})
 		return nil
 	})
 	return output, runErr
+}
+
+func verificationVerdict(output []byte) (string, error) {
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return "", errors.New("verifier returned an empty report")
+	}
+	firstLine := trimmed
+	if newline := strings.IndexByte(firstLine, '\n'); newline >= 0 {
+		firstLine = firstLine[:newline]
+	}
+	switch strings.TrimSpace(firstLine) {
+	case "Verdict: PASS":
+		return "PASS", nil
+	case "Verdict: REVISE":
+		return "REVISE", nil
+	default:
+		return "", errors.New("verifier report must begin with Verdict: PASS or Verdict: REVISE")
+	}
 }
 
 func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, role, id string) ([]byte, error) {
@@ -169,6 +201,7 @@ func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, rol
 		return nil, fmt.Errorf("unsupported runtime %q", agent.Runtime)
 	}
 	command.Dir = directory
+	configureAgentCommand(command)
 	command.Stdin = strings.NewReader(prompt)
 	command.Env = append(os.Environ(),
 		"FACTORY_CONFIG="+r.config.Path,
@@ -188,6 +221,30 @@ func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, rol
 		return stdout.Bytes(), fmt.Errorf("agent %q: %s", name, message)
 	}
 	return stdout.Bytes(), nil
+}
+
+func configureAgentCommand(command *exec.Cmd) {
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return nil
+		}
+		processGroup := -command.Process.Pid
+		err := syscall.Kill(processGroup, syscall.SIGTERM)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err == nil {
+			go func() {
+				timer := time.NewTimer(time.Second)
+				defer timer.Stop()
+				<-timer.C
+				_ = syscall.Kill(processGroup, syscall.SIGKILL)
+			}()
+		}
+		return err
+	}
+	command.WaitDelay = 2 * time.Second
 }
 
 func (r *agentRunner) foremanContext(item work) string {

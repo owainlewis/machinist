@@ -31,8 +31,8 @@ func prepareWorkspace(ctx context.Context, cfg loadedConfig, item work) (string,
 	if _, err := os.Stat(filepath.Join(repository.Path, ".git")); err != nil {
 		return "", "", fmt.Errorf("repository path %q is not a git checkout", repository.Path)
 	}
-	workspace := filepath.Join(cfg.Config.StateDirectory, "checkouts", item.ID, "work")
-	branch := "factory/" + item.ID
+	workspace := filepath.Join(cfg.Config.StateDirectory, "checkouts", item.ID, fmt.Sprintf("attempt-%d", item.Attempt), "work")
+	branch := fmt.Sprintf("factory/%s-attempt-%d", item.ID, item.Attempt)
 	if _, err := os.Stat(workspace); err == nil {
 		return workspace, branch, nil
 	} else if !errors.Is(err, os.ErrNotExist) {

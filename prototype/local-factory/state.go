@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,28 +49,36 @@ func (s *store) create(value issue) (work, bool, error) {
 	return item, true, nil
 }
 
-func (s *store) retry(id string) (work, bool, error) {
-	item, err := s.get(id)
+func (s *store) retry(id string, refreshedIssue issue) (work, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	item, err := s.readUnlocked(id)
 	if err != nil {
 		return work{}, false, err
 	}
 	if item.State != stateFailed && item.State != stateBlocked {
 		return item, false, nil
 	}
-	item, err = s.update(id, func(current *work) error {
-		now := time.Now().UTC()
-		current.State = stateQueued
-		current.Attempt++
-		current.ActiveRole = ""
-		current.Failure = ""
-		current.VerifyRuns = 0
-		current.VerifiedSHA = ""
-		current.StartedAt = time.Time{}
-		current.CompletedAt = time.Time{}
-		current.Events = append(current.Events, event{At: now, Message: fmt.Sprintf("attempt %d queued explicitly", current.Attempt)})
-		return nil
-	})
-	return item, true, err
+	if err := atomicWrite(filepath.Join(s.workDir(id), "issue.md"), []byte(renderIssue(refreshedIssue)), 0o644); err != nil {
+		return work{}, false, fmt.Errorf("refresh issue snapshot: %w", err)
+	}
+	now := time.Now().UTC()
+	item.State = stateQueued
+	item.Issue = refreshedIssue
+	item.Attempt++
+	item.ActiveRole = ""
+	item.Failure = ""
+	item.VerifyRuns = 0
+	item.VerifiedSHA = ""
+	item.StartedAt = time.Time{}
+	item.CompletedAt = time.Time{}
+	item.UpdatedAt = now
+	item.Events = append(item.Events, event{At: now, Message: fmt.Sprintf("attempt %d queued explicitly", item.Attempt)})
+	if err := s.writeUnlocked(item); err != nil {
+		return work{}, false, err
+	}
+	return item, true, nil
 }
 
 func (s *store) get(id string) (work, error) {
@@ -193,7 +202,8 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 }
 
 func workID(repository string, number int) string {
-	return strings.NewReplacer("/", "--", ".", "-").Replace(strings.ToLower(repository)) + fmt.Sprintf("--%d", number)
+	encodedRepository := base64.RawURLEncoding.EncodeToString([]byte(strings.ToLower(repository)))
+	return encodedRepository + fmt.Sprintf("--%d", number)
 }
 
 func validArtifact(name string) bool {

@@ -23,11 +23,13 @@ type githubClient interface {
 type ghClient struct{}
 
 type ghIssue struct {
-	Number int    `json:"number"`
-	Title  string `json:"title"`
-	Body   string `json:"body"`
-	URL    string `json:"url"`
-	Labels []struct {
+	Number      int             `json:"number"`
+	Title       string          `json:"title"`
+	Body        string          `json:"body"`
+	URL         string          `json:"html_url"`
+	IssueURL    string          `json:"url"`
+	PullRequest json.RawMessage `json:"pull_request"`
+	Labels      []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 }
@@ -45,17 +47,22 @@ func (ghClient) Issue(ctx context.Context, repository string, number int) (issue
 }
 
 func (ghClient) LabeledIssues(ctx context.Context, repository, label string) ([]issue, error) {
-	body, err := commandOutput(ctx, "", nil, "gh", "issue", "list", "--repo", repository, "--state", "open", "--label", label, "--limit", "100", "--json", "number,title,body,url,labels")
+	body, err := commandOutput(ctx, "", nil, "gh", "api", "--method", "GET", "--paginate", "--slurp", "repos/"+repository+"/issues", "-f", "state=open", "-f", "labels="+label, "-f", "per_page=100")
 	if err != nil {
 		return nil, err
 	}
-	var values []ghIssue
-	if err := json.Unmarshal(body, &values); err != nil {
+	var pages [][]ghIssue
+	if err := json.Unmarshal(body, &pages); err != nil {
 		return nil, fmt.Errorf("decode gh issue list response: %w", err)
 	}
-	result := make([]issue, 0, len(values))
-	for _, value := range values {
-		result = append(result, fromGHIssue(repository, value))
+	var result []issue
+	for _, page := range pages {
+		for _, value := range page {
+			if len(value.PullRequest) != 0 && string(value.PullRequest) != "null" {
+				continue
+			}
+			result = append(result, fromGHIssue(repository, value))
+		}
 	}
 	return result, nil
 }
@@ -83,7 +90,11 @@ func fromGHIssue(repository string, value ghIssue) issue {
 	for _, label := range value.Labels {
 		labels = append(labels, label.Name)
 	}
-	return issue{Repository: repository, Number: value.Number, Title: value.Title, Body: value.Body, URL: value.URL, Labels: labels}
+	url := value.URL
+	if url == "" {
+		url = value.IssueURL
+	}
+	return issue{Repository: repository, Number: value.Number, Title: value.Title, Body: value.Body, URL: url, Labels: labels}
 }
 
 var issueReferencePattern = regexp.MustCompile(`^(?:https://github\.com/)?([^/#\s]+/[^/#\s]+)(?:/issues/|#)([1-9][0-9]*)/?$`)

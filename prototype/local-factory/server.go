@@ -22,6 +22,7 @@ type server struct {
 
 	mu      sync.Mutex
 	running map[string]struct{}
+	workers sync.WaitGroup
 }
 
 func newServer(cfg loadedConfig, github githubClient, writes bool, logger *log.Logger) (*server, error) {
@@ -45,6 +46,8 @@ func (s *server) serve(ctx context.Context) error {
 	if err := s.recoverInterrupted(); err != nil {
 		return err
 	}
+	serverContext, cancel := context.WithCancel(ctx)
+	defer cancel()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleHome)
 	mux.HandleFunc("GET /api/work", s.handleList)
@@ -54,16 +57,36 @@ func (s *server) serve(ctx context.Context) error {
 	})
 
 	httpServer := &http.Server{Addr: s.config.Config.Server.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go s.schedule(ctx)
-	go s.poll(ctx)
+	var loops sync.WaitGroup
+	loops.Add(2)
 	go func() {
-		<-ctx.Done()
+		defer loops.Done()
+		s.schedule(serverContext)
+	}()
+	go func() {
+		defer loops.Done()
+		s.poll(serverContext)
+	}()
+	go func() {
+		<-serverContext.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdown)
 	}()
 	s.log.Printf("factory web listening on http://%s", displayAddress(s.config.Config.Server.Listen))
 	err := httpServer.ListenAndServe()
+	cancel()
+	loops.Wait()
+	workersDone := make(chan struct{})
+	go func() {
+		s.workers.Wait()
+		close(workersDone)
+	}()
+	select {
+	case <-workersDone:
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timed out waiting for active agent processes to stop")
+	}
 	if err == http.ErrServerClosed {
 		return nil
 	}
@@ -158,11 +181,13 @@ func (s *server) startQueued(ctx context.Context) {
 			continue
 		}
 		s.running[item.ID] = struct{}{}
+		s.workers.Add(1)
 		go s.execute(ctx, item.ID)
 	}
 }
 
 func (s *server) execute(ctx context.Context, id string) {
+	defer s.workers.Done()
 	err := s.runner.runWork(ctx, id)
 	if err != nil {
 		_, _ = s.store.update(id, func(item *work) error {
@@ -217,7 +242,7 @@ func (s *server) handleRun(w http.ResponseWriter, request *http.Request) {
 	}
 	if !created {
 		if !s.isRunning(item.ID) {
-			item, created, err = s.store.retry(item.ID)
+			item, created, err = s.store.retry(item.ID, value)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
