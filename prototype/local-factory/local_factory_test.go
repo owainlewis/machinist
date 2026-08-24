@@ -263,16 +263,60 @@ func TestRuntimeAuthorityIsHeldByOneServer(t *testing.T) {
 	secondState.deactivate("second-token")
 }
 
-func TestInternalAPIRejectsInventedAuthority(t *testing.T) {
+func TestInternalAPIRejectsWrongWorkAuthority(t *testing.T) {
 	t.Parallel()
-	server := server{runner: &agentRunner{authToken: "server-token"}}
-	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/internal", strings.NewReader(`{"work_id":"work-1","action":"finish"}`))
+	state := newStore(t.TempDir())
+	first, _, err := state.create(issue{Repository: "acme/widgets", Number: 1, Title: "First"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := state.create(issue{Repository: "acme/widgets", Number: 2, Title: "Second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &agentRunner{store: state, authToken: "server-token"}
+	server := server{store: state, runner: runner}
+	for name, token := range map[string]string{
+		"invented token": "invented-token",
+		"other work":     runner.workToken(first),
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/internal", strings.NewReader(fmt.Sprintf(`{"work_id":%q,"action":"finish"}`, second.ID)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer "+token)
+			response := httptest.NewRecorder()
+			server.handleInternal(response, request)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("response status = %d, want %d", response.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/internal", strings.NewReader(fmt.Sprintf(`{"work_id":%q,"action":"finish"}`, first.ID)))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer invented-token")
+	request.Header.Set("Authorization", "Bearer "+runner.workToken(first))
 	response := httptest.NewRecorder()
 	server.handleInternal(response, request)
+	if response.Code == http.StatusUnauthorized {
+		t.Fatal("matching work capability was rejected")
+	}
+	oldToken := runner.workToken(first)
+	first, err = state.update(first.ID, func(current *work) error {
+		current.Attempt++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldToken == runner.workToken(first) {
+		t.Fatal("work capability did not change across attempts")
+	}
+	request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/internal", strings.NewReader(fmt.Sprintf(`{"work_id":%q,"action":"finish"}`, first.ID)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+oldToken)
+	response = httptest.NewRecorder()
+	server.handleInternal(response, request)
 	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("response status = %d, want %d", response.Code, http.StatusUnauthorized)
+		t.Fatalf("old attempt response status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -602,6 +646,7 @@ command = [%q]
 		t.Fatal(err)
 	}
 	runner := agentRunner{config: cfg, store: state, github: fakeGitHub{issues: []issue{value}}, executable: binary, authToken: authToken}
+	internalServer.store = state
 	internalServer.runner = &runner
 	if err := runner.runWork(context.Background(), item.ID); err != nil {
 		t.Fatal(err)

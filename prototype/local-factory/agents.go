@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -48,7 +51,7 @@ func (r *agentRunner) runWork(ctx context.Context, id string) error {
 
 	foremanName := r.config.Config.Roles.Foreman
 	prompt := r.config.Prompts[foremanName] + "\n\n" + r.foremanContext(item)
-	output, err := r.runAgent(ctx, foremanName, workspace, prompt, "foreman", id)
+	output, err := r.runAgent(ctx, foremanName, workspace, prompt, "foreman", id, r.workToken(item))
 	_ = r.store.artifact(id, "foreman.md", output)
 	if err != nil {
 		return err
@@ -115,7 +118,7 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 		return nil, err
 	}
 	prompt := r.config.Prompts[agentName] + "\n\n" + r.roleContext(item, role, directory)
-	output, runErr := r.runAgent(ctx, agentName, directory, prompt, role, id)
+	output, runErr := r.runAgent(ctx, agentName, directory, prompt, role, id, "")
 	if role == "verify" {
 		if verifyErr := ensureExactHead(ctx, directory, item.HeadSHA); verifyErr != nil && runErr == nil {
 			runErr = verifyErr
@@ -181,7 +184,7 @@ func verificationVerdict(output []byte) (string, error) {
 	}
 }
 
-func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, role, id string) ([]byte, error) {
+func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, role, id, workToken string) ([]byte, error) {
 	agent := r.config.Config.Agents[name]
 	var command *exec.Cmd
 	switch agent.Runtime {
@@ -225,7 +228,7 @@ func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, rol
 		"FACTORY_WORKSPACE="+directory,
 	)
 	if role == "foreman" {
-		command.Env = append(command.Env, "FACTORY_AUTH_TOKEN="+r.authToken)
+		command.Env = append(command.Env, "FACTORY_AUTH_TOKEN="+workToken)
 	}
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
@@ -245,6 +248,12 @@ func (r *agentRunner) runAgent(ctx context.Context, name, directory, prompt, rol
 		return stdout.Bytes(), fmt.Errorf("agent %q process cleanup: %w", name, cleanupErr)
 	}
 	return stdout.Bytes(), nil
+}
+
+func (r *agentRunner) workToken(item work) string {
+	mac := hmac.New(sha256.New, []byte(r.authToken))
+	_, _ = fmt.Fprintf(mac, "%s\x00%d", item.ID, item.Attempt)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func withoutFactoryEnvironment(environment []string) []string {

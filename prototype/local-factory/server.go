@@ -22,9 +22,10 @@ type server struct {
 	runner *agentRunner
 	log    *log.Logger
 
-	mu      sync.Mutex
-	running map[string]struct{}
-	workers sync.WaitGroup
+	mu        sync.Mutex
+	running   map[string]struct{}
+	workLocks map[string]*sync.Mutex
+	workers   sync.WaitGroup
 }
 
 func newServer(cfg loadedConfig, github githubClient, writes bool, logger *log.Logger) (*server, error) {
@@ -45,7 +46,7 @@ func newServer(cfg loadedConfig, github githubClient, writes bool, logger *log.L
 	}
 	state := newStore(cfg.Config.StateDirectory)
 	runner := &agentRunner{config: cfg, store: state, github: github, githubWrites: writes, executable: executable, authToken: authToken}
-	return &server{config: cfg, store: state, github: github, runner: runner, log: logger, running: make(map[string]struct{})}, nil
+	return &server{config: cfg, store: state, github: github, runner: runner, log: logger, running: make(map[string]struct{}), workLocks: make(map[string]*sync.Mutex)}, nil
 }
 
 func (s *server) serve(ctx context.Context) error {
@@ -112,12 +113,6 @@ func (s *server) serve(ctx context.Context) error {
 }
 
 func (s *server) handleInternal(w http.ResponseWriter, request *http.Request) {
-	expected := "Bearer " + s.runner.authToken
-	provided := request.Header.Get("Authorization")
-	if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
-		http.Error(w, "unauthorized internal command", http.StatusUnauthorized)
-		return
-	}
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
@@ -131,6 +126,19 @@ func (s *server) handleInternal(w http.ResponseWriter, request *http.Request) {
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil || input.WorkID == "" {
 		http.Error(w, "invalid internal command", http.StatusBadRequest)
+		return
+	}
+	unlock := s.lockWork(input.WorkID)
+	defer unlock()
+	item, err := s.store.get(input.WorkID)
+	if err != nil {
+		http.Error(w, "unauthorized internal command", http.StatusUnauthorized)
+		return
+	}
+	expected := "Bearer " + s.runner.workToken(item)
+	provided := request.Header.Get("Authorization")
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+		http.Error(w, "unauthorized internal command", http.StatusUnauthorized)
 		return
 	}
 	var output []byte
@@ -316,6 +324,8 @@ func (s *server) handleRun(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	unlock := s.lockWork(item.ID)
+	defer unlock()
 	if !created {
 		if !s.isRunning(item.ID) {
 			item, created, err = s.store.retry(item.ID, value)
@@ -332,6 +342,21 @@ func (s *server) handleRun(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(item)
+}
+
+func (s *server) lockWork(id string) func() {
+	s.mu.Lock()
+	if s.workLocks == nil {
+		s.workLocks = make(map[string]*sync.Mutex)
+	}
+	lock := s.workLocks[id]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.workLocks[id] = lock
+	}
+	s.mu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 func (s *server) isRunning(id string) bool {
