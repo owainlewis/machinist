@@ -178,8 +178,7 @@ Read the JSONL output from Cloud Logging:
 gcloud run jobs logs read "$JOB_NAME" \
   --region "$REGION" \
   --project "$PROJECT_ID" \
-  --freshness 10m \
-  --order asc
+  --freshness 10m
 ```
 
 The final response appears in an `item.completed` event whose item type is
