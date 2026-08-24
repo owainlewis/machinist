@@ -2,7 +2,7 @@ module github.com/owainlewis/factory
 
 go 1.25.13
 
-require modernc.org/sqlite v1.56.0
+require modernc.org/sqlite v1.57.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
