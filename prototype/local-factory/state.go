@@ -67,7 +67,7 @@ func (s *store) activate(token string) error {
 		_ = file.Close()
 		return err
 	}
-	if err := file.Truncate(0); err == nil {
+	if err = file.Truncate(0); err == nil {
 		_, err = file.WriteAt(append(body, '\n'), 0)
 	}
 	if err != nil {
