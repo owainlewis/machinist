@@ -415,7 +415,7 @@ func (r *agentRunner) finish(ctx context.Context, id string) error {
 			return err
 		}
 		baseBranch := strings.TrimPrefix(repository.BaseRef, "origin/")
-		if err := pushBranch(ctx, item.Workspace, item.Branch); err != nil {
+		if err := pushBranch(ctx, item.Workspace, item.Branch, item.Issue.Repository); err != nil {
 			return err
 		}
 		plan, _ := r.store.readArtifact(id, "plan.md")

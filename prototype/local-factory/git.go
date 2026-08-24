@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,9 +175,42 @@ func removeVerificationWorkspace(ctx context.Context, cfg loadedConfig, item wor
 	return nil
 }
 
-func pushBranch(ctx context.Context, workspace, branch string) error {
-	_, err := commandOutput(ctx, workspace, nil, "git", "push", "--set-upstream", "origin", branch)
+func pushBranch(ctx context.Context, workspace, branch, expectedRepository string) error {
+	remoteOutput, err := commandOutput(ctx, workspace, nil, "git", "remote", "get-url", "--push", "origin")
+	if err != nil {
+		return fmt.Errorf("resolve origin push URL: %w", err)
+	}
+	actualRepository, err := githubRepositoryFromRemote(strings.TrimSpace(string(remoteOutput)))
+	if err != nil {
+		return fmt.Errorf("validate origin push URL: %w", err)
+	}
+	if !strings.EqualFold(actualRepository, expectedRepository) {
+		return fmt.Errorf("origin points to GitHub repository %q, expected %q", actualRepository, expectedRepository)
+	}
+	remote := strings.TrimSpace(string(remoteOutput))
+	refspec := "refs/heads/" + branch + ":refs/heads/" + branch
+	_, err = commandOutput(ctx, workspace, nil, "git", "push", remote, refspec)
 	return err
+}
+
+func githubRepositoryFromRemote(remote string) (string, error) {
+	var repositoryPath string
+	const scpPrefix = "git@github.com:"
+	if len(remote) >= len(scpPrefix) && strings.EqualFold(remote[:len(scpPrefix)], scpPrefix) {
+		repositoryPath = remote[len(scpPrefix):]
+	} else {
+		remoteURL, err := url.Parse(remote)
+		if err != nil || !strings.EqualFold(remoteURL.Hostname(), "github.com") || remoteURL.RawQuery != "" || remoteURL.Fragment != "" {
+			return "", errors.New("origin push URL is not a GitHub repository")
+		}
+		repositoryPath = remoteURL.Path
+	}
+	repositoryPath = strings.TrimSuffix(strings.Trim(strings.TrimSpace(repositoryPath), "/"), ".git")
+	parts := strings.Split(repositoryPath, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", errors.New("origin push URL must identify one GitHub owner and repository")
+	}
+	return parts[0] + "/" + parts[1], nil
 }
 
 func ensureClean(ctx context.Context, workspace string) error {

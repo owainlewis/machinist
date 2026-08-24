@@ -425,6 +425,32 @@ func TestRunAPIDoesNotRetryWhileOldAttemptIsActive(t *testing.T) {
 	}
 }
 
+func TestAdmitRunReloadsWorkAfterWaitingForActiveAttempt(t *testing.T) {
+	t.Parallel()
+	state := newStore(t.TempDir())
+	value := issue{Repository: "acme/widgets", Number: 1, Title: "Retry concurrently"}
+	stale, _, err := state.create(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := state.update(stale.ID, func(item *work) error {
+		item.Attempt++
+		item.State = stateRunning
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := server{store: state, running: map[string]struct{}{stale.ID: {}}}
+	admitted, created, err := server.admitRun(stale, false, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || admitted.Attempt != current.Attempt || admitted.State != stateRunning {
+		t.Fatalf("admitted stale work: %#v, created=%t; want attempt %d running", admitted, created, current.Attempt)
+	}
+}
+
 func TestGitHubWritesRequireRemoteBaseRef(t *testing.T) {
 	t.Parallel()
 	value := validTestConfig()
@@ -432,6 +458,40 @@ func TestGitHubWritesRequireRemoteBaseRef(t *testing.T) {
 	_, err := newServer(loadedConfig{Config: value}, fakeGitHub{}, true, log.New(io.Discard, "", 0))
 	if err == nil || !strings.Contains(err.Error(), "origin/<branch>") {
 		t.Fatalf("write mode accepted local base ref: %v", err)
+	}
+}
+
+func TestGitHubRepositoryFromRemote(t *testing.T) {
+	t.Parallel()
+	for _, remote := range []string{
+		"git@github.com:acme/widgets.git",
+		"https://github.com/acme/widgets.git",
+		"ssh://git@github.com/acme/widgets",
+	} {
+		repository, err := githubRepositoryFromRemote(remote)
+		if err != nil || repository != "acme/widgets" {
+			t.Errorf("githubRepositoryFromRemote(%q) = %q, %v", remote, repository, err)
+		}
+	}
+	for _, remote := range []string{
+		"https://example.com/acme/widgets.git",
+		"file:///tmp/widgets",
+		"https://github.com/acme/widgets/extra.git",
+	} {
+		if _, err := githubRepositoryFromRemote(remote); err == nil {
+			t.Errorf("githubRepositoryFromRemote(%q) unexpectedly succeeded", remote)
+		}
+	}
+}
+
+func TestPushBranchRejectsWrongOriginRepository(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	mustRun(t, repository, "git", "init")
+	mustRun(t, repository, "git", "remote", "add", "origin", "https://github.com/other/widgets.git")
+	err := pushBranch(t.Context(), repository, "factory/test", "acme/widgets")
+	if err == nil || !strings.Contains(err.Error(), `origin points to GitHub repository "other/widgets", expected "acme/widgets"`) {
+		t.Fatalf("push accepted wrong origin: %v", err)
 	}
 }
 

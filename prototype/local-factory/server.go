@@ -324,16 +324,10 @@ func (s *server) handleRun(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	unlock := s.lockWork(item.ID)
-	defer unlock()
-	if !created {
-		if !s.isRunning(item.ID) {
-			item, created, err = s.store.retry(item.ID, value)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
+	item, created, err = s.admitRun(item, created, value)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	status := http.StatusAccepted
 	if !created {
@@ -342,6 +336,19 @@ func (s *server) handleRun(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(item)
+}
+
+func (s *server) admitRun(item work, created bool, value issue) (work, bool, error) {
+	unlock := s.lockWork(item.ID)
+	defer unlock()
+	if created {
+		return item, true, nil
+	}
+	if !s.isRunning(item.ID) {
+		return s.store.retry(item.ID, value)
+	}
+	item, err := s.store.get(item.ID)
+	return item, false, err
 }
 
 func (s *server) lockWork(id string) func() {
