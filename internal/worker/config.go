@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -216,8 +217,13 @@ func validateServerURL(value string) error {
 		return errors.New("server URL must not contain a path")
 	}
 	host := parsed.Hostname()
-	if host == "" || parsed.Port() == "" {
+	port := parsed.Port()
+	if host == "" || port == "" {
 		return errors.New("server URL must include a host and port")
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNumber == 0 || strconv.FormatUint(portNumber, 10) != port {
+		return errors.New("server URL port must be a canonical integer between 1 and 65535")
 	}
 	if parsed.Scheme == "https" {
 		return nil

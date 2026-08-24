@@ -110,6 +110,46 @@ func TestLoadConfigAcceptsRemoteWorkerSettings(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsInvalidServerPorts(t *testing.T) {
+	for _, server := range []string{
+		"http://127.0.0.1:0",
+		"http://127.0.0.1:00",
+		"http://127.0.0.1:01",
+		"https://factory.example.com:65536",
+	} {
+		t.Run(server, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "worker.toml")
+			body := "server = \"" + server + "\"\nname = \"pool\"\n"
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(path); err == nil ||
+				!strings.Contains(err.Error(), "port must be a canonical integer between 1 and 65535") {
+				t.Fatalf("LoadConfig server %q error = %v", server, err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsValidServerPorts(t *testing.T) {
+	for _, server := range []string{
+		"http://127.0.0.1:1",
+		"http://[::1]:65535",
+		"https://factory.example.com:7443",
+	} {
+		t.Run(server, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "worker.toml")
+			body := "server = \"" + server + "\"\nname = \"pool\"\n"
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(path); err != nil {
+				t.Fatalf("LoadConfig server %q: %v", server, err)
+			}
+		})
+	}
+}
+
 func TestWorkerCapacityUsesSharedRange(t *testing.T) {
 	for _, capacity := range []int{protocol.MinWorkerCapacity, protocol.MaxWorkerCapacity} {
 		config := Config{
