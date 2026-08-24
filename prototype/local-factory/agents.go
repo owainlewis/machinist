@@ -375,7 +375,10 @@ func (r *agentRunner) publishPlan(ctx context.Context, id string) error {
 		if err != nil {
 			return fmt.Errorf("refresh issue before publishing plan: %w", err)
 		}
-		body := managedPlanBody(currentIssue.Body, string(plan))
+		body, err := managedPlanBody(currentIssue.Body, string(plan))
+		if err != nil {
+			return fmt.Errorf("prepare managed issue plan: %w", err)
+		}
 		if err := r.github.UpdateIssueBody(ctx, currentIssue, body); err != nil {
 			return err
 		}
@@ -471,19 +474,35 @@ func (r *agentRunner) block(ctx context.Context, id, reason string) error {
 	return err
 }
 
-func managedPlanBody(issueBody, plan string) string {
+func managedPlanBody(issueBody, plan string) (string, error) {
 	const start = "<!-- factory-plan:start -->"
 	const end = "<!-- factory-plan:end -->"
-	block := start + "\n## Factory plan\n\n" + strings.TrimSpace(plan) + "\n" + end
-	startIndex := strings.Index(issueBody, start)
-	if startIndex >= 0 {
-		endOffset := strings.Index(issueBody[startIndex:], end)
-		if endOffset >= 0 {
-			endIndex := startIndex + endOffset + len(end)
-			return strings.TrimSpace(issueBody[:startIndex]+block+issueBody[endIndex:]) + "\n"
-		}
+	if strings.Contains(plan, start) || strings.Contains(plan, end) {
+		return "", errors.New("plan contains reserved Factory plan markers")
 	}
-	return strings.TrimSpace(issueBody) + "\n\n" + block + "\n"
+	block := start + "\n## Factory plan\n\n" + strings.TrimSpace(plan) + "\n" + end
+	startCount := strings.Count(issueBody, start)
+	endCount := strings.Count(issueBody, end)
+	if startCount == 0 && endCount == 0 {
+		separator := ""
+		if issueBody != "" && !strings.HasSuffix(issueBody, "\n\n") {
+			separator = "\n\n"
+			if strings.HasSuffix(issueBody, "\n") {
+				separator = "\n"
+			}
+		}
+		return issueBody + separator + block + "\n", nil
+	}
+	if startCount != 1 || endCount != 1 {
+		return "", errors.New("issue body has incomplete or duplicate Factory plan markers")
+	}
+	startIndex := strings.Index(issueBody, start)
+	endIndex := strings.Index(issueBody, end)
+	if endIndex < startIndex {
+		return "", errors.New("issue body has Factory plan markers in the wrong order")
+	}
+	endIndex += len(end)
+	return issueBody[:startIndex] + block + issueBody[endIndex:], nil
 }
 
 func executablePath() (string, error) {
