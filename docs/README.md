@@ -28,6 +28,9 @@ Start with the root [README](../README.md) to run Factory.
 
 ## Active design work
 
+- [Connector-driven software factory](factory-reset/design.md): proposed product
+  reset around one CLI, source Connectors, configurable stage Agents, a
+  plan-build-verify loop, durable handoffs, and a monitoring UI.
 - [Agent-directed software factory](software-factory/design.md): proposed
   work-item queue, repository fleet Runs, agent update capability, and first
   useful CLI.
