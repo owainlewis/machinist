@@ -40,8 +40,8 @@ docker build --platform linux/amd64 \
   experiments/cloud-run-agent
 ```
 
-To make a real local model call without placing the key in the container
-environment:
+To make a real local model call without passing the key through Docker's
+`--env` option:
 
 ```sh
 key_file="$(mktemp)"
@@ -59,8 +59,11 @@ docker run --rm --platform linux/amd64 \
 The user override makes the container process use the host user's UID and GID,
 so it can read the mode-0600 temporary key on native Linux without making the
 file readable by other host users. `HOME=/tmp` gives that otherwise anonymous
-container identity a writable home directory. The deployed image still uses
-its default unprivileged `node` user.
+container identity a writable home directory. `run-codex` reads the mounted
+file and adds `CODEX_API_KEY` to the Codex process environment. The file mount
+keeps the key out of Docker's stored environment configuration, but not out of
+the running Codex process. The deployed image still uses its default
+unprivileged `node` user.
 
 ## Deploy to the Factory Google Cloud project
 
@@ -131,11 +134,13 @@ printf '%s' "$OPENAI_API_KEY" | \
     --project "$PROJECT_ID"
 ```
 
-Create a dedicated service account and grant access to only that secret:
+Create a dedicated service account and grant it access to the API-key secret.
+Use an unused account ID. Creation intentionally fails if the account already
+exists so the setup does not silently reuse an identity with broader IAM
+permissions. For an existing deployment, verify its IAM bindings before
+skipping the creation command.
 
 ```sh
-gcloud iam service-accounts describe "$SERVICE_ACCOUNT" \
-  --project "$PROJECT_ID" >/dev/null 2>&1 || \
 gcloud iam service-accounts create "$SERVICE_ACCOUNT_ID" \
   --display-name 'Codex Cloud Run smoke test' \
   --project "$PROJECT_ID"
