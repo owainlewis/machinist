@@ -15,7 +15,6 @@ import (
 type githubClient interface {
 	Issue(context.Context, string, int) (issue, error)
 	LabeledIssues(context.Context, string, string) ([]issue, error)
-	UpdateIssueBody(context.Context, issue, string) error
 	CommentIssue(context.Context, issue, string) error
 	OpenDraftPR(context.Context, issue, string, string, string, string) (string, error)
 }
@@ -65,11 +64,6 @@ func (ghClient) LabeledIssues(ctx context.Context, repository, label string) ([]
 		}
 	}
 	return result, nil
-}
-
-func (ghClient) UpdateIssueBody(ctx context.Context, value issue, body string) error {
-	_, err := commandOutput(ctx, "", []byte(body), "gh", "issue", "edit", strconv.Itoa(value.Number), "--repo", value.Repository, "--body-file", "-")
-	return err
 }
 
 func (ghClient) CommentIssue(ctx context.Context, value issue, body string) error {

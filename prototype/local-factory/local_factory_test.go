@@ -36,8 +36,7 @@ func (f fakeGitHub) LabeledIssues(context.Context, string, string) ([]issue, err
 	return append([]issue(nil), f.issues...), nil
 }
 
-func (fakeGitHub) UpdateIssueBody(context.Context, issue, string) error { return nil }
-func (fakeGitHub) CommentIssue(context.Context, issue, string) error    { return nil }
+func (fakeGitHub) CommentIssue(context.Context, issue, string) error { return nil }
 func (fakeGitHub) OpenDraftPR(context.Context, issue, string, string, string, string) (string, error) {
 	return "https://github.com/acme/widgets/pull/2", nil
 }
@@ -348,66 +347,11 @@ func TestForemanCommandQuotesExecutable(t *testing.T) {
 	}
 }
 
-func TestManagedPlanBodyReplacesOnlyFactoryBlock(t *testing.T) {
+func TestManagedPlanComment(t *testing.T) {
 	t.Parallel()
-	first, err := managedPlanBody("User description", "First plan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := managedPlanBody(first, "Second plan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(second, "<!-- factory-plan:start -->") != 1 {
-		t.Fatalf("managed block duplicated:\n%s", second)
-	}
-	if !strings.Contains(second, "User description") || !strings.Contains(second, "Second plan") || strings.Contains(second, "First plan") {
-		t.Fatalf("managed plan replacement failed:\n%s", second)
-	}
-}
-
-func TestManagedPlanBodyRejectsMalformedMarkers(t *testing.T) {
-	t.Parallel()
-	const start = "<!-- factory-plan:start -->"
-	const end = "<!-- factory-plan:end -->"
-	for name, issueBody := range map[string]string{
-		"orphan start":    "Requirements\n" + start + "\nDo not delete this",
-		"orphan end":      "Requirements\n" + end,
-		"duplicate start": start + "\nRequirements\n" + start + "\n" + end,
-		"duplicate end":   start + "\n" + end + "\nRequirements\n" + end,
-		"wrong order":     end + "\nRequirements\n" + start,
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := managedPlanBody(issueBody, "Replacement plan"); err == nil {
-				t.Fatal("malformed markers were accepted")
-			}
-		})
-	}
-	if _, err := managedPlanBody("Requirements", "Plan with "+start); err == nil {
-		t.Fatal("reserved marker in plan was accepted")
-	}
-}
-
-func TestManagedPlanBodyPreservesUserTextExactly(t *testing.T) {
-	t.Parallel()
-	const start = "<!-- factory-plan:start -->"
-	const end = "<!-- factory-plan:end -->"
-	original := "    indented requirement\nline with a hard break  \n"
-	appended, err := managedPlanBody(original, "New plan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(appended, original) {
-		t.Fatalf("append changed user text:\nwant prefix %q\ngot %q", original, appended)
-	}
-	prefix := "    leading code block\nline with a hard break  \n\n"
-	suffix := "\n\nTrailing requirement  "
-	replaced, err := managedPlanBody(prefix+start+"\nOld plan\n"+end+suffix, "New plan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(replaced, prefix) || !strings.HasSuffix(replaced, suffix) {
-		t.Fatalf("replacement changed user text:\nwant prefix %q and suffix %q\ngot %q", prefix, suffix, replaced)
+	comment := managedPlanComment("\nPlan one\n")
+	if comment != "<!-- factory-plan -->\n## Factory plan\n\nPlan one" {
+		t.Fatalf("managed plan comment = %q", comment)
 	}
 }
 

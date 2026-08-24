@@ -87,7 +87,7 @@ After proving a repository and its prompts locally, opt into writes explicitly:
 /tmp/factory web --github-writes
 ```
 
-In write mode, Factory publishes the plan to the issue, comments with the reason when work is blocked, pushes the candidate branch, and opens a draft pull request after verification.
+In write mode, Factory publishes the plan as a non-destructive issue comment, comments with the reason when work is blocked, pushes the candidate branch, and opens a draft pull request after verification. The durable local `plan.md` remains the authoritative plan because GitHub does not offer an atomic conditional update for issue bodies.
 
 This is a trusted-local executor, not a security sandbox. A custom `command` runtime, or another local agent configured with broad shell access, runs with the operator's host permissions and could use host credentials outside Factory's adapter. Use only trusted prompts and runtimes. Credential isolation belongs in the remote-worker phase.
 
