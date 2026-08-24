@@ -55,15 +55,82 @@ func prepareWorkspace(ctx context.Context, cfg loadedConfig, item work) (string,
 		return "", "", err
 	}
 	if _, err := commandOutput(ctx, repository.Path, nil, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
-		return "", "", fmt.Errorf("candidate branch %q already exists without a reusable attempt workspace; refusing to delete it", branch)
+		if !workspaceIntentMatches(workspace, repository.Path, branch, baseSHA) {
+			return "", "", fmt.Errorf("candidate branch %q already exists without a reusable attempt workspace; refusing to delete it", branch)
+		}
+		branchOutput, err := commandOutput(ctx, repository.Path, nil, "git", "rev-parse", "refs/heads/"+branch)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve recoverable candidate branch: %w", err)
+		}
+		if branchSHA := strings.TrimSpace(string(branchOutput)); branchSHA != baseSHA {
+			return "", "", fmt.Errorf("recoverable candidate branch %q points to %s, expected base %s", branch, branchSHA, baseSHA)
+		}
+		if _, err := commandOutput(ctx, repository.Path, nil, "git", "worktree", "add", workspace, branch); err != nil {
+			return "", "", fmt.Errorf("recover candidate worktree: %w", err)
+		}
+		return workspace, branch, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(workspace), 0o755); err != nil {
+		return "", "", err
+	}
+	if err := writeWorkspaceIntent(workspace, repository.Path, branch, baseSHA); err != nil {
 		return "", "", err
 	}
 	if _, err := commandOutput(ctx, repository.Path, nil, "git", "worktree", "add", "-b", branch, workspace, baseSHA); err != nil {
 		return "", "", fmt.Errorf("create worktree: %w", err)
 	}
 	return workspace, branch, nil
+}
+
+func workspaceIntentBody(repository, workspace, branch, baseSHA string) []byte {
+	return []byte(strings.Join([]string{repository, workspace, branch, baseSHA}, "\n") + "\n")
+}
+
+func workspaceIntentPath(workspace string) string {
+	return filepath.Join(filepath.Dir(workspace), ".workspace-intent")
+}
+
+func workspaceIntentMatches(workspace, repository, branch, baseSHA string) bool {
+	body, err := os.ReadFile(workspaceIntentPath(workspace))
+	return err == nil && string(body) == string(workspaceIntentBody(repository, workspace, branch, baseSHA))
+}
+
+func writeWorkspaceIntent(workspace, repository, branch, baseSHA string) error {
+	path := workspaceIntentPath(workspace)
+	expected := workspaceIntentBody(repository, workspace, branch, baseSHA)
+	if body, err := os.ReadFile(path); err == nil {
+		if string(body) != string(expected) {
+			return fmt.Errorf("workspace intent %q does not match this attempt", path)
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".workspace-intent-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(expected); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateReusableWorkspace(ctx context.Context, workspace, expectedBranch, expectedSHA string) error {

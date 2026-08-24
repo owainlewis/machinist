@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,12 +121,16 @@ func validateConfig(value config) error {
 	if value.Server.Listen == "" {
 		return errors.New("server.listen is required")
 	}
-	host, _, err := net.SplitHostPort(value.Server.Listen)
+	host, port, err := net.SplitHostPort(value.Server.Listen)
 	if err != nil {
 		return fmt.Errorf("server.listen: %w", err)
 	}
 	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
 		return errors.New("server.listen must use localhost, 127.0.0.1, or ::1 in this local spike")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return errors.New("server.listen must use a numeric port between 1 and 65535")
 	}
 	if value.Server.PollEvery == "" {
 		return errors.New("server.poll_every is required")

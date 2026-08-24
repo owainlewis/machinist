@@ -567,6 +567,17 @@ func TestConfigRejectsCodexForemanAndInvalidTimeout(t *testing.T) {
 	}
 }
 
+func TestConfigRejectsUnreachableListenPort(t *testing.T) {
+	t.Parallel()
+	for _, listen := range []string{"127.0.0.1:0", "127.0.0.1:", "127.0.0.1:not-a-port", "127.0.0.1:65536"} {
+		value := validTestConfig()
+		value.Server.Listen = listen
+		if err := validateConfig(value); err == nil || !strings.Contains(err.Error(), "port") {
+			t.Fatalf("server.listen %q was accepted: %v", listen, err)
+		}
+	}
+}
+
 func TestLocalOnlyHandlerRejectsForeignAuthority(t *testing.T) {
 	t.Parallel()
 	handler := localOnlyHandler("127.0.0.1:7338", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -982,6 +993,15 @@ printf 'Malformed verification report.\n'
 		t.Fatalf("unowned branch changed from %s to %s", retainedBranchSHA, actualSHA)
 	}
 	mustRun(t, repository, "git", "branch", "-D", expectedRetryBranch)
+	retryWorkspacePath := filepath.Join(cfg.Config.StateDirectory, "checkouts", retried.ID, fmt.Sprintf("attempt-%d", retried.Attempt), "work")
+	retryBaseSHA := mustOutput(t, repository, "git", "rev-parse", "HEAD")
+	if err := os.MkdirAll(filepath.Dir(retryWorkspacePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWorkspaceIntent(retryWorkspacePath, repository, expectedRetryBranch, retryBaseSHA); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, repository, "git", "branch", expectedRetryBranch, retryBaseSHA)
 	retryWorkspace, retryBranch, err := prepareWorkspace(context.Background(), cfg, retried)
 	if err != nil {
 		t.Fatal(err)
