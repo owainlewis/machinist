@@ -868,7 +868,16 @@ printf 'Malformed verification report.\n'
 		t.Fatalf("retry failed: changed=%t, err=%v", changed, err)
 	}
 	expectedRetryBranch := fmt.Sprintf("factory/%s-attempt-%d", retried.ID, retried.Attempt)
-	mustRun(t, repository, "git", "branch", expectedRetryBranch, "HEAD")
+	retainedCommit := mustOutput(t, repository, "git", "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "retained candidate")
+	mustRun(t, repository, "git", "branch", expectedRetryBranch, retainedCommit)
+	retainedBranchSHA := mustOutput(t, repository, "git", "rev-parse", expectedRetryBranch)
+	if _, _, err := prepareWorkspace(context.Background(), cfg, retried); err == nil || !strings.Contains(err.Error(), "refusing to delete") {
+		t.Fatalf("unowned branch collision was accepted: %v", err)
+	}
+	if actualSHA := mustOutput(t, repository, "git", "rev-parse", expectedRetryBranch); actualSHA != retainedBranchSHA {
+		t.Fatalf("unowned branch changed from %s to %s", retainedBranchSHA, actualSHA)
+	}
+	mustRun(t, repository, "git", "branch", "-D", expectedRetryBranch)
 	retryWorkspace, retryBranch, err := prepareWorkspace(context.Background(), cfg, retried)
 	if err != nil {
 		t.Fatal(err)
@@ -888,20 +897,19 @@ printf 'Malformed verification report.\n'
 	if err := os.WriteFile(filepath.Join(retryWorkspace, "stale.txt"), []byte("stale attempt state\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	recoveredWorkspace, recoveredBranch, err := prepareWorkspace(context.Background(), cfg, retried)
-	if err != nil || recoveredWorkspace != retryWorkspace || recoveredBranch != retryBranch {
-		t.Fatalf("partial preparation was not recovered: %q, %q, %v", recoveredWorkspace, recoveredBranch, err)
+	if _, _, err := prepareWorkspace(context.Background(), cfg, retried); err == nil || !strings.Contains(err.Error(), "not safe to reuse") {
+		t.Fatalf("dirty unowned workspace was reused: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(recoveredWorkspace, "stale.txt")); !os.IsNotExist(err) {
-		t.Fatalf("partial workspace content survived recovery: %v", err)
+	if body, err := os.ReadFile(filepath.Join(retryWorkspace, "stale.txt")); err != nil || string(body) != "stale attempt state\n" {
+		t.Fatalf("dirty unowned workspace content was not preserved: %q, %v", body, err)
 	}
-	if err := os.WriteFile(filepath.Join(recoveredWorkspace, "stale.txt"), []byte("unsafe running state\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(retryWorkspace, "stale.txt"), []byte("unsafe running state\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	prepared := retried
-	prepared.Workspace = recoveredWorkspace
-	prepared.Branch = recoveredBranch
-	prepared.HeadSHA = mustOutput(t, recoveredWorkspace, "git", "rev-parse", "HEAD")
+	prepared.Workspace = retryWorkspace
+	prepared.Branch = retryBranch
+	prepared.HeadSHA = mustOutput(t, retryWorkspace, "git", "rev-parse", "HEAD")
 	if _, _, err := prepareWorkspace(context.Background(), cfg, prepared); err == nil || !strings.Contains(err.Error(), "not safe to reuse") {
 		t.Fatalf("dirty attempt workspace was reused: %v", err)
 	}

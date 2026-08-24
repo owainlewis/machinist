@@ -47,21 +47,15 @@ func prepareWorkspace(ctx context.Context, cfg loadedConfig, item work) (string,
 	baseSHA := strings.TrimSpace(string(baseOutput))
 	if _, err := os.Stat(workspace); err == nil {
 		if validationErr := validateReusableWorkspace(ctx, workspace, branch, baseSHA); validationErr != nil {
-			if item.Workspace != "" || item.Branch != "" || item.HeadSHA != "" {
-				return "", "", fmt.Errorf("existing attempt workspace is not safe to reuse: %w", validationErr)
-			}
-			if err := cleanupPartialAttemptWorkspace(ctx, repository.Path, workspace, branch); err != nil {
-				return "", "", fmt.Errorf("recover partial attempt workspace: %w", err)
-			}
+			return "", "", fmt.Errorf("existing attempt workspace is not safe to reuse: %w", validationErr)
 		} else {
 			return workspace, branch, nil
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", "", err
-	} else if item.Workspace == "" && item.Branch == "" && item.HeadSHA == "" {
-		if err := cleanupPartialAttemptWorkspace(ctx, repository.Path, workspace, branch); err != nil {
-			return "", "", fmt.Errorf("recover partial attempt registration: %w", err)
-		}
+	}
+	if _, err := commandOutput(ctx, repository.Path, nil, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+		return "", "", fmt.Errorf("candidate branch %q already exists without a reusable attempt workspace; refusing to delete it", branch)
 	}
 	if err := os.MkdirAll(filepath.Dir(workspace), 0o755); err != nil {
 		return "", "", err
@@ -70,22 +64,6 @@ func prepareWorkspace(ctx context.Context, cfg loadedConfig, item work) (string,
 		return "", "", fmt.Errorf("create worktree: %w", err)
 	}
 	return workspace, branch, nil
-}
-
-func cleanupPartialAttemptWorkspace(ctx context.Context, repositoryPath, workspace, branch string) error {
-	_, _ = commandOutput(ctx, repositoryPath, nil, "git", "worktree", "remove", "--force", workspace)
-	if err := os.RemoveAll(workspace); err != nil {
-		return err
-	}
-	if _, err := commandOutput(ctx, repositoryPath, nil, "git", "worktree", "prune"); err != nil {
-		return err
-	}
-	if _, err := commandOutput(ctx, repositoryPath, nil, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
-		if _, err := commandOutput(ctx, repositoryPath, nil, "git", "branch", "-D", branch); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func validateReusableWorkspace(ctx context.Context, workspace, expectedBranch, expectedSHA string) error {
