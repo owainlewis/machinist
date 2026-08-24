@@ -108,6 +108,10 @@ func TestExplicitRetryOnlyRequeuesFailedOrBlockedWork(t *testing.T) {
 		current.State = stateFailed
 		current.Failure = "agent stopped"
 		current.VerifyRuns = 2
+		current.Branch = "factory/old-attempt"
+		current.Workspace = "/tmp/old-attempt"
+		current.HeadSHA = "old-head"
+		current.PRURL = "https://github.com/acme/widgets/pull/1"
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -126,6 +130,9 @@ func TestExplicitRetryOnlyRequeuesFailedOrBlockedWork(t *testing.T) {
 	}
 	if !changed || retried.State != stateQueued || retried.Attempt != 2 || retried.VerifyRuns != 0 || retried.Failure != "" {
 		t.Fatalf("unexpected retry: %#v, changed=%t", retried, changed)
+	}
+	if retried.Branch != "" || retried.Workspace != "" || retried.HeadSHA != "" || retried.PRURL != "" {
+		t.Fatalf("retry retained attempt-local checkout metadata: %#v", retried)
 	}
 	if retried.Issue.Body != refreshedIssue.Body {
 		t.Fatalf("retry retained stale issue body %q", retried.Issue.Body)
@@ -323,9 +330,9 @@ func TestConfigRejectsNonPositivePollInterval(t *testing.T) {
 func TestVerifierContextNamesDetachedCheckout(t *testing.T) {
 	t.Parallel()
 	runner := agentRunner{store: newStore(t.TempDir())}
-	item := work{ID: "work", Workspace: "/tmp/mutable-builder", Issue: issue{Repository: "acme/widgets", Number: 1}}
+	item := work{ID: "work", Workspace: "/tmp/mutable-builder", VerifyRuns: 1, Issue: issue{Repository: "acme/widgets", Number: 1}}
 	context := runner.roleContext(item, "verify", "/tmp/detached-verifier")
-	if !strings.Contains(context, "Checkout: /tmp/detached-verifier") || strings.Contains(context, item.Workspace) {
+	if !strings.Contains(context, "Checkout: /tmp/detached-verifier") || !strings.Contains(context, "Verification run: 1") || strings.Contains(context, item.Workspace) {
 		t.Fatalf("verifier context points at the wrong checkout:\n%s", context)
 	}
 }
@@ -704,12 +711,17 @@ printf 'Malformed verification report.\n'
 	if err != nil || !changed {
 		t.Fatalf("retry failed: changed=%t, err=%v", changed, err)
 	}
+	expectedRetryBranch := fmt.Sprintf("factory/%s-attempt-%d", retried.ID, retried.Attempt)
+	mustRun(t, repository, "git", "branch", expectedRetryBranch, "HEAD")
 	retryWorkspace, retryBranch, err := prepareWorkspace(context.Background(), cfg, retried)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if retryWorkspace == completed.Workspace || retryBranch == completed.Branch {
 		t.Fatalf("retry reused workspace %q or branch %q", retryWorkspace, retryBranch)
+	}
+	if retryBranch != expectedRetryBranch {
+		t.Fatalf("recovered branch = %q, want %q", retryBranch, expectedRetryBranch)
 	}
 	if _, err := os.Stat(filepath.Join(retryWorkspace, "result.txt")); !os.IsNotExist(err) {
 		t.Fatalf("retry inherited result.txt: %v", err)
@@ -720,7 +732,21 @@ printf 'Malformed verification report.\n'
 	if err := os.WriteFile(filepath.Join(retryWorkspace, "stale.txt"), []byte("stale attempt state\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := prepareWorkspace(context.Background(), cfg, retried); err == nil || !strings.Contains(err.Error(), "not safe to reuse") {
+	recoveredWorkspace, recoveredBranch, err := prepareWorkspace(context.Background(), cfg, retried)
+	if err != nil || recoveredWorkspace != retryWorkspace || recoveredBranch != retryBranch {
+		t.Fatalf("partial preparation was not recovered: %q, %q, %v", recoveredWorkspace, recoveredBranch, err)
+	}
+	if _, err := os.Stat(filepath.Join(recoveredWorkspace, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("partial workspace content survived recovery: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(recoveredWorkspace, "stale.txt"), []byte("unsafe running state\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prepared := retried
+	prepared.Workspace = recoveredWorkspace
+	prepared.Branch = recoveredBranch
+	prepared.HeadSHA = mustOutput(t, recoveredWorkspace, "git", "rev-parse", "HEAD")
+	if _, _, err := prepareWorkspace(context.Background(), cfg, prepared); err == nil || !strings.Contains(err.Error(), "not safe to reuse") {
 		t.Fatalf("dirty attempt workspace was reused: %v", err)
 	}
 }
@@ -740,4 +766,15 @@ func mustRun(t *testing.T, directory, name string, args ...string) {
 	if err != nil {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, output)
 	}
+}
+
+func mustOutput(t *testing.T, directory, name string, args ...string) string {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), name, args...)
+	command.Dir = directory
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("%s %s: %v", name, strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(output))
 }

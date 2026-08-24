@@ -135,7 +135,7 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 	if artifactErr := r.store.artifact(id, artifact, output); artifactErr != nil && runErr == nil {
 		runErr = artifactErr
 	}
-	_, _ = r.store.update(id, func(current *work) error {
+	_, stateErr := r.store.update(id, func(current *work) error {
 		current.ActiveRole = "foreman"
 		message := role + " agent completed"
 		if runErr != nil {
@@ -156,6 +156,9 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 		current.Events = append(current.Events, event{At: time.Now().UTC(), Message: message})
 		return nil
 	})
+	if stateErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("persist %s completion: %w", role, stateErr))
+	}
 	return output, runErr
 }
 
@@ -336,7 +339,11 @@ func (r *agentRunner) roleContext(item work, role, directory string) string {
 	if review, err := r.store.readArtifact(item.ID, "review.md"); err == nil && role == "build" {
 		parts = append(parts, "# Latest verification report\n\n"+string(review))
 	}
-	parts = append(parts, "# Run context\n\nRole: "+role+"\nCheckout: "+directory+"\nVerification run: "+strconv.Itoa(item.VerifyRuns+1))
+	verificationRun := item.VerifyRuns
+	if role != "verify" {
+		verificationRun++
+	}
+	parts = append(parts, "# Run context\n\nRole: "+role+"\nCheckout: "+directory+"\nVerification run: "+strconv.Itoa(verificationRun))
 	return strings.Join(parts, "\n\n")
 }
 

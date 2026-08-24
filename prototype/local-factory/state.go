@@ -145,7 +145,11 @@ func (s *store) retry(id string, refreshedIssue issue) (work, bool, error) {
 	item.ActiveRole = ""
 	item.Failure = ""
 	item.VerifyRuns = 0
+	item.Branch = ""
+	item.Workspace = ""
+	item.HeadSHA = ""
 	item.VerifiedSHA = ""
+	item.PRURL = ""
 	item.StartedAt = time.Time{}
 	item.CompletedAt = time.Time{}
 	item.UpdatedAt = now
