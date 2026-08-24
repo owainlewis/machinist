@@ -101,6 +101,9 @@ func TestExplicitRetryOnlyRequeuesFailedOrBlockedWork(t *testing.T) {
 	if _, retried, err := state.retry(item.ID, originalIssue); err != nil || retried {
 		t.Fatalf("queued retry = %t, %v", retried, err)
 	}
+	if err := state.artifact(item.ID, "review.md", []byte("obsolete review\n")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := state.update(item.ID, func(current *work) error {
 		current.State = stateFailed
 		current.Failure = "agent stopped"
@@ -111,6 +114,12 @@ func TestExplicitRetryOnlyRequeuesFailedOrBlockedWork(t *testing.T) {
 	}
 	refreshedIssue := originalIssue
 	refreshedIssue.Body = "New details from the user"
+	if err := state.archiveAttemptArtifactsUnlocked(item.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(filepath.Join(state.workDir(item.ID), "issue.md"), []byte(renderIssue(refreshedIssue)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	retried, changed, err := state.retry(item.ID, refreshedIssue)
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +133,17 @@ func TestExplicitRetryOnlyRequeuesFailedOrBlockedWork(t *testing.T) {
 	snapshot, err := state.readArtifact(item.ID, "issue.md")
 	if err != nil || !strings.Contains(string(snapshot), refreshedIssue.Body) {
 		t.Fatalf("retry snapshot was not refreshed: %v\n%s", err, snapshot)
+	}
+	if _, err := state.readArtifact(item.ID, "review.md"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry retained prior review: %v", err)
+	}
+	archivedReview, err := os.ReadFile(filepath.Join(state.workDir(item.ID), "attempts", "attempt-1", "review.md"))
+	if err != nil || string(archivedReview) != "obsolete review\n" {
+		t.Fatalf("prior review was not archived: %v, %q", err, archivedReview)
+	}
+	archivedIssue, err := os.ReadFile(filepath.Join(state.workDir(item.ID), "attempts", "attempt-1", "issue.md"))
+	if err != nil || !strings.Contains(string(archivedIssue), originalIssue.Body) || strings.Contains(string(archivedIssue), refreshedIssue.Body) {
+		t.Fatalf("partial retry overwrote archived issue: %v\n%s", err, archivedIssue)
 	}
 }
 
@@ -221,18 +241,19 @@ func TestRuntimeAuthorityIsHeldByOneServer(t *testing.T) {
 	if err := state.activate("server-token"); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.activate("second-token"); err == nil || !strings.Contains(err.Error(), "already running") {
+	secondState := newStore(state.root)
+	if err := secondState.activate("second-token"); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second server claimed authority: %v", err)
 	}
 	state.deactivate("invented-token")
-	if err := state.activate("second-token"); err == nil {
+	if err := secondState.activate("second-token"); err == nil {
 		t.Fatal("wrong token released runtime authority")
 	}
 	state.deactivate("server-token")
-	if err := state.activate("second-token"); err != nil {
+	if err := secondState.activate("second-token"); err != nil {
 		t.Fatalf("released authority could not be reclaimed: %v", err)
 	}
-	state.deactivate("second-token")
+	secondState.deactivate("second-token")
 }
 
 func TestInternalAPIRejectsInventedAuthority(t *testing.T) {
@@ -608,6 +629,34 @@ command = [%q]
 		if _, err := os.Stat(verificationPath); !os.IsNotExist(err) {
 			t.Fatalf("verification worktree %q was retained: %v", verificationPath, err)
 		}
+	}
+	if _, err := state.update(item.ID, func(current *work) error {
+		current.State = stateRunning
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, agentScript, `#!/bin/sh
+set -eu
+printf 'Malformed verification report.\n'
+`)
+	if _, err := runner.delegate(context.Background(), item.ID, "verify"); err == nil || !strings.Contains(err.Error(), "must begin") {
+		t.Fatalf("malformed re-verification succeeded: %v", err)
+	}
+	afterFailedVerification, err := state.get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFailedVerification.VerifiedSHA != "" {
+		t.Fatalf("failed re-verification retained approval %q", afterFailedVerification.VerifiedSHA)
+	}
+	if _, err := state.update(item.ID, func(current *work) error {
+		current.State = stateReady
+		current.VerifyRuns = completed.VerifyRuns
+		current.VerifiedSHA = completed.VerifiedSHA
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	verificationWorkspace, err := prepareVerificationWorkspace(context.Background(), cfg, completed, completed.HeadSHA)
 	if err != nil {

@@ -17,13 +17,14 @@ import (
 )
 
 type store struct {
-	root string
-	mu   sync.Mutex
+	root           string
+	mu             sync.Mutex
+	authorityFile  *os.File
+	authorityToken string
 }
 
 type runtimeAuthority struct {
-	Token string `json:"token"`
-	PID   int    `json:"pid"`
+	PID int `json:"pid"`
 }
 
 func newStore(root string) *store { return &store{root: root} }
@@ -39,64 +40,56 @@ func newAuthorityToken() (string, error) {
 func (s *store) activate(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if token == "" {
+		return errors.New("runtime authority token is required")
+	}
+	if s.authorityFile != nil {
+		return errors.New("this store already holds runtime authority")
+	}
 	if err := os.MkdirAll(s.root, 0o755); err != nil {
 		return err
 	}
-	body, err := json.Marshal(runtimeAuthority{Token: token, PID: os.Getpid()})
+	path := filepath.Join(s.root, "authority.lock")
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
-	body = append(body, '\n')
-	path := filepath.Join(s.root, "authority.json")
-	for range 2 {
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			if _, writeErr := file.Write(body); writeErr != nil {
-				_ = file.Close()
-				_ = os.Remove(path)
-				return writeErr
-			}
-			if closeErr := file.Close(); closeErr != nil {
-				_ = os.Remove(path)
-				return closeErr
-			}
-			return nil
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return errors.New("factory web is already running")
 		}
-		if !errors.Is(err, os.ErrExist) {
-			return err
-		}
-		existingBody, readErr := os.ReadFile(path)
-		var existing runtimeAuthority
-		if readErr == nil && json.Unmarshal(existingBody, &existing) == nil && processAlive(existing.PID) {
-			return fmt.Errorf("factory web is already running with PID %d", existing.PID)
-		}
-		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return removeErr
-		}
+		return fmt.Errorf("lock runtime authority: %w", err)
 	}
-	return errors.New("could not claim local runtime authority")
-}
-
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
+	body, err := json.Marshal(runtimeAuthority{PID: os.Getpid()})
+	if err != nil {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+		return err
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	if err := file.Truncate(0); err == nil {
+		_, err = file.WriteAt(append(body, '\n'), 0)
+	}
+	if err != nil {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+		return fmt.Errorf("write runtime authority: %w", err)
+	}
+	s.authorityFile = file
+	s.authorityToken = token
+	return nil
 }
 
 func (s *store) deactivate(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path := filepath.Join(s.root, "authority.json")
-	body, err := os.ReadFile(path)
-	if err != nil {
+	if s.authorityFile == nil || subtle.ConstantTimeCompare([]byte(token), []byte(s.authorityToken)) != 1 {
 		return
 	}
-	var authority runtimeAuthority
-	if json.Unmarshal(body, &authority) == nil && subtle.ConstantTimeCompare([]byte(token), []byte(authority.Token)) == 1 {
-		_ = os.Remove(path)
-	}
+	_ = syscall.Flock(int(s.authorityFile.Fd()), syscall.LOCK_UN)
+	_ = s.authorityFile.Close()
+	s.authorityFile = nil
+	s.authorityToken = ""
 }
 
 func (s *store) create(value issue) (work, bool, error) {
@@ -139,6 +132,9 @@ func (s *store) retry(id string, refreshedIssue issue) (work, bool, error) {
 	if item.State != stateFailed && item.State != stateBlocked {
 		return item, false, nil
 	}
+	if err := s.archiveAttemptArtifactsUnlocked(id, item.Attempt); err != nil {
+		return work{}, false, fmt.Errorf("archive attempt artifacts: %w", err)
+	}
 	if err := atomicWrite(filepath.Join(s.workDir(id), "issue.md"), []byte(renderIssue(refreshedIssue)), 0o644); err != nil {
 		return work{}, false, fmt.Errorf("refresh issue snapshot: %w", err)
 	}
@@ -158,6 +154,31 @@ func (s *store) retry(id string, refreshedIssue issue) (work, bool, error) {
 		return work{}, false, err
 	}
 	return item, true, nil
+}
+
+func (s *store) archiveAttemptArtifactsUnlocked(id string, attempt int) error {
+	archiveDirectory := filepath.Join(s.workDir(id), "attempts", fmt.Sprintf("attempt-%d", attempt))
+	for _, name := range []string{"issue.md", "plan.md", "build.md", "review.md", "foreman.md"} {
+		source := filepath.Join(s.workDir(id), name)
+		if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(archiveDirectory, 0o755); err != nil {
+			return err
+		}
+		destination := filepath.Join(archiveDirectory, name)
+		if _, err := os.Stat(destination); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Rename(source, destination); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *store) get(id string) (work, error) {

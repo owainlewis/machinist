@@ -101,6 +101,7 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 		if role == "verify" {
 			current.HeadSHA = item.HeadSHA
 			current.VerifyRuns++
+			current.VerifiedSHA = ""
 		}
 		current.Events = append(current.Events, event{At: time.Now().UTC(), Message: role + " agent started"})
 		return nil
@@ -138,6 +139,9 @@ func (r *agentRunner) delegate(ctx context.Context, id, role string) ([]byte, er
 		current.ActiveRole = "foreman"
 		message := role + " agent completed"
 		if runErr != nil {
+			if role == "verify" {
+				current.VerifiedSHA = ""
+			}
 			message = role + " agent failed: " + runErr.Error()
 		} else if role == "verify" {
 			verdict, _ := verificationVerdict(output)
