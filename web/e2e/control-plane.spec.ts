@@ -58,7 +58,7 @@ test("creates a Task and completes its Run", async ({ page }) => {
   await dialog.getByRole("button", { name: "Save Task" }).click();
 
   const task = page.locator("article").filter({ hasText: taskName });
-  await expect(task).toContainText("1 repos");
+  await expect(task).toContainText("1 repo");
   await task.getByRole("button", { name: "Run now" }).click();
   const runDialog = page.getByRole("dialog", { name: `Run ${taskName}` });
   await expect(runDialog.getByLabel("Run on")).toHaveValue("persistent-auto");

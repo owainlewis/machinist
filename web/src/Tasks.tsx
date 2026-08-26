@@ -85,7 +85,7 @@ export function TasksView({ initialID, createOpen, onRun }: { initialID?: string
           <button className="task-copy" onClick={() => openTask(task.id)}>
             <span className="task-title-line"><strong>{task.name}</strong>{task.archived && <span className="subtle-pill">Archived</span>}{task.read_only && <span className="subtle-pill">Read-only</span>}</span>
             <span>{task.prompt_preview}</span>
-            <small><GitBranch size={12} /> {task.repository_count} repos · {task.pipeline_name ?? "Single agent"} · {task.runtime}</small>
+            <small><GitBranch size={12} /> {task.repository_count} repo{task.repository_count === 1 ? "" : "s"} · {task.pipeline_name ?? "Single agent"} · {task.runtime}</small>
           </button>
           <div className="task-schedule">
             <StatusBadge state={task.schedule.enabled ? task.schedule.health_status : "disabled"} />
