@@ -209,6 +209,8 @@ func TestBoundedText(t *testing.T) {
 		{name: "splits multi byte rune", value: "héllo", limit: 2, want: "h"},
 		{name: "keeps whole multi byte rune", value: "héllo", limit: 3, want: "hé"},
 		{name: "splits four byte rune", value: "😀", limit: 3, want: ""},
+		{name: "removes partial trailing rune at limit", value: "aa\xf0", limit: 3, want: "aa"},
+		{name: "removes partial leading rune at limit", value: "\x9f\x98\x80bb", limit: 5, want: "bb"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -265,18 +267,14 @@ func TestReadBoundedText(t *testing.T) {
 		}
 	})
 
-	t.Run("truncation splits a multi byte rune", func(t *testing.T) {
-		// readBoundedText cuts the body to the limit before calling boundedText,
-		// which only trims when the value is longer than the limit, so the tail
-		// rune can be split. Tracked in #322; recorded here as current behaviour
-		// so a fix has to update this expectation deliberately.
+	t.Run("truncation drops a partial multi byte rune", func(t *testing.T) {
 		path := filepath.Join(directory, "utf8")
 		writeTestFile(t, path, "aa\U0001F600bb")
 		text, truncated, err := readBoundedText(path, 3)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if text != "aa\xf0" || !truncated {
+		if text != "aa" || !truncated {
 			t.Fatalf("readBoundedText = %q, %v", text, truncated)
 		}
 	})
@@ -321,6 +319,14 @@ func TestTailBuffer(t *testing.T) {
 	}
 	if got := buffer.String(); got != "efghijkl" {
 		t.Fatalf("tail buffer = %q, want %q", got, "efghijkl")
+	}
+
+	unicodeBuffer := &tailBuffer{limit: 5}
+	if _, err := unicodeBuffer.Write([]byte("aa\U0001F600bb")); err != nil {
+		t.Fatal(err)
+	}
+	if got := unicodeBuffer.String(); got != "bb" {
+		t.Fatalf("unicode tail buffer = %q, want %q", got, "bb")
 	}
 }
 

@@ -1035,14 +1035,10 @@ func readBoundedText(path string, limit int) (string, bool, error) {
 }
 
 func boundedText(value string, limit int) string {
-	if len(value) <= limit {
-		return value
+	if len(value) > limit {
+		value = value[:limit]
 	}
-	value = value[:limit]
-	for !utf8.ValidString(value) {
-		value = value[:len(value)-1]
-	}
-	return value
+	return strings.ToValidUTF8(value, "")
 }
 
 func startSupervisor(commandLine []string, init supervisorInit, errorOutput io.Writer) (*supervisorProcess, error) {
