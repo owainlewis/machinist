@@ -4,10 +4,15 @@
 
 # Machinist
 
-**A software factory for coding agents.**
+**Build your own software factory.**
 
-Machinist turns a GitHub issue into a reviewed pull request. It runs on your
-machine, uses coding agents you configure, and leaves the merge decision to you.
+Machinist is an open-source software factory implementation for coding agents.
+It runs development workflows you define, on your machine and against your
+repositories.
+
+Start with the included issue-to-pull-request factory, or create your own agents
+and pipelines. You control the prompts, models, executors, timeouts,
+repositories, and order of work.
 
 [![CI](https://github.com/owainlewis/machinist/actions/workflows/ci.yml/badge.svg)](https://github.com/owainlewis/machinist/actions/workflows/ci.yml)
 [![Go 1.26.6](https://img.shields.io/badge/Go-1.26.6-00ADD8?logo=go&logoColor=white)](go.mod)
@@ -21,31 +26,49 @@ machine, uses coding agents you configure, and leaves the merge decision to you.
 
 ---
 
-## Why call it a software factory?
+## Predictable development with agents
 
-Machinist runs a fixed development process instead of one long agent session.
-The default `foreman` plans the issue, gives the work to fresh agents, asks a
-different agent to review it, waits for CI, and opens a pull request.
+Machinist turns agent work into a process you can run again. Define the stages
+once, then use the same planning, building, testing, and review steps for every
+task. This makes the work more consistent and gives you clear places to add
+quality gates.
+
+Each run produces logs and a final result. If an agent or pipeline step fails,
+Machinist stops instead of carrying on with a broken result.
+
+## Included issue-to-pull-request factory
+
+The default `foreman` plans a GitHub issue, gives implementation and review to
+fresh agents, opens a pull request, and waits for repository CI. Review or CI
+failures go back for repair. The foreman allows up to two repair attempts and
+does not merge the pull request.
 
 ```mermaid
 flowchart LR
-    ISSUE[Issue] --> PLAN[Plan] --> WORK[Build or repair] --> REVIEW[Review] --> CI[CI] --> PR[Ready pull request]
+    ISSUE[Issue] --> PLAN[Plan] --> WORK[Build or repair] --> REVIEW[Review] --> PR[Open PR] --> CI[CI] --> READY[Ready for you]
     REVIEW -.->|changes| WORK
     CI -.->|failure| WORK
-    PR ~~~ SPACE(( ))
+    READY ~~~ SPACE(( ))
 
     classDef step fill:#f4efe6,stroke:#b95b16,color:#211408,stroke-width:1.5px
     classDef endpoint fill:#f2a23a,stroke:#b95b16,color:#211408,stroke-width:2px
     classDef spacer fill:transparent,stroke:transparent,color:transparent
-    class PLAN,WORK,REVIEW,CI step
-    class ISSUE,PR endpoint
+    class PLAN,WORK,REVIEW,PR,CI step
+    class ISSUE,READY endpoint
     class SPACE spacer
-    linkStyle 0,1,2,3,4,5,6 stroke:#b95b16,stroke-width:2px
+    linkStyle 0,1,2,3,4,5,6,7 stroke:#b95b16,stroke-width:2px
 ```
 
-Review and CI failures go back for repair. The retry limit stops a broken task
-from running forever. Machinist records what happened and stops after preparing
-the pull request. It never merges it.
+## Customise the factory
+
+The factory is configuration, not hard-coded behavior. Agent prompt files define
+what each agent does. `config.toml` defines agents and ordered pipelines.
+`worker.toml` maps executors, model names, repositories, and local paths.
+
+You can use Codex, Claude, or another command-line coding agent. You can run one
+agent, chain several agents into a pipeline, or write a supervising agent like
+the included foreman. See [Configuration](docs/configuration.md) to create your
+own factory.
 
 ## Quick start
 
