@@ -303,6 +303,28 @@ type TaskSnapshot struct {
 	ScheduleTimezone   string           `json:"timezone,omitempty"`
 }
 
+func (snapshot *TaskSnapshot) UnmarshalJSON(data []byte) error {
+	type taskSnapshot TaskSnapshot
+	var decoded taskSnapshot
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.Pipeline.ID == "" {
+		decoded.Pipeline = PipelineSnapshot{
+			ID:         DefaultPipelineID,
+			Name:       "Single agent",
+			Generation: 1,
+			Stages: []PipelineStage{{
+				Position: 0,
+				Name:     "Do the task",
+				Prompt:   decoded.Prompt,
+			}},
+		}
+	}
+	*snapshot = TaskSnapshot(decoded)
+	return nil
+}
+
 // ProcedureSnapshot is the product name for the immutable Task snapshot.
 // The alias keeps existing Task and scheduled Run clients source compatible.
 type ProcedureSnapshot = TaskSnapshot
