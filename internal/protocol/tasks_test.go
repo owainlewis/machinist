@@ -22,8 +22,8 @@ func TestTaskSnapshotUnmarshalDefaultsLegacyPipeline(t *testing.T) {
 		t.Fatalf("legacy Pipeline snapshot = %#v, want the single-agent default", snapshot.Pipeline)
 	}
 	stage := snapshot.Pipeline.Stages[0]
-	if stage.Position != 0 || stage.Name != "Do the task" || stage.Prompt != snapshot.Prompt {
-		t.Fatalf("legacy Pipeline stage = %#v, want the frozen task prompt", stage)
+	if stage.Position != 0 || stage.Name != "Do the task" || stage.Prompt != "{{ task.prompt }}" {
+		t.Fatalf("legacy Pipeline stage = %#v, want the default task prompt template", stage)
 	}
 }
 

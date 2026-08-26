@@ -968,6 +968,59 @@ func TestExactReplacementCopiesFrozenExecutionAndReplayWinsBeforeEligibility(t *
 	}
 }
 
+func TestLegacyReplacementPreservesResolvedPromptLiterally(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
+		Name: "Legacy replacement", Prompt: "Keep {{ repository }} literal.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
+		RequestKey: "legacy-replacement-first",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	predecessor := first.Sessions[0]
+	if _, err := store.db.Exec(`
+		UPDATE runs SET task_snapshot = json_remove(task_snapshot, '$.pipeline') WHERE id = ?
+	`, first.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		UPDATE sessions
+		SET state = 'failed', terminal_at = admitted_at, terminal_message = 'failed'
+		WHERE id = ?
+	`, predecessor.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := store.ReplaceWork(context.Background(), protocol.ReplaceWorkRequest{
+		RequestKey: "legacy-replacement", WorkID: predecessor.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementSession := replacement.Run.Sessions[0]
+	var got string
+	if err := store.db.QueryRow(`
+		SELECT prompt
+		FROM session_stages
+		WHERE session_id = ? AND position = 0
+	`, replacementSession.ID).Scan(&got); err != nil {
+		t.Fatalf("load replacement stage prompt: %v", err)
+	}
+	if got != predecessor.ResolvedPrompt {
+		t.Fatalf("legacy replacement stage prompt = %q, want frozen resolved prompt %q",
+			got, predecessor.ResolvedPrompt)
+	}
+}
+
 func needsInputWork(t *testing.T) (*Store, protocol.Worker, protocol.RunDetail, protocol.Work) {
 	t.Helper()
 	store := newTestStore(t)

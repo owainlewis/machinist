@@ -317,7 +317,7 @@ func (snapshot *TaskSnapshot) UnmarshalJSON(data []byte) error {
 			Stages: []PipelineStage{{
 				Position: 0,
 				Name:     "Do the task",
-				Prompt:   decoded.Prompt,
+				Prompt:   "{{ task.prompt }}",
 			}},
 		}
 	}
