@@ -2,8 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -738,6 +740,65 @@ func TestVersion(t *testing.T) {
 	if exitCode != 0 || stdout.String() != "1.2.3\n" {
 		t.Fatalf("exit code = %d, stdout = %q", exitCode, stdout.String())
 	}
+}
+
+func TestStartReportsListeningAfterBindAndStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	stderr := &cancelWriter{cancel: cancel}
+	exitCode := Execute(ctx, []string{
+		"start",
+		"--config=" + writeStartConfig(t),
+		"--listen=127.0.0.1:0",
+	}, strings.NewReader(""), &bytes.Buffer{}, stderr, "test")
+	if exitCode != 0 || stderr.String() != "machinist: control plane listening on http://127.0.0.1:0\n" {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestStartDoesNotReportListeningWhenAddressIsInUse(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{
+		"start",
+		"--config=" + writeStartConfig(t),
+		"--listen=" + occupied.Addr().String(),
+	}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	if exitCode != 2 || !strings.Contains(stderr.String(), "listen on "+occupied.Addr().String()) {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "control plane listening") {
+		t.Fatalf("start reported listening after bind failed: %q", stderr.String())
+	}
+}
+
+type cancelWriter struct {
+	bytes.Buffer
+	cancel context.CancelFunc
+}
+
+func (w *cancelWriter) Write(body []byte) (int, error) {
+	w.cancel()
+	return w.Buffer.Write(body)
+}
+
+func writeStartConfig(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "worker.token"), []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(directory, "config.toml")
+	body := "[server]\n" +
+		"database = \"machinist.db\"\n" +
+		"worker_token_file = \"worker.token\"\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return configPath
 }
 
 func writeCLIConfig(t *testing.T, mode string) string {

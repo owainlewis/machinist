@@ -2,8 +2,10 @@ package controlplane
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -238,6 +240,61 @@ func TestServerServesEmbeddedReactAppAndRejectsRemoteListen(t *testing.T) {
 	}
 	if err := validateLoopbackListen("127.0.0.1:7331"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServerServeReportsBoundListenerAndStopsOnCancellation(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	webServer.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	listening := make(chan net.Addr, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Serve(ctx, "127.0.0.1:0", func(address net.Addr) {
+			listening <- address
+		})
+	}()
+
+	var address net.Addr
+	select {
+	case address = <-listening:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not report listening")
+	}
+	duplicate, err := net.Listen("tcp", address.String())
+	if err == nil {
+		duplicate.Close()
+		t.Fatalf("reported address %s was not bound", address)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned after cancellation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not stop after cancellation")
+	}
+}
+
+func TestServerServeDoesNotReportListeningWhenAddressIsInUse(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	webServer.Close()
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	reported := false
+	err = server.Serve(t.Context(), occupied.Addr().String(), func(net.Addr) {
+		reported = true
+	})
+	if err == nil || !strings.Contains(err.Error(), "listen on "+occupied.Addr().String()) {
+		t.Fatalf("Serve error = %v", err)
+	}
+	if reported {
+		t.Fatal("Serve reported listening after bind failed")
 	}
 }
 

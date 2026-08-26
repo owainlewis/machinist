@@ -281,8 +281,9 @@ func newStartCommand(options *commandOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(options.stderr, "machinist: control plane listening on http://%s\n", serverConfig.Listen)
-			return server.Serve(command.Context(), serverConfig.Listen)
+			return server.Serve(command.Context(), serverConfig.Listen, func(net.Addr) {
+				fmt.Fprintf(options.stderr, "machinist: control plane listening on http://%s\n", serverConfig.Listen)
+			})
 		},
 	}
 	start.Flags().StringVar(&options.listen, "listen", "", "loopback listen address (default 127.0.0.1:7331)")
