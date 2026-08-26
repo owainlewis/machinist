@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { runDetails } from "@/run-metrics";
+import { refreshAfterSubmit } from "@/status-refresh";
 import "./styles.css";
 
 const activeStates = new Set(["queued", "running"]);
@@ -115,7 +116,7 @@ function App() {
       }
       setPrompt("");
       setComposerOpen(false);
-      await refresh();
+      await refreshAfterSubmit(refresh, setStatusError);
     } catch (requestError) {
       setSubmitError(requestError.message);
     } finally {
