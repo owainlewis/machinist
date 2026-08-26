@@ -45,18 +45,18 @@ does not merge the pull request.
 
 ```mermaid
 flowchart LR
-    ISSUE[Issue] --> PLAN[Plan] --> WORK[Build or repair] --> REVIEW[Review] --> PR[Open PR] --> CI[CI] --> READY[Ready for you]
+    ISSUE[Issue] --> PLAN[Plan] --> WORK[Build or repair] --> REVIEW[Review] --> PR[Open PR] --> CI[CI passes]
     REVIEW -.->|changes| WORK
     CI -.->|failure| WORK
-    READY ~~~ SPACE(( ))
+    CI ~~~ SPACE(( )) ~~~ SPACE2(( ))
 
     classDef step fill:#f4efe6,stroke:#b95b16,color:#211408,stroke-width:1.5px
     classDef endpoint fill:#f2a23a,stroke:#b95b16,color:#211408,stroke-width:2px
     classDef spacer fill:transparent,stroke:transparent,color:transparent
-    class PLAN,WORK,REVIEW,PR,CI step
-    class ISSUE,READY endpoint
-    class SPACE spacer
-    linkStyle 0,1,2,3,4,5,6,7 stroke:#b95b16,stroke-width:2px
+    class PLAN,WORK,REVIEW,PR step
+    class ISSUE,CI endpoint
+    class SPACE,SPACE2 spacer
+    linkStyle 0,1,2,3,4,5,6 stroke:#b95b16,stroke-width:2px
 ```
 
 ## Customise the factory
