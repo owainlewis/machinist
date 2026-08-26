@@ -750,9 +750,23 @@ func TestStartReportsListeningAfterBindAndStopsOnCancellation(t *testing.T) {
 		"--config=" + writeStartConfig(t),
 		"--listen=127.0.0.1:0",
 	}, strings.NewReader(""), &bytes.Buffer{}, stderr, "test")
-	if exitCode != 0 || stderr.String() != "machinist: control plane listening on http://127.0.0.1:0\n" {
+	if exitCode != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
+	const prefix = "machinist: control plane listening on http://"
+	if !strings.HasPrefix(stderr.String(), prefix) || !strings.HasSuffix(stderr.String(), "\n") || strings.Count(stderr.String(), "\n") != 1 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	address := strings.TrimSuffix(strings.TrimPrefix(stderr.String(), prefix), "\n")
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || host != "127.0.0.1" || port == "0" {
+		t.Fatalf("reported address = %q, parse error = %v", address, err)
+	}
+	rebound, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("reported address %s was not released: %v", address, err)
+	}
+	rebound.Close()
 }
 
 func TestStartDoesNotReportListeningWhenAddressIsInUse(t *testing.T) {

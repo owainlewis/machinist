@@ -281,8 +281,8 @@ func newStartCommand(options *commandOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return server.Serve(command.Context(), serverConfig.Listen, func(net.Addr) {
-				fmt.Fprintf(options.stderr, "machinist: control plane listening on http://%s\n", serverConfig.Listen)
+			return server.Serve(command.Context(), serverConfig.Listen, func(address net.Addr) {
+				fmt.Fprintf(options.stderr, "machinist: control plane listening on http://%s\n", address)
 			})
 		},
 	}

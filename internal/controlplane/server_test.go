@@ -243,39 +243,32 @@ func TestServerServesEmbeddedReactAppAndRejectsRemoteListen(t *testing.T) {
 	}
 }
 
-func TestServerServeReportsBoundListenerAndStopsOnCancellation(t *testing.T) {
+func TestServerServeReportsBoundListenerAndReleasesItOnImmediateCancellation(t *testing.T) {
 	server, webServer := newTestHTTPServer(t)
 	webServer.Close()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	listening := make(chan net.Addr, 1)
-	done := make(chan error, 1)
-	go func() {
-		done <- server.Serve(ctx, "127.0.0.1:0", func(address net.Addr) {
-			listening <- address
-		})
-	}()
-
 	var address net.Addr
-	select {
-	case address = <-listening:
-	case <-time.After(5 * time.Second):
+	err := server.Serve(ctx, "127.0.0.1:0", func(bound net.Addr) {
+		address = bound
+		duplicate, listenErr := net.Listen("tcp", bound.String())
+		if listenErr == nil {
+			duplicate.Close()
+			t.Fatalf("reported address %s was not bound", bound)
+		}
+		cancel()
+	})
+	if err != nil {
+		t.Fatalf("Serve returned after cancellation: %v", err)
+	}
+	if address == nil {
 		t.Fatal("Serve did not report listening")
 	}
-	duplicate, err := net.Listen("tcp", address.String())
-	if err == nil {
-		duplicate.Close()
-		t.Fatalf("reported address %s was not bound", address)
+	rebound, err := net.Listen("tcp", address.String())
+	if err != nil {
+		t.Fatalf("reported address %s was not released: %v", address, err)
 	}
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Serve returned after cancellation: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Serve did not stop after cancellation")
-	}
+	rebound.Close()
 }
 
 func TestServerServeDoesNotReportListeningWhenAddressIsInUse(t *testing.T) {
