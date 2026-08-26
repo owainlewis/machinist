@@ -297,7 +297,7 @@ func TestSizeLimitedEndpointsRejectOversizedJSON(t *testing.T) {
 		for _, stage := range stages {
 			t.Run(endpoint.name+"/"+stage.name, func(t *testing.T) {
 				body := io.MultiReader(strings.NewReader(stage.prefix), io.LimitReader(repeatingByteReader(stage.fill), endpoint.limit+1))
-				request := httptest.NewRequest(http.MethodPost, endpoint.path, body)
+				request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, endpoint.path, body)
 				request.Header.Set("Authorization", "Bearer secret")
 				response := httptest.NewRecorder()
 
@@ -335,7 +335,7 @@ func TestSizeLimitedEndpointsKeepMalformedJSONAtBadRequest(t *testing.T) {
 		"complete":  "/api/v1/runs/missing/complete",
 	} {
 		t.Run(name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{`))
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(`{`))
 			request.Header.Set("Authorization", "Bearer secret")
 			response := httptest.NewRecorder()
 
