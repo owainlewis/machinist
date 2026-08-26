@@ -41,6 +41,7 @@ function App() {
     setSelection((current) => available.has(current) ? current : firstSelection(next));
     const availableRepositories = next.repositories || [];
     setRepository((current) => availableRepositories.includes(current) ? current : availableRepositories[0] || "");
+    setStatusError("");
   }
 
   useEffect(() => {
@@ -60,7 +61,7 @@ function App() {
     const load = async () => {
       try {
         await refresh();
-        if (!stopped) { setStatusError(""); setStatusLoaded(true); }
+        if (!stopped) setStatusLoaded(true);
       } catch (requestError) {
         if (!stopped) setStatusError(requestError.message);
       }
