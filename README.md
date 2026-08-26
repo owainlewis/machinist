@@ -74,7 +74,8 @@ own factory.
 
 You need macOS or Linux, Go 1.26.6 or newer, Git, an authenticated
 [GitHub CLI](https://cli.github.com/), and an authenticated
-[Codex CLI](https://developers.openai.com/codex/cli/).
+[Codex CLI](https://developers.openai.com/codex/cli/) with native subagents
+enabled.
 
 Build Machinist and create the default config:
 
