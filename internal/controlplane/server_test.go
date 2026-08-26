@@ -270,6 +270,93 @@ func TestCompletionLimitFitsMaximumRecordedOutput(t *testing.T) {
 	}
 }
 
+func TestSizeLimitedEndpointsRejectOversizedJSON(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+
+	endpoints := []struct {
+		name  string
+		path  string
+		limit int64
+	}{
+		{name: "submit", path: "/api/v1/jobs", limit: 1 << 20},
+		{name: "poll", path: "/api/v1/workers/poll", limit: 1 << 20},
+		{name: "heartbeat", path: "/api/v1/runs/missing/heartbeat", limit: 1 << 20},
+		{name: "complete", path: "/api/v1/runs/missing/complete", limit: maxCompletionBytes},
+	}
+	stages := []struct {
+		name   string
+		prefix string
+		fill   byte
+	}{
+		{name: "first decode", prefix: `{"padding":"`, fill: 'x'},
+		{name: "trailing decode", prefix: `{}`, fill: ' '},
+	}
+
+	for _, endpoint := range endpoints {
+		for _, stage := range stages {
+			t.Run(endpoint.name+"/"+stage.name, func(t *testing.T) {
+				body := io.MultiReader(strings.NewReader(stage.prefix), io.LimitReader(repeatingByteReader(stage.fill), endpoint.limit+1))
+				request := httptest.NewRequest(http.MethodPost, endpoint.path, body)
+				request.Header.Set("Authorization", "Bearer secret")
+				response := httptest.NewRecorder()
+
+				server.Handler().ServeHTTP(response, request)
+
+				if response.Code != http.StatusRequestEntityTooLarge {
+					t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+				}
+				if response.Header().Get("Content-Type") != "application/json" {
+					t.Fatalf("content type = %q", response.Header().Get("Content-Type"))
+				}
+				if response.Body.Len() > 256 {
+					t.Fatalf("error response is not bounded: %d bytes", response.Body.Len())
+				}
+				var result map[string]string
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				if len(result) != 1 || result["error"] != "request body is too large" {
+					t.Fatalf("error response = %#v", result)
+				}
+			})
+		}
+	}
+}
+
+func TestSizeLimitedEndpointsKeepMalformedJSONAtBadRequest(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+
+	for name, path := range map[string]string{
+		"submit":    "/api/v1/jobs",
+		"poll":      "/api/v1/workers/poll",
+		"heartbeat": "/api/v1/runs/missing/heartbeat",
+		"complete":  "/api/v1/runs/missing/complete",
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{`))
+			request.Header.Set("Authorization", "Bearer secret")
+			response := httptest.NewRecorder()
+
+			server.Handler().ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+		})
+	}
+}
+
+type repeatingByteReader byte
+
+func (reader repeatingByteReader) Read(buffer []byte) (int, error) {
+	for index := range buffer {
+		buffer[index] = byte(reader)
+	}
+	return len(buffer), nil
+}
+
 func TestHeartbeatEndpointAuthenticatesAndRejectsInvalidLeases(t *testing.T) {
 	server, webServer := newTestHTTPServer(t)
 	defer webServer.Close()
