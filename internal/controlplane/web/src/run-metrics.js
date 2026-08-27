@@ -1,12 +1,48 @@
 const zeroTime = "0001-01-01T00:00:00Z";
+const activeTaskStates = new Set(["queued", "running"]);
+const terminalTaskStates = new Set(["succeeded", "failed"]);
 
-export function completedRuns(jobs, days, now = new Date()) {
+export function tasksInWindow(jobs, days, now = new Date()) {
   const since = new Date(now);
   since.setHours(0, 0, 0, 0);
   since.setDate(since.getDate() - Number(days) + 1);
-  return jobs
+  return jobs.filter((job) => {
+    const createdAt = Date.parse(job.created_at);
+    return validDate(job.created_at) && createdAt >= since.getTime() && createdAt <= now.getTime();
+  });
+}
+
+export function taskAnalytics(jobs, days, now = new Date()) {
+  const tasks = tasksInWindow(jobs, days, now);
+  const terminalTasks = tasks.filter((task) => terminalTaskStates.has(task.state));
+  const contributingDurations = terminalTasks.flatMap((task) => {
+    const measuredRuns = task.runs.filter((run) => run.state !== "skipped");
+    if (!measuredRuns.length || !measuredRuns.every((run) => validDuration(run.duration_millis))) return [];
+    return [measuredRuns.reduce((total, run) => total + run.duration_millis, 0)];
+  });
+  const succeededTasks = terminalTasks.filter((task) => task.state === "succeeded").length;
+
+  return {
+    tasks,
+    totalTasks: tasks.length,
+    successRate: terminalTasks.length ? succeededTasks / terminalTasks.length : null,
+    failedTasks: terminalTasks.length - succeededTasks,
+    activeTasks: tasks.filter((task) => activeTaskStates.has(task.state)).length,
+    averageTaskDurationMillis: contributingDurations.length
+      ? Math.round(contributingDurations.reduce((total, duration) => total + duration, 0) / contributingDurations.length)
+      : null,
+    contributingTasks: contributingDurations.length,
+  };
+}
+
+export function completedRuns(jobs, days, now = new Date()) {
+  return completedRunsForTasks(tasksInWindow(jobs, days, now));
+}
+
+export function completedRunsForTasks(tasks) {
+  return tasks
     .flatMap((job) => job.runs)
-    .filter((run) => Number.isSafeInteger(run.duration_millis) && run.duration_millis >= 0 && validDate(run.completed_at) && Date.parse(run.completed_at) >= since.getTime())
+    .filter((run) => validDuration(run.duration_millis) && validDate(run.completed_at))
     .sort((left, right) => Date.parse(right.completed_at) - Date.parse(left.completed_at));
 }
 
@@ -26,6 +62,11 @@ export function formatTokenUsage(value) {
   return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) ? value.replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "Unavailable";
 }
 
+export function formatSuccessRate(rate) {
+  if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0 || rate > 1) return "Unavailable";
+  return `${Math.round(rate * 1000) / 10}%`;
+}
+
 export function runDetails(run) {
   const values = [run.executor];
   if (run.worker_name) values.push(run.worker_name);
@@ -36,3 +77,4 @@ export function runDetails(run) {
 }
 
 function validDate(value) { return Boolean(value && value !== zeroTime && Number.isFinite(Date.parse(value))); }
+function validDuration(value) { return Number.isSafeInteger(value) && value >= 0; }
