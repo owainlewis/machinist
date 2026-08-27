@@ -1010,6 +1010,39 @@ def main(arguments: Sequence[str] | None = None) -> int:
             parent_state="OPEN",
         )
 
+        parent_review_status, parent_review_snapshot, parent_review_mutations = (
+            run_shepherd_with_budget(executable, options, 1, pull_requests)
+        )
+        if parent_review_status != 0:
+            raise EvalFailure("stack parent review Shepherd run failed")
+        assert_actions_used(
+            parent_review_mutations, 1, "stack parent review Shepherd run"
+        )
+        parent_review_pulls = parent_review_snapshot["pull_requests"]
+        assert_stack_transition(
+            parent_review_pulls[parent_url],
+            parent_review_pulls[child_url],
+            parent_url=parent_url,
+            parent_head=parent_head,
+            parent_base=base_branch,
+            child_head=child_head,
+            child_base=parent_branch,
+            state=PENDING_RETARGET,
+            trusted_author=trusted_review_author,
+            parent_state="OPEN",
+        )
+        parent_base_sha = parent_review_pulls[parent_url].get("baseRefOid")
+        if not isinstance(parent_base_sha, str) or not parent_base_sha:
+            raise EvalFailure("GitHub did not return the stack parent's base SHA")
+        assert_review_comment(
+            parent_review_pulls[parent_url],
+            parent_head,
+            base_branch,
+            parent_base_sha,
+            trusted_review_author,
+            trusted_review_author_id,
+        )
+
         parent_status, parent_snapshot, parent_mutations = run_shepherd_with_budget(
             executable, options, 1, pull_requests
         )
@@ -1134,7 +1167,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "PASS shepherd-queue: created label, audited older draft blocker, "
         "merged the eligible exact head within the full mutation budget, deferred the "
         "remaining candidate, and resumed a max_actions=1 stack through recorded parent "
-        "merge, safe child retarget, transition completion, review, and merge"
+        "and child reviews, parent merge, safe child retarget, transition completion, "
+        "and child merge"
     )
     return 0
 
