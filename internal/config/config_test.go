@@ -438,33 +438,109 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, rule := range []string{
-		"Never plan the solution, edit code",
-		"Use at most two repair attempts",
-		"Use attempt `0` for planning",
-		"attempts `1` and `2` for the first and second repairs",
-		"Every planning, build, review, and repair subagent prompt",
-		"SUBAGENT role=<role> outcome=<outcome> issue=<issue-url> evidence=<short factual evidence>",
-		"print or paste a complete diff",
-		"replace it with a fresh subagent on the same immutable head",
-		"issue URL, acceptance criteria, worktree, branch, base SHA, head SHA",
-		"Never inline or print the diff",
-		"open one non-draft pull request",
-		"Keep the issue labeled `machinist:verifying`",
-		"poll no more often than every 30 seconds",
+		"Never plan the solution",
+		"Perform this discovery at the start of every run",
+		"**Existing implementation:**",
+		"**CI failure:**",
+		"**Review feedback:**",
+		"**Open pull request:**",
+		"**Completed planning:**",
+		"**New issue:**",
+		"a verified branch without an open pull request",
+		"any dirty or incomplete work",
+		"at most two total",
+		"Existing work must reuse its branch, worktree, and pull request",
+		"create a second pull request for the issue",
+		"`machinist:ready-for-review` or a verified ready/completed state",
+		"stale remote",
+		"Repair or create its deterministic isolated worktree",
+		"fast-forward a clean local head that is an ancestor",
+		"Preserve dirty, ahead, or unpublished",
+		"each recorded head is an ancestor of",
+		"Never overwrite",
+		"Create a missing local",
+		"clean worktree and equality between the local branch head",
+		"Every subagent prompt must require a concise Markdown handoff",
+		"## Planning handoff",
+		"## Build handoff",
+		"## Review handoff",
+		"## Repair handoff",
+		"complete diff",
+		"inspect the branch, HEAD, worktree",
+		"return a valid handoff, whether it exits or remains active",
+		"read-only reviewer",
+		"Never inline the diff",
+		"non-draft pull request linked",
+		"For both paths, confirm the base, exact head, issue link",
+		"recheck that it is open before pushing",
+		"return to linked-pull-request resolution",
+		"Use this one loop for local review, CI",
+		"Resolve linked pull requests before",
+		"Reuse exactly one open pull request and ignore historical closed or merged",
+		"If multiple are open, or none is open and any is merged",
+		"With none open and",
+		"closed-unmerged candidates present",
+		"multiple candidates or any",
+		"selection, reopening, or verification failure",
+		"For any existing or reopened",
+		"open pull request without a usable worktree",
+		"After every code change",
+		"Approval applies only to the reviewed SHA",
+		"push `<approved-sha>:refs/heads/<branch>`",
+		"automated reviewers and review bots",
+		"event, branch, path",
+		"exactly match the",
+		"missing expected results remain pending",
+		"Exclude human",
+		"Poll no more often than every 30 seconds",
 		"at most 20 minutes",
 		"set `machinist:blocked`",
-		"resolve only threads whose feedback is fully",
-		"Treat only findings that still apply to the current",
-		"Never merge the pull request",
+		"resolve only threads whose feedback is fully addressed",
+		"Compare each finding with",
+		"`<!-- machinist:foreman-pr -->`",
+		"persist its head, approval, checks",
+		"If none remain, return to the originating stage",
+		"Persist the count",
+		"immediately after a code-changing commit and before Local review",
+		"failure keeps the prior count",
+		"If no",
+		"pull request exists, continue to Create or reuse the pull request",
+		"Never merge",
+		"Keep the open-pull-request worktree",
+		"Before any terminal stop or handoff",
 	} {
 		if !strings.Contains(foreman.Prompt, rule) {
 			t.Fatalf("foreman prompt does not contain %q", rule)
 		}
 	}
-	for _, forbidden := range []string{"open one draft pull request", "mark the pull request ready for human review", "branch, complete diff"} {
+	for _, forbidden := range []string{
+		"open one draft pull request",
+		"mark the pull request ready for human review",
+		"branch, complete diff",
+		"SUBAGENT role=<role>",
+	} {
 		if strings.Contains(foreman.Prompt, forbidden) {
 			t.Fatalf("foreman prompt still contains %q", forbidden)
 		}
+	}
+	for _, heading := range []string{
+		"# Ordered state entry\n",
+		"## Local review\n",
+		"## Automation gate\n",
+		"# Shared repair loop\n",
+	} {
+		if count := strings.Count(foreman.Prompt, heading); count != 1 {
+			t.Fatalf("foreman prompt contains %q %d times, want once", heading, count)
+		}
+	}
+	if existing, open := strings.Index(foreman.Prompt, "**Existing implementation:**"), strings.Index(foreman.Prompt, "**Open pull request:**"); existing < 0 || open < 0 || existing > open {
+		t.Fatalf("foreman prompt must classify unpublished implementation before open pull request: existing=%d open=%d", existing, open)
+	}
+	if reopen, recover := strings.Index(foreman.Prompt, "closed-unmerged candidates present"), strings.Index(foreman.Prompt, "For any existing or reopened"); reopen < 0 || recover < 0 || reopen > recover {
+		t.Fatalf("foreman prompt must reopen a unique safe pull request before worktree recovery: reopen=%d recover=%d", reopen, recover)
+	}
+	if words := len(strings.Fields(foreman.Prompt)); words > 2200 {
+		t.Fatalf("foreman prompt has %d words, want no more than 2200", words)
 	}
 
 	audit, err := LoadAgent(definition, "audit")

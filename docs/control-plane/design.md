@@ -74,7 +74,7 @@ url = "http://127.0.0.1:7331"
 token_file = "~/.machinist/server/worker.token"
 
 [executors.codex]
-command = ["codex", "exec", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
+command = ["codex", "exec", "--json", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
 models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
 
 [repositories.machinist]
