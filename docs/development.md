@@ -39,7 +39,6 @@ Focused commands are also available:
 
 ```sh
 just test
-./skills/machinist/test.sh
 cd internal/controlplane/web && npm test
 go test ./internal/runner
 ```

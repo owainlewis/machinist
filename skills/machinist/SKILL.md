@@ -1,74 +1,93 @@
 ---
 name: machinist
-description: "Routes state-changing coding work from an interactive Codex chat through Machinist. Use by default whenever the user asks to implement, build, fix, refactor, migrate, add, remove, or otherwise change code, even when another coding workflow skill also matches. Do not use for read-only discussion, planning, explanation, or review, or when MACHINIST_RUN_ID is set."
-user-invocable: true
-argument-hint: "<coding task or one GitHub issue URL>"
+description: Use Machinist to create, assign, monitor, and resume software tasks. Use when a coding agent needs to work with Machinist, its GitHub issue workflow, lifecycle labels, direct runs, or managed queue.
 ---
 
 # Machinist
 
-Route coding changes through the Machinist foreman. The current Codex chat is the
-dispatcher, not the implementer.
+Machinist turns one open GitHub issue into a planned, implemented, independently
+reviewed, and checked pull request. It never merges the pull request.
 
-## Boundary
+## Core model
 
-Use this skill for any request whose intended result changes repository files. This
-includes implementation, bug fixes, refactors, migrations, dependency changes, and
-follow-up fixes from an issue or pull request.
+- A task is one open GitHub issue in the target repository.
+- Assigning a task means starting `machinist run` or queuing `machinist submit`.
+- Labels report workflow state. They do not assign or start work.
+- Reassign the same issue to resume existing work. The foreman recovers its branch,
+  worktree, pull request, checks, and repair count.
 
-Do not use it for read-only questions, investigation, design, planning, explanation, or
-review. If the user explicitly asks to work in the current chat instead of Machinist,
-follow that instruction.
+## Create a task
 
-Never delegate when `MACHINIST_RUN_ID` is non-empty. That variable means Machinist already
-started the current executor. Follow the supplied Machinist role and workflow instead.
+Reuse a supplied issue when it is open and belongs to the current repository. Otherwise
+create one issue with `gh issue create`. Keep it focused on one observable outcome and
+preserve the user's constraints. Do not invent implementation details that the request
+does not decide.
 
-## Hard rules
+```sh
+gh issue create --title "<short outcome>" --body "<problem, outcome, constraints, and acceptance evidence>"
+```
 
-- Do not edit code, create a task branch, run implementation checks, push, or open a pull
-  request in the dispatching chat.
-- Do not fall back to implementing in the chat when Machinist, GitHub, or its executor is
-  unavailable. Report the exact setup failure and stop.
-- Do not invoke a competing implementation skill such as `task-to-pr`. Machinist owns the
-  full build, test, independent review, repair, CI, and pull-request workflow.
-- Do not merge. The Machinist foreman hands an open, verified pull request to the user.
+Use the issue URL returned by GitHub for every later command.
 
-## Dispatch
+## Assign a task
 
-1. Check `MACHINIST_RUN_ID` before doing anything else. If it is set, stop this skill and
-   continue the existing Machinist role.
-2. Resolve the current Git repository root and its GitHub remote. Stop if the target is
-   not an unambiguous GitHub repository.
-3. Resolve one issue:
-   - If the user supplied exactly one GitHub issue URL, verify that it belongs to the
-     current repository and is open. Reuse it.
-   - Otherwise create one open GitHub issue from the user's request. Preserve the requested
-     outcome, constraints, and relevant evidence. Keep the issue factual and do not invent
-     a solution. Issue creation is intake, not implementation.
-   - If the request contains clearly independent changes, create one issue and one run per
-     change. Run overlapping work sequentially.
-4. Tell the user which issue is entering Machinist.
-5. From this skill directory, run:
+Use direct mode for immediate local work. Pass an absolute Git worktree path:
 
-   ```sh
-   ./scripts/delegate.sh "/absolute/repository/root" "https://github.com/owner/repo/issues/123"
-   ```
+```sh
+machinist run \
+  --agent=foreman \
+  --repo=/absolute/path/to/repository \
+  --prompt="Complete https://github.com/owner/repository/issues/123"
+```
 
-   Let the command stream. During a long run, relay only concise phase changes or blockers.
-   Do not duplicate the foreman's implementation work in the chat.
-6. Wait for the command to finish. Report the issue, pull request when created, final
-   label, checks, independent review verdict, and repair count from the foreman's result.
+Use managed mode when the control plane and worker are already running. Pass the logical
+repository name from `worker.toml`:
 
-## Existing pull requests and resumed work
+```sh
+machinist submit \
+  --agent=foreman \
+  --repo=repository-name \
+  --prompt="Complete https://github.com/owner/repository/issues/123"
+```
 
-Still dispatch the issue when work already exists. The foreman discovers and resumes its
-recorded branch, worktree, pull request, review state, and CI state. Do not create a second
-branch or pull request from the chat.
+`submit` prints a job ID. Follow managed work in the local control-plane UI. Do not treat
+adding a label as submission. Label-based delegation is not implemented.
 
-## Failure handling
+## Lifecycle labels
 
-A helper exit before the executor starts is a dispatch failure. Show its stderr and the
-specific action needed, such as installing `machinist`, running `machinist init`, or
-authenticating `gh` or Codex. Once the foreman starts, treat its final
-`machinist:needs-human` or `machinist:blocked` state as authoritative and return the stated
-question or evidence.
+Keep exactly one lifecycle or exception label on the issue:
+
+| Label | Meaning | Agent action |
+| --- | --- | --- |
+| `machinist:planning` | The issue is being refined into a clear task. | Wait for planning or answer a question if asked. |
+| `machinist:building` | A worker is implementing or repairing the change. | Do not start overlapping work. |
+| `machinist:verifying` | Independent review, CI, or automated review is running. | Wait for the current head to finish verification. |
+| `machinist:ready-for-review` | The pull request is verified and ready for a person. | Review and merge manually when satisfied. |
+| `machinist:needs-human` | A product or technical decision is missing. | Answer the precise issue question, then assign the same issue again. |
+| `machinist:blocked` | Tooling, credentials, infrastructure, or the repair limit stopped work. | Read the evidence, remove the external blocker, then assign the same issue again. |
+
+The foreman creates and transitions these labels. If a label is missing during manual
+recovery, create it with GitHub CLI, then add it to the issue:
+
+```sh
+gh label create "machinist:planning" --color 1d76db --description "Machinist is planning this task"
+gh issue edit https://github.com/owner/repository/issues/123 --add-label "machinist:planning"
+```
+
+Use the same pattern for the label named in the table. Remove the previous lifecycle label
+before adding another. Do not change a label merely to make progress appear further along.
+
+## Manage and resume work
+
+Inspect the issue labels, the `<!-- machinist:foreman-state -->` issue comment, the linked
+pull request, and current checks. Treat that recorded state as the source of truth.
+
+- For `machinist:needs-human`, answer the issue question and reassign the same issue.
+- For `machinist:blocked`, fix the reported external cause and reassign the same issue.
+- For interrupted or stale work, reassign the same issue. Do not create a second branch or
+  pull request.
+- For `machinist:ready-for-review`, hand the pull request to a person. Never merge unless
+  that person explicitly decides to do so outside the shipped foreman workflow.
+
+When reporting status, include the issue URL, job ID when managed, pull request URL when
+created, current label, checks, review verdict, and blocker or next human action.

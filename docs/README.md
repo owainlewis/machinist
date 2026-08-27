@@ -19,5 +19,3 @@
   compare the products and review Machinist's readiness and priorities
 - [Runner-managed skills](worker-skills/design.md): understand why coding-agent
   skills stay native to the configured runner
-- [Codex skill](codex-skill.md): route interactive Codex coding requests through
-  the Machinist foreman by default

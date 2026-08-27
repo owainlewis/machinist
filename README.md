@@ -238,6 +238,18 @@ You can submit the same managed work from the CLI. Use the repository name from
   --repo=my-project
 ```
 
+## Use Machinist from a coding agent
+
+Install the portable Machinist skill for Claude Code, Codex, or another
+supported coding agent:
+
+```sh
+npx skills add owainlewis/machinist --skill machinist
+```
+
+The skill teaches an agent how to create and assign Machinist tasks, interpret
+lifecycle labels, resume work, and hand a verified pull request to a person.
+
 ## Design principles
 
 1. **Intent is portable; authority stays local.** The control plane sends
@@ -262,8 +274,6 @@ You can submit the same managed work from the CLI. Use the repository name from
   supervision, and artifacts
 - [Configuration](docs/configuration.md): agents, executors, models, prompts,
   and pipelines
-- [Codex skill](docs/codex-skill.md): route state-changing Codex requests
-  through the Machinist foreman by default
 - [Local control plane](docs/control-plane.md): server, workers, security, and
   failure recovery
 - [Architecture](ARCHITECTURE.md): components, dependency direction, execution
