@@ -81,22 +81,29 @@ func miseProgramIndex(command []string) int {
 }
 
 func miseGlobalOption(argument string) (bool, bool) {
-	for _, option := range []string{"-C", "--cd", "-E", "--env", "-j", "--jobs", "--output"} {
+	for _, option := range []string{"--cd", "--env", "--jobs", "--output"} {
 		if argument == option {
 			return true, true
 		}
-		if strings.HasPrefix(argument, option+"=") || (len(option) == 2 && strings.HasPrefix(argument, option) && len(argument) > 2) {
+		if strings.HasPrefix(argument, option+"=") {
 			return true, false
 		}
 	}
-	if slices.Contains([]string{"-q", "--quiet", "-v", "--verbose", "-y", "--yes", "--raw", "--locked", "--silent", "--no-config", "--no-env", "--no-hooks", "-h", "--help"}, argument) {
+	if slices.Contains([]string{"--quiet", "--verbose", "--yes", "--raw", "--locked", "--silent", "--no-config", "--no-env", "--no-hooks", "--help"}, argument) {
 		return true, false
 	}
-	if len(argument) > 2 && argument[0] == '-' && argument[1] != '-' {
-		for _, option := range argument[1:] {
-			if !strings.ContainsRune("qvyh", option) {
-				return false, false
+	if len(argument) >= 2 && argument[0] == '-' && argument[1] != '-' {
+		for index, option := range argument[1:] {
+			if strings.ContainsRune("qvyh", option) {
+				continue
 			}
+			if strings.ContainsRune("CEj", option) {
+				if index+2 < len(argument) {
+					return true, false
+				}
+				return true, true
+			}
+			return false, false
 		}
 		return true, false
 	}

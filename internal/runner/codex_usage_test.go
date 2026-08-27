@@ -140,6 +140,7 @@ func TestStructuredCodexCommandAddsJSONToRecognizedLegacyCommands(t *testing.T) 
 		{name: "wrapped renamed executable after empty environment alias", executor: "codex-local", command: []string{"/usr/bin/env", "-", "agent", "exec", "-"}, want: []string{"/usr/bin/env", "-", "agent", "exec", "--json", "-"}},
 		{name: "wrapper has its own exec", executor: "custom", command: []string{"mise", "exec", "--", "codex", "exec", "-"}, want: []string{"mise", "exec", "--", "codex", "exec", "--json", "-"}},
 		{name: "wrapper has global options", executor: "custom", command: []string{"mise", "-q", "exec", "--", "codex", "exec", "-"}, want: []string{"mise", "-q", "exec", "--", "codex", "exec", "--json", "-"}},
+		{name: "wrapper has compact global options", executor: "custom", command: []string{"mise", "-qC/tmp", "exec", "--", "codex", "exec", "-"}, want: []string{"mise", "-qC/tmp", "exec", "--", "codex", "exec", "--json", "-"}},
 		{name: "already structured", executor: "codex", command: []string{"codex", "exec", "--json", "-"}, want: []string{"codex", "exec", "--json", "-"}},
 		{name: "other executor", executor: "claude", command: []string{"claude", "exec", "-"}, want: []string{"claude", "exec", "-"}},
 		{name: "Codex words are data", executor: "custom", command: []string{"echo", "codex", "exec"}, want: []string{"echo", "codex", "exec"}},
