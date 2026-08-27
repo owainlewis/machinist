@@ -182,6 +182,18 @@ show evidence:
   --prompt="Audit the request handling and persistence code"
 ```
 
+## Use Machinist from a coding agent
+
+Install the portable Machinist skill for Claude Code, Codex, or another
+supported coding agent:
+
+```sh
+npx skills add owainlewis/machinist --skill machinist
+```
+
+The skill teaches an agent how to create and assign Machinist tasks, interpret
+lifecycle labels, resume work, and hand a verified pull request to a person.
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md)

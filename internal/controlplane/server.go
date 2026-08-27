@@ -25,6 +25,8 @@ import (
 // below this limit, including per-event and string-escaping overhead.
 const maxCompletionBytes = 96 << 20
 
+const maxRequestBytes = 1 << 20
+
 const workerAvailabilityWindow = 10 * time.Second
 
 //go:embed web/dist/* web/dist/assets/*
@@ -232,10 +234,12 @@ func (s *Server) catalog(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, 1<<20)
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
 	var input submitRequest
 	if err := decodeJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, err)
+		writeDecodeError(response, err)
 		return
 	}
 	if strings.TrimSpace(input.Repository) == "" {
@@ -300,10 +304,12 @@ func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, 1<<20)
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
 	var input protocol.PollRequest
 	if err := decodeJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, err)
+		writeDecodeError(response, err)
 		return
 	}
 	if strings.TrimSpace(input.InstanceID) == "" || strings.TrimSpace(input.Name) == "" {
@@ -319,10 +325,12 @@ func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) complete(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, maxCompletionBytes)
+	if !limitRequestBody(response, request, maxCompletionBytes) {
+		return
+	}
 	var input protocol.Completion
 	if err := decodeJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, err)
+		writeDecodeError(response, err)
 		return
 	}
 	if input.InstanceID == "" || input.LeaseToken == "" {
@@ -346,10 +354,12 @@ func (s *Server) complete(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, 1<<20)
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
 	var input protocol.Heartbeat
 	if err := decodeJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, err)
+		writeDecodeError(response, err)
 		return
 	}
 	if input.InstanceID == "" || input.LeaseToken == "" {
@@ -458,6 +468,15 @@ func decodeJSON(request *http.Request, target any) error {
 	return nil
 }
 
+func limitRequestBody(response http.ResponseWriter, request *http.Request, limit int64) bool {
+	if request.ContentLength > limit {
+		writeError(response, http.StatusRequestEntityTooLarge, errors.New("request body is too large"))
+		return false
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, limit)
+	return true
+}
+
 func writeJSON(response http.ResponseWriter, status int, body any) {
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(status)
@@ -466,6 +485,15 @@ func writeJSON(response http.ResponseWriter, status int, body any) {
 
 func writeError(response http.ResponseWriter, status int, err error) {
 	writeJSON(response, status, map[string]string{"error": err.Error()})
+}
+
+func writeDecodeError(response http.ResponseWriter, err error) {
+	var maxBytesError *http.MaxBytesError
+	if errors.As(err, &maxBytesError) {
+		writeError(response, http.StatusRequestEntityTooLarge, errors.New("request body is too large"))
+		return
+	}
+	writeError(response, http.StatusBadRequest, err)
 }
 
 func securityHeaders(next http.Handler) http.Handler {

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Activity, BarChart3, Bot, ChevronDown, GitBranch, LayoutDashboard, Moon, Play, Plus, Server, Sun, Table2, Workflow, X } from "lucide-react";
 import { Analytics } from "@/analytics";
@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { formatTokenUsage, runDetails, tokenUsageSummary } from "@/run-metrics";
 import { boardColumns, currentRun, filterJobs, groupJobsByBoardColumn, jobCounts, needsAttention, stepProgress } from "@/runs-board";
+import { createStatusLoader } from "@/status-loader";
 import "./styles.css";
 
 const zeroTime = "0001-01-01T00:00:00Z";
@@ -29,20 +30,31 @@ function App() {
   const [expanded, setExpanded] = useState(new Set());
   const [dark, setDark] = useState(() => localStorage.getItem("machinist-theme") !== "light");
   const [view, setView] = useState(() => viewFromHash(window.location.hash));
-
-  async function refresh() {
-    const response = await fetch("/api/v1/status", { headers: { Accept: "application/json" } });
-    if (!response.ok) throw new Error(`Status request failed (${response.status})`);
-    const next = await response.json();
-    setStatus(next);
-    const available = new Set([
-      ...next.pipelines.map((name) => `pipeline:${name}`),
-      ...next.agents.map((name) => `agent:${name}`),
-    ]);
-    setSelection((current) => available.has(current) ? current : firstSelection(next));
-    const availableRepositories = next.repositories || [];
-    setRepository((current) => availableRepositories.includes(current) ? current : availableRepositories[0] || "");
-  }
+  const statusLoader = useRef(null);
+  if (!statusLoader.current) statusLoader.current = createStatusLoader({
+    request: async () => {
+      const response = await fetch("/api/v1/status", { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(`Status request failed (${response.status})`);
+      return response.json();
+    },
+    apply: (result) => {
+      if (result.kind === "error") {
+        setStatusError(result.message);
+        return;
+      }
+      const next = result.status;
+      setStatus(next);
+      setStatusError("");
+      setStatusLoaded(true);
+      const available = new Set([
+        ...next.pipelines.map((name) => `pipeline:${name}`),
+        ...next.agents.map((name) => `agent:${name}`),
+      ]);
+      setSelection((current) => available.has(current) ? current : firstSelection(next));
+      const availableRepositories = next.repositories || [];
+      setRepository((current) => availableRepositories.includes(current) ? current : availableRepositories[0] || "");
+    },
+  });
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -59,17 +71,13 @@ function App() {
     let stopped = false;
     let timer;
     const load = async () => {
-      try {
-        await refresh();
-        if (!stopped) { setStatusError(""); setStatusLoaded(true); }
-      } catch (requestError) {
-        if (!stopped) setStatusError(requestError.message);
-      }
+      await statusLoader.current.refresh();
       if (!stopped) timer = window.setTimeout(load, 2000);
     };
     load();
     return () => {
       stopped = true;
+      statusLoader.current.cancel();
       window.clearTimeout(timer);
     };
   }, []);
@@ -103,7 +111,7 @@ function App() {
       }
       setPrompt("");
       setComposerOpen(false);
-      await refresh();
+      await statusLoader.current.refresh();
     } catch (requestError) {
       setSubmitError(requestError.message);
     } finally {
@@ -123,7 +131,7 @@ function App() {
     <div className="min-h-screen bg-background text-foreground md:flex">
       <aside className="sticky top-0 z-20 flex shrink-0 items-center border-b border-border bg-sidebar px-3 py-2 md:h-screen md:w-52 md:flex-col md:items-stretch md:border-b-0 md:border-r md:px-3 md:py-4">
         <div className="flex h-10 items-center gap-2.5 px-2 text-sm font-semibold tracking-tight">
-          <span className="grid size-7 place-items-center rounded-md border border-border bg-surface text-primary shadow-xs"><Workflow className="size-4" /></span>
+          <span className="grid size-7 place-items-center rounded-md border border-border bg-surface text-primary shadow-xs"><Workflow className="size-[18px]" /></span>
           <span>Machinist</span>
         </div>
         <nav className="ml-4 flex flex-1 gap-1 overflow-x-auto md:ml-0 md:mt-6 md:block md:overflow-visible" aria-label="Primary">
@@ -142,7 +150,7 @@ function App() {
       </aside>
 
       <main className="min-w-0 flex-1">
-        {view === "analytics" ? <Analytics jobs={status.jobs} /> : view === "workers" ? <WorkersPage workers={status.workers} loaded={statusLoaded} error={statusError} /> : view === "agents" ? <AgentsPage /> : view === "pipelines" ? <PipelinesPage /> : <div className="mx-auto max-w-[1500px] space-y-6 p-4 sm:p-6 lg:p-8">
+        {view === "analytics" ? <Analytics jobs={status.jobs} loaded={statusLoaded} error={statusError} /> : view === "workers" ? <WorkersPage workers={status.workers} loaded={statusLoaded} error={statusError} /> : view === "agents" ? <AgentsPage /> : view === "pipelines" ? <PipelinesPage /> : <div className="mx-auto max-w-[1500px] space-y-6 p-4 sm:p-6 lg:p-8">
           <header className="flex items-start justify-between gap-6">
             <h1 className="text-xl font-semibold tracking-tight">Runs</h1>
             <div className="flex items-center gap-2">
