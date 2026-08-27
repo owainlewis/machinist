@@ -27,6 +27,11 @@ timeout = "120m"
 executor = "codex"
 prompt_file = "agents/audit.md"
 timeout = "60m"
+
+[agents.shepherd]
+executor = "codex"
+prompt_file = "agents/shepherd.md"
+timeout = "120m"
 ```
 
 Prompt paths are resolved relative to the Machinist definition. Every prompt must
@@ -39,6 +44,42 @@ contain the supported work-request parameter:
 Machinist replaces every occurrence byte-for-byte with the `--prompt` value. It
 does not recursively expand parameters in user input. The final rendered prompt
 is limited to 512 KiB.
+
+## Schedule Shepherd
+
+Shepherd is a separate, managed agent for an opt-in pull request merge queue. Add one
+schedule per worker repository name:
+
+```toml
+[shepherd.api]
+repository = "api"
+every = "30m"
+max_actions = 3
+```
+
+`every` must be at least one minute and `max_actions` must be positive. The control plane
+queues the first run when it starts, then persists the next due time in SQLite. It never
+overlaps two Shepherd runs for one repository. If a run reaches its action limit, the next
+run inventories GitHub again and continues from durable pull request state and audit
+comments.
+
+Schedules use the `agents.shepherd` definition and managed workers, because repository
+paths and GitHub credentials remain machine-local. Restart the control plane after changing
+a schedule.
+
+Shepherd treats the pull request label `machinist:auto-merge` as its sole permission to
+update, repair, comment on, or merge a pull request. Create that label in each scheduled
+repository, then apply it only to pull requests you want Shepherd to change:
+
+```sh
+gh label create "machinist:auto-merge" \
+  --color 0e8a16 \
+  --description "Allow Shepherd to verify, update, repair, and merge this pull request"
+```
+
+An unlabelled pull request remains inventory-only. A repository policy may apply the label
+to Dependabot patch and minor updates. Keep major updates unlabelled unless a person opts in
+that specific pull request.
 
 ## Configure an executor
 

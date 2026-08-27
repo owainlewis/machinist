@@ -62,9 +62,10 @@ type Server struct {
 }
 
 type Config struct {
-	Server    Server              `toml:"server"`
-	Agents    map[string]Agent    `toml:"agents"`
-	Pipelines map[string]Pipeline `toml:"pipelines"`
+	Server    Server                      `toml:"server"`
+	Agents    map[string]Agent            `toml:"agents"`
+	Pipelines map[string]Pipeline         `toml:"pipelines"`
+	Shepherd  map[string]ShepherdSchedule `toml:"shepherd"`
 	path      string
 }
 
@@ -76,6 +77,21 @@ type Agent struct {
 
 type Pipeline struct {
 	Agents []string `toml:"agents"`
+}
+
+type ShepherdSchedule struct {
+	Repository string `toml:"repository"`
+	Every      string `toml:"every"`
+	MaxActions int    `toml:"max_actions"`
+}
+
+type ResolvedShepherdSchedule struct {
+	Name       string
+	Repository string
+	Every      time.Duration
+	MaxActions int
+	Prompt     string
+	Agent      ResolvedAgent
 }
 
 type ResolvedAgent struct {
@@ -322,6 +338,61 @@ func LoadPipeline(definitionPath, name string) ([]ResolvedAgent, error) {
 }
 
 func LoadDefinitions(path string) (Config, error) { return loadConfigFile(path) }
+
+func LoadShepherdSchedules(path string) ([]ResolvedShepherdSchedule, error) {
+	definition, err := loadConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(definition.Shepherd) == 0 {
+		return nil, nil
+	}
+	agent, ok := definition.Agents["shepherd"]
+	if !ok {
+		return nil, errors.New("shepherd schedules require an agents.shepherd definition")
+	}
+	resolvedAgent, err := resolveAgent(definition.path, "shepherd", agent)
+	if err != nil {
+		return nil, err
+	}
+	seenRepositories := make(map[string]string)
+	result := make([]ResolvedShepherdSchedule, 0, len(definition.Shepherd))
+	for _, name := range sortedMapKeys(definition.Shepherd) {
+		schedule := definition.Shepherd[name]
+		repository := strings.TrimSpace(schedule.Repository)
+		if strings.TrimSpace(name) == "" || repository == "" {
+			return nil, errors.New("shepherd schedule names and repositories must be non-empty")
+		}
+		if previous, exists := seenRepositories[repository]; exists {
+			return nil, fmt.Errorf("shepherd schedules %q and %q target the same repository %q", previous, name, repository)
+		}
+		seenRepositories[repository] = name
+		every, err := time.ParseDuration(schedule.Every)
+		if err != nil {
+			return nil, fmt.Errorf("shepherd schedule %q every: %w", name, err)
+		}
+		if every < time.Minute {
+			return nil, fmt.Errorf("shepherd schedule %q every must be at least 1m", name)
+		}
+		if schedule.MaxActions <= 0 {
+			return nil, fmt.Errorf("shepherd schedule %q max_actions must be positive", name)
+		}
+		prompt := fmt.Sprintf("Run the scheduled Shepherd queue for repository %q with max_actions=%d. Perform at most %d mutating actions in this run.", repository, schedule.MaxActions, schedule.MaxActions)
+		rendered, err := RenderPrompt(resolvedAgent, prompt)
+		if err != nil {
+			return nil, fmt.Errorf("render shepherd schedule %q: %w", name, err)
+		}
+		result = append(result, ResolvedShepherdSchedule{
+			Name:       name,
+			Repository: repository,
+			Every:      every,
+			MaxActions: schedule.MaxActions,
+			Prompt:     prompt,
+			Agent:      rendered,
+		})
+	}
+	return result, nil
+}
 
 func resolveAgent(definitionPath, name string, agent Agent) (ResolvedAgent, error) {
 	if strings.TrimSpace(agent.Executor) == "" {

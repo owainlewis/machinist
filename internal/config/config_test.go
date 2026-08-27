@@ -145,6 +145,72 @@ agents = ["plan"]
 	}
 }
 
+func TestLoadShepherdSchedulesResolvesAgentAndLimits(t *testing.T) {
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "shepherd.md"), "Policy:\n{{machinist.prompt}}\n")
+	path := filepath.Join(directory, "config.toml")
+	writeTestFile(t, path, `[agents.shepherd]
+executor = "test"
+prompt_file = "shepherd.md"
+timeout = "2h"
+
+[shepherd.api]
+repository = "api"
+every = "15m"
+max_actions = 4
+`)
+
+	schedules, err := LoadShepherdSchedules(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(schedules) != 1 {
+		t.Fatalf("schedules = %#v", schedules)
+	}
+	schedule := schedules[0]
+	if schedule.Name != "api" || schedule.Repository != "api" || schedule.Every != 15*time.Minute || schedule.MaxActions != 4 {
+		t.Fatalf("schedule = %#v", schedule)
+	}
+	if schedule.Agent.Name != "shepherd" || schedule.Agent.Timeout != 2*time.Hour || !strings.Contains(schedule.Agent.Prompt, "max_actions=4") || !strings.Contains(schedule.Agent.Prompt, "at most 4 mutating actions") {
+		t.Fatalf("scheduled agent = %#v", schedule.Agent)
+	}
+}
+
+func TestLoadShepherdSchedulesRejectsUnsafeConfiguration(t *testing.T) {
+	for name, test := range map[string]struct {
+		body string
+		want string
+	}{
+		"missing agent": {
+			body: "[shepherd.api]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=1\n",
+			want: "agents.shepherd",
+		},
+		"short interval": {
+			body: "[agents.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"30s\"\nmax_actions=1\n",
+			want: "at least 1m",
+		},
+		"zero actions": {
+			body: "[agents.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=0\n",
+			want: "must be positive",
+		},
+		"duplicate repository": {
+			body: "[agents.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.first]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=1\n[shepherd.second]\nrepository=\"api\"\nevery=\"30m\"\nmax_actions=2\n",
+			want: "same repository",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			writeTestFile(t, filepath.Join(directory, "shepherd.md"), "{{machinist.prompt}}\n")
+			path := filepath.Join(directory, "config.toml")
+			writeTestFile(t, path, test.body)
+			_, err := LoadShepherdSchedules(path)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestLoadAgentResolvesPromptAndHashesDefinition(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "plan.md"), "Inspect the repository for {{machinist.prompt}}.\n")
@@ -403,8 +469,8 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions.Agents) != 2 {
-		t.Fatalf("example agents = %#v, want only foreman and audit", definitions.Agents)
+	if len(definitions.Agents) != 3 {
+		t.Fatalf("example agents = %#v, want foreman, audit, and shepherd", definitions.Agents)
 	}
 	if _, ok := definitions.Agents["foreman"]; !ok {
 		t.Fatal("example foreman agent is missing")
@@ -412,11 +478,14 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 	if _, ok := definitions.Agents["audit"]; !ok {
 		t.Fatal("example audit agent is missing")
 	}
+	if _, ok := definitions.Agents["shepherd"]; !ok {
+		t.Fatal("example shepherd agent is missing")
+	}
 	if len(definitions.Pipelines) != 0 {
 		t.Fatalf("example pipelines = %#v, want none", definitions.Pipelines)
 	}
 
-	for _, name := range []string{"foreman", "audit"} {
+	for _, name := range []string{"foreman", "audit", "shepherd"} {
 		t.Run(name, func(t *testing.T) {
 			agent, err := LoadAgent(definition, name)
 			if err != nil {

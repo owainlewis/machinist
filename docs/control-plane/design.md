@@ -56,10 +56,21 @@ timeout = "120m"
 executor = "codex"
 prompt_file = "agents/audit.md"
 timeout = "60m"
+
+[agents.shepherd]
+executor = "codex"
+prompt_file = "agents/shepherd.md"
+timeout = "120m"
+
+[shepherd.machinist]
+repository = "machinist"
+every = "30m"
+max_actions = 3
 ```
 
-These are the two shipped agent definitions. Users can add their own agents and compose
-them into named pipelines; pipeline configuration and execution are unchanged.
+These are the three shipped agent definitions. Shepherd schedules are optional and use a
+logical worker repository name. Users can add their own agents and compose them into named
+pipelines; pipeline configuration and execution are unchanged.
 
 The worker owns the machine-specific execution and credential boundary. Its
 configuration file stores executor commands, repository paths, and token-file
@@ -221,6 +232,8 @@ HTTPS so bearer tokens and prompts are never sent across a network in cleartext.
   leases are transactionally reclaimed during polling and redispatched with a new token.
 - INV-6: the control plane advances pipelines only from process terminal state.
 - INV-7: job, run, result, and completed output state survives a server restart.
+- INV-8: at most one queued or running Shepherd job exists per repository, and its next due
+  time survives a server restart.
 
 ## 9. Acceptance criteria and checks
 

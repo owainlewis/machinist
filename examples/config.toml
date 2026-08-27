@@ -12,3 +12,14 @@ timeout = "120m"
 executor = "codex"
 prompt_file = "agents/audit.md"
 timeout = "60m"
+
+[agents.shepherd]
+executor = "codex"
+prompt_file = "agents/shepherd.md"
+timeout = "120m"
+
+# Opt in one configured repository by adding a schedule like this:
+# [shepherd.my-project]
+# repository = "my-project"
+# every = "30m"
+# max_actions = 3

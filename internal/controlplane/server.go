@@ -33,6 +33,7 @@ var webAssets embed.FS
 type Server struct {
 	store          *Store
 	definitionPath string
+	schedules      []config.ResolvedShepherdSchedule
 	workerToken    string
 	csrfToken      string
 	handler        http.Handler
@@ -83,7 +84,11 @@ func NewServer(store *Store, definitionPath, workerToken string) (*Server, error
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{store: store, definitionPath: definitionPath, workerToken: workerToken, csrfToken: csrfToken}
+	schedules, err := config.LoadShepherdSchedules(definitionPath)
+	if err != nil {
+		return nil, err
+	}
+	server := &Server{store: store, definitionPath: definitionPath, schedules: schedules, workerToken: workerToken, csrfToken: csrfToken}
 	server.handler, err = server.routes()
 	if err != nil {
 		return nil, err
@@ -95,6 +100,9 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 func (s *Server) Serve(ctx context.Context, listen string) error {
 	if err := validateLoopbackListen(listen); err != nil {
+		return err
+	}
+	if err := s.enqueueScheduledRuns(ctx); err != nil {
 		return err
 	}
 	listener, err := net.Listen("tcp", listen)
@@ -114,9 +122,21 @@ func (s *Server) Serve(ctx context.Context, listen string) error {
 		}
 		done <- err
 	}()
+	schedulerCtx, stopScheduler := context.WithCancel(ctx)
+	defer stopScheduler()
+	schedulerDone := make(chan error, 1)
+	go func() { schedulerDone <- s.runScheduler(schedulerCtx) }()
 	select {
 	case err := <-done:
 		return err
+	case err := <-schedulerDone:
+		if err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = httpServer.Shutdown(shutdownCtx)
+			return err
+		}
+		return nil
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -125,6 +145,34 @@ func (s *Server) Serve(ctx context.Context, listen string) error {
 		}
 		return nil
 	}
+}
+
+func (s *Server) runScheduler(ctx context.Context) error {
+	if len(s.schedules) == 0 {
+		<-ctx.Done()
+		return nil
+	}
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := s.enqueueScheduledRuns(ctx); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (s *Server) enqueueScheduledRuns(ctx context.Context) error {
+	for _, schedule := range s.schedules {
+		if _, _, err := s.store.CreateScheduledJob(ctx, schedule); err != nil {
+			return fmt.Errorf("queue shepherd schedule %q: %w", schedule.Name, err)
+		}
+	}
+	return nil
 }
 
 func (s *Server) routes() (http.Handler, error) {

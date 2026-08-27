@@ -36,6 +36,7 @@ type Job struct {
 	Repository    string    `json:"repository"`
 	SelectionKind string    `json:"selection_kind"`
 	SelectionName string    `json:"selection_name"`
+	ScheduleName  string    `json:"schedule_name,omitempty"`
 	State         string    `json:"state"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -105,6 +106,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   repository TEXT NOT NULL,
   selection_kind TEXT NOT NULL,
   selection_name TEXT NOT NULL,
+  schedule_name TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -144,6 +146,10 @@ CREATE TABLE IF NOT EXISTS worker_repositories (
   worker_instance TEXT NOT NULL REFERENCES workers(instance_id) ON DELETE CASCADE,
   repository TEXT NOT NULL,
   PRIMARY KEY(worker_instance, repository)
+);
+CREATE TABLE IF NOT EXISTS schedule_state (
+  name TEXT PRIMARY KEY,
+  next_run_at TEXT NOT NULL
 );`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
@@ -159,6 +165,12 @@ CREATE TABLE IF NOT EXISTS worker_repositories (
 	}
 	if err := s.addColumnIfMissing(ctx, "runs", "token_usage", "INTEGER"); err != nil {
 		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "jobs", "schedule_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_shepherd_repository_v2 ON jobs(repository) WHERE selection_kind='agent' AND selection_name='shepherd' AND state IN ('queued','running')`); err != nil {
+		return fmt.Errorf("create scheduled job overlap guard: %w", err)
 	}
 	return s.migrateRunMetrics(ctx)
 }
@@ -269,6 +281,63 @@ func (s *Store) CreateJob(ctx context.Context, prompt, repository, kind, name st
 		return "", fmt.Errorf("commit job: %w", err)
 	}
 	return jobID, nil
+}
+
+// CreateScheduledJob queues one due Shepherd run. It persists the next due time and uses
+// a partial unique index so separate server processes and manual submissions cannot
+// overlap Shepherd runs for a repository.
+func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.ResolvedShepherdSchedule) (string, bool, error) {
+	nowTime := s.now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback()
+	var nextRun string
+	err = tx.QueryRowContext(ctx, `SELECT next_run_at FROM schedule_state WHERE name=?`, schedule.Name).Scan(&nextRun)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", false, fmt.Errorf("read shepherd schedule %q: %w", schedule.Name, err)
+	}
+	if err == nil {
+		next, parseErr := time.Parse(time.RFC3339Nano, nextRun)
+		if parseErr != nil {
+			return "", false, fmt.Errorf("parse shepherd schedule %q next run: %w", schedule.Name, parseErr)
+		}
+		if next.After(nowTime) {
+			return "", false, tx.Commit()
+		}
+	}
+	jobID, err := randomID("job", 12)
+	if err != nil {
+		return "", false, err
+	}
+	runID, err := randomID("run", 12)
+	if err != nil {
+		return "", false, err
+	}
+	now := nowTime.Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,prompt,repository,selection_kind,selection_name,schedule_name,state,created_at,updated_at) VALUES(?,?,?,'agent','shepherd',?,'queued',?,?)`, jobID, schedule.Prompt, schedule.Repository, schedule.Name, now, now)
+	if err != nil {
+		return "", false, fmt.Errorf("insert scheduled job: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return "", false, err
+	}
+	if changed == 0 {
+		return "", false, tx.Commit()
+	}
+	agent := schedule.Agent
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,step,agent,agent_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, runID, jobID, 0, agent.Name, agent.Hash, agent.Executor, agent.Model, schedule.Repository, agent.Prompt, agent.Timeout.Milliseconds(), "queued"); err != nil {
+		return "", false, fmt.Errorf("insert scheduled run: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schedule_state(name,next_run_at) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET next_run_at=excluded.next_run_at`, schedule.Name, nowTime.Add(schedule.Every).Format(time.RFC3339Nano)); err != nil {
+		return "", false, fmt.Errorf("advance shepherd schedule %q: %w", schedule.Name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, err
+	}
+	return jobID, true, nil
 }
 
 func (s *Store) Poll(ctx context.Context, request protocol.PollRequest) (*protocol.RunSpec, error) {
@@ -510,7 +579,7 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 }
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,prompt,repository,selection_kind,selection_name,state,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,prompt,repository,selection_kind,selection_name,schedule_name,state,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -518,7 +587,7 @@ func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
 	for rows.Next() {
 		var job Job
 		var created, updated string
-		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.SelectionKind, &job.SelectionName, &job.State, &created, &updated); err != nil {
+		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.SelectionKind, &job.SelectionName, &job.ScheduleName, &job.State, &created, &updated); err != nil {
 			return nil, err
 		}
 		job.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)

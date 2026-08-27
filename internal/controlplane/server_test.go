@@ -354,6 +354,49 @@ func TestHeartbeatEndpointAuthenticatesAndRejectsInvalidLeases(t *testing.T) {
 	nonRunning.Body.Close()
 }
 
+func TestServerEnqueuesConfiguredShepherdSchedule(t *testing.T) {
+	directory := t.TempDir()
+	promptPath := filepath.Join(directory, "shepherd.md")
+	if err := os.WriteFile(promptPath, []byte("Queue policy:\n{{machinist.prompt}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definitionPath := filepath.Join(directory, "config.toml")
+	definition := `[agents.shepherd]
+executor = "test"
+prompt_file = "shepherd.md"
+timeout = "1m"
+
+[shepherd.machinist]
+repository = "machinist"
+every = "10m"
+max_actions = 2
+`
+	if err := os.WriteFile(definitionPath, []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := openTestStore(t, filepath.Join(directory, "machinist.db"))
+	server, err := NewServer(store, definitionPath, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.enqueueScheduledRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.enqueueScheduledRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ScheduleName != "machinist" || snapshot.Jobs[0].Prompt == "" {
+		t.Fatalf("scheduled jobs = %#v", snapshot.Jobs)
+	}
+	if len(snapshot.Jobs[0].Runs) != 1 || !strings.Contains(snapshot.Jobs[0].Runs[0].Agent, "shepherd") {
+		t.Fatalf("scheduled runs = %#v", snapshot.Jobs[0].Runs)
+	}
+}
+
 func newTestHTTPServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
 	directory := t.TempDir()

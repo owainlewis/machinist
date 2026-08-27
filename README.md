@@ -85,12 +85,13 @@ evidence instead of quietly continuing forever.
 | **Quality gates** | Independent review and repository checks must pass before handoff. |
 | **Repeatable execution** | The same runner supervises direct work and managed jobs. |
 | **Traceability** | Ordered event logs, terminal results, job state, and run history record what happened. |
-| **Human authority** | The shipped foreman stops after preparing the change. Its workflow leaves the merge decision to a person. |
+| **Explicit merge authority** | The shipped foreman always stops before merge. The separate Shepherd can merge only pull requests explicitly labelled `machinist:auto-merge`. |
 
 The default `foreman` runs the issue-to-pull-request production line. Machinist
 also ships a read-only `audit` agent that inspects a repository, independently
 verifies possible bugs, and opens evidence-backed issues for the ones it can
-prove.
+prove. The separate `shepherd` agent can run on a managed schedule and serially
+advance only pull requests carrying the `machinist:auto-merge` permission label.
 
 ## Inside the factory
 
@@ -204,6 +205,11 @@ To inspect a repository without changing it:
   --repo=/absolute/path/to/your-repository \
   --prompt="Audit the request handling and persistence code"
 ```
+
+To enable the optional scheduled merge queue, add a `[shepherd.<name>]` entry to
+`config.toml` and create the `machinist:auto-merge` pull request label. See
+[Configuration](docs/configuration.md#schedule-shepherd). Foreman remains unable to merge,
+and Shepherd leaves every unlabelled pull request unchanged.
 
 ## Run the local control plane
 

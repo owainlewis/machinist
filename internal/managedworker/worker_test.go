@@ -99,6 +99,88 @@ func TestManagedWorkerExecutesControlPlaneRun(t *testing.T) {
 	}
 }
 
+func TestScheduledShepherdExecutesInDisposableRepository(t *testing.T) {
+	directory := t.TempDir()
+	repository := filepath.Join(directory, "repository")
+	if output, err := exec.Command("git", "init", "--quiet", repository).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	definitionPath := filepath.Join(directory, "config.toml")
+	if err := os.WriteFile(filepath.Join(directory, "shepherd.md"), []byte("Trusted schedule:\n{{machinist.prompt}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition := `[agents.shepherd]
+executor = "test"
+prompt_file = "shepherd.md"
+timeout = "5s"
+
+[shepherd.disposable]
+repository = "disposable"
+every = "1m"
+max_actions = 2
+`
+	if err := os.WriteFile(definitionPath, []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	schedules, err := config.LoadShepherdSchedules(definitionPath)
+	if err != nil || len(schedules) != 1 {
+		t.Fatalf("schedules = %#v, %v", schedules, err)
+	}
+	store, err := controlplane.OpenStore(filepath.Join(directory, "machinist.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, created, err := store.CreateScheduledJob(t.Context(), schedules[0]); err != nil || !created {
+		t.Fatalf("scheduled job created = %t, %v", created, err)
+	}
+	server, err := controlplane.NewServer(store, definitionPath, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	tokenPath := filepath.Join(directory, "token")
+	if err := os.WriteFile(tokenPath, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := New(config.Worker{
+		Name:          "shepherd-worker",
+		DataDirectory: filepath.Join(directory, "worker-data"),
+		ControlPlane:  config.ControlPlane{URL: httpServer.URL, TokenFile: tokenPath},
+		Executors:     map[string]config.Executor{"test": {Command: []string{"/bin/sh", "-c", `input=$(cat); case "$input" in *"at most 2 mutating actions"*) exit 0;; *) exit 7;; esac`}}},
+		Repositories:  map[string]config.Repository{"disposable": {Path: repository}},
+	}, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snapshot, err := store.Snapshot(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(snapshot.Jobs) == 1 && snapshot.Jobs[0].State == "succeeded" {
+			if snapshot.Jobs[0].ScheduleName != "disposable" || snapshot.Jobs[0].Runs[0].Agent != "shepherd" {
+				t.Fatalf("scheduled job = %#v", snapshot.Jobs[0])
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scheduled job did not complete: %#v", snapshot.Jobs)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManagedWorkerReportsPreflightFailureWithoutStartingRun(t *testing.T) {
 	directory := t.TempDir()
 	worker := &Worker{

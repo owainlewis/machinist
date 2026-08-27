@@ -23,6 +23,7 @@ flowchart LR
     CLI --> CP[Control plane HTTP API]
     WEB --> CP
     CP --> DB[(SQLite)]
+    SCHED[Shepherd schedules] --> CP
     MW[Managed worker] -->|poll, heartbeat, completion| CP
     DIRECT --> RUNNER[Runner]
     MW --> RUNNER
@@ -58,8 +59,10 @@ labels, or prompt templates. The protocol does not know about local paths or com
 ## Configuration and ownership
 
 `config.toml` is the shared definition file. It declares the local control-plane server,
-agents, and ordered pipelines. Each agent selects an executor by logical name, points to
-a prompt file, and may set a timeout. Prompt paths are resolved relative to this file.
+agents, ordered pipelines, and optional per-repository Shepherd schedules. Each agent
+selects an executor by logical name, points to a prompt file, and may set a timeout. Prompt
+paths are resolved relative to this file. A Shepherd schedule supplies a logical repository,
+interval, and maximum actions per run.
 
 `worker.toml` is machine-local. It declares executor argument arrays, optional model alias
 maps, repository-name to path mappings, a data directory, and the control-plane URL and
@@ -120,6 +123,13 @@ The managed path adds durable admission and leasing while reusing the same runne
 8. A successful completion queues the next pipeline step or succeeds the job. Any other
    terminal process state fails the job and skips later steps.
 
+At server startup and every 30 seconds thereafter, the scheduler admits each due Shepherd
+job. The next due time is durable. A partial unique SQLite index permits at most one queued
+or running scheduled job per repository, even when two server processes share a database.
+The configured action limit is rendered into the trusted Shepherd prompt. Queue progress
+and merge audit state remain on GitHub, so the next run can re-inventory instead of relying
+on process memory.
+
 Polling is idempotent for one worker instance. If a lease response is lost, the next poll
 returns the same active run. If heartbeats stop, polling clears the expired lease and may
 redispatch the run with a new token. A stale worker can finish its local process, but it
@@ -128,7 +138,8 @@ not provide exactly-once side effects or process resumption.
 
 ## Persistence and artifacts
 
-SQLite is the managed source of truth for jobs, runs, workers, and completed output. It
+SQLite is the managed source of truth for jobs, runs, workers, completed output, and
+Shepherd due times. It
 uses foreign keys, write-ahead logging, and a five-second busy timeout. Schema setup and
 the implemented additive run-metric migrations run when the store opens.
 
@@ -197,7 +208,7 @@ software outcome is correct.
 | Job, run, worker, and lease state | `internal/controlplane/store.go` |
 | HTTP and browser security boundary | `internal/controlplane/server.go` |
 | Embedded UI | `internal/controlplane/web/src/`, `internal/controlplane/web/dist/` |
-| Default agent behavior | `examples/agents/foreman.md`, `examples/agents/audit.md` |
+| Default agent behavior | `examples/agents/foreman.md`, `examples/agents/audit.md`, `examples/agents/shepherd.md` |
 
 ## Verification
 
