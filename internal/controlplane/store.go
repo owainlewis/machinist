@@ -152,7 +152,8 @@ CREATE TABLE IF NOT EXISTS schedule_state (
   name TEXT PRIMARY KEY,
   next_run_at TEXT NOT NULL,
   repository TEXT NOT NULL DEFAULT '',
-  every_ms INTEGER NOT NULL DEFAULT 0
+  every_ms INTEGER NOT NULL DEFAULT 0,
+  execution_signature TEXT NOT NULL DEFAULT ''
 );`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
@@ -179,6 +180,9 @@ CREATE TABLE IF NOT EXISTS schedule_state (
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "schedule_state", "every_ms", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "schedule_state", "execution_signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE jobs SET has_shepherd=1 WHERE has_shepherd=0 AND EXISTS (SELECT 1 FROM runs WHERE runs.job_id=jobs.id AND runs.agent='shepherd')`); err != nil {
@@ -360,9 +364,13 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 		return "", false, err
 	}
 	defer tx.Rollback()
-	var nextRun, repository string
+	signature, err := shepherdScheduleSignature(schedule)
+	if err != nil {
+		return "", false, err
+	}
+	var nextRun, repository, executionSignature string
 	var everyMillis int64
-	err = tx.QueryRowContext(ctx, `SELECT next_run_at,repository,every_ms FROM schedule_state WHERE name=?`, schedule.Name).Scan(&nextRun, &repository, &everyMillis)
+	err = tx.QueryRowContext(ctx, `SELECT next_run_at,repository,every_ms,execution_signature FROM schedule_state WHERE name=?`, schedule.Name).Scan(&nextRun, &repository, &everyMillis, &executionSignature)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return "", false, fmt.Errorf("read shepherd schedule %q: %w", schedule.Name, err)
 	}
@@ -371,7 +379,7 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 		if parseErr != nil {
 			return "", false, fmt.Errorf("parse shepherd schedule %q next run: %w", schedule.Name, parseErr)
 		}
-		unchanged := repository == schedule.Repository && everyMillis == schedule.Every.Milliseconds()
+		unchanged := repository == schedule.Repository && everyMillis == schedule.Every.Milliseconds() && executionSignature == signature
 		if unchanged && next.After(nowTime) {
 			return "", false, tx.Commit()
 		}
@@ -400,13 +408,25 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,step,agent,agent_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, runID, jobID, 0, agent.Name, agent.Hash, agent.Executor, agent.Model, schedule.Repository, agent.Prompt, agent.Timeout.Milliseconds(), "queued"); err != nil {
 		return "", false, fmt.Errorf("insert scheduled run: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO schedule_state(name,next_run_at,repository,every_ms) VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET next_run_at=excluded.next_run_at,repository=excluded.repository,every_ms=excluded.every_ms`, schedule.Name, nowTime.Add(schedule.Every).Format(time.RFC3339Nano), schedule.Repository, schedule.Every.Milliseconds()); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schedule_state(name,next_run_at,repository,every_ms,execution_signature) VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET next_run_at=excluded.next_run_at,repository=excluded.repository,every_ms=excluded.every_ms,execution_signature=excluded.execution_signature`, schedule.Name, nowTime.Add(schedule.Every).Format(time.RFC3339Nano), schedule.Repository, schedule.Every.Milliseconds(), signature); err != nil {
 		return "", false, fmt.Errorf("advance shepherd schedule %q: %w", schedule.Name, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return "", false, err
 	}
 	return jobID, true, nil
+}
+
+func shepherdScheduleSignature(schedule config.ResolvedShepherdSchedule) (string, error) {
+	body, err := json.Marshal(struct {
+		MaxActions int                  `json:"max_actions"`
+		Prompt     string               `json:"prompt"`
+		Agent      config.ResolvedAgent `json:"agent"`
+	}{schedule.MaxActions, schedule.Prompt, schedule.Agent})
+	if err != nil {
+		return "", fmt.Errorf("encode shepherd schedule %q execution settings: %w", schedule.Name, err)
+	}
+	return string(body), nil
 }
 
 func (s *Store) Poll(ctx context.Context, request protocol.PollRequest) (*protocol.RunSpec, error) {

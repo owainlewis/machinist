@@ -291,6 +291,48 @@ func TestServerServeDoesNotReportListeningWhenAddressIsInUse(t *testing.T) {
 	}
 }
 
+func TestServerDoesNotAdmitShepherdScheduleWhenBindFails(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "shepherd.md"), []byte("Queue policy:\n{{machinist.prompt}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definitionPath := filepath.Join(directory, "config.toml")
+	definition := `[agents.shepherd]
+executor = "test"
+prompt_file = "shepherd.md"
+timeout = "1m"
+
+[shepherd.machinist]
+repository = "machinist"
+every = "10m"
+max_actions = 2
+`
+	if err := os.WriteFile(definitionPath, []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := openTestStore(t, filepath.Join(directory, "machinist.db"))
+	server, err := NewServer(store, definitionPath, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupied, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+
+	if err := server.Serve(t.Context(), occupied.Addr().String(), nil); err == nil {
+		t.Fatal("Serve succeeded on an occupied address")
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Jobs) != 0 {
+		t.Fatalf("failed server start admitted scheduled jobs: %#v", snapshot.Jobs)
+	}
+}
+
 func TestServerExposesReadOnlyDefinitions(t *testing.T) {
 	_, webServer := newTestHTTPServer(t)
 	defer webServer.Close()

@@ -619,6 +619,33 @@ func TestStoreReschedulesWhenScheduleConfigurationChanges(t *testing.T) {
 	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || !created {
 		t.Fatalf("interval change rescheduled = %t, %v", created, err)
 	}
+	run, err = store.Poll(t.Context(), pollRequest("worker-c", []string{"codex"}, []string{"web"}))
+	if err != nil || run == nil {
+		t.Fatalf("lease interval-changed schedule = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-c", LeaseToken: run.LeaseToken, State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = clock.Now
+
+	schedule.MaxActions = 4
+	schedule.Prompt = "Run Shepherd with max_actions=4"
+	schedule.Agent = testAgent("shepherd", "Updated policy; at most 4 actions")
+	schedule.Agent.Timeout = 2 * time.Minute
+	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || !created {
+		t.Fatalf("execution settings change rescheduled = %t, %v", created, err)
+	}
+	run, err = store.Poll(t.Context(), pollRequest("worker-d", []string{"codex"}, []string{"web"}))
+	if err != nil || run == nil || run.RenderedPrompt != schedule.Agent.Prompt || run.TimeoutMillis != schedule.Agent.Timeout.Milliseconds() {
+		t.Fatalf("lease execution-settings schedule = %#v, %v", run, err)
+	}
 }
 
 func TestStorePersistsShepherdScheduleAcrossRestart(t *testing.T) {
@@ -648,6 +675,39 @@ func TestStorePersistsShepherdScheduleAcrossRestart(t *testing.T) {
 	reopened.now = clock.Now
 	if _, created, err := reopened.CreateScheduledJob(t.Context(), schedule); err != nil || created {
 		t.Fatalf("restart repeated schedule = %t, %v", created, err)
+	}
+}
+
+func TestShepherdScheduleSignatureCoversExecutionSettings(t *testing.T) {
+	base := config.ResolvedShepherdSchedule{
+		Name: "api", Repository: "api", Every: time.Hour, MaxActions: 1,
+		Prompt: "Run with max_actions=1",
+		Agent:  testAgent("shepherd", "Inspect every pull request; at most 1 action."),
+	}
+	want, err := shepherdScheduleSignature(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variants := map[string]func(*config.ResolvedShepherdSchedule){
+		"max actions":     func(schedule *config.ResolvedShepherdSchedule) { schedule.MaxActions = 2 },
+		"schedule prompt": func(schedule *config.ResolvedShepherdSchedule) { schedule.Prompt = "Run with max_actions=2" },
+		"agent prompt":    func(schedule *config.ResolvedShepherdSchedule) { schedule.Agent.Prompt = "Updated queue policy" },
+		"executor":        func(schedule *config.ResolvedShepherdSchedule) { schedule.Agent.Executor = "claude" },
+		"model":           func(schedule *config.ResolvedShepherdSchedule) { schedule.Agent.Model = "sol" },
+		"timeout":         func(schedule *config.ResolvedShepherdSchedule) { schedule.Agent.Timeout = 2 * time.Hour },
+	}
+	for name, change := range variants {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			change(&changed)
+			got, err := shepherdScheduleSignature(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == want {
+				t.Fatal("execution setting did not change schedule signature")
+			}
+		})
 	}
 }
 

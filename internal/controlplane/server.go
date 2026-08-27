@@ -105,12 +105,12 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 	if err := validateLoopbackListen(listen); err != nil {
 		return err
 	}
-	_ = s.enqueueScheduledRuns(ctx)
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listen, err)
 	}
 	defer listener.Close()
+	_ = s.enqueueScheduledRuns(ctx)
 	if onListening != nil {
 		onListening(listener.Addr())
 	}
