@@ -15,6 +15,8 @@ reviewed, and checked pull request. It never merges the pull request.
 - Labels report workflow state. They do not assign or start work.
 - Reassign the same issue to resume existing work. The foreman recovers its branch,
   worktree, pull request, checks, and repair count.
+- When `MACHINIST_RUN_ID` is set, the agent is already inside a Machinist run. Follow the
+  assigned role and do not start or submit another run.
 
 ## Create a task
 
@@ -62,7 +64,7 @@ Keep exactly one lifecycle or exception label on the issue:
 | `machinist:planning` | The issue is being refined into a clear task. | Wait for planning or answer a question if asked. |
 | `machinist:building` | A worker is implementing or repairing the change. | Do not start overlapping work. |
 | `machinist:verifying` | Independent review, CI, or automated review is running. | Wait for the current head to finish verification. |
-| `machinist:ready-for-review` | The pull request is verified and ready for a person. | Review and merge manually when satisfied. |
+| `machinist:ready-for-review` | The pull request is verified and ready for a person. | Hand the pull request to a person. Do not merge it. |
 | `machinist:needs-human` | A product or technical decision is missing. | Answer the precise issue question, then assign the same issue again. |
 | `machinist:blocked` | Tooling, credentials, infrastructure, or the repair limit stopped work. | Read the evidence, remove the external blocker, then assign the same issue again. |
 
@@ -80,7 +82,8 @@ before adding another. Do not change a label merely to make progress appear furt
 ## Manage and resume work
 
 Inspect the issue labels, the `<!-- machinist:foreman-state -->` issue comment, the linked
-pull request, and current checks. Treat that recorded state as the source of truth.
+pull request, and current checks. Verify the recorded branch, worktree, SHAs, pull request,
+checks, and repair count against current Git and GitHub state before using them.
 
 - For `machinist:needs-human`, answer the issue question and reassign the same issue.
 - For `machinist:blocked`, fix the reported external cause and reassign the same issue.
