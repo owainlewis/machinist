@@ -93,8 +93,12 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 			t.Fatalf("load installed agent %s: %v", name, err)
 		}
 	}
-	if _, err := config.LoadWorker(filepath.Join(directory, "worker.toml")); err != nil {
+	worker, err := config.LoadWorker(filepath.Join(directory, "worker.toml"))
+	if err != nil {
 		t.Fatalf("load installed worker: %v", err)
+	}
+	if got := strings.Join(worker.Executors["codex"].Command, " "); !strings.Contains(got, "codex exec --json") {
+		t.Fatalf("installed Codex executor does not request structured output: %q", got)
 	}
 	if !strings.Contains(stdout.String(), "created agents/audit.md") || !strings.Contains(stdout.String(), "Add repositories to worker.toml") {
 		t.Fatalf("stdout = %q", stdout.String())
