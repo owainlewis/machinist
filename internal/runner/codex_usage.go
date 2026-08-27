@@ -90,16 +90,16 @@ func envProgramIndex(command []string) int {
 		if strings.Contains(argument, "=") && !strings.HasPrefix(argument, "-") {
 			continue
 		}
-		if envBooleanShortOptions(argument) || slices.Contains([]string{"--ignore-environment", "--null", "--debug", "--block-signal", "--default-signal", "--ignore-signal", "--list-signal-handling"}, argument) {
+		if argument == "-" || envBooleanShortOptions(argument) || slices.Contains([]string{"--ignore-environment", "--null", "--debug", "--block-signal", "--default-signal", "--ignore-signal", "--list-signal-handling"}, argument) {
 			continue
 		}
-		if slices.Contains([]string{"-u", "--unset", "-C", "--chdir", "-P", "-S", "--split-string"}, argument) {
+		if slices.Contains([]string{"-u", "--unset", "-C", "--chdir", "-P", "-S", "--split-string", "-a", "--argv0"}, argument) {
 			index++
 			continue
 		}
-		if strings.HasPrefix(argument, "--unset=") || strings.HasPrefix(argument, "--chdir=") || strings.HasPrefix(argument, "--split-string=") ||
+		if strings.HasPrefix(argument, "--unset=") || strings.HasPrefix(argument, "--chdir=") || strings.HasPrefix(argument, "--split-string=") || strings.HasPrefix(argument, "--argv0=") ||
 			strings.HasPrefix(argument, "--block-signal=") || strings.HasPrefix(argument, "--default-signal=") || strings.HasPrefix(argument, "--ignore-signal=") ||
-			(len(argument) > 2 && slices.Contains([]string{"-u", "-C", "-P", "-S"}, argument[:2])) {
+			(len(argument) > 2 && slices.Contains([]string{"-u", "-C", "-P", "-S", "-a"}, argument[:2])) {
 			continue
 		}
 		if strings.HasPrefix(argument, "-") {
