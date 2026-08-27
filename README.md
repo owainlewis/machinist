@@ -1,54 +1,83 @@
+<div align="center">
+
+<img src=".github/assets/machinist-mark.png" alt="Machinist project mark: a precision operator inside a machine dial" width="180">
+
 # Machinist
 
-Run a local team of coding agents that turns GitHub issues into reviewed pull
-requests.
+**Build your own software factory.**
 
-Machinist is an open-source runtime and control plane for supervised coding work.
-Give its foreman an issue. It plans the work, dispatches fresh agents to build
-and review the change, waits for the repository's checks, and hands you a pull
-request to merge.
+Machinist is an open-source software factory implementation for coding agents.
+It runs development workflows you define, on your machine and against your
+repositories.
 
-```text
-GitHub issue -> plan -> build -> independent review -> CI -> pull request
-                                                            ^
-                                                      you decide to merge
+Start with the included issue-to-pull-request factory, or create your own agents
+and pipelines. You control the prompts, models, executors, timeouts,
+repositories, and order of work.
+
+[![CI](https://github.com/owainlewis/machinist/actions/workflows/ci.yml/badge.svg)](https://github.com/owainlewis/machinist/actions/workflows/ci.yml)
+[![Go 1.26.6](https://img.shields.io/badge/Go-1.26.6-00ADD8?logo=go&logoColor=white)](go.mod)
+[![macOS and Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-18181b)](#project-status)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-7c3aed)](LICENSE)
+
+[Getting started](docs/getting-started.md) · [How it works](docs/how-it-works.md) ·
+[Architecture](ARCHITECTURE.md)
+
+</div>
+
+---
+
+## Predictable development with agents
+
+Machinist turns agent work into a process you can run again. Define the stages
+once, then use the same planning, building, testing, and review steps for every
+task. This makes the work more consistent and gives you clear places to add
+quality gates.
+
+Each run produces logs and a final result. If an agent or pipeline step fails,
+Machinist stops instead of carrying on with a broken result.
+
+## Included issue-to-pull-request factory
+
+The default `foreman` plans a GitHub issue, gives implementation and review to
+fresh agents, opens a pull request, and waits for repository CI. Review or CI
+failures go back for repair. The foreman allows up to two repair attempts and
+does not merge the pull request.
+
+```mermaid
+flowchart LR
+    ISSUE[Issue] --> PLAN[Plan] --> WORK[Build or repair] --> REVIEW[Review] --> PR[Open PR] --> CI[CI passes]
+    REVIEW -.->|changes| WORK
+    CI -.->|failure| WORK
+    CI ~~~ SPACE(( )) ~~~ SPACE2(( ))
+
+    classDef step fill:#f4efe6,stroke:#b95b16,color:#211408,stroke-width:1.5px
+    classDef endpoint fill:#f2a23a,stroke:#b95b16,color:#211408,stroke-width:2px
+    classDef spacer fill:transparent,stroke:transparent,color:transparent
+    class PLAN,WORK,REVIEW,PR step
+    class ISSUE,CI endpoint
+    class SPACE,SPACE2 spacer
+    linkStyle 0,1,2,3,4,5,6 stroke:#b95b16,stroke-width:2px
 ```
 
-Machinist runs on your machine, in your repositories, with the coding tools you
-already use. Agent prompts and workflows are files you can read, change, and
-version. The control plane records what ran without trying to guess whether an
-agent's prose means the job is done.
+## Customise the factory
 
-## Why Machinist?
+The factory is configuration, not hard-coded behavior. Agent prompt files define
+what each agent does. `config.toml` defines agents and ordered pipelines.
+`worker.toml` maps executors, model names, repositories, and local paths.
 
-- **One request, a complete workflow.** The foreman coordinates planning,
-  implementation, review, repair, and CI instead of stopping after one coding
-  session.
-- **Review before handoff.** A fresh agent reviews the exact change. Failed
-  checks and valid findings go back through a bounded repair loop.
-- **Your tools and models.** Machinist launches configured executors such as Codex
-  or Claude. Model aliases let you choose per task without hard-coding provider
-  details into prompts.
-- **Local by default.** Repository paths, credentials, and executor commands
-  stay on the worker. Managed results and event logs are copied only to the
-  loopback control plane's local SQLite database.
-- **A human owns the merge.** The shipped foreman can prepare and verify a pull
-  request. It never merges one.
-
-Machinist also ships a read-only `audit` agent that inspects a repository,
-independently verifies possible bugs, and opens evidence-backed issues for the
-ones it can prove.
+You can use Codex, Claude, or another command-line coding agent. You can run one
+agent, chain several agents into a pipeline, or write a supervising agent like
+the included foreman. See [Configuration](docs/configuration.md) to create your
+own factory.
 
 ## Quick start
 
 You need macOS or Linux, Go 1.26.6 or newer, Git, an authenticated
 [GitHub CLI](https://cli.github.com/), and an authenticated
-[Codex CLI](https://developers.openai.com/codex/cli/). The default foreman uses
-Codex and its native subagents.
+[Codex CLI](https://developers.openai.com/codex/cli/) with native subagents
+enabled.
 
-### 1. Build and initialize
-
-From a Machinist source checkout:
+Build Machinist and create the default config:
 
 ```sh
 mkdir -p ./bin
@@ -56,10 +85,10 @@ go build -o ./bin/machinist ./cmd/machinist
 ./bin/machinist init
 ```
 
-`machinist init` creates editable configuration and agent prompts in
-`~/.machinist`. It keeps existing files unchanged when you run it again.
+`machinist init` writes editable agent and worker settings to `~/.machinist`.
+It does not overwrite existing files.
 
-### 2. Give the foreman an issue
+Run the foreman against a small, well-defined issue:
 
 ```sh
 ./bin/machinist run \
@@ -68,36 +97,60 @@ go build -o ./bin/machinist ./cmd/machinist
   --prompt="Complete https://github.com/your-org/your-repo/issues/123"
 ```
 
-Use a small, well-defined issue for the first run. Machinist streams the agent's
-output and saves an ordered event log and terminal result under
+Machinist streams the agent output and writes the run log and result under
 `~/.machinist/worker/runs/`.
 
-### 3. Review the pull request
+## Direct and managed runs
 
-The foreman leaves the issue and pull request ready for a person to review. It
-does not merge.
+`machinist run` starts work immediately. It is the simplest way to try the
+project. Managed mode adds a local queue, run history, browser UI, and workers.
 
-To inspect a repository without changing it:
+| | Direct | Managed |
+| --- | --- | --- |
+| Start with | `machinist run` | Browser UI or `machinist submit` |
+| Repository | Existing Git worktree path | Name from `worker.toml` |
+| State | Local run files | SQLite history and local run files |
+| Server | Not needed | Runs on loopback |
 
-```sh
-./bin/machinist run \
-  --agent=audit \
-  --repo=/absolute/path/to/your-repository \
-  --prompt="Audit the request handling and persistence code"
+Both modes use the same agents, prompts, runner, and file format.
+
+## How the parts fit together
+
+```mermaid
+flowchart LR
+    CLI[CLI] -->|direct| RUNNER[Runner]
+    UI[Web UI] --> CP[Control plane] --> WORKER[Worker] --> RUNNER
+    RUNNER --> REPO[(Git worktree)]
+    REPO ~~~ SPACE(( ))
+
+    classDef node fill:#f4efe6,stroke:#b95b16,color:#211408,stroke-width:1.5px
+    classDef managed fill:#ffedd5,stroke:#b95b16,color:#211408,stroke-width:1.5px
+    classDef data fill:#fff7ed,stroke:#b95b16,color:#211408,stroke-width:1.5px
+    classDef spacer fill:transparent,stroke:transparent,color:transparent
+    class CLI,UI,RUNNER node
+    class CP,WORKER managed
+    class REPO data
+    class SPACE spacer
+    linkStyle 0,1,2,3,4 stroke:#b95b16,stroke-width:2px
 ```
+
+In a direct run, the CLI starts the runner. In a managed run, the control plane
+queues the job and a worker starts the runner. The runner launches the configured
+coding agent in an existing Git worktree and saves the run files locally.
+
+Shared settings live in `~/.machinist/config.toml`. Machine-specific executor,
+model, path, and worker settings live in `~/.machinist/worker.toml`.
 
 ## Run the local control plane
 
-Direct mode is the fastest way to try Machinist. When you want a queue, durable
-run history, and a browser UI, add a repository to
-`~/.machinist/worker.toml`:
+Add a repository to `~/.machinist/worker.toml`:
 
 ```toml
 [repositories.my-project]
 path = "/absolute/path/to/my-project"
 ```
 
-Then start the server and worker in separate terminals:
+Start the server and worker in separate terminals:
 
 ```sh
 ./bin/machinist start
@@ -107,11 +160,8 @@ Then start the server and worker in separate terminals:
 ./bin/machinist worker start
 ```
 
-Open [http://127.0.0.1:7331](http://127.0.0.1:7331), choose a repository and
-agent, and submit a work request.
-
-You can also queue managed work from the CLI. Use the repository name from
-`worker.toml`, not its local path:
+Open [http://127.0.0.1:7331](http://127.0.0.1:7331) to submit work, or use the
+CLI:
 
 ```sh
 ./bin/machinist submit \
@@ -120,42 +170,40 @@ You can also queue managed work from the CLI. Use the repository name from
   --repo=my-project
 ```
 
-`machinist run` executes immediately and never contacts the control plane.
-`machinist submit` validates the selection with the control plane, queues it, and
-prints the admitted job ID. `machinist worker run` remains available as the
-worker-namespaced direct path for a single agent.
+## Audit a repository
+
+The read-only `audit` agent looks for bugs and opens an issue only when it can
+show evidence:
+
+```sh
+./bin/machinist run \
+  --agent=audit \
+  --repo=/absolute/path/to/your-repository \
+  --prompt="Audit the request handling and persistence code"
+```
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md): requirements, installation, and
-  first runs
-- [How Machinist works](docs/how-it-works.md): direct runs, managed runs,
-  supervision, and artifacts
-- [Configuration](docs/configuration.md): agents, executors, models, prompts,
-  and pipelines
-- [Local control plane](docs/control-plane.md): server, workers, security, and
-  failure recovery
-- [Development](docs/development.md): build, test, and project layout
-- [Migration guide](docs/migration-from-factory.md): clean installation,
-  renamed interfaces, and rollback
-- [Architecture](ARCHITECTURE.md): source of truth, dependency direction,
-  execution flows, trust boundaries, and persistence
-- [Control-plane design](docs/control-plane/design.md): the detailed V1 design
-  and invariants
-- [Warp Factories product review](docs/product-direction/warp-factories-review.md):
-  lessons, readiness gates, and recommended product order
-- [Runner-managed skills](docs/worker-skills/design.md): why coding-agent skills
-  stay native to the configured runner
+- [Getting started](docs/getting-started.md)
+- [How Machinist works](docs/how-it-works.md)
+- [Configuration](docs/configuration.md)
+- [Local control plane](docs/control-plane.md)
+- [Architecture](ARCHITECTURE.md)
+- [Development](docs/development.md)
+- [Migration from Factory](docs/migration-from-factory.md)
 
 ## Project status
 
-Machinist is early software. It currently targets trusted local automation on
-macOS and Linux. The control plane intentionally accepts only loopback listeners;
-remote deployment needs a separate authentication and TLS boundary.
+Machinist is early software for trusted local use on macOS and Linux. The
+control plane only listens on loopback. Do not expose it directly to a network.
 
-The opt-in Python eval under [`evals/`](evals/) runs the complete default workflow against
-a dedicated scratch repository and verifies its issue-label lifecycle. It is separate
-from `just check` because it creates real GitHub issues and pull requests.
+The no-merge rule is an agent instruction, not a security boundary. Use
+operating-system and GitHub permissions to limit what agents can do, and review
+your prompts and executor commands before running them.
+
+The optional Python suite under [`evals/`](evals/) tests the full workflow in a
+scratch GitHub repository. It is separate from `just check` because it creates
+real issues and pull requests.
 
 ## License
 
