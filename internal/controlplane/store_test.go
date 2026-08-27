@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -881,6 +882,52 @@ func TestStorePreservesLatestFailedJobHealthAcrossSuccessfulPolls(t *testing.T) 
 	}
 	if status := byIdentity["github/polls"]; status.Health != "healthy" || status.LatestError != "" {
 		t.Fatalf("recovered poll error was retained: %#v", status)
+	}
+}
+
+func TestStorePreservesTriggerHealthFromActualCompletionOrder(t *testing.T) {
+	clock := newTestClock(time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC))
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	store.now = clock.Now
+	identity := "github/jobs"
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: identity, Family: "github", ConfigSignature: "jobs"}}); err != nil {
+		t.Fatal(err)
+	}
+	generation := mustTriggerGeneration(t, store, identity)
+	for issue := 1; issue <= 2; issue++ {
+		_, created, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{
+			Identity: identity, Family: "github", ConfigSignature: "jobs", ConfigGeneration: generation,
+			OccurrenceKey: fmt.Sprintf("github.com:event:%d", issue), Subject: fmt.Sprintf("https://github.com/o/r/issues/%d", issue), ScheduledAt: clock.Now(),
+			Prompt: "Complete issue", Repository: "machinist", SelectionKind: "agent", SelectionName: "foreman", Agents: []config.ResolvedAgent{testAgent("foreman", "Complete issue")},
+			GitHubRepository: "o/r", GitHubIssueNumber: issue, RequestActor: "owner", RequestLabel: "machinist:requested",
+		})
+		if err != nil || !created {
+			t.Fatalf("admit github job %d = %v, %v", issue, created, err)
+		}
+	}
+	older, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+	if err != nil || older == nil {
+		t.Fatalf("poll older job = %#v, %v", older, err)
+	}
+	newer, err := store.Poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}))
+	if err != nil || newer == nil || newer.JobID == older.JobID {
+		t.Fatalf("poll newer job = %#v, %v", newer, err)
+	}
+	if err := store.Complete(t.Context(), newer.ID, protocol.Completion{InstanceID: "worker-b", LeaseToken: newer.LeaseToken, State: "failed", ExitCode: 1, Error: "newer job failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Complete(t.Context(), older.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: older.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordTriggerAttempt(t.Context(), identity, generation, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := store.TriggerSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Health != "healthy" || statuses[0].LatestError != "" {
+		t.Fatalf("completion-order health = %#v, want healthy", statuses)
 	}
 }
 

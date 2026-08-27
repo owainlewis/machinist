@@ -241,6 +241,8 @@ CREATE TABLE IF NOT EXISTS trigger_state (
   pending_occurrence_at TEXT,
   last_attempt_at TEXT,
   last_success_at TEXT,
+  last_job_state TEXT NOT NULL DEFAULT '',
+  last_job_error TEXT NOT NULL DEFAULT '',
   health TEXT NOT NULL DEFAULT 'healthy',
   latest_error TEXT NOT NULL DEFAULT '',
   candidate_count INTEGER NOT NULL DEFAULT 0,
@@ -316,6 +318,12 @@ CREATE TABLE IF NOT EXISTS github_trigger_requests (
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "trigger_state", "generation_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "trigger_state", "last_job_state", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "trigger_state", "last_job_error", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "github_trigger_requests", "request_label", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -541,6 +549,8 @@ ON CONFLICT(identity) DO UPDATE SET
   pending_occurrence_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.pending_occurrence_at END,
   last_attempt_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.last_attempt_at END,
   last_success_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.last_success_at END,
+  last_job_state=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN '' ELSE trigger_state.last_job_state END,
+  last_job_error=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN '' ELSE trigger_state.last_job_error END,
   health=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 'healthy' ELSE trigger_state.health END,
   latest_error=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN '' ELSE trigger_state.latest_error END,
   candidate_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.candidate_count END,
@@ -761,11 +771,11 @@ func (s *Store) RecordTriggerAttempt(ctx context.Context, identity, configGenera
   health=CASE
     WHEN ?='healthy' AND health='coalesced' THEN 'coalesced'
 	WHEN ?='healthy' AND EXISTS (SELECT 1 FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.trigger_generation_id=trigger_state.generation_id AND jobs.state IN ('queued','running')) THEN 'active'
-    WHEN ?='healthy' AND (SELECT state FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.trigger_generation_id=trigger_state.generation_id ORDER BY created_at DESC,rowid DESC LIMIT 1)='failed' THEN 'failed'
+	WHEN ?='healthy' AND last_job_state='failed' THEN 'failed'
     ELSE ?
   END,
   latest_error=CASE
-    WHEN ?='healthy' AND (SELECT state FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.trigger_generation_id=trigger_state.generation_id ORDER BY created_at DESC,rowid DESC LIMIT 1)='failed' THEN latest_error
+	WHEN ?='healthy' AND last_job_state='failed' THEN last_job_error
     ELSE ?
   END,
   updated_at=?
@@ -1135,7 +1145,7 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 				return err
 			}
 			if triggerIdentity != "" {
-				if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_success_at=?,health='healthy',latest_error='',updated_at=? WHERE identity=? AND generation_id=?`, now, now, triggerIdentity, triggerGeneration); err != nil {
+				if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_success_at=?,last_job_state='succeeded',last_job_error='',health='healthy',latest_error='',updated_at=? WHERE identity=? AND generation_id=?`, now, now, triggerIdentity, triggerGeneration); err != nil {
 					return fmt.Errorf("record trigger success: %w", err)
 				}
 			}
@@ -1152,7 +1162,8 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 			if latestError == "" {
 				latestError = "triggered job " + completion.State
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET health='failed',latest_error=?,updated_at=? WHERE identity=? AND generation_id=?`, boundedTriggerError(latestError), now, triggerIdentity, triggerGeneration); err != nil {
+			latestError = boundedTriggerError(latestError)
+			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_job_state='failed',last_job_error=?,health='failed',latest_error=?,updated_at=? WHERE identity=? AND generation_id=?`, latestError, latestError, now, triggerIdentity, triggerGeneration); err != nil {
 				return fmt.Errorf("record trigger failure: %w", err)
 			}
 		}
@@ -1228,7 +1239,7 @@ func (s *Store) TriggerSnapshot(ctx context.Context) ([]TriggerStatus, error) {
 		status.PendingOccurrenceAt = parseOptionalTime(pendingOccurrence)
 		status.LastAttemptAt = parseOptionalTime(lastAttempt)
 		status.LastSuccessAt = parseOptionalTime(lastSuccess)
-		if status.Health == "healthy" && status.ActiveJobID == "" && status.NextDueAt != nil && status.NextDueAt.Before(s.now().UTC()) {
+		if status.Health == "healthy" && status.ActiveJobID == "" && status.PendingOccurrenceAt == nil && status.NextDueAt != nil && status.NextDueAt.Before(s.now().UTC()) {
 			status.Health = "stale"
 		}
 		statuses = append(statuses, status)

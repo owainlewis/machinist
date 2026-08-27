@@ -194,6 +194,23 @@ func TestGitHubCLIPermissionAndWritePolicy(t *testing.T) {
 	}
 }
 
+func TestGitHubCLIPermissionTreatsGitHubAppBot404AsNone(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI(scriptedGitHubResult{
+		stderr: "gh: Not Found (HTTP 404)",
+		err:    errors.New("exit status 1"),
+	})
+	permission, err := cli.Permission(context.Background(), "o/r", "github-actions[bot]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permission != "none" {
+		t.Fatalf("permission = %q, want none", permission)
+	}
+	if got := strings.Join(runner.calls[0], " "); !strings.Contains(got, "github-actions%5Bbot%5D") {
+		t.Fatalf("bot login was not path escaped: %s", got)
+	}
+}
+
 func TestGitHubCLIReplaceLabelIsRepairableAfterPartialFailure(t *testing.T) {
 	cli, runner := newScriptedGitHubCLI(
 		scriptedGitHubResult{},
@@ -297,6 +314,9 @@ func TestGitHubCLIRejectsUnsafeInputsBeforeExecution(t *testing.T) {
 	}
 	if _, err := cli.Permission(context.Background(), "o/r", "name/path"); err == nil {
 		t.Fatal("unsafe actor was accepted")
+	}
+	if _, err := cli.SearchRequestedIssues(context.Background(), []string{"o/r"}, "requested,urgent", 100); err == nil {
+		t.Fatal("comma-separated label was accepted")
 	}
 	if len(runner.calls) != 0 {
 		t.Fatalf("unsafe input reached executable: %v", runner.calls)

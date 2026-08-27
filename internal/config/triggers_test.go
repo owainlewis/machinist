@@ -184,6 +184,14 @@ agent="audit"
 `,
 			want: "between 1m0s and 24h0m0s",
 		},
+		"comma github label": {
+			body: `[triggers.github.intake]
+every="5m"
+label="requested,urgent"
+agent="audit"
+`,
+			want: "without commas",
+		},
 		"long fixed interval": {
 			body: `[triggers.interval.audit]
 every="721h"

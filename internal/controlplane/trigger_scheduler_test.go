@@ -555,6 +555,7 @@ prompt="Audit"
 
 func TestManagedFixedTriggerWaitsForPreviousConfigurationJobAcrossABA(t *testing.T) {
 	clock := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	pendingDue := clock
 	store := openManagedTriggerTestStore(t, &clock)
 	identity := "interval/audit"
 	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: identity, Family: "interval", ConfigSignature: "v1", NextDueAt: clock}}); err != nil {
@@ -584,12 +585,13 @@ func TestManagedFixedTriggerWaitsForPreviousConfigurationJobAcrossABA(t *testing
 	if err := server.processManagedTrigger(t.Context(), trigger); err != nil {
 		t.Fatal(err)
 	}
+	clock = clock.Add(time.Minute)
 	snapshot, err := store.Snapshot(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	status := snapshot.Triggers[0]
-	if len(snapshot.Jobs) != 1 || status.PendingOccurrenceAt == nil || !status.PendingOccurrenceAt.Equal(clock) || status.NextDueAt == nil || !status.NextDueAt.Equal(clock) || status.CoalescedCount != 0 || status.Health != "healthy" || status.ActiveJobID != "" {
+	if len(snapshot.Jobs) != 1 || status.PendingOccurrenceAt == nil || !status.PendingOccurrenceAt.Equal(pendingDue) || status.NextDueAt == nil || !status.NextDueAt.Equal(pendingDue) || status.CoalescedCount != 0 || status.Health != "healthy" || status.ActiveJobID != "" {
 		t.Fatalf("new A occurrence was not preserved behind old A work: %#v", snapshot)
 	}
 	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"test"}, []string{"machinist"}))
@@ -599,6 +601,7 @@ func TestManagedFixedTriggerWaitsForPreviousConfigurationJobAcrossABA(t *testing
 	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
 		t.Fatal(err)
 	}
+	clock = pendingDue.Add(3 * time.Hour)
 	if err := server.processManagedTrigger(t.Context(), trigger); err != nil {
 		t.Fatal(err)
 	}
@@ -608,9 +611,9 @@ func TestManagedFixedTriggerWaitsForPreviousConfigurationJobAcrossABA(t *testing
 	}
 	v2Admitted := false
 	for _, job := range snapshot.Jobs {
-		v2Admitted = v2Admitted || job.OccurrenceKey == clock.Format(time.RFC3339Nano)
+		v2Admitted = v2Admitted || job.OccurrenceKey == pendingDue.Format(time.RFC3339Nano)
 	}
-	if len(snapshot.Jobs) != 2 || !v2Admitted || snapshot.Triggers[0].PendingOccurrenceAt != nil {
+	if len(snapshot.Jobs) != 2 || !v2Admitted || snapshot.Triggers[0].PendingOccurrenceAt != nil || snapshot.Triggers[0].CoalescedCount != 3 {
 		t.Fatalf("new A occurrence was not admitted after old A completion: %#v", snapshot)
 	}
 }

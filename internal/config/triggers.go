@@ -253,8 +253,8 @@ func triggerDuration(identity, field, input string, min, max time.Duration) (tim
 
 func triggerLabel(identity, input string) (string, error) {
 	label := strings.TrimSpace(input)
-	if label == "" || label != input || len(label) > 50 || strings.ContainsAny(label, "\x00\r\n") {
-		return "", fmt.Errorf("trigger %q label must be a non-empty GitHub label of at most 50 bytes on one line", identity)
+	if label == "" || label != input || len(label) > 50 || strings.ContainsAny(label, "\x00\r\n,") {
+		return "", fmt.Errorf("trigger %q label must be a non-empty GitHub label of at most 50 bytes on one line without commas", identity)
 	}
 	return label, nil
 }

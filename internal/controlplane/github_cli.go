@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -25,6 +26,7 @@ const (
 var (
 	githubRepositoryPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$`)
 	githubActorPattern      = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+	githubBotActorPattern   = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?\[bot\]$`)
 	githubSecretPattern     = regexp.MustCompile(`(?i)(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+)`)
 )
 
@@ -127,8 +129,8 @@ func (g *GitHubCLI) SearchRequestedIssues(ctx context.Context, repositories []st
 	if len(repositories) == 0 {
 		return nil, nil
 	}
-	if strings.TrimSpace(label) == "" || strings.ContainsRune(label, '\x00') {
-		return nil, errors.New("github search label must not be empty")
+	if err := validateGitHubLabel(label); err != nil {
+		return nil, fmt.Errorf("github search label: %w", err)
 	}
 	if limit <= 0 || limit > maxGitHubCandidates {
 		limit = maxGitHubCandidates
@@ -188,8 +190,8 @@ func (g *GitHubCLI) IssueDetails(ctx context.Context, repository string, number 
 	if number <= 0 {
 		return GitHubIssueDetails{}, errors.New("github issue number must be positive")
 	}
-	if strings.TrimSpace(requestedLabel) == "" || strings.ContainsRune(requestedLabel, '\x00') {
-		return GitHubIssueDetails{}, errors.New("github requested label must not be empty")
+	if err := validateGitHubLabel(requestedLabel); err != nil {
+		return GitHubIssueDetails{}, fmt.Errorf("github requested label: %w", err)
 	}
 	endpoint := fmt.Sprintf("repos/%s/issues/%d", repository, number)
 	stdout, err := g.run(ctx, "read issue", []string{"api", "--method", "GET", endpoint})
@@ -226,12 +228,16 @@ func (g *GitHubCLI) Permission(ctx context.Context, repository, actor string) (s
 		return "", err
 	}
 	actor = strings.TrimSpace(actor)
-	if !githubActorPattern.MatchString(actor) {
+	if !githubActorPattern.MatchString(actor) && !githubBotActorPattern.MatchString(actor) {
 		return "", errors.New("github actor must be a path-safe login")
 	}
-	endpoint := fmt.Sprintf("repos/%s/collaborators/%s/permission", repository, actor)
+	endpoint := fmt.Sprintf("repos/%s/collaborators/%s/permission", repository, url.PathEscape(actor))
 	stdout, err := g.run(ctx, "read actor permission", []string{"api", "--method", "GET", endpoint})
 	if err != nil {
+		var cliErr *GitHubCLIError
+		if errors.As(err, &cliErr) && cliErr.Kind == GitHubCLIErrorCommand && strings.Contains(strings.ToLower(cliErr.Detail), "http 404") {
+			return "none", nil
+		}
 		return "", err
 	}
 	var response struct {
@@ -378,8 +384,8 @@ func normalizeGitHubRepository(repository string) (string, error) {
 }
 
 func validateGitHubLabel(label string) error {
-	if strings.TrimSpace(label) == "" || strings.ContainsRune(label, '\x00') {
-		return errors.New("GitHub label must not be empty")
+	if strings.TrimSpace(label) == "" || strings.ContainsAny(label, "\x00\r\n,") {
+		return errors.New("GitHub label must be non-empty, on one line, and contain no commas")
 	}
 	return nil
 }
