@@ -52,11 +52,15 @@ local: build
 test:
     go test -race ./...
 
+skill-test:
+    ./skills/machinist/test.sh
+
 format-check:
     files="$(gofmt -l cmd internal)"; test -z "$files" || { printf '%s\n' "$files"; exit 1; }
 
 check:
     cd internal/controlplane/web && npm ci && npm test && npm run build
+    just skill-test
     just format-check
     go vet ./...
     go test -race ./...

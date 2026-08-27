@@ -38,6 +38,8 @@ jobs:
       - name: Build frontend
         working-directory: internal/controlplane/web
         run: npm run build
+      - name: Test Machinist Codex skill
+        run: ./skills/machinist/test.sh
       - name: Check tracked frontend is current
         run: |
           git diff --exit-code -- internal/controlplane/web/dist
@@ -72,6 +74,8 @@ jobs:
           cache: true
       - name: Confirm toolchain
         run: test "$(go env GOVERSION)" = "go1.26.6"
+      - name: Test Machinist Codex skill
+        run: ./skills/machinist/test.sh
       - name: Run Go tests with the race detector
         run: go test -race ./...
       - name: Build Machinist
