@@ -162,6 +162,50 @@ func TestManagedGitHubTriggerCommitsBeforeLabelsAndRepairsWithoutDuplicate(t *te
 	}
 }
 
+func TestManagedGitHubTriggerFinishesAdmittedLabelRepairAfterRepositoryRemoval(t *testing.T) {
+	clock := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	trigger := githubTestTrigger()
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, NextDueAt: clock}}); err != nil {
+		t.Fatal(err)
+	}
+	candidate := GitHubCandidate{Repository: "owainlewis/machinist", Number: 396, State: "open", CreatedAt: clock}
+	client := &fakeGitHubTriggerClient{
+		candidates: []GitHubCandidate{candidate},
+		details: GitHubIssueDetails{GitHubCandidate: candidate, Labels: []string{"machinist:requested"}, RequestedEvent: &GitHubLabelEvent{
+			ID: "123", Actor: "owner", CreatedAt: clock, OccurrenceKey: "github.com:123",
+		}},
+		permission: "write", replaceErr: errors.New("label update failed"),
+	}
+	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
+	if err := server.processManagedTriggers(t.Context()); err == nil {
+		t.Fatal("expected initial label update failure")
+	}
+
+	current := trigger
+	current.Signature = "github-signature-v2"
+	current.GitHubRepositories = map[string]string{"other": "owainlewis/other"}
+	clock = clock.Add(trigger.Every)
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: current.Identity, Family: current.Family, ConfigSignature: current.Signature, NextDueAt: clock}}); err != nil {
+		t.Fatal(err)
+	}
+	server.triggers = []config.ResolvedTrigger{current}
+	client.replaceErr = nil
+	if err := server.processManagedTriggers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if client.replaceCalls != 2 || hasGitHubLabel(client.details.Labels, trigger.Label) || !hasGitHubLabel(client.details.Labels, queuedGitHubLabel) {
+		t.Fatalf("admitted label repair was discarded after repository removal: calls=%d labels=%v", client.replaceCalls, client.details.Labels)
+	}
+	reconciliations, err := store.GitHubTriggerReconciliations(t.Context(), trigger.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciliations) != 0 {
+		t.Fatalf("completed reconciliation remains pending: %#v", reconciliations)
+	}
+}
+
 func TestManagedGitHubTriggerRejectsUnauthorizedActor(t *testing.T) {
 	clock := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	store := openManagedTriggerTestStore(t, &clock)

@@ -254,13 +254,17 @@ func (s *Server) reconcileGitHubRequest(ctx context.Context, trigger config.Reso
 	if !strings.EqualFold(details.State, "open") || details.IsPullRequest {
 		return s.store.CompleteGitHubTriggerReconciliation(ctx, request.TriggerIdentity, request.OccurrenceKey, request.ConfigGeneration)
 	}
-	if _, ok := logicalGitHubRepository(trigger.GitHubRepositories, details.Repository); !ok {
+	_, repositoryConfigured := logicalGitHubRepository(trigger.GitHubRepositories, details.Repository)
+	if !repositoryConfigured && request.State == "pending" {
 		return s.store.CompleteGitHubTriggerReconciliation(ctx, request.TriggerIdentity, request.OccurrenceKey, request.ConfigGeneration)
 	}
 	if details.RequestedEvent == nil {
 		return errors.New("github issue timeline has no request-label event")
 	}
 	if details.RequestedEvent.OccurrenceKey != request.OccurrenceKey {
+		if !repositoryConfigured {
+			return s.store.CompleteGitHubTriggerReconciliation(ctx, request.TriggerIdentity, request.OccurrenceKey, request.ConfigGeneration)
+		}
 		if err := s.processGitHubDetails(ctx, trigger, generation, repositories, requestLabel, details); err != nil {
 			return err
 		}

@@ -755,7 +755,21 @@ func (s *Store) RecordTriggerAttempt(ctx context.Context, identity, configGenera
 		health = "failed"
 		latestError = boundedTriggerError(attemptErr.Error())
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET last_attempt_at=?,candidate_count=candidate_count+?,health=CASE WHEN ?='healthy' AND health='coalesced' THEN 'coalesced' WHEN ?='healthy' AND EXISTS (SELECT 1 FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.state IN ('queued','running')) THEN 'active' ELSE ? END,latest_error=?,updated_at=? WHERE identity=? AND generation_id=?`, now, candidates, health, health, health, latestError, now, identity, configGeneration)
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET
+  last_attempt_at=?,
+  candidate_count=candidate_count+?,
+  health=CASE
+    WHEN ?='healthy' AND health='coalesced' THEN 'coalesced'
+    WHEN ?='healthy' AND EXISTS (SELECT 1 FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.state IN ('queued','running')) THEN 'active'
+    WHEN ?='healthy' AND (SELECT state FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.trigger_generation_id=trigger_state.generation_id ORDER BY created_at DESC,rowid DESC LIMIT 1)='failed' THEN 'failed'
+    ELSE ?
+  END,
+  latest_error=CASE
+    WHEN ?='healthy' AND (SELECT state FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.trigger_generation_id=trigger_state.generation_id ORDER BY created_at DESC,rowid DESC LIMIT 1)='failed' THEN latest_error
+    ELSE ?
+  END,
+  updated_at=?
+WHERE identity=? AND generation_id=?`, now, candidates, health, health, health, health, health, latestError, now, identity, configGeneration)
 	if err != nil {
 		return fmt.Errorf("record trigger %q attempt: %w", identity, err)
 	}
