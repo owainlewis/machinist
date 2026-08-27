@@ -18,19 +18,16 @@ type codexUsageCollector struct {
 }
 
 func newCodexUsageCollector(executor string, command []string) *codexUsageCollector {
-	execIndex := codexExecIndex(command)
+	execIndex := codexExecIndex(executor, command)
 	if execIndex < 1 || !slices.Contains(command[execIndex+1:], "--json") {
-		return nil
-	}
-	if !recognizedCodexCommand(executor, command[:execIndex]) {
 		return nil
 	}
 	return &codexUsageCollector{}
 }
 
 func structuredCodexCommand(executor string, command []string) []string {
-	execIndex := codexExecIndex(command)
-	if execIndex < 1 || !recognizedCodexCommand(executor, command[:execIndex]) || slices.Contains(command[execIndex+1:], "--json") {
+	execIndex := codexExecIndex(executor, command)
+	if execIndex < 1 || slices.Contains(command[execIndex+1:], "--json") {
 		return command
 	}
 	structured := make([]string, 0, len(command)+1)
@@ -39,33 +36,51 @@ func structuredCodexCommand(executor string, command []string) []string {
 	return append(structured, command[execIndex+1:]...)
 }
 
-func codexExecIndex(command []string) int {
-	for index := 1; index < len(command); index++ {
+func codexExecIndex(executor string, command []string) int {
+	programIndex := slices.IndexFunc(command, func(argument string) bool {
+		return codexExecutableName(argument) == "codex"
+	})
+	if programIndex < 0 {
+		if !codexExecutorName(executor) || len(command) == 0 {
+			return -1
+		}
+		programIndex = 0
+	}
+	for index := programIndex + 1; index < len(command); index++ {
 		argument := command[index]
-		if codexRootOptionTakesValue(argument) {
-			index++
+		recognized, takesNextValue := codexRootOption(argument)
+		if recognized {
+			if takesNextValue {
+				index++
+			}
 			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return -1
 		}
 		if argument == "exec" {
 			return index
 		}
+		return -1
 	}
 	return -1
 }
 
-func codexRootOptionTakesValue(argument string) bool {
+func codexRootOption(argument string) (bool, bool) {
 	for _, option := range []string{"-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env", "-i", "--image", "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd", "--add-dir", "-a", "--ask-for-approval"} {
 		if argument == option {
-			return true
+			return true, true
+		}
+		if strings.HasPrefix(argument, option+"=") || (len(option) == 2 && strings.HasPrefix(argument, option) && len(argument) > len(option)) {
+			return true, false
 		}
 	}
-	return false
-}
-
-func recognizedCodexCommand(executor string, commandPrefix []string) bool {
-	return codexExecutorName(executor) || slices.ContainsFunc(commandPrefix, func(argument string) bool {
-		return codexExecutableName(argument) == "codex"
-	})
+	for _, option := range []string{"--strict-config", "--oss", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "--search", "--no-alt-screen", "-h", "--help", "-V", "--version"} {
+		if argument == option {
+			return true, false
+		}
+	}
+	return false, false
 }
 
 func codexExecutorName(executor string) bool {
