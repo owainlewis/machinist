@@ -517,9 +517,9 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 		"**New issue:**",
 		"a verified branch without an open pull request",
 		"any dirty or incomplete work",
-		"Attempts `1`, `2`, and `3` are the allowed repairs",
-		"at most three total",
-		"block if it would exceed three",
+		"Positive numbers are repairs",
+		"reset, reuse, or cap it on resume",
+		"repair count without a maximum",
 		"Existing work must reuse its branch, worktree, and pull request",
 		"create a second pull request for the issue",
 		"`machinist:ready-for-review` or a verified ready/completed state",
@@ -592,6 +592,9 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 		"Attempts `1` and `2` are the two allowed repairs",
 		"at most two total",
 		"block if it would exceed two",
+		"Attempts `1`, `2`, and `3` are the allowed repairs",
+		"at most three total",
+		"block if it would exceed three",
 	} {
 		if strings.Contains(foreman.Prompt, forbidden) {
 			t.Fatalf("foreman prompt still contains %q", forbidden)
@@ -665,12 +668,12 @@ func TestWorkflowExampleDefinitionsLoad(t *testing.T) {
 					t.Fatalf("agent %q prompt does not contain %s", name, promptParameter)
 				}
 				if test.name == "issue-to-pr" {
-					for _, rule := range []string{"at most three repair rounds", "after all three repair rounds"} {
+					for _, rule := range []string{"continue without a fixed cap", "Repair confirmed code defects with the next repair number"} {
 						if !strings.Contains(agent.Prompt, rule) {
 							t.Fatalf("agent %q prompt does not contain %q", name, rule)
 						}
 					}
-					for _, obsolete := range []string{"at most two repair rounds", "same two-round limit", "after both repair rounds"} {
+					for _, obsolete := range []string{"at most two repair rounds", "same two-round limit", "after both repair rounds", "at most three repair rounds", "same three-round limit", "after all three repair rounds"} {
 						if strings.Contains(agent.Prompt, obsolete) {
 							t.Fatalf("agent %q prompt still contains %q", name, obsolete)
 						}
