@@ -16,6 +16,7 @@ from evals.pipeline_labels import EvalFailure, checked, command, gh_json, valida
 LABEL = "machinist:auto-merge"
 LABEL_COLOR = "0e8a16"
 LABEL_DESCRIPTION = "Allow Shepherd to verify, update, repair, and merge this pull request"
+AUDIT_MARKER = "<!-- machinist:shepherd-audit -->"
 
 
 def label_names(pull_request: dict[str, Any]) -> set[str]:
@@ -37,6 +38,27 @@ def assert_label(label: Any) -> None:
     expected = (LABEL, LABEL_COLOR, LABEL_DESCRIPTION)
     if observed != expected:
         raise EvalFailure(f"unexpected auto-merge label definition: {observed!r}")
+
+
+def assert_audit_comment(
+    pull_request: dict[str, Any], head: str, classification: str
+) -> None:
+    comments = pull_request.get("comments")
+    if not isinstance(comments, list):
+        raise EvalFailure("GitHub returned invalid pull request comments")
+    for comment in comments:
+        if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
+            continue
+        body = comment["body"]
+        if (
+            AUDIT_MARKER in body
+            and head in body
+            and classification.lower() in body.lower()
+        ):
+            return
+    raise EvalFailure(
+        f"missing {classification} audit comment for exact head {head}"
+    )
 
 
 def assert_queue_result(
@@ -61,6 +83,21 @@ def assert_queue_result(
         or LABEL not in label_names(eligible)
     ):
         raise EvalFailure(f"eligible pull request was not merged at its exact head: {eligible!r}")
+    assert_audit_comment(blocked, blocked_head, "blocked")
+    assert_audit_comment(eligible, eligible_head, "merged")
+
+
+def assert_deferred_result(deferred: Any, deferred_head: str) -> None:
+    if not isinstance(deferred, dict):
+        raise EvalFailure("GitHub returned invalid deferred pull request evidence")
+    if (
+        deferred.get("state") != "OPEN"
+        or deferred.get("isDraft") is not False
+        or deferred.get("headRefOid") != deferred_head
+        or LABEL not in label_names(deferred)
+    ):
+        raise EvalFailure(f"deferred pull request changed unexpectedly: {deferred!r}")
+    assert_audit_comment(deferred, deferred_head, "deferred")
 
 
 def ensure_label_absent(repository: str) -> None:
@@ -84,7 +121,7 @@ def pull_request(repository: str, url: str) -> dict[str, Any]:
             "--repo",
             repository,
             "--json",
-            "state,isDraft,headRefOid,mergedAt,labels,url",
+            "state,isDraft,headRefOid,mergedAt,labels,comments,url",
         )
     )
     if not isinstance(result, dict):
@@ -298,12 +335,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 1
     run_id = f"{time.strftime('%Y%m%d%H%M%S', time.gmtime())}-{uuid.uuid4().hex[:8]}"
     prefix = f"codex/shepherd-eval-{run_id}"
-    base_branch, blocked_branch, eligible_branch = (
+    base_branch, blocked_branch, eligible_branch, deferred_branch = (
         f"{prefix}-base",
         f"{prefix}-blocked",
         f"{prefix}-eligible",
+        f"{prefix}-deferred",
     )
-    branches = (blocked_branch, eligible_branch, base_branch)
+    branches = (blocked_branch, eligible_branch, deferred_branch, base_branch)
     pull_requests: list[str] = []
     label_created = False
     failure: BaseException | None = None
@@ -356,6 +394,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
             draft=False,
         )
         pull_requests.append(eligible_url)
+        deferred_url, deferred_head = create_pull_request(
+            options.repository,
+            options.repo_path,
+            base_sha,
+            base_branch,
+            deferred_branch,
+            run_id,
+            "deferred",
+            draft=False,
+        )
+        pull_requests.append(deferred_url)
         bootstrap_status = run_shepherd(executable, options, 1)
         label_created = command(
             ("gh", "label", "view", LABEL, "--repo", options.repository)
@@ -391,13 +440,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 ),
                 f"opt in {url}",
             )
-        if run_shepherd(executable, options, 3) != 0:
+        if run_shepherd(executable, options, 1) != 0:
             raise EvalFailure("queue Shepherd run failed")
         assert_queue_result(
             pull_request(options.repository, blocked_url),
             pull_request(options.repository, eligible_url),
             blocked_head,
             eligible_head,
+        )
+        assert_deferred_result(
+            pull_request(options.repository, deferred_url), deferred_head
         )
     except BaseException as error:
         failure = error
@@ -414,7 +466,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
         details.extend(cleanup_errors)
         print(f"FAIL shepherd-queue: {'; '.join(details)}", file=sys.stderr)
         return 1
-    print("PASS shepherd-queue: created label, kept older draft blocked, merged eligible exact head")
+    print(
+        "PASS shepherd-queue: created label, audited older draft blocker, "
+        "merged and audited eligible exact head, audited deferred candidate"
+    )
     return 0
 
 

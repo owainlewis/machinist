@@ -2,8 +2,10 @@ package controlplane
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -395,6 +397,67 @@ max_actions = 2
 	if len(snapshot.Jobs[0].Runs) != 1 || !strings.Contains(snapshot.Jobs[0].Runs[0].Agent, "shepherd") {
 		t.Fatalf("scheduled runs = %#v", snapshot.Jobs[0].Runs)
 	}
+}
+
+func TestServerCancellationAlwaysStopsHTTPServer(t *testing.T) {
+	for range 32 {
+		directory := t.TempDir()
+		promptPath := filepath.Join(directory, "plan.md")
+		if err := os.WriteFile(promptPath, []byte("Plan this request:\n{{machinist.prompt}}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		definitionPath := filepath.Join(directory, "config.toml")
+		if err := os.WriteFile(definitionPath, []byte("[agents.plan]\nexecutor = \"test\"\nprompt_file = \"plan.md\"\ntimeout = \"1m\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		store := openTestStore(t, filepath.Join(directory, "machinist.db"))
+		server, err := NewServer(store, definitionPath, "secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		probe, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		address := probe.Addr().String()
+		if err := probe.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve(ctx, address) }()
+		waitForServer(t, address)
+		cancel()
+		select {
+		case err := <-serveDone:
+			if err != nil {
+				t.Fatalf("Serve returned %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Serve did not return after cancellation")
+		}
+		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
+		if err == nil {
+			connection.Close()
+			t.Fatalf("HTTP server at %s still accepts connections after Serve returned", address)
+		}
+	}
+}
+
+func waitForServer(t *testing.T, address string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		connection, err := net.DialTimeout("tcp", address, 50*time.Millisecond)
+		if err == nil {
+			connection.Close()
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("HTTP server at %s did not start", address)
 }
 
 func newTestHTTPServer(t *testing.T) (*Server, *httptest.Server) {

@@ -38,8 +38,9 @@ Parse the positive `max_actions` value from the trusted schedule request. Count 
 update, code-repair push, pull request edit, and merge as one mutating action. Audit comments
 do not consume the limit, but may be added only to pull requests that still have the label.
 Once the limit is reached, leave concise deferred audit evidence on each remaining labelled
-candidate and stop. A later scheduled run must rediscover the queue from GitHub state, so no
-candidate depends only on process memory.
+candidate. Include classification `deferred`, `<!-- machinist:shepherd-audit -->`, the exact
+head, and evidence, then stop. A later scheduled run must rediscover the queue from GitHub state,
+so no candidate depends only on process memory.
 
 Use native coding subagents for all code changes and independent review. A code author may
 not review its own work. If native subagents are unavailable, record the affected labelled
@@ -76,8 +77,8 @@ must never stop another eligible pull request.
 
 # Exact-head gate
 
-Immediately before any mutation, re-read the pull request from GitHub and require all of
-these facts to match the candidate snapshot:
+Immediately before any base update, repair push, pull request edit, or merge, re-read the
+pull request from GitHub and require all of these facts to match the candidate snapshot:
 
 - it remains open and non-draft;
 - `machinist:auto-merge` is still present;
@@ -88,6 +89,12 @@ these facts to match the candidate snapshot:
 If the label was removed or the head or base changed, do not mutate it. Refresh and
 reclassify it. Use GitHub's expected-head safeguard for every supported branch update and
 merge operation. A failed safeguard is a state change, not permission to retry blindly.
+
+Immediately before an audit comment, re-read the pull request and require the label, head
+SHA, and base branch to match the candidate snapshot. Audit comments may document a labelled
+draft blocker or a merge already confirmed at the expected head, so those two cases do not
+require the pull request to remain open and non-draft. If any required fact changed, do not
+comment; refresh and reclassify the pull request. Unlabelled pull requests are never changed.
 
 For a merge, additionally require the exact current head to be mergeable, all applicable
 required checks to be present and successful, an independent current-head review to approve,
@@ -123,16 +130,18 @@ Wait for checks and independent review of the pushed head before merge.
 
 A failed check, valid unresolved finding, conflict, missing product decision, unavailable
 reviewer, or unsafe dependency blocks only that pull request. Leave a concise audit comment
-containing `<!-- machinist:shepherd-audit -->`, the exact head, classification, and evidence,
-then continue. Do not spend actions on infrastructure failures or human decisions.
+containing `<!-- machinist:shepherd-audit -->`, the exact head, classification `blocked`, and
+evidence, then continue. Do not spend actions on infrastructure failures or human decisions.
 
 # Restart and completion
 
 Before merging, perform the full exact-head gate again, including a final label check, then
 merge with the expected head SHA. Confirm the pull request is merged at that SHA before
-recording success. Existing merged state is terminal and must never be repeated after a
-restart. Leave one concise audit comment per material head and outcome; update an existing
-matching Shepherd marker when practical instead of duplicating it.
+recording success. Leave a concise audit comment containing
+`<!-- machinist:shepherd-audit -->`, the exact head, classification `merged`, and evidence.
+Existing merged state is terminal and must never be repeated after a restart. Leave one
+concise audit comment per material head and outcome; update an existing matching Shepherd
+marker when practical instead of duplicating it.
 
 Finish with a compact run summary: every inventoried pull request and classification,
 ordered candidates, merged URLs and SHAs, blockers, deferred work, actions used and limit,

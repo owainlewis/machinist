@@ -130,13 +130,12 @@ func (s *Server) Serve(ctx context.Context, listen string) error {
 	case err := <-done:
 		return err
 	case err := <-schedulerDone:
-		if err != nil {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = httpServer.Shutdown(shutdownCtx)
-			return err
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := httpServer.Shutdown(shutdownCtx); shutdownErr != nil && err == nil {
+			return fmt.Errorf("stop control plane: %w", shutdownErr)
 		}
-		return nil
+		return err
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

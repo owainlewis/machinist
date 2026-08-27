@@ -12,6 +12,7 @@ func TestShepherdPromptKeepsAutomaticMergeAuthorityOptIn(t *testing.T) {
 		"unlabelled pull request": {"without that label is inventory-only", "Never add the permission label", "never attach the label to a pull request"},
 		"label removal":           {"If the label was removed", "do not mutate it"},
 		"head change":             {"head SHA equals the expected head SHA", "failed safeguard is a state change"},
+		"audit comments":          {"Immediately before an audit comment", "may document a labelled", "draft blocker or a merge already confirmed", "classification `blocked`", "classification `merged`", "classification `deferred`", "Unlabelled pull requests are never changed"},
 		"checks and findings":     {"required checks to be present", "every current review thread or automated finding"},
 		"base update":             {"expected-head base update", "fresh independent review of the new head"},
 		"repair separation":       {"separate repair subagent", "fresh read-only reviewer"},
