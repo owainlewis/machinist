@@ -65,6 +65,8 @@ func wrappedProgramIndex(command []string) int {
 			nestedProgramIndex = envProgramIndex(command[programIndex:])
 		case "mise":
 			nestedProgramIndex = miseProgramIndex(command[programIndex:])
+		case "direnv":
+			nestedProgramIndex = direnvProgramIndex(command[programIndex:])
 		default:
 			return programIndex
 		}
@@ -74,6 +76,13 @@ func wrappedProgramIndex(command []string) int {
 		programIndex += nestedProgramIndex
 	}
 	return -1
+}
+
+func direnvProgramIndex(command []string) int {
+	if len(command) < 4 || command[1] != "exec" || command[2] == "" || strings.HasPrefix(command[2], "-") {
+		return -1
+	}
+	return 3
 }
 
 func miseProgramIndex(command []string) int {
@@ -162,16 +171,27 @@ func envProgramIndex(command []string) int {
 		if strings.Contains(argument, "=") && !strings.HasPrefix(argument, "-") {
 			continue
 		}
-		if argument == "-" || envBooleanShortOptions(argument) || slices.Contains([]string{"--ignore-environment", "--null", "--debug", "--block-signal", "--default-signal", "--ignore-signal", "--list-signal-handling"}, argument) {
+		if argument == "-" || slices.Contains([]string{"--ignore-environment", "--null", "--debug", "--block-signal", "--default-signal", "--ignore-signal", "--list-signal-handling"}, argument) {
 			continue
 		}
-		if slices.Contains([]string{"-u", "--unset", "-C", "--chdir", "-P", "-S", "--split-string", "-a", "--argv0"}, argument) {
+		if envSplitStringOption(argument) {
+			return -1
+		}
+		if recognized, takesNextValue := envShortOptions(argument); recognized {
+			if takesNextValue {
+				index++
+			}
+			continue
+		}
+		if argument == "--split-string" || strings.HasPrefix(argument, "--split-string=") {
+			return -1
+		}
+		if slices.Contains([]string{"--unset", "--chdir", "--argv0"}, argument) {
 			index++
 			continue
 		}
-		if strings.HasPrefix(argument, "--unset=") || strings.HasPrefix(argument, "--chdir=") || strings.HasPrefix(argument, "--split-string=") || strings.HasPrefix(argument, "--argv0=") ||
-			strings.HasPrefix(argument, "--block-signal=") || strings.HasPrefix(argument, "--default-signal=") || strings.HasPrefix(argument, "--ignore-signal=") ||
-			(len(argument) > 2 && slices.Contains([]string{"-u", "-C", "-P", "-S", "-a"}, argument[:2])) {
+		if strings.HasPrefix(argument, "--unset=") || strings.HasPrefix(argument, "--chdir=") || strings.HasPrefix(argument, "--argv0=") ||
+			strings.HasPrefix(argument, "--block-signal=") || strings.HasPrefix(argument, "--default-signal=") || strings.HasPrefix(argument, "--ignore-signal=") {
 			continue
 		}
 		if strings.HasPrefix(argument, "-") {
@@ -182,16 +202,33 @@ func envProgramIndex(command []string) int {
 	return -1
 }
 
-func envBooleanShortOptions(argument string) bool {
+func envSplitStringOption(argument string) bool {
 	if len(argument) < 2 || argument[0] != '-' || argument[1] == '-' {
 		return false
 	}
 	for _, option := range argument[1:] {
-		if !strings.ContainsRune("iv0", option) {
-			return false
+		if strings.ContainsRune("iv0", option) {
+			continue
 		}
+		return option == 'S'
 	}
-	return true
+	return false
+}
+
+func envShortOptions(argument string) (bool, bool) {
+	if len(argument) < 2 || argument[0] != '-' || argument[1] == '-' {
+		return false, false
+	}
+	for index, option := range argument[1:] {
+		if strings.ContainsRune("iv0", option) {
+			continue
+		}
+		if strings.ContainsRune("uCPSa", option) {
+			return true, index+2 == len(argument)
+		}
+		return false, false
+	}
+	return true, false
 }
 
 func codexRootOption(argument string) (bool, bool) {
@@ -203,7 +240,7 @@ func codexRootOption(argument string) (bool, bool) {
 			return true, false
 		}
 	}
-	for _, option := range []string{"--strict-config", "--oss", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "--search", "--no-alt-screen", "-h", "--help", "-V", "--version"} {
+	for _, option := range []string{"--strict-config", "--oss", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "--approve-for-me", "--not-so-yolo", "--search", "--no-alt-screen", "-h", "--help", "-V", "--version"} {
 		if argument == option {
 			return true, false
 		}
