@@ -7,8 +7,9 @@ The files at this level are the small default installed by `machinist init`:
 - `agents/` contains the editable default prompts.
 
 `config.toml` includes a commented Shepherd schedule. Enable it only after its repository
-name exists in `worker.toml` and the repository has the `machinist:auto-merge` pull request
-label. Unlabelled pull requests remain read-only to Shepherd.
+name exists in `worker.toml`. Shepherd ensures the repository defines the
+`machinist:auto-merge` label, but it never applies the label to a pull request. Unlabelled
+pull requests remain read-only to Shepherd.
 
 The [workflow examples](workflows/README.md) are self-contained definitions with exact
 setup and run commands:

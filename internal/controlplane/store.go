@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   selection_kind TEXT NOT NULL,
   selection_name TEXT NOT NULL,
   schedule_name TEXT NOT NULL DEFAULT '',
+  has_shepherd INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -169,7 +170,13 @@ CREATE TABLE IF NOT EXISTS schedule_state (
 	if err := s.addColumnIfMissing(ctx, "jobs", "schedule_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_shepherd_repository_v2 ON jobs(repository) WHERE selection_kind='agent' AND selection_name='shepherd' AND state IN ('queued','running')`); err != nil {
+	if err := s.addColumnIfMissing(ctx, "jobs", "has_shepherd", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE jobs SET has_shepherd=1 WHERE has_shepherd=0 AND EXISTS (SELECT 1 FROM runs WHERE runs.job_id=jobs.id AND runs.agent='shepherd')`); err != nil {
+		return fmt.Errorf("migrate Shepherd job membership: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_shepherd_repository_v3 ON jobs(repository) WHERE has_shepherd=1 AND state IN ('queued','running')`); err != nil {
 		return fmt.Errorf("create scheduled job overlap guard: %w", err)
 	}
 	return s.migrateRunMetrics(ctx)
@@ -261,7 +268,11 @@ func (s *Store) CreateJob(ctx context.Context, prompt, repository, kind, name st
 		return "", err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,state,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?)`, jobID, prompt, repository, kind, name, now, now); err != nil {
+	hasShepherd := false
+	for _, agent := range agents {
+		hasShepherd = hasShepherd || agent.Name == "shepherd"
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,state,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',?,?)`, jobID, prompt, repository, kind, name, hasShepherd, now, now); err != nil {
 		return "", fmt.Errorf("insert job: %w", err)
 	}
 	for index, agent := range agents {
@@ -316,7 +327,7 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 		return "", false, err
 	}
 	now := nowTime.Format(time.RFC3339Nano)
-	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,prompt,repository,selection_kind,selection_name,schedule_name,state,created_at,updated_at) VALUES(?,?,?,'agent','shepherd',?,'queued',?,?)`, jobID, schedule.Prompt, schedule.Repository, schedule.Name, now, now)
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,prompt,repository,selection_kind,selection_name,schedule_name,has_shepherd,state,created_at,updated_at) VALUES(?,?,?,'agent','shepherd',?,1,'queued',?,?)`, jobID, schedule.Prompt, schedule.Repository, schedule.Name, now, now)
 	if err != nil {
 		return "", false, fmt.Errorf("insert scheduled job: %w", err)
 	}

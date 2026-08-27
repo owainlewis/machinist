@@ -68,13 +68,13 @@ paths and GitHub credentials remain machine-local. Restart the control plane aft
 a schedule.
 
 Shepherd treats the pull request label `machinist:auto-merge` as its sole permission to
-update, repair, comment on, or merge a pull request. Create that label in each scheduled
-repository, then apply it only to pull requests you want Shepherd to change:
+update, repair, comment on, or merge a pull request. At the start of each run, Shepherd
+checks that the repository defines this label and creates the definition when it is absent.
+It never applies the label itself. Apply it only to pull requests you want Shepherd to
+change:
 
 ```sh
-gh label create "machinist:auto-merge" \
-  --color 0e8a16 \
-  --description "Allow Shepherd to verify, update, repair, and merge this pull request"
+gh pr edit <number> --add-label "machinist:auto-merge"
 ```
 
 An unlabelled pull request remains inventory-only. A repository policy may apply the label

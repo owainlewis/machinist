@@ -30,3 +30,25 @@ Run the local, non-mutating tests with:
 ```sh
 python3 -m unittest discover -s evals -p 'test_*.py'
 ```
+
+## Shepherd queue smoke test
+
+The Shepherd eval creates a temporary base branch plus two pull requests in a dedicated
+scratch repository. The older pull request is a labelled draft that must remain blocked;
+the second is labelled and must merge at its exact head. A first run also proves Shepherd
+creates the missing `machinist:auto-merge` label definition. Cleanup closes the draft and
+deletes the temporary branches and label, so the repository's default branch is unchanged.
+
+The repository must start without the auto-merge label. Repeat its name with
+`--confirm-disposable` to acknowledge that the run creates and merges disposable pull
+requests:
+
+```sh
+just build
+
+python3 -m evals.shepherd_queue \
+  --repository=your-org/machinist-evals \
+  --confirm-disposable=your-org/machinist-evals \
+  --repo-path=/absolute/path/to/machinist-evals \
+  --machinist=./bin/machinist
+```

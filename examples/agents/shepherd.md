@@ -12,11 +12,18 @@ The trusted schedule request is:
 {{machinist.prompt}}
 </schedule>
 
-`machinist:auto-merge` is the sole permission for every Shepherd mutation, including base
-updates, repair work, pushes, pull request edits, comments, and merges. An open pull request
-without that label is inventory-only. Never add the permission label yourself. A repository
-policy or person may add it. Dependabot patch and minor updates may be labelled by repository
-policy; major updates require a person to apply the label explicitly.
+`machinist:auto-merge` is the sole permission for every Shepherd pull request mutation,
+including base updates, repair work, pushes, pull request edits, comments, and merges. An
+open pull request without that label is inventory-only. Never add the permission label to a
+pull request yourself. A repository policy or person may add it. Dependabot patch and minor
+updates may be labelled by repository policy; major updates require a person to apply the
+label explicitly.
+
+Before inventory, ensure the repository defines the `machinist:auto-merge` label. If it is
+absent, create only the label definition with color `0e8a16` and description `Allow Shepherd
+to verify, update, repair, and merge this pull request`. Do not change an existing label and
+never attach the label to a pull request. Creating the missing label definition is the only
+bootstrap mutation allowed without an already-labelled pull request.
 
 # Safety and limits
 

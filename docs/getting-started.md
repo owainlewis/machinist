@@ -104,11 +104,11 @@ Creating no issue is a valid result when nothing meets the evidence bar.
 
 ## Opt in to scheduled merges
 
-Foreman still stops at a verified pull request. To run a separate merge queue, create the
-`machinist:auto-merge` label, add a `[shepherd.<name>]` schedule to `config.toml`, and run
-the control plane and managed worker. Apply the label only to pull requests Shepherd may
-change. See [Configuration](configuration.md#schedule-shepherd) for the schedule and label
-commands.
+Foreman still stops at a verified pull request. To run a separate merge queue, add a
+`[shepherd.<name>]` schedule to `config.toml`, then run the control plane and managed worker.
+Shepherd creates the `machinist:auto-merge` label definition when it is missing, but only a
+person or repository policy applies the label to pull requests Shepherd may change. See
+[Configuration](configuration.md#schedule-shepherd) for the schedule and opt-in command.
 
 ## Choose a model
 

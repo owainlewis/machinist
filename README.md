@@ -207,7 +207,8 @@ To inspect a repository without changing it:
 ```
 
 To enable the optional scheduled merge queue, add a `[shepherd.<name>]` entry to
-`config.toml` and create the `machinist:auto-merge` pull request label. See
+`config.toml`. Shepherd ensures the repository defines the `machinist:auto-merge` label;
+only a person or repository policy applies it to a pull request. See
 [Configuration](docs/configuration.md#schedule-shepherd). Foreman remains unable to merge,
 and Shepherd leaves every unlabelled pull request unchanged.
 

@@ -460,6 +460,10 @@ func TestStoreSchedulesOneNonOverlappingShepherdRunPerRepository(t *testing.T) {
 	if _, err := store.CreateJob(t.Context(), "manual", "api", "agent", "shepherd", []config.ResolvedAgent{schedule.Agent}); err == nil {
 		t.Fatal("manual Shepherd overlapped the scheduled run")
 	}
+	pipeline := []config.ResolvedAgent{testAgent("plan", "Plan"), schedule.Agent}
+	if _, err := store.CreateJob(t.Context(), "pipeline", "api", "pipeline", "merge", pipeline); err == nil {
+		t.Fatal("pipeline containing Shepherd overlapped the scheduled run")
+	}
 	other := schedule
 	other.Name = "api-second"
 	if _, created, err := store.CreateScheduledJob(t.Context(), other); err != nil || created {
@@ -487,6 +491,26 @@ func TestStoreSchedulesOneNonOverlappingShepherdRunPerRepository(t *testing.T) {
 	}
 	if len(snapshot.Jobs) != 2 || snapshot.Jobs[0].ScheduleName != "api" || snapshot.Jobs[1].ScheduleName != "api" {
 		t.Fatalf("scheduled jobs = %#v", snapshot.Jobs)
+	}
+}
+
+func TestStoreScheduleDoesNotOverlapActivePipelineContainingShepherd(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	clock := newTestClock(time.Date(2026, 8, 27, 8, 0, 0, 0, time.UTC))
+	store.now = clock.Now
+	shepherd := testAgent("shepherd", "Inspect every pull request")
+	pipeline := []config.ResolvedAgent{testAgent("plan", "Plan"), shepherd}
+	if _, err := store.CreateJob(t.Context(), "pipeline", "api", "pipeline", "merge", pipeline); err != nil {
+		t.Fatal(err)
+	}
+	schedule := config.ResolvedShepherdSchedule{
+		Name: "api", Repository: "api", Every: 15 * time.Minute, MaxActions: 3, Agent: shepherd,
+	}
+	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || created {
+		t.Fatalf("schedule overlapped pipeline = %t, %v", created, err)
+	}
+	if _, err := store.CreateJob(t.Context(), "ordinary", "api", "pipeline", "checks", []config.ResolvedAgent{testAgent("review", "Review")}); err != nil {
+		t.Fatalf("ordinary pipeline was blocked: %v", err)
 	}
 }
 

@@ -8,7 +8,8 @@ import (
 func TestShepherdPromptKeepsAutomaticMergeAuthorityOptIn(t *testing.T) {
 	prompt := shepherdPrompt(t)
 	for name, required := range map[string][]string{
-		"unlabelled pull request": {"without that label is inventory-only", "Never add the permission label yourself"},
+		"label bootstrap":         {"ensure the repository defines", "create only the label definition", "Do not change an existing label"},
+		"unlabelled pull request": {"without that label is inventory-only", "Never add the permission label", "never attach the label to a pull request"},
 		"label removal":           {"If the label was removed", "do not mutate it"},
 		"head change":             {"head SHA equals the expected head SHA", "failed safeguard is a state change"},
 		"checks and findings":     {"required checks to be present", "every current review thread or automated finding"},
