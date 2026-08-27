@@ -191,7 +191,12 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	streamErrors := make(chan error, 2)
 	var streams sync.WaitGroup
 	streams.Add(2)
-	go pumpStream(&streams, stdoutReader, options.Stdout, "stdout", log, streamErrors)
+	usageCollector := newCodexUsageCollector(options.Agent.Executor, options.Agent.Command)
+	stdoutDestination := options.Stdout
+	if usageCollector != nil {
+		stdoutDestination = io.MultiWriter(options.Stdout, usageCollector)
+	}
+	go pumpStream(&streams, stdoutReader, stdoutDestination, "stdout", log, streamErrors)
 	go pumpStream(&streams, stderrReader, options.Stderr, "stderr", log, streamErrors)
 	streamsDone := make(chan struct{})
 	go func() {
@@ -207,7 +212,11 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	closeInput := func() { _ = stdinWriter.Close() }
 	closeStreams := func() { closeFiles(stdoutReader, stderrReader) }
 	state, exitCode, outcome := supervise(ctx, command.Process, options.Agent.Timeout, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr)
-	if err := finish(&result, log, runDirectory, state, exitCode, outcome); err != nil {
+	var collectedTokenUsage *int64
+	if usageCollector != nil {
+		collectedTokenUsage = usageCollector.tokenUsage()
+	}
+	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage, usageCollector != nil); err != nil {
 		if outcome != nil {
 			return result, &OutcomeError{State: state, ExitCode: exitCode, Cause: errors.Join(outcome, err)}
 		}
@@ -443,13 +452,13 @@ func completeFailure(result *Result, log *eventLog, runDirectory string, outcome
 }
 
 func completeOutcome(result *Result, log *eventLog, runDirectory string, state State, exitCode int, outcome error) (Result, error) {
-	if err := finish(result, log, runDirectory, state, exitCode, outcome); err != nil {
+	if err := finish(result, log, runDirectory, state, exitCode, outcome, nil, false); err != nil {
 		outcome = errors.Join(outcome, err)
 	}
 	return *result, &OutcomeError{State: state, ExitCode: exitCode, Cause: outcome}
 }
 
-func finish(result *Result, log *eventLog, runDirectory string, state State, exitCode int, outcome error) error {
+func finish(result *Result, log *eventLog, runDirectory string, state State, exitCode int, outcome error, collectedTokenUsage *int64, collectedTokenUsageIsAuthoritative bool) error {
 	message := ""
 	if outcome != nil {
 		message = outcome.Error()
@@ -465,7 +474,11 @@ func finish(result *Result, log *eventLog, runDirectory string, state State, exi
 	result.ExitCode = exitCode
 	result.CompletedAt = completedAt
 	result.DurationMillis = completedAt.Sub(result.StartedAt).Milliseconds()
-	result.TokenUsage = readTokenUsage(filepath.Join(runDirectory, tokenUsageFileName))
+	if collectedTokenUsageIsAuthoritative {
+		result.TokenUsage = collectedTokenUsage
+	} else {
+		result.TokenUsage = readTokenUsage(filepath.Join(runDirectory, tokenUsageFileName))
+	}
 	if err := writeResult(filepath.Join(runDirectory, "result.json"), *result); err != nil {
 		return err
 	}
