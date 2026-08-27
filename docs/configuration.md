@@ -13,6 +13,22 @@ Machinist definition for `machinist start` and the worker file for `machinist ru
 `machinist submit`, or `machinist worker start`. For direct runs, select a separate
 Machinist definition with `--machinist-config`.
 
+## Limit concurrent managed jobs
+
+By default, every available worker may lease a different job. Set a positive global
+limit when the control plane should run fewer jobs at once:
+
+```toml
+[server]
+max_concurrent_jobs = 1
+```
+
+The limit counts jobs, not individual pipeline steps. Additional submissions remain
+in the durable queue. An active pipeline keeps its slot between steps, and an expired
+lease can be redispatched without consuming another slot. Lowering the value does not
+cancel active work; the control plane starts no additional queued jobs until the active
+count falls below the new limit. Restart the control plane after changing this setting.
+
 ## Define an agent
 
 Agents live in the Machinist definition:

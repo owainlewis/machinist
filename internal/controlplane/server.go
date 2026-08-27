@@ -34,15 +34,16 @@ const workerAvailabilityWindow = 10 * time.Second
 var webAssets embed.FS
 
 type Server struct {
-	store           *Store
-	definitionPath  string
-	schedules       []config.ResolvedShepherdSchedule
-	schedulerEvery  time.Duration
-	schedulerError  func(error)
-	shutdownTimeout time.Duration
-	workerToken     string
-	csrfToken       string
-	handler         http.Handler
+	store             *Store
+	definitionPath    string
+	schedules         []config.ResolvedShepherdSchedule
+	schedulerEvery    time.Duration
+	schedulerError    func(error)
+	shutdownTimeout   time.Duration
+	maxConcurrentJobs int
+	workerToken       string
+	csrfToken         string
+	handler           http.Handler
 }
 
 type statusResponse struct {
@@ -85,7 +86,10 @@ type catalogResponse struct {
 	Repositories []string `json:"repositories"`
 }
 
-func NewServer(store *Store, definitionPath, workerToken string) (*Server, error) {
+func NewServer(store *Store, definitionPath, workerToken string, maxConcurrentJobs int) (*Server, error) {
+	if maxConcurrentJobs < 0 {
+		return nil, errors.New("max concurrent jobs cannot be negative")
+	}
 	csrfToken, err := randomID("csrf", 24)
 	if err != nil {
 		return nil, err
@@ -97,8 +101,8 @@ func NewServer(store *Store, definitionPath, workerToken string) (*Server, error
 	server := &Server{
 		store: store, definitionPath: definitionPath, schedules: schedules,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
-		schedulerError: func(err error) { log.Printf("shepherd scheduler: %v", err) },
-		workerToken:    workerToken, csrfToken: csrfToken,
+		schedulerError:    func(err error) { log.Printf("shepherd scheduler: %v", err) },
+		maxConcurrentJobs: maxConcurrentJobs, workerToken: workerToken, csrfToken: csrfToken,
 	}
 	server.handler, err = server.routes()
 	if err != nil {
@@ -386,7 +390,7 @@ func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusBadRequest, errors.New("worker instance_id and name are required"))
 		return
 	}
-	run, err := s.store.Poll(request.Context(), input)
+	run, err := s.store.poll(request.Context(), input, s.maxConcurrentJobs)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return

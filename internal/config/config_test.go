@@ -121,6 +121,7 @@ func TestLoadConfigCombinesServerAgentsAndPipelines(t *testing.T) {
 	writeTestFile(t, path, `[server]
 database = "state/machinist.db"
 worker_token_file = "token"
+max_concurrent_jobs = 2
 
 [agents.plan]
 executor = "test"
@@ -134,7 +135,7 @@ agents = ["plan"]
 		t.Fatal(err)
 	}
 	server := machinistConfig.Server
-	if server.Listen != "127.0.0.1:7331" || server.Database != filepath.Join(directory, "state", "machinist.db") {
+	if server.Listen != "127.0.0.1:7331" || server.Database != filepath.Join(directory, "state", "machinist.db") || server.ConcurrentJobLimit() != 2 {
 		t.Fatalf("server = %#v", server)
 	}
 	if machinistConfig.Path() != path || len(machinistConfig.Agents) != 1 || len(machinistConfig.Pipelines) != 1 {
@@ -142,6 +143,40 @@ agents = ["plan"]
 	}
 	if token, err := server.WorkerToken(); err != nil || token != "secret" {
 		t.Fatalf("token = %q, %v", token, err)
+	}
+}
+
+func TestLoadConfigValidatesOptionalConcurrentJobLimit(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{name: "omitted is unlimited", want: 0},
+		{name: "positive limit", value: "max_concurrent_jobs = 1\n", want: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			writeTestFile(t, filepath.Join(directory, "token"), "secret")
+			path := filepath.Join(directory, "config.toml")
+			writeTestFile(t, path, "[server]\nworker_token_file = \"token\"\n"+test.value)
+			machinistConfig, err := LoadConfig(path)
+			if err != nil || machinistConfig.Server.ConcurrentJobLimit() != test.want {
+				t.Fatalf("limit = %d, error = %v", machinistConfig.Server.ConcurrentJobLimit(), err)
+			}
+		})
+	}
+
+	for _, value := range []string{"0", "-1"} {
+		t.Run("reject "+value, func(t *testing.T) {
+			directory := t.TempDir()
+			writeTestFile(t, filepath.Join(directory, "token"), "secret")
+			path := filepath.Join(directory, "config.toml")
+			writeTestFile(t, path, "[server]\nworker_token_file = \"token\"\nmax_concurrent_jobs = "+value+"\n")
+			if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "max_concurrent_jobs must be positive") {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 
