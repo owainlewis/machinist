@@ -50,7 +50,7 @@ func TestManagedWorkerExecutesControlPlaneRun(t *testing.T) {
 	if _, err := store.CreateJob(t.Context(), "managed request", "machinist", "agent", "plan", []config.ResolvedAgent{agent}); err != nil {
 		t.Fatal(err)
 	}
-	server, err := controlplane.NewServer(store, definitionPath, "secret")
+	server, err := controlplane.NewServer(store, definitionPath, "secret", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ max_actions = 2
 	if _, created, err := store.CreateScheduledJob(t.Context(), schedules[0]); err != nil || !created {
 		t.Fatalf("scheduled job created = %t, %v", created, err)
 	}
-	server, err := controlplane.NewServer(store, definitionPath, "secret")
+	server, err := controlplane.NewServer(store, definitionPath, "secret", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
