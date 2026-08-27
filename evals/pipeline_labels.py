@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 EXPECTED_LABELS = (
@@ -38,6 +38,7 @@ def command(
     cwd: Path | None = None,
     input_text: str | None = None,
     capture: bool = True,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(arguments),
@@ -46,6 +47,7 @@ def command(
         text=True,
         capture_output=capture,
         check=False,
+        env=env,
     )
 
 
@@ -56,8 +58,15 @@ def checked(result: subprocess.CompletedProcess[str], action: str) -> str:
     raise EvalFailure(f"{action} failed with status {result.returncode}: {detail}")
 
 
-def gh_json(arguments: Sequence[str], *, cwd: Path | None = None) -> Any:
-    output = checked(command(("gh", *arguments), cwd=cwd), " ".join(arguments))
+def gh_json(
+    arguments: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> Any:
+    output = checked(
+        command(("gh", *arguments), cwd=cwd, env=env), " ".join(arguments)
+    )
     try:
         return json.loads(output)
     except json.JSONDecodeError as error:

@@ -53,7 +53,10 @@ default branch is unchanged.
 The repository must start without the auto-merge label. Repeat its name with
 `--confirm-disposable` to acknowledge that the run creates and merges disposable pull
 requests. Use a Machinist definition without a configured Shepherd schedule so the
-disposable direct smoke cannot overlap production scheduled work:
+disposable direct smoke cannot overlap production scheduled work. Set a token for a
+second GitHub account that can create pull requests in the scratch repository. The eval
+uses that account for candidates so Shepherd's authenticated account provides an
+independent review:
 
 ```sh
 just build
@@ -62,5 +65,6 @@ python3 -m evals.shepherd_queue \
   --repository=your-org/machinist-evals \
   --confirm-disposable=your-org/machinist-evals \
   --repo-path=/absolute/path/to/machinist-evals \
+  --candidate-token-env=MACHINIST_EVAL_CANDIDATE_TOKEN \
   --machinist=./bin/machinist
 ```

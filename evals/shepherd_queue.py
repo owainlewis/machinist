@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import os
 import sys
 import tempfile
 import time
@@ -71,6 +72,26 @@ def trusted_actor_comment(comment: Any, trusted_author: str) -> bool:
         return False
     author = comment.get("author")
     return isinstance(author, dict) and author.get("login") == trusted_author
+
+
+def actor_identity(actor: Any, role: str) -> tuple[str, str]:
+    login = actor.get("login") if isinstance(actor, dict) else None
+    node_id = actor.get("node_id") if isinstance(actor, dict) else None
+    if not isinstance(login, str) or not login or not isinstance(node_id, str) or not node_id:
+        raise EvalFailure(f"GitHub did not return the {role} actor identity")
+    return login, node_id
+
+
+def assert_distinct_actors(
+    trusted_reviewer: tuple[str, str], candidate_author: tuple[str, str]
+) -> None:
+    if (
+        trusted_reviewer[0].casefold() == candidate_author[0].casefold()
+        or trusted_reviewer[1] == candidate_author[1]
+    ):
+        raise EvalFailure(
+            "the candidate pull request author must differ from the trusted Shepherd reviewer"
+        )
 
 
 def assert_audit_comment(
@@ -526,6 +547,7 @@ def create_pull_request(
     kind: str,
     *,
     draft: bool,
+    github_env: dict[str, str],
 ) -> tuple[str, str]:
     with tempfile.TemporaryDirectory(prefix="machinist-shepherd-eval-") as directory:
         worktree = Path(directory) / "checkout"
@@ -601,7 +623,9 @@ def create_pull_request(
     ]
     if draft:
         arguments.append("--draft")
-    url = checked(command(arguments), f"create {kind} pull request").strip()
+    url = checked(
+        command(arguments, env=github_env), f"create {kind} pull request"
+    ).strip()
     return url, head
 
 
@@ -720,6 +744,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--worker-config", type=Path)
     result.add_argument("--machinist-config", type=Path)
     result.add_argument("--model")
+    result.add_argument(
+        "--candidate-token-env",
+        required=True,
+        help="environment variable containing a token for a distinct PR author",
+    )
     return result
 
 
@@ -762,18 +791,22 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         executable = validate(options.repository, options.repo_path, options.machinist)
         ensure_label_absent(options.repository)
-        viewer = gh_json(("api", "user"))
-        trusted_review_author = viewer.get("login") if isinstance(viewer, dict) else None
-        trusted_review_author_id = (
-            viewer.get("node_id") if isinstance(viewer, dict) else None
+        trusted_review_author, trusted_review_author_id = actor_identity(
+            gh_json(("api", "user")), "trusted Shepherd"
         )
-        if (
-            not isinstance(trusted_review_author, str)
-            or not trusted_review_author
-            or not isinstance(trusted_review_author_id, str)
-            or not trusted_review_author_id
-        ):
-            raise EvalFailure("GitHub did not return the authenticated actor identity")
+        candidate_token = os.environ.get(options.candidate_token_env)
+        if not candidate_token:
+            raise EvalFailure(
+                f"candidate token environment variable {options.candidate_token_env!r} is not set"
+            )
+        candidate_env = os.environ.copy()
+        candidate_env["GH_TOKEN"] = candidate_token
+        candidate_author = actor_identity(
+            gh_json(("api", "user"), env=candidate_env), "candidate"
+        )
+        assert_distinct_actors(
+            (trusted_review_author, trusted_review_author_id), candidate_author
+        )
         checked(
             command(("git", "fetch", "origin", "--prune"), cwd=options.repo_path),
             "fetch origin",
@@ -807,6 +840,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             run_id,
             "blocked",
             draft=True,
+            github_env=candidate_env,
         )
         pull_requests.append(blocked_url)
         eligible_url, eligible_head = create_pull_request(
@@ -818,6 +852,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             run_id,
             "eligible",
             draft=False,
+            github_env=candidate_env,
         )
         pull_requests.append(eligible_url)
         deferred_url, deferred_head = create_pull_request(
@@ -829,6 +864,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             run_id,
             "deferred",
             draft=False,
+            github_env=candidate_env,
         )
         pull_requests.append(deferred_url)
         bootstrap_status, bootstrap_snapshot, bootstrap_mutations = (
@@ -875,11 +911,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 f"opt in {url}",
             )
         queue_status, queue_snapshot_result, queue_mutations = run_shepherd_with_budget(
-            executable, options, 2, pull_requests
+            executable, options, 3, pull_requests
         )
         if queue_status != 0:
             raise EvalFailure("queue Shepherd run failed")
-        assert_actions_used(queue_mutations, 2, "queue Shepherd run")
+        assert_actions_used(queue_mutations, 3, "queue Shepherd run")
         queue_pulls = queue_snapshot_result["pull_requests"]
         assert_queue_result(
             queue_pulls[blocked_url],
@@ -888,6 +924,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
             eligible_head,
             trusted_review_author,
             require_eligible_audit=False,
+        )
+        eligible_base_sha = bootstrap_pulls[eligible_url].get("baseRefOid")
+        if not isinstance(eligible_base_sha, str) or not eligible_base_sha:
+            raise EvalFailure("GitHub did not return the eligible pull request base SHA")
+        assert_review_comment(
+            queue_pulls[eligible_url],
+            eligible_head,
+            base_branch,
+            eligible_base_sha,
+            trusted_review_author,
+            trusted_review_author_id,
         )
         assert_deferred_result(
             queue_pulls[deferred_url],
@@ -909,6 +956,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             run_id,
             "parent",
             draft=False,
+            github_env=candidate_env,
         )
         pull_requests.append(parent_url)
         child_url, child_head = create_pull_request(
@@ -920,6 +968,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             run_id,
             "child",
             draft=False,
+            github_env=candidate_env,
         )
         pull_requests.append(child_url)
         for url in (parent_url, child_url):

@@ -637,6 +637,52 @@ func TestServerCancellationAlwaysStopsHTTPServer(t *testing.T) {
 	}
 }
 
+func TestServerForcesCloseWhenGracefulShutdownTimesOut(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+	server.shutdownTimeout = 20 * time.Millisecond
+	handlerStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	server.handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(handlerStarted)
+		<-releaseHandler
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	listening := make(chan net.Addr, 1)
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- server.Serve(ctx, "127.0.0.1:0", func(address net.Addr) {
+			listening <- address
+		})
+	}()
+	address := <-listening
+	requestDone := make(chan error, 1)
+	go func() {
+		response, err := http.Get("http://" + address.String())
+		if response != nil {
+			response.Body.Close()
+		}
+		requestDone <- err
+	}()
+	<-handlerStarted
+	cancel()
+	select {
+	case err := <-serveDone:
+		if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+			t.Fatalf("Serve error = %v, want graceful shutdown timeout", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve hung after graceful shutdown timed out")
+	}
+	close(releaseHandler)
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("stalled request did not finish after forced close")
+	}
+}
+
 func TestScheduledAdmissionFailureDoesNotStopServer(t *testing.T) {
 	directory := t.TempDir()
 	promptPath := filepath.Join(directory, "shepherd.md")
@@ -653,6 +699,11 @@ timeout = "1m"
 repository = "machinist"
 every = "10m"
 max_actions = 2
+
+[shepherd.other]
+repository = "other"
+every = "10m"
+max_actions = 2
 `
 	if err := os.WriteFile(definitionPath, []byte(definition), 0o600); err != nil {
 		t.Fatal(err)
@@ -663,6 +714,13 @@ max_actions = 2
 		t.Fatal(err)
 	}
 	server.schedulerEvery = time.Millisecond
+	schedulerErrors := make(chan error, 1)
+	server.schedulerError = func(err error) {
+		select {
+		case schedulerErrors <- err:
+		default:
+		}
+	}
 	probe, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -678,7 +736,18 @@ max_actions = 2
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case err := <-schedulerErrors:
+		if !strings.Contains(err.Error(), "queue shepherd schedule") {
+			t.Fatalf("scheduler admission failure was not identified: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("scheduler admission failure was not reported")
+	}
+	allFailures := server.enqueueScheduledRuns(t.Context())
+	if allFailures == nil || !strings.Contains(allFailures.Error(), `schedule "machinist"`) || !strings.Contains(allFailures.Error(), `schedule "other"`) {
+		t.Fatalf("scheduler did not continue after the first admission failure: %v", allFailures)
+	}
 	dialCtx, cancelDial := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	connection, err := new(net.Dialer).DialContext(dialCtx, "tcp", address)
 	cancelDial()

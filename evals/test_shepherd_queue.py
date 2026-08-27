@@ -12,6 +12,7 @@ from evals.shepherd_queue import (
     REVIEW_MARKER,
     RETARGETED,
     assert_action_budget,
+    assert_distinct_actors,
     assert_deferred_result,
     assert_label,
     assert_queue_result,
@@ -78,6 +79,15 @@ def pull_request(
 
 
 class ShepherdQueueEvidenceTests(unittest.TestCase):
+    def test_accepts_distinct_candidate_and_reviewer(self) -> None:
+        assert_distinct_actors(("reviewer", "reviewer-id"), ("author", "author-id"))
+
+    def test_rejects_candidate_with_same_immutable_actor_id(self) -> None:
+        with self.assertRaisesRegex(EvalFailure, "must differ"):
+            assert_distinct_actors(
+                ("reviewer", "same-id"), ("renamed-reviewer", "same-id")
+            )
+
     def test_accepts_review_for_exact_head_and_base_comparison(self) -> None:
         review = (
             f"{REVIEW_MARKER}\nhead: head\nbase branch: main\n"

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,13 +34,15 @@ const workerAvailabilityWindow = 10 * time.Second
 var webAssets embed.FS
 
 type Server struct {
-	store          *Store
-	definitionPath string
-	schedules      []config.ResolvedShepherdSchedule
-	schedulerEvery time.Duration
-	workerToken    string
-	csrfToken      string
-	handler        http.Handler
+	store           *Store
+	definitionPath  string
+	schedules       []config.ResolvedShepherdSchedule
+	schedulerEvery  time.Duration
+	schedulerError  func(error)
+	shutdownTimeout time.Duration
+	workerToken     string
+	csrfToken       string
+	handler         http.Handler
 }
 
 type statusResponse struct {
@@ -91,7 +94,12 @@ func NewServer(store *Store, definitionPath, workerToken string) (*Server, error
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{store: store, definitionPath: definitionPath, schedules: schedules, schedulerEvery: 30 * time.Second, workerToken: workerToken, csrfToken: csrfToken}
+	server := &Server{
+		store: store, definitionPath: definitionPath, schedules: schedules,
+		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
+		schedulerError: func(err error) { log.Printf("shepherd scheduler: %v", err) },
+		workerToken:    workerToken, csrfToken: csrfToken,
+	}
 	server.handler, err = server.routes()
 	if err != nil {
 		return nil, err
@@ -110,7 +118,7 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 		return fmt.Errorf("listen on %s: %w", listen, err)
 	}
 	defer listener.Close()
-	_ = s.enqueueScheduledRuns(ctx)
+	s.reportSchedulerError(s.enqueueScheduledRuns(ctx))
 	if onListening != nil {
 		onListening(listener.Addr())
 	}
@@ -132,21 +140,29 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- s.runScheduler(schedulerCtx) }()
 	stopHTTP := func() error {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 		defer cancel()
 		shutdownErr := httpServer.Shutdown(shutdownCtx)
+		var forceCloseErr error
+		if shutdownErr != nil {
+			forceCloseErr = httpServer.Close()
+		}
 		// Shutdown can run before Serve registers the listener when the
 		// callback cancels the context. Close it explicitly and wait for the
 		// serving goroutine so every cancellation path releases the socket.
 		closeErr := listener.Close()
 		<-done
+		var shutdownFailure error
 		if shutdownErr != nil {
-			return fmt.Errorf("stop control plane: %w", shutdownErr)
+			shutdownFailure = fmt.Errorf("stop control plane: %w", shutdownErr)
+		}
+		if forceCloseErr != nil && !errors.Is(forceCloseErr, http.ErrServerClosed) {
+			shutdownFailure = errors.Join(shutdownFailure, fmt.Errorf("force close control plane: %w", forceCloseErr))
 		}
 		if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-			return fmt.Errorf("stop control plane listener: %w", closeErr)
+			shutdownFailure = errors.Join(shutdownFailure, fmt.Errorf("stop control plane listener: %w", closeErr))
 		}
-		return nil
+		return shutdownFailure
 	}
 	select {
 	case err := <-done:
@@ -173,18 +189,25 @@ func (s *Server) runScheduler(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			_ = s.enqueueScheduledRuns(ctx)
+			s.reportSchedulerError(s.enqueueScheduledRuns(ctx))
 		}
 	}
 }
 
 func (s *Server) enqueueScheduledRuns(ctx context.Context) error {
+	var failures []error
 	for _, schedule := range s.schedules {
 		if _, _, err := s.store.CreateScheduledJob(ctx, schedule); err != nil {
-			return fmt.Errorf("queue shepherd schedule %q: %w", schedule.Name, err)
+			failures = append(failures, fmt.Errorf("queue shepherd schedule %q: %w", schedule.Name, err))
 		}
 	}
-	return nil
+	return errors.Join(failures...)
+}
+
+func (s *Server) reportSchedulerError(err error) {
+	if err != nil && s.schedulerError != nil {
+		s.schedulerError(err)
+	}
 }
 
 func (s *Server) routes() (http.Handler, error) {
