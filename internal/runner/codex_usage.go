@@ -52,6 +52,9 @@ func wrappedProgramIndex(command []string) int {
 	case "env":
 		return envProgramIndex(command)
 	case "mise":
+		if len(command) < 2 || (command[1] != "exec" && command[1] != "x") {
+			return 0
+		}
 		for index, argument := range command[1:] {
 			if argument == "--" && index+2 < len(command) {
 				return index + 2
