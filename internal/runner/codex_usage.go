@@ -90,7 +90,7 @@ func envProgramIndex(command []string) int {
 		if strings.Contains(argument, "=") && !strings.HasPrefix(argument, "-") {
 			continue
 		}
-		if slices.Contains([]string{"-i", "--ignore-environment", "-0", "--null"}, argument) {
+		if envBooleanShortOptions(argument) || slices.Contains([]string{"--ignore-environment", "--null", "--debug", "--block-signal", "--default-signal", "--ignore-signal", "--list-signal-handling"}, argument) {
 			continue
 		}
 		if slices.Contains([]string{"-u", "--unset", "-C", "--chdir", "-P", "-S", "--split-string"}, argument) {
@@ -98,6 +98,7 @@ func envProgramIndex(command []string) int {
 			continue
 		}
 		if strings.HasPrefix(argument, "--unset=") || strings.HasPrefix(argument, "--chdir=") || strings.HasPrefix(argument, "--split-string=") ||
+			strings.HasPrefix(argument, "--block-signal=") || strings.HasPrefix(argument, "--default-signal=") || strings.HasPrefix(argument, "--ignore-signal=") ||
 			(len(argument) > 2 && slices.Contains([]string{"-u", "-C", "-P", "-S"}, argument[:2])) {
 			continue
 		}
@@ -107,6 +108,18 @@ func envProgramIndex(command []string) int {
 		return index
 	}
 	return -1
+}
+
+func envBooleanShortOptions(argument string) bool {
+	if len(argument) < 2 || argument[0] != '-' || argument[1] == '-' {
+		return false
+	}
+	for _, option := range argument[1:] {
+		if !strings.ContainsRune("iv0", option) {
+			return false
+		}
+	}
+	return true
 }
 
 func codexRootOption(argument string) (bool, bool) {

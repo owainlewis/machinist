@@ -133,6 +133,8 @@ func TestStructuredCodexCommandAddsJSONToRecognizedLegacyCommands(t *testing.T) 
 		{name: "custom executor name", executor: "codex-local", command: []string{"agent", "exec", "-"}, want: []string{"agent", "exec", "--json", "-"}},
 		{name: "wrapped", executor: "custom", command: []string{"/usr/bin/env", "codex", "exec", "-"}, want: []string{"/usr/bin/env", "codex", "exec", "--json", "-"}},
 		{name: "wrapped renamed executable", executor: "codex-local", command: []string{"/usr/bin/env", "agent", "exec", "-"}, want: []string{"/usr/bin/env", "agent", "exec", "--json", "-"}},
+		{name: "wrapped renamed executable after diagnostic option", executor: "codex-local", command: []string{"/usr/bin/env", "-v", "agent", "exec", "-"}, want: []string{"/usr/bin/env", "-v", "agent", "exec", "--json", "-"}},
+		{name: "wrapped renamed executable after compact options", executor: "codex-local", command: []string{"/usr/bin/env", "-iv", "agent", "exec", "-"}, want: []string{"/usr/bin/env", "-iv", "agent", "exec", "--json", "-"}},
 		{name: "wrapper has its own exec", executor: "custom", command: []string{"mise", "exec", "--", "codex", "exec", "-"}, want: []string{"mise", "exec", "--", "codex", "exec", "--json", "-"}},
 		{name: "already structured", executor: "codex", command: []string{"codex", "exec", "--json", "-"}, want: []string{"codex", "exec", "--json", "-"}},
 		{name: "other executor", executor: "claude", command: []string{"claude", "exec", "-"}, want: []string{"claude", "exec", "-"}},
