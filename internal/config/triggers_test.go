@@ -217,8 +217,10 @@ machinist="owainlewis/machinist"
 
 func TestLoadTriggersRejectsUnsafeOrDuplicateRepositorySlugs(t *testing.T) {
 	tests := map[string]string{
-		"unsafe":      "../owner/repo",
-		"credentials": "https://token@example.com/owner/repo",
+		"unsafe":         "../owner/repo",
+		"credentials":    "https://token@example.com/owner/repo",
+		"hidden name":    "owner/.repo",
+		"path-like name": "owner/repo..x",
 	}
 	for name, slug := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -238,6 +240,27 @@ second="owner/repo"
 `)
 	if _, err := LoadTriggers(path); err == nil || !strings.Contains(err.Error(), "same case-insensitive slug") {
 		t.Fatalf("duplicate error = %v", err)
+	}
+}
+
+func TestLoadTriggersRejectsReservedQueuedLabelCaseInsensitively(t *testing.T) {
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "foreman.md"), "{{machinist.prompt}}\n")
+	path := filepath.Join(directory, "config.toml")
+	writeTestFile(t, path, `[agents.foreman]
+executor="codex"
+prompt_file="foreman.md"
+[github.repositories]
+machinist="owainlewis/machinist"
+[triggers.github.intake]
+every="5m"
+label="Machinist:Queued"
+agent="foreman"
+`)
+
+	_, err := LoadTriggers(path)
+	if err == nil || !strings.Contains(err.Error(), `trigger "github/intake" label must differ from reserved label "machinist:queued"`) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

@@ -61,6 +61,9 @@ func TestGitHubCLISearchCombinesRepositoriesAndOrdersOldest(t *testing.T) {
 	if !strings.Contains(call, "--repo owner/alpha --repo Owner/Zed") {
 		t.Fatalf("repositories were not combined deterministically: %s", call)
 	}
+	if !strings.Contains(call, "--state open") {
+		t.Fatalf("search did not exclude closed issues before applying its limit: %s", call)
+	}
 	if strings.Contains(call, "sh -c") {
 		t.Fatalf("search unexpectedly used a shell: %s", call)
 	}
@@ -72,7 +75,7 @@ func TestGitHubCLISearchBatchesAndAppliesGlobalLimit(t *testing.T) {
 		scriptedGitHubResult{stdout: `[{"number":1,"repository":{"nameWithOwner":"o/b"},"state":"open","url":"https://github.com/o/b/issues/1","isPullRequest":false,"createdAt":"2026-01-01T00:00:00Z"}]`},
 		scriptedGitHubResult{stdout: `[{"number":3,"repository":{"nameWithOwner":"o/c"},"state":"open","url":"https://github.com/o/c/issues/3","isPullRequest":false,"createdAt":"2026-01-02T00:00:00Z"}]`},
 	)
-	base := []string{"search", "issues", "--label", "requested", "--sort", "created", "--order", "asc", "--limit", "100", "--json", "number,repository,state,url,isPullRequest,createdAt"}
+	base := []string{"search", "issues", "--label", "requested", "--state", "open", "--sort", "created", "--order", "asc", "--limit", "100", "--json", "number,repository,state,url,isPullRequest,createdAt"}
 	cli.maxArgumentBytes = argumentBytes(base) + len("--repo") + 1 + len("o/a") + 1
 
 	candidates, err := cli.SearchRequestedIssues(context.Background(), []string{"o/c", "o/b", "o/a"}, "requested", 2)
@@ -126,6 +129,21 @@ func TestGitHubCLIIssueDetailsReadsLatestLabelEventActor(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(runner.calls[1], " "), "--paginate --slurp") {
 		t.Fatalf("timeline call was not paginated: %v", runner.calls[1])
+	}
+}
+
+func TestGitHubCLIIssueDetailsMatchesRequestedLabelCaseInsensitively(t *testing.T) {
+	cli, _ := newScriptedGitHubCLI(
+		scriptedGitHubResult{stdout: `{"number":7,"html_url":"https://github.com/o/r/issues/7","state":"open","created_at":"2026-01-01T00:00:00Z","labels":[{"name":"Machinist:Requested"}]}`},
+		scriptedGitHubResult{stdout: `[[{"id":41,"event":"labeled","created_at":"2026-01-02T00:00:00Z","actor":{"login":"maintainer"},"label":{"name":"Machinist:Requested"}}]]`},
+	)
+
+	details, err := cli.IssueDetails(context.Background(), "o/r", 7, "machinist:requested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if details.RequestedEvent == nil || details.RequestedEvent.ID != "41" {
+		t.Fatalf("requested event = %#v", details.RequestedEvent)
 	}
 }
 
@@ -193,6 +211,17 @@ func TestGitHubCLIReplaceLabelIsRepairableAfterPartialFailure(t *testing.T) {
 	}
 	if got := strings.Join(runner.calls[1], " "); !strings.Contains(got, "--remove-label machinist:requested") {
 		t.Fatalf("request label was not removed second: %s", got)
+	}
+}
+
+func TestGitHubCLIReplaceLabelRejectsCaseInsensitiveCollision(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI()
+	err := cli.ReplaceRequestLabel(context.Background(), "o/r", 7, "Machinist:Queued", "machinist:queued")
+	if err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("colliding labels reached executable: %v", runner.calls)
 	}
 }
 

@@ -136,6 +136,7 @@ func (g *GitHubCLI) SearchRequestedIssues(ctx context.Context, repositories []st
 
 	baseArgs := []string{
 		"search", "issues", "--label", label,
+		"--state", "open",
 		"--sort", "created", "--order", "asc", "--limit", strconv.Itoa(maxGitHubCandidates),
 		"--json", "number,repository,state,url,isPullRequest,createdAt",
 	}
@@ -273,7 +274,7 @@ func (g *GitHubCLI) ReplaceRequestLabel(ctx context.Context, repository string, 
 	if err := validateGitHubLabel(queuedLabel); err != nil {
 		return fmt.Errorf("queued label: %w", err)
 	}
-	if requestedLabel == queuedLabel {
+	if strings.EqualFold(requestedLabel, queuedLabel) {
 		return errors.New("requested and queued labels must differ")
 	}
 	issueURL := fmt.Sprintf("https://github.com/%s/issues/%d", repository, number)
@@ -540,7 +541,7 @@ func parseLatestGitHubLabelEvent(output []byte, requestedLabel string) (*GitHubL
 	var latest *GitHubLabelEvent
 	for _, page := range pages {
 		for _, event := range page {
-			if event.Event != "labeled" || event.Label == nil || event.Label.Name != requestedLabel {
+			if event.Event != "labeled" || event.Label == nil || !strings.EqualFold(event.Label.Name, requestedLabel) {
 				continue
 			}
 			id, err := parseGitHubEventID(event.ID)

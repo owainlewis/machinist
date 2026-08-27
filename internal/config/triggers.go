@@ -14,14 +14,15 @@ import (
 )
 
 const (
-	minTriggerEvery  = time.Minute
-	maxGitHubEvery   = 24 * time.Hour
-	maxIntervalEvery = 720 * time.Hour
+	minTriggerEvery   = time.Minute
+	maxGitHubEvery    = 24 * time.Hour
+	maxIntervalEvery  = 720 * time.Hour
+	queuedGitHubLabel = "machinist:queued"
 )
 
 var (
 	triggerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-	repositoryPattern  = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]{1,100}$`)
+	repositoryPattern  = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$`)
 )
 
 // LoadTriggers loads and resolves every managed trigger without applying
@@ -99,6 +100,9 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 		label, err := triggerLabel(identity, definition.Label)
 		if err != nil {
 			return nil, err
+		}
+		if strings.EqualFold(label, queuedGitHubLabel) {
+			return nil, fmt.Errorf("trigger %q label must differ from reserved label %q", identity, queuedGitHubLabel)
 		}
 		canonicalLabel := strings.ToLower(label)
 		if previous, ok := seenLabels[canonicalLabel]; ok {
@@ -201,7 +205,7 @@ func resolveGitHubRepositories(input map[string]string) (map[string]string, erro
 			return nil, fmt.Errorf("github repository name %q is invalid", name)
 		}
 		slug := input[name]
-		if slug != strings.TrimSpace(slug) || !repositoryPattern.MatchString(slug) {
+		if slug != strings.TrimSpace(slug) || !repositoryPattern.MatchString(slug) || strings.Contains(slug, "..") {
 			return nil, fmt.Errorf("github repository %q must be a safe OWNER/REPO slug", name)
 		}
 		canonical := strings.ToLower(slug)
