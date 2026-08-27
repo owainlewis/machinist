@@ -704,14 +704,20 @@ func TestWorkflowExampleDefinitionsLoad(t *testing.T) {
 	}
 }
 
-func TestMachinistSkillDoesNotDescribeARepairCap(t *testing.T) {
-	body, err := os.ReadFile(filepath.Join("..", "..", "skills", "machinist", "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
+func TestShippedGuidanceDoesNotDescribeARepairCap(t *testing.T) {
+	paths := []string{
+		filepath.Join("..", "..", "skills", "machinist", "SKILL.md"),
+		filepath.Join("..", "..", ".github", "site", "index.html"),
 	}
-	for _, obsolete := range []string{"repair limit", "at most two repair", "at most three repair"} {
-		if strings.Contains(string(body), obsolete) {
-			t.Fatalf("machinist skill still contains %q", obsolete)
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, obsolete := range []string{"repair limit", "Limited repair attempts", "Repair loops have a fixed limit", "Bounded repair"} {
+			if strings.Contains(string(body), obsolete) {
+				t.Fatalf("%s still contains %q", path, obsolete)
+			}
 		}
 	}
 }

@@ -147,7 +147,7 @@
         <div class="factory-values">
           <article><span>DEFINED</span><h3>Configuration in files</h3><p>Prompts, agents, models, and pipelines use TOML and Markdown that you can review and version.</p></article>
           <article><span>INDEPENDENT</span><h3>Separate builder and reviewer</h3><p>The agent that writes the code does not review it. A fresh agent reviews the exact commit before handoff.</p></article>
-          <article><span>BOUNDED</span><h3>Limited repair attempts</h3><p>Repair loops have a fixed limit. If the work still cannot pass, Machinist stops and reports why.</p></article>
+          <article><span>PERSISTENT</span><h3>Verified repair loop</h3><p>Valid code defects return to a fresh repair and review cycle. External blockers still stop safely with clear evidence.</p></article>
         </div>
       </section>
 
@@ -173,7 +173,7 @@
           <div class="eval-rows">
             <div><span><i class="pass"></i>Issue lifecycle</span><strong>PASS</strong><small>1.00</small></div>
             <div><span><i class="pass"></i>Independent review</span><strong>PASS</strong><small>1.00</small></div>
-            <div><span><i class="pass"></i>Bounded repair</span><strong>PASS</strong><small>0.96</small></div>
+            <div><span><i class="pass"></i>Verified repair</span><strong>PASS</strong><small>0.96</small></div>
             <div class="eval-warning"><span><i class="warn"></i>Time to handoff</span><strong>WATCH</strong><small>0.78</small></div>
           </div>
           <div class="compare-row"><span>CONFIG</span><strong>foreman-v12</strong><span>MODEL</span><strong>terra</strong></div>
