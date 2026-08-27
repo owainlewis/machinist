@@ -17,6 +17,7 @@ LABEL = "machinist:auto-merge"
 LABEL_COLOR = "0e8a16"
 LABEL_DESCRIPTION = "Allow Shepherd to verify, update, repair, and merge this pull request"
 AUDIT_MARKER = "<!-- machinist:shepherd-audit -->"
+REVIEW_MARKER = "<!-- machinist:shepherd-review -->"
 STACK_CLASSIFICATION = "stack-transition"
 PENDING_RETARGET = "pending-retarget"
 RETARGETED = "retargeted"
@@ -43,9 +44,9 @@ def assert_label(label: Any) -> None:
         raise EvalFailure(f"unexpected auto-merge label definition: {observed!r}")
 
 
-def audit_fields(body: str) -> dict[str, str] | None:
+def marker_fields(body: str, marker: str) -> dict[str, str] | None:
     lines = body.splitlines()
-    if AUDIT_MARKER not in (line.strip() for line in lines):
+    if marker not in (line.strip() for line in lines):
         return None
     fields: dict[str, str] = {}
     for line in lines:
@@ -57,6 +58,10 @@ def audit_fields(body: str) -> dict[str, str] | None:
             return None
         fields[key] = value.strip()
     return fields
+
+
+def audit_fields(body: str) -> dict[str, str] | None:
+    return marker_fields(body, AUDIT_MARKER)
 
 
 def assert_audit_comment(
@@ -153,16 +158,25 @@ def assert_stack_transition(
     child_head: str,
     child_base: str,
     state: str,
+    parent_state: str = "MERGED",
+    child_current_base: str | None = None,
 ) -> None:
     if not isinstance(parent, dict) or not isinstance(child, dict):
         raise EvalFailure("GitHub returned invalid stack transition evidence")
     if (
-        parent.get("state") != "MERGED"
+        parent.get("state") != parent_state
         or parent.get("headRefOid") != parent_head
         or parent.get("baseRefName") != parent_base
+        or (parent_state == "MERGED" and not parent.get("mergedAt"))
+        or (parent_state == "OPEN" and parent.get("mergedAt") is not None)
     ):
-        raise EvalFailure(f"stack parent was not merged at its expected comparison: {parent!r}")
-    expected_child_base = child_base if state == PENDING_RETARGET else parent_base
+        raise EvalFailure(
+            f"stack parent was not {parent_state.lower()} at its expected comparison: "
+            f"{parent!r}"
+        )
+    expected_child_base = child_current_base
+    if expected_child_base is None:
+        expected_child_base = child_base if state == PENDING_RETARGET else parent_base
     if (
         child.get("state") != "OPEN"
         or child.get("headRefOid") != child_head
@@ -202,6 +216,28 @@ def assert_stack_transition(
     raise EvalFailure(f"missing durable {state} stack transition evidence")
 
 
+def assert_review_comment(pull_request: Any, head: str) -> None:
+    if not isinstance(pull_request, dict):
+        raise EvalFailure("GitHub returned invalid review evidence")
+    comments = pull_request.get("comments")
+    if not isinstance(comments, list):
+        raise EvalFailure("GitHub returned invalid review comments")
+    for comment in comments:
+        if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
+            continue
+        fields = marker_fields(comment["body"], REVIEW_MARKER)
+        if fields is None:
+            continue
+        recorded_head = fields.get("head") or fields.get("head sha")
+        if (
+            recorded_head == head
+            and fields.get("verdict", "").lower() == "approve"
+            and fields.get("checks")
+        ):
+            return
+    raise EvalFailure(f"missing approved review audit comment for exact head {head}")
+
+
 def ensure_label_absent(repository: str) -> None:
     labels = gh_json(
         ("label", "list", "--repo", repository, "--limit", "1000", "--json", "name")
@@ -223,12 +259,138 @@ def pull_request(repository: str, url: str) -> dict[str, Any]:
             "--repo",
             repository,
             "--json",
-            "state,isDraft,headRefOid,baseRefName,mergedAt,labels,comments,url",
+            "state,isDraft,headRefOid,baseRefName,mergedAt,labels,comments,reviews,"
+            "title,body,url",
         )
     )
     if not isinstance(result, dict):
         raise EvalFailure(f"GitHub returned invalid evidence for {url}")
     return result
+
+
+def repository_label(repository: str) -> dict[str, Any] | None:
+    labels = gh_json(
+        (
+            "label",
+            "list",
+            "--repo",
+            repository,
+            "--limit",
+            "1000",
+            "--json",
+            "name,color,description",
+        )
+    )
+    if not isinstance(labels, list):
+        raise EvalFailure("GitHub returned invalid repository label evidence")
+    matches = [
+        label
+        for label in labels
+        if isinstance(label, dict) and label.get("name") == LABEL
+    ]
+    if len(matches) > 1:
+        raise EvalFailure(f"GitHub returned duplicate {LABEL} definitions")
+    return matches[0] if matches else None
+
+
+def queue_snapshot(repository: str, pull_request_urls: Sequence[str]) -> dict[str, Any]:
+    return {
+        "label": repository_label(repository),
+        "pull_requests": {
+            url: pull_request(repository, url) for url in pull_request_urls
+        },
+    }
+
+
+def record_mutations(
+    before: Any, after: Any, *, pull_request_url: str, kind: str
+) -> list[str]:
+    if not isinstance(before, list) or not isinstance(after, list):
+        raise EvalFailure(f"GitHub returned invalid {kind} evidence for {pull_request_url}")
+
+    def records(items: list[Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise EvalFailure(
+                    f"GitHub returned invalid {kind} evidence for {pull_request_url}"
+                )
+            identity = item.get("id") or item.get("url") or f"position:{index}"
+            identity = str(identity)
+            if identity in result:
+                raise EvalFailure(
+                    f"GitHub returned duplicate {kind} evidence for {pull_request_url}"
+                )
+            result[identity] = item
+        return result
+
+    before_records = records(before)
+    after_records = records(after)
+    return [
+        f"{pull_request_url} {kind} {identity} changed"
+        for identity in sorted(before_records.keys() | after_records.keys())
+        if before_records.get(identity) != after_records.get(identity)
+    ]
+
+
+def pull_request_mutations(
+    before: Any, after: Any, pull_request_url: str
+) -> list[str]:
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        raise EvalFailure(f"GitHub returned invalid snapshot for {pull_request_url}")
+    mutations: list[str] = []
+    for field in ("state", "headRefOid", "baseRefName", "isDraft", "title", "body"):
+        if before.get(field) != after.get(field):
+            mutations.append(f"{pull_request_url} {field} changed")
+    if before.get("state") == after.get("state") and before.get("mergedAt") != after.get(
+        "mergedAt"
+    ):
+        mutations.append(f"{pull_request_url} mergedAt changed")
+    if label_names(before) != label_names(after):
+        mutations.append(f"{pull_request_url} labels changed")
+    mutations.extend(
+        record_mutations(
+            before.get("comments", []),
+            after.get("comments", []),
+            pull_request_url=pull_request_url,
+            kind="comment",
+        )
+    )
+    mutations.extend(
+        record_mutations(
+            before.get("reviews", []),
+            after.get("reviews", []),
+            pull_request_url=pull_request_url,
+            kind="review",
+        )
+    )
+    return mutations
+
+
+def assert_action_budget(
+    before: Any, after: Any, max_actions: int
+) -> list[str]:
+    if max_actions <= 0:
+        raise EvalFailure("action limit must be positive")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        raise EvalFailure("invalid GitHub mutation snapshots")
+    before_pulls = before.get("pull_requests")
+    after_pulls = after.get("pull_requests")
+    if not isinstance(before_pulls, dict) or not isinstance(after_pulls, dict):
+        raise EvalFailure("invalid pull request mutation snapshots")
+    if before_pulls.keys() != after_pulls.keys():
+        raise EvalFailure("pull request mutation snapshots cover different queues")
+    mutations: list[str] = []
+    if before.get("label") != after.get("label"):
+        mutations.append(f"repository label {LABEL} changed")
+    for url in before_pulls:
+        mutations.extend(pull_request_mutations(before_pulls[url], after_pulls[url], url))
+    if len(mutations) > max_actions:
+        raise EvalFailure(
+            f"Shepherd used {len(mutations)} actions, limit {max_actions}: "
+            f"{'; '.join(mutations)}"
+        )
+    return mutations
 
 
 def create_remote_branch(repository_path: Path, sha: str, branch: str) -> None:
@@ -348,6 +510,27 @@ def run_shepherd(executable: str, options: argparse.Namespace, max_actions: int)
     if options.model is not None:
         arguments.append(f"--model={options.model}")
     return command(arguments, cwd=options.repo_path, capture=False).returncode
+
+
+def run_shepherd_with_budget(
+    executable: str,
+    options: argparse.Namespace,
+    max_actions: int,
+    pull_request_urls: Sequence[str],
+) -> tuple[int, dict[str, Any], list[str]]:
+    before = queue_snapshot(options.repository, pull_request_urls)
+    status = run_shepherd(executable, options, max_actions)
+    after = queue_snapshot(options.repository, pull_request_urls)
+    mutations = assert_action_budget(before, after, max_actions)
+    return status, after, mutations
+
+
+def assert_actions_used(mutations: Sequence[str], expected: int, stage: str) -> None:
+    if len(mutations) != expected:
+        raise EvalFailure(
+            f"{stage} used {len(mutations)} actions, expected {expected}: "
+            f"{'; '.join(mutations) if mutations else 'none'}"
+        )
 
 
 def delete_remote_branch(
@@ -523,39 +706,29 @@ def main(arguments: Sequence[str] | None = None) -> int:
             draft=False,
         )
         pull_requests.append(deferred_url)
-        bootstrap_status = run_shepherd(executable, options, 1)
-        label_created = command(
-            ("gh", "label", "view", LABEL, "--repo", options.repository)
-        ).returncode == 0
+        bootstrap_status, bootstrap_snapshot, bootstrap_mutations = (
+            run_shepherd_with_budget(executable, options, 1, pull_requests)
+        )
+        label_created = bootstrap_snapshot["label"] is not None
         if bootstrap_status != 0:
             raise EvalFailure("label-bootstrap Shepherd run failed")
-        label = gh_json(
-            (
-                "label",
-                "view",
-                LABEL,
-                "--repo",
-                options.repository,
-                "--json",
-                "name,color,description",
-            )
-        )
-        label_created = True
-        assert_label(label)
+        assert_actions_used(bootstrap_mutations, 1, "label-bootstrap Shepherd run")
+        assert_label(bootstrap_snapshot["label"])
+        bootstrap_pulls = bootstrap_snapshot["pull_requests"]
         assert_unlabelled_unchanged(
-            pull_request(options.repository, blocked_url),
+            bootstrap_pulls[blocked_url],
             head=blocked_head,
             base=base_branch,
             draft=True,
         )
         assert_unlabelled_unchanged(
-            pull_request(options.repository, eligible_url),
+            bootstrap_pulls[eligible_url],
             head=eligible_head,
             base=base_branch,
             draft=False,
         )
         assert_unlabelled_unchanged(
-            pull_request(options.repository, deferred_url),
+            bootstrap_pulls[deferred_url],
             head=deferred_head,
             base=base_branch,
             draft=False,
@@ -576,17 +749,22 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 ),
                 f"opt in {url}",
             )
-        if run_shepherd(executable, options, 2) != 0:
+        queue_status, queue_snapshot_result, queue_mutations = run_shepherd_with_budget(
+            executable, options, 2, pull_requests
+        )
+        if queue_status != 0:
             raise EvalFailure("queue Shepherd run failed")
+        assert_actions_used(queue_mutations, 2, "queue Shepherd run")
+        queue_pulls = queue_snapshot_result["pull_requests"]
         assert_queue_result(
-            pull_request(options.repository, blocked_url),
-            pull_request(options.repository, eligible_url),
+            queue_pulls[blocked_url],
+            queue_pulls[eligible_url],
             blocked_head,
             eligible_head,
             require_eligible_audit=False,
         )
         assert_deferred_result(
-            pull_request(options.repository, deferred_url),
+            queue_pulls[deferred_url],
             deferred_head,
             require_audit=False,
         )
@@ -634,13 +812,37 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 f"opt in stacked pull request {url}",
             )
 
-        if run_shepherd(executable, options, 1) != 0:
+        transition_status, transition_snapshot, transition_mutations = (
+            run_shepherd_with_budget(executable, options, 1, pull_requests)
+        )
+        if transition_status != 0:
             raise EvalFailure("stack transition Shepherd run failed")
-        if run_shepherd(executable, options, 1) != 0:
-            raise EvalFailure("stack parent Shepherd run failed")
+        assert_actions_used(
+            transition_mutations, 1, "stack transition Shepherd run"
+        )
+        transition_pulls = transition_snapshot["pull_requests"]
         assert_stack_transition(
-            pull_request(options.repository, parent_url),
-            pull_request(options.repository, child_url),
+            transition_pulls[parent_url],
+            transition_pulls[child_url],
+            parent_url=parent_url,
+            parent_head=parent_head,
+            parent_base=base_branch,
+            child_head=child_head,
+            child_base=parent_branch,
+            state=PENDING_RETARGET,
+            parent_state="OPEN",
+        )
+
+        parent_status, parent_snapshot, parent_mutations = run_shepherd_with_budget(
+            executable, options, 1, pull_requests
+        )
+        if parent_status != 0:
+            raise EvalFailure("stack parent Shepherd run failed")
+        assert_actions_used(parent_mutations, 1, "stack parent Shepherd run")
+        parent_pulls = parent_snapshot["pull_requests"]
+        assert_stack_transition(
+            parent_pulls[parent_url],
+            parent_pulls[child_url],
             parent_url=parent_url,
             parent_head=parent_head,
             parent_base=base_branch,
@@ -649,13 +851,37 @@ def main(arguments: Sequence[str] | None = None) -> int:
             state=PENDING_RETARGET,
         )
 
-        if run_shepherd(executable, options, 1) != 0:
+        retarget_status, retarget_snapshot, retarget_mutations = (
+            run_shepherd_with_budget(executable, options, 1, pull_requests)
+        )
+        if retarget_status != 0:
             raise EvalFailure("stack retarget Shepherd run failed")
-        if run_shepherd(executable, options, 1) != 0:
-            raise EvalFailure("stack transition completion Shepherd run failed")
+        assert_actions_used(retarget_mutations, 1, "stack retarget Shepherd run")
+        retarget_pulls = retarget_snapshot["pull_requests"]
         assert_stack_transition(
-            pull_request(options.repository, parent_url),
-            pull_request(options.repository, child_url),
+            retarget_pulls[parent_url],
+            retarget_pulls[child_url],
+            parent_url=parent_url,
+            parent_head=parent_head,
+            parent_base=base_branch,
+            child_head=child_head,
+            child_base=parent_branch,
+            state=PENDING_RETARGET,
+            child_current_base=base_branch,
+        )
+
+        completion_status, completion_snapshot, completion_mutations = (
+            run_shepherd_with_budget(executable, options, 1, pull_requests)
+        )
+        if completion_status != 0:
+            raise EvalFailure("stack transition completion Shepherd run failed")
+        assert_actions_used(
+            completion_mutations, 1, "stack transition completion Shepherd run"
+        )
+        completion_pulls = completion_snapshot["pull_requests"]
+        assert_stack_transition(
+            completion_pulls[parent_url],
+            completion_pulls[child_url],
             parent_url=parent_url,
             parent_head=parent_head,
             parent_base=base_branch,
@@ -664,13 +890,35 @@ def main(arguments: Sequence[str] | None = None) -> int:
             state=RETARGETED,
         )
 
-        if run_shepherd(executable, options, 1) != 0:
+        review_status, review_snapshot, review_mutations = run_shepherd_with_budget(
+            executable, options, 1, pull_requests
+        )
+        if review_status != 0:
             raise EvalFailure("stack child review Shepherd run failed")
-        if run_shepherd(executable, options, 1) != 0:
+        assert_actions_used(review_mutations, 1, "stack child review Shepherd run")
+        review_pulls = review_snapshot["pull_requests"]
+        assert_stack_transition(
+            review_pulls[parent_url],
+            review_pulls[child_url],
+            parent_url=parent_url,
+            parent_head=parent_head,
+            parent_base=base_branch,
+            child_head=child_head,
+            child_base=parent_branch,
+            state=RETARGETED,
+        )
+        assert_review_comment(review_pulls[child_url], child_head)
+
+        child_status, child_snapshot, child_mutations = run_shepherd_with_budget(
+            executable, options, 1, pull_requests
+        )
+        if child_status != 0:
             raise EvalFailure("stack child Shepherd run failed")
+        assert_actions_used(child_mutations, 1, "stack child Shepherd run")
+        child_pulls = child_snapshot["pull_requests"]
         assert_queue_result(
-            pull_request(options.repository, blocked_url),
-            pull_request(options.repository, child_url),
+            child_pulls[blocked_url],
+            child_pulls[child_url],
             blocked_head,
             child_head,
             require_eligible_audit=False,

@@ -10,6 +10,7 @@ from evals.shepherd_queue import (
     LABEL_DESCRIPTION,
     PENDING_RETARGET,
     RETARGETED,
+    assert_action_budget,
     assert_deferred_result,
     assert_label,
     assert_queue_result,
@@ -46,6 +47,79 @@ def pull_request(
 
 
 class ShepherdQueueEvidenceTests(unittest.TestCase):
+    def test_rejects_audit_mutations_beyond_action_budget(self) -> None:
+        before = {
+            "label": {"name": LABEL},
+            "pull_requests": {
+                "blocked": pull_request(state="OPEN", draft=True, head="blocked"),
+                "eligible": pull_request(state="OPEN", draft=False, head="eligible"),
+                "deferred": pull_request(state="OPEN", draft=False, head="deferred"),
+            },
+        }
+        after = {
+            "label": {"name": LABEL},
+            "pull_requests": {
+                "blocked": pull_request(
+                    state="OPEN", draft=True, head="blocked", classification="blocked"
+                ),
+                "eligible": pull_request(
+                    state="MERGED",
+                    draft=False,
+                    head="eligible",
+                    classification="merged",
+                ),
+                "deferred": pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="deferred",
+                    classification="deferred",
+                ),
+            },
+        }
+
+        with self.assertRaisesRegex(EvalFailure, "used 4 actions, limit 2"):
+            assert_action_budget(before, after, 2)
+
+    def test_rejects_two_stack_mutations_in_max_actions_one_run(self) -> None:
+        pending = (
+            f"{AUDIT_MARKER}\nclassification: stack-transition\n"
+            f"state: {PENDING_RETARGET}\nparent: https://example.test/pull/1\n"
+            "parent head: parent-head\nparent base: main\n"
+            "dependent head: child-head\ndependent base: parent-branch"
+        )
+        before = {
+            "label": {"name": LABEL},
+            "pull_requests": {
+                "parent": pull_request(
+                    state="OPEN", draft=False, head="parent-head", base="main"
+                ),
+                "child": pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="child-head",
+                    base="parent-branch",
+                ),
+            },
+        }
+        after = {
+            "label": {"name": LABEL},
+            "pull_requests": {
+                "parent": pull_request(
+                    state="MERGED", draft=False, head="parent-head", base="main"
+                ),
+                "child": pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="child-head",
+                    base="parent-branch",
+                    body=pending,
+                ),
+            },
+        }
+
+        with self.assertRaisesRegex(EvalFailure, "used 2 actions, limit 1"):
+            assert_action_budget(before, after, 1)
+
     def test_accepts_unlabelled_pull_request_with_no_mutation(self) -> None:
         pull = pull_request(state="OPEN", draft=False, head="head", base="main")
         pull["labels"] = []
