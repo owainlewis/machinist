@@ -150,7 +150,9 @@ CREATE TABLE IF NOT EXISTS worker_repositories (
 );
 CREATE TABLE IF NOT EXISTS schedule_state (
   name TEXT PRIMARY KEY,
-  next_run_at TEXT NOT NULL
+  next_run_at TEXT NOT NULL,
+  repository TEXT NOT NULL DEFAULT '',
+  every_ms INTEGER NOT NULL DEFAULT 0
 );`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
@@ -173,13 +175,67 @@ CREATE TABLE IF NOT EXISTS schedule_state (
 	if err := s.addColumnIfMissing(ctx, "jobs", "has_shepherd", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing(ctx, "schedule_state", "repository", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "schedule_state", "every_ms", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE jobs SET has_shepherd=1 WHERE has_shepherd=0 AND EXISTS (SELECT 1 FROM runs WHERE runs.job_id=jobs.id AND runs.agent='shepherd')`); err != nil {
 		return fmt.Errorf("migrate Shepherd job membership: %w", err)
+	}
+	if err := s.reconcileActiveShepherdJobs(ctx); err != nil {
+		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_shepherd_repository_v3 ON jobs(repository) WHERE has_shepherd=1 AND state IN ('queued','running')`); err != nil {
 		return fmt.Errorf("create scheduled job overlap guard: %w", err)
 	}
 	return s.migrateRunMetrics(ctx)
+}
+
+func (s *Store) reconcileActiveShepherdJobs(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("reconcile active Shepherd jobs: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id,repository FROM jobs WHERE has_shepherd=1 AND state IN ('queued','running') ORDER BY repository,CASE state WHEN 'running' THEN 0 ELSE 1 END,created_at,rowid`)
+	if err != nil {
+		return fmt.Errorf("inspect active Shepherd jobs: %w", err)
+	}
+	seen := make(map[string]bool)
+	var duplicates []string
+	for rows.Next() {
+		var id, repository string
+		if err := rows.Scan(&id, &repository); err != nil {
+			rows.Close()
+			return fmt.Errorf("inspect active Shepherd jobs: %w", err)
+		}
+		if seen[repository] {
+			duplicates = append(duplicates, id)
+		} else {
+			seen[repository] = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("inspect active Shepherd jobs: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("inspect active Shepherd jobs: %w", err)
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	for _, id := range duplicates {
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET state='failed',worker_instance=NULL,lease_token=NULL,lease_expires_at=NULL,error=CASE WHEN COALESCE(error,'')='' THEN 'superseded duplicate Shepherd job during migration' ELSE error END,completed_at=COALESCE(completed_at,?) WHERE job_id=? AND state IN ('pending','queued','running')`, now, id); err != nil {
+			return fmt.Errorf("terminalize duplicate Shepherd job %q runs: %w", id, err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',updated_at=? WHERE id=?`, now, id); err != nil {
+			return fmt.Errorf("terminalize duplicate Shepherd job %q: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("reconcile active Shepherd jobs: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) addColumnIfMissing(ctx context.Context, table, column, definition string) error {
@@ -304,8 +360,9 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 		return "", false, err
 	}
 	defer tx.Rollback()
-	var nextRun string
-	err = tx.QueryRowContext(ctx, `SELECT next_run_at FROM schedule_state WHERE name=?`, schedule.Name).Scan(&nextRun)
+	var nextRun, repository string
+	var everyMillis int64
+	err = tx.QueryRowContext(ctx, `SELECT next_run_at,repository,every_ms FROM schedule_state WHERE name=?`, schedule.Name).Scan(&nextRun, &repository, &everyMillis)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return "", false, fmt.Errorf("read shepherd schedule %q: %w", schedule.Name, err)
 	}
@@ -314,7 +371,8 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 		if parseErr != nil {
 			return "", false, fmt.Errorf("parse shepherd schedule %q next run: %w", schedule.Name, parseErr)
 		}
-		if next.After(nowTime) {
+		unchanged := repository == schedule.Repository && everyMillis == schedule.Every.Milliseconds()
+		if unchanged && next.After(nowTime) {
 			return "", false, tx.Commit()
 		}
 	}
@@ -342,7 +400,7 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,step,agent,agent_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, runID, jobID, 0, agent.Name, agent.Hash, agent.Executor, agent.Model, schedule.Repository, agent.Prompt, agent.Timeout.Milliseconds(), "queued"); err != nil {
 		return "", false, fmt.Errorf("insert scheduled run: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO schedule_state(name,next_run_at) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET next_run_at=excluded.next_run_at`, schedule.Name, nowTime.Add(schedule.Every).Format(time.RFC3339Nano)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schedule_state(name,next_run_at,repository,every_ms) VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET next_run_at=excluded.next_run_at,repository=excluded.repository,every_ms=excluded.every_ms`, schedule.Name, nowTime.Add(schedule.Every).Format(time.RFC3339Nano), schedule.Repository, schedule.Every.Milliseconds()); err != nil {
 		return "", false, fmt.Errorf("advance shepherd schedule %q: %w", schedule.Name, err)
 	}
 	if err := tx.Commit(); err != nil {

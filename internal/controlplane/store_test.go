@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -511,6 +512,91 @@ func TestStoreScheduleDoesNotOverlapActivePipelineContainingShepherd(t *testing.
 	}
 	if _, err := store.CreateJob(t.Context(), "ordinary", "api", "pipeline", "checks", []config.ResolvedAgent{testAgent("review", "Review")}); err != nil {
 		t.Fatalf("ordinary pipeline was blocked: %v", err)
+	}
+}
+
+func TestStoreReconcilesDuplicateActiveShepherdJobsBeforeAddingOverlapGuard(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "machinist.db")
+	store, err := OpenStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(t.Context(), `DROP INDEX jobs_active_shepherd_repository_v3`); err != nil {
+		t.Fatal(err)
+	}
+	shepherd := testAgent("shepherd", "Inspect every pull request")
+	keptJob, err := store.CreateJob(t.Context(), "first", "api", "agent", "shepherd", []config.ResolvedAgent{shepherd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"api"})); err != nil || run == nil {
+		t.Fatalf("lease first Shepherd = %#v, %v", run, err)
+	}
+	failedJob, err := store.CreateJob(t.Context(), "second", "api", "agent", "shepherd", []config.ResolvedAgent{shepherd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE jobs SET has_shepherd=0 WHERE id IN (?,?)`, keptJob, failedJob); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	var keptState, failedState, failedRunState, failedRunError string
+	if err := reopened.db.QueryRowContext(t.Context(), `SELECT state FROM jobs WHERE id=?`, keptJob).Scan(&keptState); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.db.QueryRowContext(t.Context(), `SELECT jobs.state,runs.state,runs.error FROM jobs JOIN runs ON runs.job_id=jobs.id WHERE jobs.id=?`, failedJob).Scan(&failedState, &failedRunState, &failedRunError); err != nil {
+		t.Fatal(err)
+	}
+	if keptState != "running" || failedState != "failed" || failedRunState != "failed" || !strings.Contains(failedRunError, "superseded duplicate Shepherd job") {
+		t.Fatalf("reconciled states = kept %q, duplicate job %q, run %q, error %q", keptState, failedState, failedRunState, failedRunError)
+	}
+	if _, err := reopened.CreateJob(t.Context(), "third", "api", "agent", "shepherd", []config.ResolvedAgent{shepherd}); err == nil {
+		t.Fatal("recreated overlapping Shepherd job after migration")
+	}
+}
+
+func TestStoreReschedulesWhenScheduleConfigurationChanges(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	clock := newTestClock(time.Date(2026, 8, 27, 8, 0, 0, 0, time.UTC))
+	store.now = clock.Now
+	schedule := config.ResolvedShepherdSchedule{
+		Name: "queue", Repository: "api", Every: time.Hour, MaxActions: 1,
+		Agent: testAgent("shepherd", "Inspect every pull request"),
+	}
+	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || !created {
+		t.Fatalf("initial schedule created = %t, %v", created, err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"api"}))
+	if err != nil || run == nil {
+		t.Fatalf("lease initial schedule = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+
+	schedule.Repository = "web"
+	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || !created {
+		t.Fatalf("repository change rescheduled = %t, %v", created, err)
+	}
+	run, err = store.Poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"web"}))
+	if err != nil || run == nil {
+		t.Fatalf("lease changed repository schedule = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-b", LeaseToken: run.LeaseToken, State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+
+	schedule.Every = 10 * time.Minute
+	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || !created {
+		t.Fatalf("interval change rescheduled = %t, %v", created, err)
 	}
 }
 

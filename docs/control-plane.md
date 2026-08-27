@@ -43,9 +43,11 @@ lease protocol as manual submissions.
 
 Shepherd changes only pull requests carrying `machinist:auto-merge`. It processes them
 serially, refreshes the queue after each merge, and leaves blocked or deferred evidence on
-the affected labelled pull request. A pending stack retarget is recorded before its parent
-merges, so restart recovery remains safe even when `max_actions = 1`. The default `foreman`
-remains unable to merge.
+the affected labelled pull request when its action budget permits. Every GitHub mutation,
+including label-definition creation and audit comments, consumes one action. A pending stack
+retarget is recorded before its parent merges, so restart recovery remains safe even when
+`max_actions = 1`; each required mutation then happens in a separate run. The default
+`foreman` remains unable to merge.
 
 ## Start the server and worker
 

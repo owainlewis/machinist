@@ -143,6 +143,52 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 "eligible",
             )
 
+    def test_accepts_merge_without_audit_when_action_budget_is_consumed(self) -> None:
+        assert_queue_result(
+            pull_request(
+                state="OPEN", draft=True, head="blocked", classification="blocked"
+            ),
+            pull_request(state="MERGED", draft=False, head="eligible"),
+            "blocked",
+            "eligible",
+            require_eligible_audit=False,
+        )
+
+    def test_rejects_audit_comment_with_prefix_matched_head(self) -> None:
+        with self.assertRaisesRegex(EvalFailure, "exact head"):
+            assert_queue_result(
+                pull_request(
+                    state="OPEN", draft=True, head="blocked", classification="blocked"
+                ),
+                pull_request(
+                    state="MERGED",
+                    draft=False,
+                    head="abc",
+                    body=f"{AUDIT_MARKER}\nhead: abcd\nclassification: merged",
+                ),
+                "blocked",
+                "abc",
+            )
+
+    def test_rejects_audit_comment_with_substring_classification(self) -> None:
+        with self.assertRaisesRegex(EvalFailure, "missing merged audit comment"):
+            assert_queue_result(
+                pull_request(
+                    state="OPEN", draft=True, head="blocked", classification="blocked"
+                ),
+                pull_request(
+                    state="MERGED",
+                    draft=False,
+                    head="eligible",
+                    body=(
+                        f"{AUDIT_MARKER}\nhead: eligible\n"
+                        "classification: not-merged"
+                    ),
+                ),
+                "blocked",
+                "eligible",
+            )
+
     def test_accepts_unchanged_deferred_pull_request_with_audit(self) -> None:
         assert_deferred_result(
             pull_request(
@@ -157,6 +203,13 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 pull_request(state="OPEN", draft=False, head="deferred"),
                 "deferred",
             )
+
+    def test_accepts_unchanged_deferred_without_unbudgeted_comment(self) -> None:
+        assert_deferred_result(
+            pull_request(state="OPEN", draft=False, head="deferred"),
+            "deferred",
+            require_audit=False,
+        )
 
     def test_accepts_persisted_transition_after_parent_uses_final_action(self) -> None:
         transition = (
@@ -248,6 +301,61 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 child_head="child-head",
                 child_base="parent-branch",
                 state=PENDING_RETARGET,
+            )
+
+    def test_rejects_stack_transition_with_prefix_matched_parent_head(self) -> None:
+        transition = (
+            f"{AUDIT_MARKER}\nclassification: stack-transition\n"
+            f"state: {PENDING_RETARGET}\nparent: https://example.test/pull/1\n"
+            "parent head: parent-head-extra\nparent base: main\n"
+            "dependent head: child-head\ndependent base: parent-branch"
+        )
+        with self.assertRaisesRegex(EvalFailure, "durable pending-retarget"):
+            assert_stack_transition(
+                pull_request(
+                    state="MERGED", draft=False, head="parent-head", base="main"
+                ),
+                pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="child-head",
+                    base="parent-branch",
+                    body=transition,
+                ),
+                parent_url="https://example.test/pull/1",
+                parent_head="parent-head",
+                parent_base="main",
+                child_head="child-head",
+                child_base="parent-branch",
+                state=PENDING_RETARGET,
+            )
+
+    def test_rejects_retargeted_transition_with_active_pending_marker(self) -> None:
+        pending = (
+            f"{AUDIT_MARKER}\nclassification: stack-transition\n"
+            f"state: {PENDING_RETARGET}\nparent: https://example.test/pull/1\n"
+            "parent head: parent-head\nparent base: main\n"
+            "dependent head: child-head\ndependent base: parent-branch"
+        )
+        retargeted = pending.replace(
+            f"state: {PENDING_RETARGET}", f"state: {RETARGETED}"
+        )
+        child = pull_request(
+            state="OPEN", draft=False, head="child-head", base="main", body=retargeted
+        )
+        child["comments"].append({"body": pending})
+        with self.assertRaisesRegex(EvalFailure, "active pending-retarget"):
+            assert_stack_transition(
+                pull_request(
+                    state="MERGED", draft=False, head="parent-head", base="main"
+                ),
+                child,
+                parent_url="https://example.test/pull/1",
+                parent_head="parent-head",
+                parent_base="main",
+                child_head="child-head",
+                child_base="parent-branch",
+                state=RETARGETED,
             )
 
 

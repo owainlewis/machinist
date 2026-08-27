@@ -57,13 +57,16 @@ every = "30m"
 max_actions = 3
 ```
 
-`every` must be at least one minute and `max_actions` must be positive. The control plane
-queues the first run when it starts, then persists the next due time in SQLite. It never
-overlaps two Shepherd runs for one repository. If a run reaches its action limit, the next
-run inventories GitHub again and continues from durable pull request state and audit
-comments. Before a stacked parent merge, Shepherd records the child's pending retarget so
-a later run cannot mistake the child for independent work when the parent used the final
-action.
+`every` must be at least one minute and `max_actions` must be positive. The limit counts
+every GitHub mutation, including creating the repository label definition, creating or
+editing comments, updating a branch or pull request, pushing a repair, resolving a thread,
+and merging. The control plane queues the first run when it starts, then persists the next
+due time in SQLite. It never overlaps two Shepherd runs for one repository. If a run reaches
+its action limit, the next run inventories GitHub again and continues from live pull request
+state and audit comments. Before a stacked parent merge, Shepherd records the child's
+pending retarget so a later run cannot mistake the child for independent work. With
+`max_actions = 1`, recording the transition, merging the parent, retargeting the child, and
+marking the transition complete happen in separate runs.
 
 Schedules use the `agents.shepherd` definition and managed workers, because repository
 paths and GitHub credentials remain machine-local. Restart the control plane after changing
@@ -71,9 +74,9 @@ a schedule.
 
 Shepherd treats the pull request label `machinist:auto-merge` as its sole permission to
 update, repair, comment on, or merge a pull request. At the start of each run, Shepherd
-checks that the repository defines this label and creates the definition when it is absent.
-It never applies the label itself. Apply it only to pull requests you want Shepherd to
-change:
+checks that the repository defines this label and creates the definition when it is absent,
+using one action from that run. It never applies the label itself. Apply it only to pull
+requests you want Shepherd to change:
 
 ```sh
 gh pr edit <number> --add-label "machinist:auto-merge"

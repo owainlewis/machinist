@@ -34,6 +34,7 @@ type Server struct {
 	store          *Store
 	definitionPath string
 	schedules      []config.ResolvedShepherdSchedule
+	schedulerEvery time.Duration
 	workerToken    string
 	csrfToken      string
 	handler        http.Handler
@@ -88,7 +89,7 @@ func NewServer(store *Store, definitionPath, workerToken string) (*Server, error
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{store: store, definitionPath: definitionPath, schedules: schedules, workerToken: workerToken, csrfToken: csrfToken}
+	server := &Server{store: store, definitionPath: definitionPath, schedules: schedules, schedulerEvery: 30 * time.Second, workerToken: workerToken, csrfToken: csrfToken}
 	server.handler, err = server.routes()
 	if err != nil {
 		return nil, err
@@ -102,9 +103,7 @@ func (s *Server) Serve(ctx context.Context, listen string) error {
 	if err := validateLoopbackListen(listen); err != nil {
 		return err
 	}
-	if err := s.enqueueScheduledRuns(ctx); err != nil {
-		return err
-	}
+	_ = s.enqueueScheduledRuns(ctx)
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listen, err)
@@ -151,16 +150,14 @@ func (s *Server) runScheduler(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(s.schedulerEvery)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := s.enqueueScheduledRuns(ctx); err != nil {
-				return err
-			}
+			_ = s.enqueueScheduledRuns(ctx)
 		}
 	}
 }

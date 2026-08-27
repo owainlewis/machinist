@@ -43,6 +43,22 @@ def assert_label(label: Any) -> None:
         raise EvalFailure(f"unexpected auto-merge label definition: {observed!r}")
 
 
+def audit_fields(body: str) -> dict[str, str] | None:
+    lines = body.splitlines()
+    if AUDIT_MARKER not in (line.strip() for line in lines):
+        return None
+    fields: dict[str, str] = {}
+    for line in lines:
+        key, separator, value = line.partition(":")
+        if not separator:
+            continue
+        key = key.strip().lower()
+        if not key or key in fields:
+            return None
+        fields[key] = value.strip()
+    return fields
+
+
 def assert_audit_comment(
     pull_request: dict[str, Any], head: str, classification: str
 ) -> None:
@@ -52,11 +68,11 @@ def assert_audit_comment(
     for comment in comments:
         if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
             continue
-        body = comment["body"]
+        fields = audit_fields(comment["body"])
         if (
-            AUDIT_MARKER in body
-            and head in body
-            and classification.lower() in body.lower()
+            fields is not None
+            and fields.get("head") == head
+            and fields.get("classification") == classification
         ):
             return
     raise EvalFailure(
@@ -69,6 +85,8 @@ def assert_queue_result(
     eligible: Any,
     blocked_head: str,
     eligible_head: str,
+    *,
+    require_eligible_audit: bool = True,
 ) -> None:
     if not isinstance(blocked, dict) or not isinstance(eligible, dict):
         raise EvalFailure("GitHub returned invalid pull request evidence")
@@ -87,10 +105,13 @@ def assert_queue_result(
     ):
         raise EvalFailure(f"eligible pull request was not merged at its exact head: {eligible!r}")
     assert_audit_comment(blocked, blocked_head, "blocked")
-    assert_audit_comment(eligible, eligible_head, "merged")
+    if require_eligible_audit:
+        assert_audit_comment(eligible, eligible_head, "merged")
 
 
-def assert_deferred_result(deferred: Any, deferred_head: str) -> None:
+def assert_deferred_result(
+    deferred: Any, deferred_head: str, *, require_audit: bool = True
+) -> None:
     if not isinstance(deferred, dict):
         raise EvalFailure("GitHub returned invalid deferred pull request evidence")
     if (
@@ -100,7 +121,8 @@ def assert_deferred_result(deferred: Any, deferred_head: str) -> None:
         or LABEL not in label_names(deferred)
     ):
         raise EvalFailure(f"deferred pull request changed unexpectedly: {deferred!r}")
-    assert_audit_comment(deferred, deferred_head, "deferred")
+    if require_audit:
+        assert_audit_comment(deferred, deferred_head, "deferred")
 
 
 def assert_unlabelled_unchanged(
@@ -151,21 +173,30 @@ def assert_stack_transition(
     comments = child.get("comments")
     if not isinstance(comments, list):
         raise EvalFailure("GitHub returned invalid stack child comments")
-    expected = (
-        AUDIT_MARKER,
-        STACK_CLASSIFICATION,
-        state,
-        parent_url,
-        parent_head,
-        parent_base,
-        child_head,
-        child_base,
-    )
-    if any(
-        isinstance(comment, dict)
-        and isinstance(comment.get("body"), str)
-        and all(item in comment["body"] for item in expected)
+    records = [
+        fields
         for comment in comments
+        if isinstance(comment, dict) and isinstance(comment.get("body"), str)
+        if (fields := audit_fields(comment["body"])) is not None
+    ]
+    expected = {
+        "classification": STACK_CLASSIFICATION,
+        "state": state,
+        "parent": parent_url,
+        "parent head": parent_head,
+        "parent base": parent_base,
+        "dependent head": child_head,
+        "dependent base": child_base,
+    }
+    if state == RETARGETED and any(
+        record.get("classification") == STACK_CLASSIFICATION
+        and record.get("state") == PENDING_RETARGET
+        for record in records
+    ):
+        raise EvalFailure("active pending-retarget transition remains after retarget")
+    if any(
+        all(record.get(key) == value for key, value in expected.items())
+        for record in records
     ):
         return
     raise EvalFailure(f"missing durable {state} stack transition evidence")
@@ -545,16 +576,19 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 ),
                 f"opt in {url}",
             )
-        if run_shepherd(executable, options, 1) != 0:
+        if run_shepherd(executable, options, 2) != 0:
             raise EvalFailure("queue Shepherd run failed")
         assert_queue_result(
             pull_request(options.repository, blocked_url),
             pull_request(options.repository, eligible_url),
             blocked_head,
             eligible_head,
+            require_eligible_audit=False,
         )
         assert_deferred_result(
-            pull_request(options.repository, deferred_url), deferred_head
+            pull_request(options.repository, deferred_url),
+            deferred_head,
+            require_audit=False,
         )
         checked(
             command(("gh", "pr", "close", deferred_url, "--repo", options.repository)),
@@ -601,6 +635,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
 
         if run_shepherd(executable, options, 1) != 0:
+            raise EvalFailure("stack transition Shepherd run failed")
+        if run_shepherd(executable, options, 1) != 0:
             raise EvalFailure("stack parent Shepherd run failed")
         assert_stack_transition(
             pull_request(options.repository, parent_url),
@@ -615,6 +651,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
         if run_shepherd(executable, options, 1) != 0:
             raise EvalFailure("stack retarget Shepherd run failed")
+        if run_shepherd(executable, options, 1) != 0:
+            raise EvalFailure("stack transition completion Shepherd run failed")
         assert_stack_transition(
             pull_request(options.repository, parent_url),
             pull_request(options.repository, child_url),
@@ -627,12 +665,15 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
 
         if run_shepherd(executable, options, 1) != 0:
+            raise EvalFailure("stack child review Shepherd run failed")
+        if run_shepherd(executable, options, 1) != 0:
             raise EvalFailure("stack child Shepherd run failed")
         assert_queue_result(
             pull_request(options.repository, blocked_url),
             pull_request(options.repository, child_url),
             blocked_head,
             child_head,
+            require_eligible_audit=False,
         )
     except BaseException as error:
         failure = error
@@ -651,8 +692,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 1
     print(
         "PASS shepherd-queue: created label, audited older draft blocker, "
-        "merged and audited eligible exact head, audited deferred candidate, "
-        "and resumed a max_actions=1 stack through parent merge and safe child retarget"
+        "merged the eligible exact head within the full mutation budget, deferred the "
+        "remaining candidate, and resumed a max_actions=1 stack through recorded parent "
+        "merge, safe child retarget, transition completion, review, and merge"
     )
     return 0
 
