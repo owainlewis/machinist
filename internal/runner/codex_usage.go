@@ -52,16 +52,55 @@ func wrappedProgramIndex(command []string) int {
 	case "env":
 		return envProgramIndex(command)
 	case "mise":
-		if len(command) < 2 || (command[1] != "exec" && command[1] != "x") {
-			return 0
-		}
-		for index, argument := range command[1:] {
-			if argument == "--" && index+2 < len(command) {
-				return index + 2
-			}
-		}
+		return miseProgramIndex(command)
 	}
 	return 0
+}
+
+func miseProgramIndex(command []string) int {
+	for index := 1; index < len(command); index++ {
+		argument := command[index]
+		recognized, takesNextValue := miseGlobalOption(argument)
+		if recognized {
+			if takesNextValue {
+				index++
+			}
+			continue
+		}
+		if argument != "exec" && argument != "x" {
+			return -1
+		}
+		for commandIndex := index + 1; commandIndex < len(command); commandIndex++ {
+			if command[commandIndex] == "--" && commandIndex+1 < len(command) {
+				return commandIndex + 1
+			}
+		}
+		return -1
+	}
+	return -1
+}
+
+func miseGlobalOption(argument string) (bool, bool) {
+	for _, option := range []string{"-C", "--cd", "-E", "--env", "-j", "--jobs", "--output"} {
+		if argument == option {
+			return true, true
+		}
+		if strings.HasPrefix(argument, option+"=") || (len(option) == 2 && strings.HasPrefix(argument, option) && len(argument) > 2) {
+			return true, false
+		}
+	}
+	if slices.Contains([]string{"-q", "--quiet", "-v", "--verbose", "-y", "--yes", "--raw", "--locked", "--silent", "--no-config", "--no-env", "--no-hooks", "-h", "--help"}, argument) {
+		return true, false
+	}
+	if len(argument) > 2 && argument[0] == '-' && argument[1] != '-' {
+		for _, option := range argument[1:] {
+			if !strings.ContainsRune("qvyh", option) {
+				return false, false
+			}
+		}
+		return true, false
+	}
+	return false, false
 }
 
 func codexExecIndexAfter(command []string, programIndex int) int {
