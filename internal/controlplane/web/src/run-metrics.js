@@ -111,6 +111,13 @@ export function formatReportingCoverage(summary) {
   return `${summary.reported} of ${summary.completed} step${summary.completed === 1 ? "" : "s"}`;
 }
 
+export function formatTaskTokenUsage(summary) {
+  if (summary.total === undefined) return "Not reported";
+  const total = `${formatTokenUsage(summary.total)} tokens`;
+  if (!summary.unavailable) return total;
+  return `${total} reported · ${summary.unavailable} step${summary.unavailable === 1 ? "" : "s"} unreported`;
+}
+
 export function runDetails(run) {
   const values = [run.executor];
   if (run.worker_name) values.push(run.worker_name);

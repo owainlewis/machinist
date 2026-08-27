@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { completedRuns, formatDurationMillis, formatReportingCoverage, formatSuccessRate, formatTokenUsage, runDetails, runModelSummary, taskAnalytics, taskDurationMillis, tasksInWindow, tokenUsageSummary } from "./run-metrics.js";
+import { completedRuns, formatDurationMillis, formatReportingCoverage, formatSuccessRate, formatTaskTokenUsage, formatTokenUsage, runDetails, runModelSummary, taskAnalytics, taskDurationMillis, tasksInWindow, tokenUsageSummary } from "./run-metrics.js";
 
 function localDate(year, month, day, hour = 0) {
   return new Date(year, month - 1, day, hour).toISOString();
@@ -111,6 +111,13 @@ test("tokenUsageSummary does not present missing usage as zero", () => {
   assert.deepEqual(zero, { total: "0", reported: 1, completed: 1, unavailable: 0 });
   assert.equal(formatTokenUsage(zero.total), "0");
   assert.equal(formatReportingCoverage(tokenUsageSummary([])), "No completed steps");
+});
+
+test("formatTaskTokenUsage marks partial totals as reported", () => {
+  assert.equal(formatTaskTokenUsage({ total: undefined, unavailable: 2 }), "Not reported");
+  assert.equal(formatTaskTokenUsage({ total: "4321", unavailable: 0 }), "4,321 tokens");
+  assert.equal(formatTaskTokenUsage({ total: "4321", unavailable: 1 }), "4,321 tokens reported · 1 step unreported");
+  assert.equal(formatTaskTokenUsage({ total: "4321", unavailable: 2 }), "4,321 tokens reported · 2 steps unreported");
 });
 
 test("runModelSummary reports every distinct configured model and honest fallbacks", () => {

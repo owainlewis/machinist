@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { formatDurationMillis, formatTokenUsage, runModelSummary, taskDurationMillis, tokenUsageSummary } from "@/run-metrics";
+import { formatDurationMillis, formatTaskTokenUsage, formatTokenUsage, runModelSummary, taskDurationMillis, tokenUsageSummary } from "@/run-metrics";
 import { routeFromHash } from "@/routes";
 import { boardColumns, currentRun, filterJobs, groupJobsByBoardColumn, jobCounts, needsAttention } from "@/runs-board";
 import { createStatusLoader } from "@/status-loader";
@@ -238,7 +238,7 @@ function TaskDetail({ job, loaded, error, deleting, onDelete }) {
       <DetailMetric label="Submitted" value={formatTimestamp(job.created_at)} />
       <DetailMetric label="Steps" value={`${job.runs.length}`} />
       <DetailMetric label="Duration" value={totalDuration === undefined ? "Unavailable" : formatDurationMillis(totalDuration)} />
-      <DetailMetric label="Token usage" value={usage.total === undefined ? "Not reported" : `${formatTokenUsage(usage.total)} tokens`} />
+      <DetailMetric label="Token usage" value={formatTaskTokenUsage(usage)} />
       <DetailMetric label="Updated" value={formatTimestamp(job.updated_at)} />
     </dl>
 
