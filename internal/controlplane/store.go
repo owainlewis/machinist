@@ -19,11 +19,13 @@ import (
 )
 
 var (
-	ErrLeaseConflict = errors.New("run lease does not match")
-	ErrRunState      = errors.New("run is not active")
+	ErrLeaseConflict  = errors.New("run lease does not match")
+	ErrRunState       = errors.New("run is not active")
+	ErrTriggerMissing = errors.New("trigger state does not exist")
 )
 
 const leaseDuration = 30 * time.Second
+const maxTriggerErrorLength = 2000
 
 type Store struct {
 	db  *sql.DB
@@ -31,16 +33,19 @@ type Store struct {
 }
 
 type Job struct {
-	ID            string    `json:"id"`
-	Prompt        string    `json:"prompt"`
-	Repository    string    `json:"repository"`
-	SelectionKind string    `json:"selection_kind"`
-	SelectionName string    `json:"selection_name"`
-	ScheduleName  string    `json:"schedule_name,omitempty"`
-	State         string    `json:"state"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	Runs          []Run     `json:"runs"`
+	ID             string    `json:"id"`
+	Prompt         string    `json:"prompt"`
+	Repository     string    `json:"repository"`
+	SelectionKind  string    `json:"selection_kind"`
+	SelectionName  string    `json:"selection_name"`
+	ScheduleName   string    `json:"schedule_name,omitempty"`
+	TriggerID      string    `json:"trigger_id,omitempty"`
+	OccurrenceKey  string    `json:"occurrence_key,omitempty"`
+	TriggerSubject string    `json:"trigger_subject,omitempty"`
+	State          string    `json:"state"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Runs           []Run     `json:"runs"`
 }
 
 type Run struct {
@@ -67,8 +72,50 @@ type Worker struct {
 }
 
 type Snapshot struct {
-	Jobs    []Job    `json:"jobs"`
-	Workers []Worker `json:"workers"`
+	Jobs     []Job           `json:"jobs"`
+	Workers  []Worker        `json:"workers"`
+	Triggers []TriggerStatus `json:"triggers"`
+}
+
+// TriggerDefinition is the durable identity and schedule state for one resolved trigger.
+// A changed signature resets scheduling from NextDueAt; an unchanged signature preserves
+// its existing due time across restarts.
+type TriggerDefinition struct {
+	Identity        string
+	Family          string
+	ConfigSignature string
+	NextDueAt       time.Time
+}
+
+// TriggerAdmission contains an already resolved job. Trigger scheduling code remains
+// responsible for validating configuration and rendering the prompt before admission.
+type TriggerAdmission struct {
+	Identity      string
+	Family        string
+	OccurrenceKey string
+	Subject       string
+	ScheduledAt   time.Time
+	NextDueAt     time.Time
+	Prompt        string
+	Repository    string
+	SelectionKind string
+	SelectionName string
+	Agents        []config.ResolvedAgent
+}
+
+type TriggerStatus struct {
+	Identity        string     `json:"identity"`
+	Family          string     `json:"family"`
+	ConfigSignature string     `json:"config_signature,omitempty"`
+	NextDueAt       *time.Time `json:"next_due,omitempty"`
+	LastAttemptAt   *time.Time `json:"last_attempt,omitempty"`
+	LastSuccessAt   *time.Time `json:"last_success,omitempty"`
+	ActiveJobID     string     `json:"active_job,omitempty"`
+	CandidateCount  int64      `json:"candidate_count,omitempty"`
+	AdmissionCount  int64      `json:"admission_count,omitempty"`
+	CoalescedCount  int64      `json:"coalesced_count,omitempty"`
+	Health          string     `json:"health"`
+	LatestError     string     `json:"error,omitempty"`
 }
 
 type RunOutput struct {
@@ -108,6 +155,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   selection_name TEXT NOT NULL,
   schedule_name TEXT NOT NULL DEFAULT '',
   has_shepherd INTEGER NOT NULL DEFAULT 0,
+  trigger_identity TEXT NOT NULL DEFAULT '',
+  occurrence_key TEXT NOT NULL DEFAULT '',
+  trigger_subject TEXT NOT NULL DEFAULT '',
+  fixed_trigger INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -154,6 +205,20 @@ CREATE TABLE IF NOT EXISTS schedule_state (
   repository TEXT NOT NULL DEFAULT '',
   every_ms INTEGER NOT NULL DEFAULT 0,
   execution_signature TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS trigger_state (
+  identity TEXT PRIMARY KEY,
+  family TEXT NOT NULL,
+  config_signature TEXT NOT NULL,
+  next_due_at TEXT,
+  last_attempt_at TEXT,
+  last_success_at TEXT,
+  health TEXT NOT NULL DEFAULT 'healthy',
+  latest_error TEXT NOT NULL DEFAULT '',
+  candidate_count INTEGER NOT NULL DEFAULT 0,
+  admission_count INTEGER NOT NULL DEFAULT 0,
+  coalesced_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
 );`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
@@ -176,6 +241,18 @@ CREATE TABLE IF NOT EXISTS schedule_state (
 	if err := s.addColumnIfMissing(ctx, "jobs", "has_shepherd", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_identity", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "jobs", "occurrence_key", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_subject", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "jobs", "fixed_trigger", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := s.addColumnIfMissing(ctx, "schedule_state", "repository", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
@@ -193,6 +270,15 @@ CREATE TABLE IF NOT EXISTS schedule_state (
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_shepherd_repository_v3 ON jobs(repository) WHERE has_shepherd=1 AND state IN ('queued','running')`); err != nil {
 		return fmt.Errorf("create scheduled job overlap guard: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identity,occurrence_key) WHERE trigger_identity<>'' AND occurrence_key<>''`); err != nil {
+		return fmt.Errorf("create trigger occurrence guard: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running')`); err != nil {
+		return fmt.Errorf("create fixed trigger overlap guard: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running')`); err != nil {
+		return fmt.Errorf("create trigger subject overlap guard: %w", err)
 	}
 	return s.migrateRunMetrics(ctx)
 }
@@ -352,6 +438,259 @@ func (s *Store) CreateJob(ctx context.Context, prompt, repository, kind, name st
 		return "", fmt.Errorf("commit job: %w", err)
 	}
 	return jobID, nil
+}
+
+// SyncTriggers makes the durable trigger set match the resolved configuration. Existing
+// state is preserved only when both family and configuration signature are unchanged.
+func (s *Store) SyncTriggers(ctx context.Context, definitions []TriggerDefinition) error {
+	seen := make(map[string]bool, len(definitions))
+	for _, definition := range definitions {
+		if definition.Identity == "" || definition.Family == "" || definition.ConfigSignature == "" {
+			return errors.New("trigger identity, family, and configuration signature are required")
+		}
+		if seen[definition.Identity] {
+			return fmt.Errorf("duplicate trigger identity %q", definition.Identity)
+		}
+		seen[definition.Identity] = true
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	for _, definition := range definitions {
+		nextDue := nullableTimeText(definition.NextDueAt)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO trigger_state(identity,family,config_signature,next_due_at,health,updated_at)
+VALUES(?,?,?,?,'healthy',?)
+ON CONFLICT(identity) DO UPDATE SET
+  family=excluded.family,
+  config_signature=excluded.config_signature,
+  next_due_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN excluded.next_due_at ELSE trigger_state.next_due_at END,
+  last_attempt_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.last_attempt_at END,
+  last_success_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.last_success_at END,
+  health=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 'healthy' ELSE trigger_state.health END,
+  latest_error=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN '' ELSE trigger_state.latest_error END,
+  candidate_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.candidate_count END,
+  admission_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.admission_count END,
+  coalesced_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.coalesced_count END,
+  updated_at=excluded.updated_at`, definition.Identity, definition.Family, definition.ConfigSignature, nextDue, now); err != nil {
+			return fmt.Errorf("sync trigger %q: %w", definition.Identity, err)
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT identity FROM trigger_state`)
+	if err != nil {
+		return fmt.Errorf("list durable triggers: %w", err)
+	}
+	var removed []string
+	for rows.Next() {
+		var identity string
+		if err := rows.Scan(&identity); err != nil {
+			rows.Close()
+			return fmt.Errorf("list durable triggers: %w", err)
+		}
+		if !seen[identity] {
+			removed = append(removed, identity)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("list durable triggers: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("list durable triggers: %w", err)
+	}
+	for _, identity := range removed {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM trigger_state WHERE identity=?`, identity); err != nil {
+			return fmt.Errorf("remove trigger %q: %w", identity, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit trigger sync: %w", err)
+	}
+	return nil
+}
+
+// CreateTriggeredJob durably admits an occurrence and its job in one transaction.
+// Duplicate occurrences are idempotent. Fixed schedules coalesce a new occurrence while
+// active work exists; subject-based triggers wait so a later retry can admit the event.
+func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmission) (string, bool, error) {
+	if admission.Identity == "" || admission.Family == "" {
+		return "", false, errors.New("trigger identity and family are required")
+	}
+	if len(admission.Agents) == 0 {
+		return "", false, errors.New("triggered job must contain at least one agent")
+	}
+	fixed := fixedTriggerFamily(admission.Family)
+	if admission.OccurrenceKey == "" && fixed && !admission.ScheduledAt.IsZero() {
+		admission.OccurrenceKey = admission.ScheduledAt.UTC().Format(time.RFC3339Nano)
+	}
+	if admission.OccurrenceKey == "" {
+		return "", false, errors.New("trigger occurrence key is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback()
+	var family string
+	if err := tx.QueryRowContext(ctx, `SELECT family FROM trigger_state WHERE identity=?`, admission.Identity).Scan(&family); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, fmt.Errorf("%w: %s", ErrTriggerMissing, admission.Identity)
+		}
+		return "", false, fmt.Errorf("read trigger %q: %w", admission.Identity, err)
+	}
+	if family != admission.Family {
+		return "", false, fmt.Errorf("trigger %q family is %q, not %q", admission.Identity, family, admission.Family)
+	}
+
+	var existingJob string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE trigger_identity=? AND occurrence_key=?`, admission.Identity, admission.OccurrenceKey).Scan(&existingJob)
+	if err == nil {
+		return existingJob, false, tx.Commit()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", false, fmt.Errorf("read trigger occurrence: %w", err)
+	}
+
+	if fixed {
+		err = tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE trigger_identity=? AND fixed_trigger=1 AND state IN ('queued','running')`, admission.Identity).Scan(&existingJob)
+		if err == nil {
+			now := s.now().UTC().Format(time.RFC3339Nano)
+			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=COALESCE(?,next_due_at),last_attempt_at=?,health='coalesced',latest_error='',coalesced_count=coalesced_count+1,updated_at=? WHERE identity=?`, nullableTimeText(admission.NextDueAt), now, now, admission.Identity); err != nil {
+				return "", false, fmt.Errorf("coalesce trigger %q: %w", admission.Identity, err)
+			}
+			return existingJob, false, tx.Commit()
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", false, fmt.Errorf("read active trigger job: %w", err)
+		}
+	}
+	if admission.Subject != "" {
+		err = tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE trigger_subject=? AND state IN ('queued','running')`, admission.Subject).Scan(&existingJob)
+		if err == nil {
+			return existingJob, false, tx.Commit()
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", false, fmt.Errorf("read active trigger subject: %w", err)
+		}
+	}
+
+	jobID, err := randomID("job", 12)
+	if err != nil {
+		return "", false, err
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	hasShepherd := false
+	for _, agent := range admission.Agents {
+		hasShepherd = hasShepherd || agent.Name == "shepherd"
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,trigger_identity,occurrence_key,trigger_subject,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionKind, admission.SelectionName, hasShepherd, admission.Identity, admission.OccurrenceKey, admission.Subject, fixed, now, now); err != nil {
+		return "", false, fmt.Errorf("insert triggered job: %w", err)
+	}
+	for index, agent := range admission.Agents {
+		runID, err := randomID("run", 12)
+		if err != nil {
+			return "", false, err
+		}
+		state := "pending"
+		if index == 0 {
+			state = "queued"
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,step,agent,agent_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, runID, jobID, index, agent.Name, agent.Hash, agent.Executor, agent.Model, admission.Repository, agent.Prompt, agent.Timeout.Milliseconds(), state); err != nil {
+			return "", false, fmt.Errorf("insert triggered run: %w", err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=COALESCE(?,next_due_at),last_attempt_at=?,health='active',latest_error='',admission_count=admission_count+1,updated_at=? WHERE identity=?`, nullableTimeText(admission.NextDueAt), now, now, admission.Identity)
+	if err != nil {
+		return "", false, fmt.Errorf("update trigger admission: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return "", false, err
+	}
+	if changed != 1 {
+		return "", false, fmt.Errorf("%w: %s", ErrTriggerMissing, admission.Identity)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, fmt.Errorf("commit triggered job: %w", err)
+	}
+	return jobID, true, nil
+}
+
+// RecordTriggerAttempt records one poll or scheduling attempt. Candidate counts are
+// cumulative. Failed attempts do not advance the occurrence or next due time.
+func (s *Store) RecordTriggerAttempt(ctx context.Context, identity string, candidates int, attemptErr error) error {
+	if candidates < 0 {
+		return errors.New("trigger candidate count cannot be negative")
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	health := "healthy"
+	latestError := ""
+	if attemptErr != nil {
+		health = "failed"
+		latestError = boundedTriggerError(attemptErr.Error())
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET last_attempt_at=?,candidate_count=candidate_count+?,health=CASE WHEN ?='healthy' AND EXISTS (SELECT 1 FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.state IN ('queued','running')) THEN 'active' ELSE ? END,latest_error=?,updated_at=? WHERE identity=?`, now, candidates, health, health, latestError, now, identity)
+	if err != nil {
+		return fmt.Errorf("record trigger %q attempt: %w", identity, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("%w: %s", ErrTriggerMissing, identity)
+	}
+	return nil
+}
+
+func (s *Store) SetTriggerNextDue(ctx context.Context, identity string, nextDue time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=?,updated_at=? WHERE identity=?`, nullableTimeText(nextDue), s.now().UTC().Format(time.RFC3339Nano), identity)
+	if err != nil {
+		return fmt.Errorf("set trigger %q next due time: %w", identity, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("%w: %s", ErrTriggerMissing, identity)
+	}
+	return nil
+}
+
+// TriggerOccurrenceExists distinguishes an idempotent admission from an occurrence that
+// is still waiting behind active work for the same subject.
+func (s *Store) TriggerOccurrenceExists(ctx context.Context, identity, occurrenceKey string) (bool, error) {
+	if identity == "" || occurrenceKey == "" {
+		return false, errors.New("trigger identity and occurrence key are required")
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE trigger_identity=? AND occurrence_key=?)`, identity, occurrenceKey).Scan(&exists); err != nil {
+		return false, fmt.Errorf("read trigger occurrence: %w", err)
+	}
+	return exists == 1, nil
+}
+
+func (s *Store) AddTriggerCoalesced(ctx context.Context, identity string, count int64) error {
+	if count < 0 {
+		return errors.New("trigger coalesced count cannot be negative")
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET coalesced_count=coalesced_count+?,health=CASE WHEN ?>0 THEN 'coalesced' ELSE health END,updated_at=? WHERE identity=?`, count, count, now, identity)
+	if err != nil {
+		return fmt.Errorf("record trigger %q coalesced occurrences: %w", identity, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("%w: %s", ErrTriggerMissing, identity)
+	}
+	return nil
 }
 
 // CreateScheduledJob queues one due Shepherd run. It persists the next due time and uses
@@ -517,10 +856,10 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 		return err
 	}
 	defer tx.Rollback()
-	var jobID, state, instanceID, leaseToken, startedAt string
+	var jobID, state, instanceID, leaseToken, startedAt, triggerIdentity string
 	var leaseExpiresAt sql.NullInt64
 	var step int
-	if err := tx.QueryRowContext(ctx, `SELECT job_id,step,state,COALESCE(worker_instance,''),COALESCE(lease_token,''),lease_expires_at,COALESCE(started_at,'') FROM runs WHERE id=?`, runID).Scan(&jobID, &step, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT r.job_id,r.step,r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,COALESCE(r.started_at,''),COALESCE(j.trigger_identity,'') FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.id=?`, runID).Scan(&jobID, &step, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt, &triggerIdentity); err != nil {
 		return err
 	}
 	if subtle.ConstantTimeCompare([]byte(instanceID), []byte(completion.InstanceID)) != 1 || subtle.ConstantTimeCompare([]byte(leaseToken), []byte(completion.LeaseToken)) != 1 {
@@ -563,6 +902,11 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='succeeded',updated_at=? WHERE id=?`, now, jobID); err != nil {
 				return err
 			}
+			if triggerIdentity != "" {
+				if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_success_at=?,health='healthy',latest_error='',updated_at=? WHERE identity=?`, now, now, triggerIdentity); err != nil {
+					return fmt.Errorf("record trigger success: %w", err)
+				}
+			}
 		}
 	} else {
 		if _, err := tx.ExecContext(ctx, `UPDATE runs SET state='skipped' WHERE job_id=? AND state='pending'`, jobID); err != nil {
@@ -570,6 +914,15 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',updated_at=? WHERE id=?`, now, jobID); err != nil {
 			return err
+		}
+		if triggerIdentity != "" {
+			latestError := completion.Error
+			if latestError == "" {
+				latestError = "triggered job " + completion.State
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET health='failed',latest_error=?,updated_at=? WHERE identity=?`, boundedTriggerError(latestError), now, triggerIdentity); err != nil {
+				return fmt.Errorf("record trigger failure: %w", err)
+			}
 		}
 	}
 	return tx.Commit()
@@ -619,7 +972,38 @@ func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return Snapshot{Jobs: jobs, Workers: workers}, nil
+	triggers, err := s.TriggerSnapshot(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{Jobs: jobs, Workers: workers, Triggers: triggers}, nil
+}
+
+func (s *Store) TriggerSnapshot(ctx context.Context) ([]TriggerStatus, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT t.identity,t.family,t.config_signature,COALESCE(t.next_due_at,''),COALESCE(t.last_attempt_at,''),COALESCE(t.last_success_at,''),COALESCE((SELECT j.id FROM jobs j WHERE j.trigger_identity=t.identity AND j.state IN ('queued','running') ORDER BY j.created_at LIMIT 1),''),t.candidate_count,t.admission_count,t.coalesced_count,t.health,t.latest_error FROM trigger_state t ORDER BY t.identity`)
+	if err != nil {
+		return nil, fmt.Errorf("read trigger snapshot: %w", err)
+	}
+	defer rows.Close()
+	statuses := []TriggerStatus{}
+	for rows.Next() {
+		var status TriggerStatus
+		var nextDue, lastAttempt, lastSuccess string
+		if err := rows.Scan(&status.Identity, &status.Family, &status.ConfigSignature, &nextDue, &lastAttempt, &lastSuccess, &status.ActiveJobID, &status.CandidateCount, &status.AdmissionCount, &status.CoalescedCount, &status.Health, &status.LatestError); err != nil {
+			return nil, fmt.Errorf("read trigger snapshot: %w", err)
+		}
+		status.NextDueAt = parseOptionalTime(nextDue)
+		status.LastAttemptAt = parseOptionalTime(lastAttempt)
+		status.LastSuccessAt = parseOptionalTime(lastSuccess)
+		if status.Health == "healthy" && status.ActiveJobID == "" && status.NextDueAt != nil && status.NextDueAt.Before(s.now().UTC()) {
+			status.Health = "stale"
+		}
+		statuses = append(statuses, status)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read trigger snapshot: %w", err)
+	}
+	return statuses, nil
 }
 
 func (s *Store) AvailableRepositories(ctx context.Context, seenAfter time.Time) ([]string, error) {
@@ -668,7 +1052,7 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 }
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,prompt,repository,selection_kind,selection_name,schedule_name,state,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,prompt,repository,selection_kind,selection_name,schedule_name,trigger_identity,occurrence_key,trigger_subject,state,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -676,7 +1060,7 @@ func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
 	for rows.Next() {
 		var job Job
 		var created, updated string
-		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.SelectionKind, &job.SelectionName, &job.ScheduleName, &job.State, &created, &updated); err != nil {
+		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.SelectionKind, &job.SelectionName, &job.ScheduleName, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated); err != nil {
 			return nil, err
 		}
 		job.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -820,6 +1204,36 @@ func supportsModel(capabilities map[string][]string, executor, model string) boo
 		return true
 	}
 	return stringSet(models)[model]
+}
+
+func fixedTriggerFamily(family string) bool {
+	return family == "interval" || family == "cron"
+}
+
+func nullableTimeText(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func parseOptionalTime(value string) *time.Time {
+	if value == "" {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return nil
+	}
+	return &parsed
+}
+
+func boundedTriggerError(message string) string {
+	runes := []rune(message)
+	if len(runes) > maxTriggerErrorLength {
+		runes = runes[:maxTriggerErrorLength]
+	}
+	return string(runes)
 }
 
 func terminalRunState(state string) bool {

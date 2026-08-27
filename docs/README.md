@@ -8,6 +8,8 @@
   pipelines, and managed repositories
 - [Local control plane](control-plane.md): run the server and worker, and
   understand their security and recovery boundaries
+- [Managed triggers](managed-triggers.md): start jobs from GitHub labels,
+  intervals, and cron schedules
 - [Development](development.md): build, test, and navigate the repository
 - [Migration guide](migration-from-factory.md): clean installation, renamed
   interfaces, and rollback

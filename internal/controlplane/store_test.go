@@ -711,6 +711,175 @@ func TestShepherdScheduleSignatureCoversExecutionSettings(t *testing.T) {
 	}
 }
 
+func TestStoreSyncsDurableTriggerStateAcrossRestartAndConfigurationChanges(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "machinist.db")
+	clock := newTestClock(time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC))
+	store := openTestStore(t, database)
+	store.now = clock.Now
+	firstDue := clock.Now().Add(time.Hour)
+	definitions := []TriggerDefinition{
+		{Identity: "interval/audit", Family: "interval", ConfigSignature: "v1", NextDueAt: firstDue},
+		{Identity: "github/intake", Family: "github", ConfigSignature: "v1"},
+	}
+	if err := store.SyncTriggers(t.Context(), definitions); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordTriggerAttempt(t.Context(), "github/intake", 3, errors.New(strings.Repeat("x", maxTriggerErrorLength+10))); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Minute)
+	if err := store.SetTriggerNextDue(t.Context(), "interval/audit", firstDue.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := openTestStore(t, database)
+	reopened.now = clock.Now
+	if err := reopened.SyncTriggers(t.Context(), definitions); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := reopened.TriggerSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 2 || statuses[0].Identity != "github/intake" || statuses[1].Identity != "interval/audit" {
+		t.Fatalf("trigger statuses = %#v", statuses)
+	}
+	if statuses[0].Health != "failed" || statuses[0].CandidateCount != 3 || len([]rune(statuses[0].LatestError)) != maxTriggerErrorLength {
+		t.Fatalf("GitHub status = %#v", statuses[0])
+	}
+	if statuses[1].NextDueAt == nil || !statuses[1].NextDueAt.Equal(firstDue.Add(time.Hour)) {
+		t.Fatalf("unchanged next due = %#v", statuses[1].NextDueAt)
+	}
+
+	changedDue := clock.Now().Add(4 * time.Hour)
+	if err := reopened.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: "github/intake", Family: "github", ConfigSignature: "v2", NextDueAt: changedDue}}); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err = reopened.TriggerSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Identity != "github/intake" || statuses[0].Health != "healthy" || statuses[0].CandidateCount != 0 || statuses[0].LastAttemptAt != nil || statuses[0].LatestError != "" {
+		t.Fatalf("changed trigger status = %#v", statuses)
+	}
+	if statuses[0].NextDueAt == nil || !statuses[0].NextDueAt.Equal(changedDue) {
+		t.Fatalf("changed next due = %#v", statuses[0].NextDueAt)
+	}
+}
+
+func TestStoreAdmitsUniqueFixedOccurrencesAndCoalescesOverlap(t *testing.T) {
+	clock := newTestClock(time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC))
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	store.now = clock.Now
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: "interval/audit", Family: "interval", ConfigSignature: "v1", NextDueAt: clock.Now().Add(time.Hour)}}); err != nil {
+		t.Fatal(err)
+	}
+	admission := TriggerAdmission{
+		Identity: "interval/audit", Family: "interval", ScheduledAt: clock.Now().Add(time.Hour), NextDueAt: clock.Now().Add(2 * time.Hour),
+		Prompt: "Audit", Repository: "machinist", SelectionKind: "agent", SelectionName: "audit", Agents: []config.ResolvedAgent{testAgent("audit", "Audit")},
+	}
+	jobID, created, err := store.CreateTriggeredJob(t.Context(), admission)
+	if err != nil || !created {
+		t.Fatalf("first admission = %q, %v, %v", jobID, created, err)
+	}
+	duplicateID, created, err := store.CreateTriggeredJob(t.Context(), admission)
+	if err != nil || created || duplicateID != jobID {
+		t.Fatalf("duplicate admission = %q, %v, %v", duplicateID, created, err)
+	}
+	later := admission
+	later.ScheduledAt = clock.Now().Add(2 * time.Hour)
+	later.NextDueAt = clock.Now().Add(3 * time.Hour)
+	activeID, created, err := store.CreateTriggeredJob(t.Context(), later)
+	if err != nil || created || activeID != jobID {
+		t.Fatalf("coalesced admission = %q, %v, %v", activeID, created, err)
+	}
+	if err := store.AddTriggerCoalesced(t.Context(), admission.Identity, 2); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Triggers) != 1 || snapshot.Triggers[0].ActiveJobID != jobID || snapshot.Triggers[0].AdmissionCount != 1 || snapshot.Triggers[0].CoalescedCount != 3 || snapshot.Triggers[0].Health != "coalesced" {
+		t.Fatalf("active trigger snapshot = %#v", snapshot.Triggers)
+	}
+	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].TriggerID != admission.Identity || snapshot.Jobs[0].OccurrenceKey != admission.ScheduledAt.Format(time.RFC3339Nano) {
+		t.Fatalf("triggered job snapshot = %#v", snapshot.Jobs)
+	}
+
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	clock.Advance(time.Second)
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := store.TriggerSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statuses[0].ActiveJobID != "" || statuses[0].LastSuccessAt == nil || !statuses[0].LastSuccessAt.Equal(clock.Now()) || statuses[0].Health != "healthy" {
+		t.Fatalf("completed trigger status = %#v", statuses[0])
+	}
+	secondID, created, err := store.CreateTriggeredJob(t.Context(), later)
+	if err != nil || !created || secondID == jobID {
+		t.Fatalf("catch-up admission = %q, %v, %v", secondID, created, err)
+	}
+}
+
+func TestStoreRetriesUncommittedAdmissionAndPreventsSubjectOverlap(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{
+		{Identity: "github/intake", Family: "github", ConfigSignature: "v1"},
+		{Identity: "github/security", Family: "github", ConfigSignature: "v1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	admission := TriggerAdmission{Identity: "github/intake", Family: "github", OccurrenceKey: "github.com/event/1", Subject: "https://github.com/owainlewis/machinist/issues/396", Prompt: "Complete issue", Repository: "machinist", SelectionKind: "agent", SelectionName: "foreman"}
+	if _, _, err := store.CreateTriggeredJob(t.Context(), admission); err == nil {
+		t.Fatal("expected incomplete admission to fail")
+	}
+	admission.Agents = []config.ResolvedAgent{testAgent("foreman", "Complete issue")}
+	firstID, created, err := store.CreateTriggeredJob(t.Context(), admission)
+	if err != nil || !created {
+		t.Fatalf("retried admission = %q, %v, %v", firstID, created, err)
+	}
+	exists, err := store.TriggerOccurrenceExists(t.Context(), admission.Identity, admission.OccurrenceKey)
+	if err != nil || !exists {
+		t.Fatalf("committed occurrence exists = %v, %v", exists, err)
+	}
+	reapplied := admission
+	reapplied.Identity = "github/security"
+	reapplied.OccurrenceKey = "github.com/event/2"
+	activeID, created, err := store.CreateTriggeredJob(t.Context(), reapplied)
+	if err != nil || created || activeID != firstID {
+		t.Fatalf("overlapping subject = %q, %v, %v", activeID, created, err)
+	}
+	exists, err = store.TriggerOccurrenceExists(t.Context(), reapplied.Identity, reapplied.OccurrenceKey)
+	if err != nil || exists {
+		t.Fatalf("blocked occurrence exists = %v, %v", exists, err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "failed", ExitCode: 1, Error: "work failed"}); err != nil {
+		t.Fatal(err)
+	}
+	duplicateID, created, err := store.CreateTriggeredJob(t.Context(), admission)
+	if err != nil || created || duplicateID != firstID {
+		t.Fatalf("terminal duplicate occurrence = %q, %v, %v", duplicateID, created, err)
+	}
+	secondID, created, err := store.CreateTriggeredJob(t.Context(), reapplied)
+	if err != nil || !created || secondID == firstID {
+		t.Fatalf("reapplied occurrence = %q, %v, %v", secondID, created, err)
+	}
+}
+
 func openTestStore(t *testing.T, path string) *Store {
 	t.Helper()
 	store, err := OpenStore(path)

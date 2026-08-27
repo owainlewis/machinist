@@ -1,0 +1,48 @@
+name: Request Machinist work
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  request:
+    if: ${{ !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate request and add intake label
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const body = context.payload.comment?.body ?? "";
+            const firstNonEmptyLine = body
+              .split(/\r?\n/)
+              .find((line) => line.trim().length > 0)
+              ?.trimStart();
+
+            if (!firstNonEmptyLine?.startsWith("@machinist")) {
+              core.notice("Ignoring a comment that does not start with @machinist.");
+              return;
+            }
+
+            const actor = context.payload.comment.user.login;
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: actor,
+            });
+            const allowed = new Set(["write", "maintain", "admin"]);
+            if (!allowed.has(data.permission)) {
+              core.notice(`Ignoring a request from ${actor}: repository permission is ${data.permission}.`);
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ["machinist:requested"],
+            });
