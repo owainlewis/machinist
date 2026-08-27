@@ -116,6 +116,11 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 		if err != nil {
 			return nil, err
 		}
+		for _, agent := range agents {
+			if _, err := RenderPrompt(agent, maximumGitHubIssuePrompt()); err != nil {
+				return nil, fmt.Errorf("trigger %q: %w", identity, err)
+			}
+		}
 		resolved := ResolvedTrigger{
 			Identity: identity, Family: "github", Name: name,
 			GitHubRepositories: cloneStrings(repositories), Every: every, Label: label,
@@ -195,6 +200,12 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 		result = append(result, resolved)
 	}
 	return result, nil
+}
+
+// maximumGitHubIssuePrompt matches the longest issue prompt the GitHub adapter
+// can construct from a valid repository slug and a positive 64-bit issue number.
+func maximumGitHubIssuePrompt() string {
+	return "Complete https://github.com/" + strings.Repeat("o", 39) + "/" + strings.Repeat("r", 100) + "/issues/" + strings.Repeat("9", 19)
 }
 
 func resolveGitHubRepositories(input map[string]string) (map[string]string, error) {

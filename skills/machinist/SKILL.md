@@ -12,7 +12,8 @@ reviewed, and checked pull request. It never merges the pull request.
 
 - A task is one open GitHub issue in the target repository.
 - Assigning a task means starting `machinist run` or queuing `machinist submit`.
-- Labels report workflow state. They do not assign or start work.
+- Foreman lifecycle labels report workflow state. Configured GitHub intake labels can
+  enqueue managed work.
 - Reassign the same issue to resume existing work. The foreman recovers its branch,
   worktree, pull request, checks, and repair count.
 - When `MACHINIST_RUN_ID` is set, the agent is already inside a Machinist run. Follow the

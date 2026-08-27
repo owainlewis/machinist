@@ -117,6 +117,35 @@ func TestLoadTriggersRejectsUnknownTriggerField(t *testing.T) {
 	}
 }
 
+func TestLoadTriggersRejectsGitHubSelectionThatCannotRenderMaximumIssuePrompt(t *testing.T) {
+	for _, selection := range []string{"agent=\"static\"", "pipeline=\"mixed\""} {
+		t.Run(strings.Split(selection, "=")[0], func(t *testing.T) {
+			directory := t.TempDir()
+			writeTestFile(t, filepath.Join(directory, "static.md"), strings.Repeat(promptParameter, 3_000))
+			writeTestFile(t, filepath.Join(directory, "dynamic.md"), "Complete {{machinist.prompt}}\n")
+			path := filepath.Join(directory, "config.toml")
+			writeTestFile(t, path, `[agents.static]
+executor="codex"
+prompt_file="static.md"
+[agents.dynamic]
+executor="codex"
+prompt_file="dynamic.md"
+[pipelines.mixed]
+agents=["dynamic","static"]
+[github.repositories]
+machinist="owainlewis/machinist"
+[triggers.github.intake]
+every="5m"
+label="machinist:requested"
+`+selection+"\n")
+			_, err := LoadTriggers(path)
+			if err == nil || !strings.Contains(err.Error(), `trigger "github/intake": rendered agent prompt exceeds`) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadTriggersRejectsInvalidConfigurationWithIdentity(t *testing.T) {
 	tests := map[string]struct {
 		body string
