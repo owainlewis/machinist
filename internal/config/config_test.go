@@ -517,7 +517,9 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 		"**New issue:**",
 		"a verified branch without an open pull request",
 		"any dirty or incomplete work",
-		"at most two total",
+		"Positive numbers are repairs",
+		"reset, reuse, or cap it on resume",
+		"repair count without a maximum",
 		"Existing work must reuse its branch, worktree, and pull request",
 		"create a second pull request for the issue",
 		"`machinist:ready-for-review` or a verified ready/completed state",
@@ -587,6 +589,12 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 		"mark the pull request ready for human review",
 		"branch, complete diff",
 		"SUBAGENT role=<role>",
+		"Attempts `1` and `2` are the two allowed repairs",
+		"at most two total",
+		"block if it would exceed two",
+		"Attempts `1`, `2`, and `3` are the allowed repairs",
+		"at most three total",
+		"block if it would exceed three",
 	} {
 		if strings.Contains(foreman.Prompt, forbidden) {
 			t.Fatalf("foreman prompt still contains %q", forbidden)
@@ -659,6 +667,18 @@ func TestWorkflowExampleDefinitionsLoad(t *testing.T) {
 				if !strings.Contains(agent.Prompt, promptParameter) {
 					t.Fatalf("agent %q prompt does not contain %s", name, promptParameter)
 				}
+				if test.name == "issue-to-pr" {
+					for _, rule := range []string{"continue without a fixed cap", "Repair confirmed code defects with the next repair number"} {
+						if !strings.Contains(agent.Prompt, rule) {
+							t.Fatalf("agent %q prompt does not contain %q", name, rule)
+						}
+					}
+					for _, obsolete := range []string{"at most two repair rounds", "same two-round limit", "after both repair rounds", "at most three repair rounds", "same three-round limit", "after all three repair rounds"} {
+						if strings.Contains(agent.Prompt, obsolete) {
+							t.Fatalf("agent %q prompt still contains %q", name, obsolete)
+						}
+					}
+				}
 				for _, section := range []string{"# Role", "# Input", "# Required result", "# Procedure", "# Boundaries"} {
 					if !strings.Contains(agent.Prompt, section) {
 						t.Fatalf("agent %q prompt does not contain %q", name, section)
@@ -681,6 +701,41 @@ func TestWorkflowExampleDefinitionsLoad(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestShippedGuidanceDoesNotDescribeARepairCap(t *testing.T) {
+	paths := []string{
+		filepath.Join("..", "..", "skills", "machinist", "SKILL.md"),
+		filepath.Join("..", "..", ".github", "site", "index.html"),
+	}
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, obsolete := range []string{"repair limit", "Limited repair attempts", "Repair loops have a fixed limit", "Bounded repair"} {
+			if strings.Contains(string(body), obsolete) {
+				t.Fatalf("%s still contains %q", path, obsolete)
+			}
+		}
+	}
+}
+
+func TestShippedMachinistSkillDescribesGitHubIntake(t *testing.T) {
+	path := filepath.Join("..", "..", "skills", "machinist", "SKILL.md")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance := string(body)
+	for _, required := range []string{"[triggers.github.<name>]", "machinist:requested", "machinist:queued", "intake labels"} {
+		if !strings.Contains(guidance, required) {
+			t.Fatalf("%s does not describe %q", path, required)
+		}
+	}
+	if strings.Contains(guidance, "Label-based delegation is not implemented") {
+		t.Fatalf("%s still rejects label-based delegation", path)
 	}
 }
 

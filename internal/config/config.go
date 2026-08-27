@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/triggers"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -66,7 +67,66 @@ type Config struct {
 	Agents    map[string]Agent            `toml:"agents"`
 	Pipelines map[string]Pipeline         `toml:"pipelines"`
 	Shepherd  map[string]ShepherdSchedule `toml:"shepherd"`
+	GitHub    GitHub                      `toml:"github"`
+	Triggers  TriggerDefinitions          `toml:"triggers"`
 	path      string
+}
+
+type GitHub struct {
+	Repositories map[string]string `toml:"repositories"`
+}
+
+type TriggerDefinitions struct {
+	GitHub   map[string]GitHubTrigger   `toml:"github"`
+	Interval map[string]IntervalTrigger `toml:"interval"`
+	Cron     map[string]CronTrigger     `toml:"cron"`
+}
+
+type TriggerSelection struct {
+	Agent    string `toml:"agent"`
+	Pipeline string `toml:"pipeline"`
+	Model    string `toml:"model"`
+}
+
+type GitHubTrigger struct {
+	TriggerSelection
+	Every string `toml:"every"`
+	Label string `toml:"label"`
+}
+
+type IntervalTrigger struct {
+	TriggerSelection
+	Every      string `toml:"every"`
+	Repository string `toml:"repository"`
+	Prompt     string `toml:"prompt"`
+}
+
+type CronTrigger struct {
+	TriggerSelection
+	Schedule   string `toml:"schedule"`
+	Timezone   string `toml:"timezone"`
+	Repository string `toml:"repository"`
+	Prompt     string `toml:"prompt"`
+}
+
+type ResolvedTrigger struct {
+	Identity           string
+	Family             string
+	Name               string
+	Repository         string
+	GitHubRepository   string
+	GitHubRepositories map[string]string
+	Every              time.Duration
+	Schedule           string
+	Timezone           string
+	Label              string
+	SelectionKind      string
+	SelectionName      string
+	Model              string
+	Prompt             string
+	Agents             []ResolvedAgent
+	Signature          string
+	cron               *triggers.Cron
 }
 
 type Agent struct {
@@ -166,6 +226,13 @@ func loadConfigFile(path string) (Config, error) {
 	body, err := readBoundedFile(absPath, maxConfigBytes)
 	if err != nil {
 		return Config{}, fmt.Errorf("read Machinist config %q: %w", absPath, err)
+	}
+	var raw map[string]any
+	if err := toml.Unmarshal(body, &raw); err != nil {
+		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
+	}
+	if err := validateTriggerKeys(raw); err != nil {
+		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
 	}
 	machinistConfig := Config{path: absPath}
 	decoder := toml.NewDecoder(strings.NewReader(string(body)))

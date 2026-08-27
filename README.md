@@ -40,8 +40,9 @@ Machinist stops instead of carrying on with a broken result.
 
 The default `foreman` plans a GitHub issue, gives implementation and review to
 fresh agents, opens a pull request, and waits for repository CI. Review or CI
-failures go back for repair. The foreman allows up to two repair attempts and
-does not merge the pull request.
+failures go back for repair until review and automation pass. Repair attempts are
+numbered and preserved across resumed work. The foreman does not merge the pull
+request.
 
 ```mermaid
 flowchart LR
@@ -140,6 +141,10 @@ coding agent in an existing Git worktree and saves the run files locally.
 
 Shared settings live in `~/.machinist/config.toml`. Machine-specific executor,
 model, path, and worker settings live in `~/.machinist/worker.toml`.
+
+Managed jobs can also start from GitHub issue labels, fixed intervals, and cron
+schedules. See [Managed triggers](docs/managed-triggers.md) for configuration,
+authentication, timing, restart, and recovery behavior.
 
 To enable the optional scheduled merge queue, add a `[shepherd.<name>]` entry to
 `config.toml`. Shepherd ensures the repository defines the `machinist:auto-merge`
