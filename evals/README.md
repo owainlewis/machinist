@@ -41,9 +41,10 @@ the transition is recorded, the parent merges, the persisted transition is recov
 child is retargeted, and a later run merges the newly verified child. Each GitHub mutation,
 including the audit updates between those steps, consumes the single action available in
 its run. The smoke rejects review evidence from another base branch or base SHA even when
-the child head is unchanged, rejects review markers not written by the authenticated
-Shepherd actor, and requires exact head, base, state, and outcome audit fields. A first run
-also proves Shepherd creates the missing `machinist:auto-merge` label definition. Cleanup
+the child head is unchanged, rejects review markers not provably written by an independent
+authenticated Shepherd actor, and rejects stack markers without that trusted provenance or
+exact ref and SHA facts. A first run also proves Shepherd creates the missing
+`machinist:auto-merge` label definition. Cleanup
 closes open pull requests and deletes the temporary branches and label, so the repository's
 default branch is unchanged.
 

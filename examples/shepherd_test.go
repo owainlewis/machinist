@@ -16,7 +16,7 @@ func TestShepherdPromptKeepsAutomaticMergeAuthorityOptIn(t *testing.T) {
 		"exact audit state":        {"exactly `head`, `base`, `state`, and `classification`", "uppercase `OPEN` or `MERGED`", "Never accept a prefix", "exactly matching Shepherd"},
 		"checks and findings":     {"required checks to be present", "every current review thread or automated finding"},
 		"exact comparison review": {"exact head and", "base SHA comparison", "comparison-specific", "comparison values still match"},
-		"trusted review author":   {"authenticated GitHub actor's canonical login", "trusted author for Shepherd review audit comments", "any other account is untrusted"},
+		"trusted review author":   {"authenticated GitHub actor's canonical login", "viewerDidAuthor", "authenticated actor must not be the pull request author", "any other account is untrusted"},
 		"base update":             {"expected-head base update", "fresh independent review of the new head"},
 		"repair separation":       {"separate repair subagent", "fresh read-only reviewer"},
 		"dependabot":              {"Dependabot patch and minor", "major updates require a person"},
@@ -42,7 +42,7 @@ func TestShepherdPromptDefinesSerialRestartSafeQueue(t *testing.T) {
 		"serial refresh":          {"Process one pull request at a time", "rebuild the full queue"},
 		"action limit":            {"Once the limit is reached", "later scheduled run", "rediscover the queue", "durable queue state"},
 		"restart":                 {"Existing merged state is terminal", "restart.", "pending-retarget", "parent merge used the final action", "max_actions=1", "separate runs"},
-		"deferred stack retarget": {"Before merging a pull request that supplies", "persist a pending stack transition", "process a current `pending-retarget`", "parent is no longer open", "no active pending", "Never infer that an", "obsolete parent branch"},
+		"deferred stack retarget": {"Before merging a pull request that supplies", "persist a pending stack transition", "process a current `pending-retarget`", "parent is no longer open", "base SHA", "comment provenance", "no active pending", "Never infer that an", "obsolete parent branch"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, text := range required {

@@ -64,6 +64,14 @@ def audit_fields(body: str) -> dict[str, str] | None:
     return marker_fields(body, AUDIT_MARKER)
 
 
+def trusted_actor_comment(comment: Any, trusted_author: str) -> bool:
+    """Return whether GitHub says the authenticated actor wrote this comment."""
+    if not isinstance(comment, dict) or comment.get("viewerDidAuthor") is not True:
+        return False
+    author = comment.get("author")
+    return isinstance(author, dict) and author.get("login") == trusted_author
+
+
 def assert_audit_comment(
     pull_request: dict[str, Any],
     head: str,
@@ -176,6 +184,7 @@ def assert_stack_transition(
     child_head: str,
     child_base: str,
     state: str,
+    trusted_author: str,
     parent_state: str = "MERGED",
     child_current_base: str | None = None,
 ) -> None:
@@ -185,6 +194,7 @@ def assert_stack_transition(
         parent.get("state") != parent_state
         or parent.get("headRefOid") != parent_head
         or parent.get("baseRefName") != parent_base
+        or not isinstance(parent.get("baseRefOid"), str)
         or (parent_state == "MERGED" and not parent.get("mergedAt"))
         or (parent_state == "OPEN" and parent.get("mergedAt") is not None)
     ):
@@ -199,6 +209,11 @@ def assert_stack_transition(
         child.get("state") != "OPEN"
         or child.get("headRefOid") != child_head
         or child.get("baseRefName") != expected_child_base
+        or not isinstance(child.get("baseRefOid"), str)
+        or (
+            expected_child_base == child_base
+            and child.get("baseRefOid") != parent_head
+        )
         or LABEL not in label_names(child)
     ):
         raise EvalFailure(f"stack child does not match {state} state: {child!r}")
@@ -208,7 +223,8 @@ def assert_stack_transition(
     records = [
         fields
         for comment in comments
-        if isinstance(comment, dict) and isinstance(comment.get("body"), str)
+        if trusted_actor_comment(comment, trusted_author)
+        and isinstance(comment.get("body"), str)
         if (fields := audit_fields(comment["body"])) is not None
     ]
     expected = {
@@ -217,9 +233,13 @@ def assert_stack_transition(
         "parent": parent_url,
         "parent head": parent_head,
         "parent base": parent_base,
+        "parent base sha": parent["baseRefOid"],
         "dependent head": child_head,
         "dependent base": child_base,
+        "dependent base sha": parent_head,
     }
+    if state == RETARGETED:
+        expected["retarget base sha"] = child["baseRefOid"]
     if state == RETARGETED and any(
         record.get("classification") == STACK_CLASSIFICATION
         and record.get("state") == PENDING_RETARGET
@@ -240,17 +260,29 @@ def assert_review_comment(
     base_branch: str,
     base_sha: str,
     trusted_author: str,
+    trusted_author_id: str,
 ) -> None:
     if not isinstance(pull_request, dict):
         raise EvalFailure("GitHub returned invalid review evidence")
     comments = pull_request.get("comments")
     if not isinstance(comments, list):
         raise EvalFailure("GitHub returned invalid review comments")
+    pull_request_author = pull_request.get("author")
+    if (
+        not isinstance(pull_request_author, dict)
+        or not isinstance(pull_request_author.get("login"), str)
+        or not isinstance(pull_request_author.get("id"), str)
+    ):
+        raise EvalFailure("GitHub returned invalid pull request author evidence")
+    if (
+        pull_request_author["login"].casefold() == trusted_author.casefold()
+        or pull_request_author["id"] == trusted_author_id
+    ):
+        raise EvalFailure("pull request author cannot provide independent review evidence")
     for comment in comments:
         if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
             continue
-        author = comment.get("author")
-        if not isinstance(author, dict) or author.get("login") != trusted_author:
+        if not trusted_actor_comment(comment, trusted_author):
             continue
         fields = marker_fields(comment["body"], REVIEW_MARKER)
         if fields is None:
@@ -291,7 +323,7 @@ def pull_request(repository: str, url: str) -> dict[str, Any]:
             "--repo",
             repository,
             "--json",
-            "state,isDraft,headRefOid,baseRefName,baseRefOid,mergedAt,labels,comments,reviews,"
+            "state,isDraft,headRefOid,baseRefName,baseRefOid,mergedAt,labels,comments,reviews,author,"
             "title,body,url",
         )
     )
@@ -683,8 +715,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
         ensure_label_absent(options.repository)
         viewer = gh_json(("api", "user"))
         trusted_review_author = viewer.get("login") if isinstance(viewer, dict) else None
-        if not isinstance(trusted_review_author, str) or not trusted_review_author:
-            raise EvalFailure("GitHub did not return the authenticated actor login")
+        trusted_review_author_id = (
+            viewer.get("node_id") if isinstance(viewer, dict) else None
+        )
+        if (
+            not isinstance(trusted_review_author, str)
+            or not trusted_review_author
+            or not isinstance(trusted_review_author_id, str)
+            or not trusted_review_author_id
+        ):
+            raise EvalFailure("GitHub did not return the authenticated actor identity")
         checked(
             command(("git", "fetch", "origin", "--prune"), cwd=options.repo_path),
             "fetch origin",
@@ -866,6 +906,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             child_head=child_head,
             child_base=parent_branch,
             state=PENDING_RETARGET,
+            trusted_author=trusted_review_author,
             parent_state="OPEN",
         )
 
@@ -885,6 +926,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             child_head=child_head,
             child_base=parent_branch,
             state=PENDING_RETARGET,
+            trusted_author=trusted_review_author,
         )
 
         retarget_status, retarget_snapshot, retarget_mutations = (
@@ -903,6 +945,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             child_head=child_head,
             child_base=parent_branch,
             state=PENDING_RETARGET,
+            trusted_author=trusted_review_author,
             child_current_base=base_branch,
         )
 
@@ -924,6 +967,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             child_head=child_head,
             child_base=parent_branch,
             state=RETARGETED,
+            trusted_author=trusted_review_author,
         )
 
         review_status, review_snapshot, review_mutations = run_shepherd_with_budget(
@@ -942,6 +986,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             child_head=child_head,
             child_base=parent_branch,
             state=RETARGETED,
+            trusted_author=trusted_review_author,
         )
         child_base_sha = review_pulls[child_url].get("baseRefOid")
         if not isinstance(child_base_sha, str) or not child_base_sha:
@@ -952,6 +997,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             base_branch,
             child_base_sha,
             trusted_review_author,
+            trusted_review_author_id,
         )
 
         child_status, child_snapshot, child_mutations = run_shepherd_with_budget(
