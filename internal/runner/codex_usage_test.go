@@ -73,7 +73,7 @@ func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) 
 
 func TestExecuteCollectsCodexUsageWithoutChangingOutput(t *testing.T) {
 	const output = "{\"type\":\"item.completed\",\"item\":{}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":100,\"cached_input_tokens\":80,\"output_tokens\":23}}\n"
-	agent := codexJSONAgent(`cat >/dev/null; printf '%s' '`+output+`'`, time.Second)
+	agent := codexJSONAgent(`cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s' '`+output+`'`, time.Second)
 	var stdout bytes.Buffer
 	result, err := Execute(t.Context(), Options{
 		Agent:         agent,
@@ -97,7 +97,7 @@ func TestExecuteCollectsCodexUsageWithoutChangingOutput(t *testing.T) {
 }
 
 func TestExecuteIgnoresMalformedCodexUsageWithoutChangingFailure(t *testing.T) {
-	agent := codexJSONAgent(`cat >/dev/null; printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":"unknown","output_tokens":2}}'; exit 7`, time.Second)
+	agent := codexJSONAgent(`cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":"unknown","output_tokens":2}}'; exit 7`, time.Second)
 	result, err := Execute(t.Context(), Options{
 		Agent:         agent,
 		Repository:    newGitRepository(t),

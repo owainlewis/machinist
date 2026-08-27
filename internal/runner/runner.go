@@ -216,7 +216,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	if usageCollector != nil {
 		collectedTokenUsage = usageCollector.tokenUsage()
 	}
-	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage); err != nil {
+	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage, usageCollector != nil); err != nil {
 		if outcome != nil {
 			return result, &OutcomeError{State: state, ExitCode: exitCode, Cause: errors.Join(outcome, err)}
 		}
@@ -452,13 +452,13 @@ func completeFailure(result *Result, log *eventLog, runDirectory string, outcome
 }
 
 func completeOutcome(result *Result, log *eventLog, runDirectory string, state State, exitCode int, outcome error) (Result, error) {
-	if err := finish(result, log, runDirectory, state, exitCode, outcome, nil); err != nil {
+	if err := finish(result, log, runDirectory, state, exitCode, outcome, nil, false); err != nil {
 		outcome = errors.Join(outcome, err)
 	}
 	return *result, &OutcomeError{State: state, ExitCode: exitCode, Cause: outcome}
 }
 
-func finish(result *Result, log *eventLog, runDirectory string, state State, exitCode int, outcome error, collectedTokenUsage *int64) error {
+func finish(result *Result, log *eventLog, runDirectory string, state State, exitCode int, outcome error, collectedTokenUsage *int64, collectedTokenUsageIsAuthoritative bool) error {
 	message := ""
 	if outcome != nil {
 		message = outcome.Error()
@@ -474,9 +474,10 @@ func finish(result *Result, log *eventLog, runDirectory string, state State, exi
 	result.ExitCode = exitCode
 	result.CompletedAt = completedAt
 	result.DurationMillis = completedAt.Sub(result.StartedAt).Milliseconds()
-	result.TokenUsage = readTokenUsage(filepath.Join(runDirectory, tokenUsageFileName))
-	if result.TokenUsage == nil {
+	if collectedTokenUsageIsAuthoritative {
 		result.TokenUsage = collectedTokenUsage
+	} else {
+		result.TokenUsage = readTokenUsage(filepath.Join(runDirectory, tokenUsageFileName))
 	}
 	if err := writeResult(filepath.Join(runDirectory, "result.json"), *result); err != nil {
 		return err
