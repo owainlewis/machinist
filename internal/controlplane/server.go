@@ -93,13 +93,17 @@ func NewServer(store *Store, definitionPath, workerToken string) (*Server, error
 
 func (s *Server) Handler() http.Handler { return s.handler }
 
-func (s *Server) Serve(ctx context.Context, listen string) error {
+func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.Addr)) error {
 	if err := validateLoopbackListen(listen); err != nil {
 		return err
 	}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listen, err)
+	}
+	defer listener.Close()
+	if onListening != nil {
+		onListening(listener.Addr())
 	}
 	httpServer := &http.Server{
 		Handler:           s.handler,
@@ -123,6 +127,13 @@ func (s *Server) Serve(ctx context.Context, listen string) error {
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("stop control plane: %w", err)
 		}
+		// Shutdown can run before Serve registers the listener when the
+		// callback cancels the context. Close it explicitly and wait for the
+		// serving goroutine so every cancellation path releases the socket.
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return fmt.Errorf("stop control plane listener: %w", err)
+		}
+		<-done
 		return nil
 	}
 }
