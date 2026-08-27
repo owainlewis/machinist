@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -57,13 +59,35 @@ func TestCodexUsageCollectorUsesTheLastCompletedTurn(t *testing.T) {
 	}
 }
 
+func TestCodexUsageCollectorInvalidatesUsageForTruncatedFinalCompletedTurn(t *testing.T) {
+	collector := newCodexUsageCollector("codex", []string{"codex", "exec", "--json"})
+	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5}}` + "\n"))
+	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":8`))
+	if got := collector.tokenUsage(); got != nil {
+		t.Fatalf("token usage = %d, want unavailable for truncated final event", *got)
+	}
+}
+
+func TestCodexUsageCollectorIgnoresUnrelatedMalformedOutput(t *testing.T) {
+	collector := newCodexUsageCollector("codex", []string{"codex", "exec", "--json"})
+	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5}}` + "\n"))
+	_, _ = collector.Write([]byte(`{"type":"item.completed","item":`))
+	if got := collector.tokenUsage(); got == nil || *got != 9 {
+		t.Fatalf("token usage = %v, want 9", got)
+	}
+}
+
 func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) {
+	if collector := newCodexUsageCollector("codex-local", []string{"codex", "exec", "--json"}); collector == nil {
+		t.Fatal("collector disabled for custom executor using structured Codex output")
+	}
 	for _, test := range []struct {
 		executor string
 		command  []string
 	}{
 		{executor: "claude", command: []string{"claude", "--json"}},
 		{executor: "codex", command: []string{"codex", "exec"}},
+		{executor: "codex", command: []string{"agent", "exec", "--json"}},
 	} {
 		if collector := newCodexUsageCollector(test.executor, test.command); collector != nil {
 			t.Fatalf("collector enabled for executor %q command %q", test.executor, test.command)
@@ -73,7 +97,7 @@ func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) 
 
 func TestExecuteCollectsCodexUsageWithoutChangingOutput(t *testing.T) {
 	const output = "{\"type\":\"item.completed\",\"item\":{}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":100,\"cached_input_tokens\":80,\"output_tokens\":23}}\n"
-	agent := codexJSONAgent(`cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s' '`+output+`'`, time.Second)
+	agent := codexJSONAgent(t, `cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s' '`+output+`'`, 5*time.Second)
 	var stdout bytes.Buffer
 	result, err := Execute(t.Context(), Options{
 		Agent:         agent,
@@ -97,7 +121,7 @@ func TestExecuteCollectsCodexUsageWithoutChangingOutput(t *testing.T) {
 }
 
 func TestExecuteIgnoresMalformedCodexUsageWithoutChangingFailure(t *testing.T) {
-	agent := codexJSONAgent(`cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":"unknown","output_tokens":2}}'; exit 7`, time.Second)
+	agent := codexJSONAgent(t, `cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":"unknown","output_tokens":2}}'; exit 7`, 5*time.Second)
 	result, err := Execute(t.Context(), Options{
 		Agent:         agent,
 		Repository:    newGitRepository(t),
@@ -114,11 +138,16 @@ func TestExecuteIgnoresMalformedCodexUsageWithoutChangingFailure(t *testing.T) {
 	}
 }
 
-func codexJSONAgent(script string, timeout time.Duration) config.ResolvedAgent {
+func codexJSONAgent(t *testing.T, script string, timeout time.Duration) config.ResolvedAgent {
+	t.Helper()
+	command := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return config.ResolvedAgent{
 		Name:     "build",
 		Executor: "codex",
-		Command:  []string{"/bin/sh", "-c", script, "--json"},
+		Command:  []string{command, "exec", "--json"},
 		Prompt:   "complete prompt\n",
 		Timeout:  timeout,
 		Hash:     "codex-test-hash",

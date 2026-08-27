@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"math"
+	"path/filepath"
 	"slices"
+	"strings"
 )
 
 const maxCodexEventBytes = 1 << 20
@@ -15,11 +17,15 @@ type codexUsageCollector struct {
 	usage      *int64
 }
 
-func newCodexUsageCollector(executor string, command []string) *codexUsageCollector {
-	if executor != "codex" || !slices.Contains(command, "--json") {
+func newCodexUsageCollector(_ string, command []string) *codexUsageCollector {
+	if len(command) < 2 || codexExecutableName(command[0]) != "codex" || command[1] != "exec" || !slices.Contains(command[2:], "--json") {
 		return nil
 	}
 	return &codexUsageCollector{}
+}
+
+func codexExecutableName(command string) string {
+	return strings.TrimSuffix(strings.ToLower(filepath.Base(command)), ".exe")
 }
 
 func (collector *codexUsageCollector) Write(data []byte) (int, error) {
@@ -74,7 +80,13 @@ func (collector *codexUsageCollector) parseLine(line []byte) {
 		Type  string          `json:"type"`
 		Usage json.RawMessage `json:"usage"`
 	}
-	if err := json.Unmarshal(line, &event); err != nil || event.Type != "turn.completed" {
+	if err := json.Unmarshal(line, &event); err != nil {
+		if isCompletedTurnCandidate(line) {
+			collector.usage = nil
+		}
+		return
+	}
+	if event.Type != "turn.completed" {
 		return
 	}
 	collector.usage = nil
@@ -90,4 +102,33 @@ func (collector *codexUsageCollector) parseLine(line []byte) {
 	}
 	total := *usage.Input + *usage.Output
 	collector.usage = &total
+}
+
+func isCompletedTurnCandidate(line []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	token, err := decoder.Token()
+	delimiter, ok := token.(json.Delim)
+	if err != nil || !ok || delimiter != '{' {
+		return false
+	}
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return false
+		}
+		key, ok := token.(string)
+		if !ok {
+			return false
+		}
+		if key == "type" {
+			token, err = decoder.Token()
+			value, ok := token.(string)
+			return err == nil && ok && value == "turn.completed"
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return false
+		}
+	}
+	return false
 }
