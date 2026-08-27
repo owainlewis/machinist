@@ -36,8 +36,9 @@ func TestShepherdPromptDefinesSerialRestartSafeQueue(t *testing.T) {
 		"oldest independent":      {"oldest creation time", "oldest-first order"},
 		"blocked versus eligible": {"must never stop another eligible pull request", "blocks only that pull request"},
 		"serial refresh":          {"Process one pull request at a time", "rebuild the full queue"},
-		"action limit":            {"Once the limit is reached", "later scheduled run must rediscover"},
-		"restart":                 {"Existing merged state is terminal", "restart."},
+		"action limit":            {"Once the limit is reached", "later scheduled run must rediscover", "durable queue state"},
+		"restart":                 {"Existing merged state is terminal", "restart.", "pending-retarget", "parent merge used the final action", "max_actions=1"},
+		"deferred stack retarget": {"Before merging a pull request that supplies", "persist a pending stack transition", "process a current `pending-retarget`", "parent is no longer open", "no active\npending marker remains", "Never infer that an obsolete parent branch"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, text := range required {

@@ -39,8 +39,9 @@ update, code-repair push, pull request edit, and merge as one mutating action. A
 do not consume the limit, but may be added only to pull requests that still have the label.
 Once the limit is reached, leave concise deferred audit evidence on each remaining labelled
 candidate. Include classification `deferred`, `<!-- machinist:shepherd-audit -->`, the exact
-head, and evidence, then stop. A later scheduled run must rediscover the queue from GitHub state,
-so no candidate depends only on process memory.
+head, and evidence, then stop. Audit evidence is durable queue state, not only a human-facing
+log. A later scheduled run must rediscover the queue from GitHub state, including current
+Shepherd audit comments, so no candidate depends only on process memory.
 
 Use native coding subagents for all code changes and independent review. A code author may
 not review its own work. If native subagents are unavailable, record the affected labelled
@@ -70,6 +71,27 @@ require applicable checks plus a fresh independent review before merge, even whe
 SHA itself did not change. If safe retargeting cannot be proven, block that pull request for
 a human decision instead of merging it into a branch that no longer represents an open
 stack dependency.
+
+Before merging a pull request that supplies the base branch of any labelled dependent,
+persist a pending stack transition on each such dependent. Recheck the dependent's label,
+exact head, and base before commenting. The comment must contain
+`<!-- machinist:shepherd-audit -->`, classification `stack-transition`, state
+`pending-retarget`, the dependent head and base, and the parent pull request URL, exact
+head, and expected base. Re-read the comment and live pull request state before merging the
+parent. If the transition cannot be recorded exactly, refresh the queue instead of merging
+the parent. This audit comment does not consume an action, but it is still forbidden on an
+unlabelled pull request.
+
+On every inventory, process a current `pending-retarget` transition before treating its
+pull request as independent, even when the recorded parent is no longer open. Accept the
+transition only after GitHub proves that the recorded parent merged at its recorded exact
+head into its recorded expected base and the dependent still has the label and recorded
+head and base. Retarget the dependent to that expected base through the exact-head gate,
+count the edit as one action, update the same transition record to `retargeted` so no active
+pending marker remains, and require checks and a fresh independent review for the new
+comparison. If the evidence is stale, ambiguous, or cannot be proved, block only the
+dependent. Never infer that an obsolete parent branch is an independent target merely
+because the parent is absent from the open pull request graph.
 
 Process one pull request at a time. After every successful merge, discard the inventory,
 fetch remote refs, and rebuild the full queue and order. A blocked or waiting pull request
@@ -142,6 +164,13 @@ recording success. Leave a concise audit comment containing
 Existing merged state is terminal and must never be repeated after a restart. Leave one
 concise audit comment per material head and outcome; update an existing matching Shepherd
 marker when practical instead of duplicating it.
+
+A restart may happen immediately after a merge. The pre-merge `pending-retarget` record is
+therefore authoritative only as a pointer to facts that must be reverified from GitHub; it
+must survive even if the parent merge used the final action or the process stopped before a
+post-merge comment. With `max_actions=1`, use separate runs to merge the parent, retarget the
+child, and later merge the newly verified child. Do not skip the retarget or reuse checks or
+review from its old comparison.
 
 Finish with a compact run summary: every inventoried pull request and classification,
 ordered candidates, merged URLs and SHAs, blockers, deferred work, actions used and limit,

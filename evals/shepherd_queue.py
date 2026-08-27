@@ -17,6 +17,9 @@ LABEL = "machinist:auto-merge"
 LABEL_COLOR = "0e8a16"
 LABEL_DESCRIPTION = "Allow Shepherd to verify, update, repair, and merge this pull request"
 AUDIT_MARKER = "<!-- machinist:shepherd-audit -->"
+STACK_CLASSIFICATION = "stack-transition"
+PENDING_RETARGET = "pending-retarget"
+RETARGETED = "retargeted"
 
 
 def label_names(pull_request: dict[str, Any]) -> set[str]:
@@ -100,6 +103,74 @@ def assert_deferred_result(deferred: Any, deferred_head: str) -> None:
     assert_audit_comment(deferred, deferred_head, "deferred")
 
 
+def assert_unlabelled_unchanged(
+    pull_request: Any, *, head: str, base: str, draft: bool
+) -> None:
+    if not isinstance(pull_request, dict):
+        raise EvalFailure("GitHub returned invalid unlabelled pull request evidence")
+    if (
+        pull_request.get("state") != "OPEN"
+        or pull_request.get("isDraft") is not draft
+        or pull_request.get("headRefOid") != head
+        or pull_request.get("baseRefName") != base
+        or LABEL in label_names(pull_request)
+        or pull_request.get("comments") not in ([], None)
+    ):
+        raise EvalFailure(
+            f"Shepherd changed an unlabelled pull request: {pull_request!r}"
+        )
+
+
+def assert_stack_transition(
+    parent: Any,
+    child: Any,
+    *,
+    parent_url: str,
+    parent_head: str,
+    parent_base: str,
+    child_head: str,
+    child_base: str,
+    state: str,
+) -> None:
+    if not isinstance(parent, dict) or not isinstance(child, dict):
+        raise EvalFailure("GitHub returned invalid stack transition evidence")
+    if (
+        parent.get("state") != "MERGED"
+        or parent.get("headRefOid") != parent_head
+        or parent.get("baseRefName") != parent_base
+    ):
+        raise EvalFailure(f"stack parent was not merged at its expected comparison: {parent!r}")
+    expected_child_base = child_base if state == PENDING_RETARGET else parent_base
+    if (
+        child.get("state") != "OPEN"
+        or child.get("headRefOid") != child_head
+        or child.get("baseRefName") != expected_child_base
+        or LABEL not in label_names(child)
+    ):
+        raise EvalFailure(f"stack child does not match {state} state: {child!r}")
+    comments = child.get("comments")
+    if not isinstance(comments, list):
+        raise EvalFailure("GitHub returned invalid stack child comments")
+    expected = (
+        AUDIT_MARKER,
+        STACK_CLASSIFICATION,
+        state,
+        parent_url,
+        parent_head,
+        parent_base,
+        child_head,
+        child_base,
+    )
+    if any(
+        isinstance(comment, dict)
+        and isinstance(comment.get("body"), str)
+        and all(item in comment["body"] for item in expected)
+        for comment in comments
+    ):
+        return
+    raise EvalFailure(f"missing durable {state} stack transition evidence")
+
+
 def ensure_label_absent(repository: str) -> None:
     labels = gh_json(
         ("label", "list", "--repo", repository, "--limit", "1000", "--json", "name")
@@ -121,7 +192,7 @@ def pull_request(repository: str, url: str) -> dict[str, Any]:
             "--repo",
             repository,
             "--json",
-            "state,isDraft,headRefOid,mergedAt,labels,comments,url",
+            "state,isDraft,headRefOid,baseRefName,mergedAt,labels,comments,url",
         )
     )
     if not isinstance(result, dict):
@@ -335,13 +406,29 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 1
     run_id = f"{time.strftime('%Y%m%d%H%M%S', time.gmtime())}-{uuid.uuid4().hex[:8]}"
     prefix = f"codex/shepherd-eval-{run_id}"
-    base_branch, blocked_branch, eligible_branch, deferred_branch = (
+    (
+        base_branch,
+        blocked_branch,
+        eligible_branch,
+        deferred_branch,
+        parent_branch,
+        child_branch,
+    ) = (
         f"{prefix}-base",
         f"{prefix}-blocked",
         f"{prefix}-eligible",
         f"{prefix}-deferred",
+        f"{prefix}-parent",
+        f"{prefix}-child",
     )
-    branches = (blocked_branch, eligible_branch, deferred_branch, base_branch)
+    branches = (
+        child_branch,
+        parent_branch,
+        blocked_branch,
+        eligible_branch,
+        deferred_branch,
+        base_branch,
+    )
     pull_requests: list[str] = []
     label_created = False
     failure: BaseException | None = None
@@ -424,6 +511,24 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
         label_created = True
         assert_label(label)
+        assert_unlabelled_unchanged(
+            pull_request(options.repository, blocked_url),
+            head=blocked_head,
+            base=base_branch,
+            draft=True,
+        )
+        assert_unlabelled_unchanged(
+            pull_request(options.repository, eligible_url),
+            head=eligible_head,
+            base=base_branch,
+            draft=False,
+        )
+        assert_unlabelled_unchanged(
+            pull_request(options.repository, deferred_url),
+            head=deferred_head,
+            base=base_branch,
+            draft=False,
+        )
         for url in pull_requests:
             checked(
                 command(
@@ -451,6 +556,84 @@ def main(arguments: Sequence[str] | None = None) -> int:
         assert_deferred_result(
             pull_request(options.repository, deferred_url), deferred_head
         )
+        checked(
+            command(("gh", "pr", "close", deferred_url, "--repo", options.repository)),
+            "remove the independent deferred candidate from the stack scenario",
+        )
+
+        parent_url, parent_head = create_pull_request(
+            options.repository,
+            options.repo_path,
+            base_sha,
+            base_branch,
+            parent_branch,
+            run_id,
+            "parent",
+            draft=False,
+        )
+        pull_requests.append(parent_url)
+        child_url, child_head = create_pull_request(
+            options.repository,
+            options.repo_path,
+            parent_head,
+            parent_branch,
+            child_branch,
+            run_id,
+            "child",
+            draft=False,
+        )
+        pull_requests.append(child_url)
+        for url in (parent_url, child_url):
+            checked(
+                command(
+                    (
+                        "gh",
+                        "pr",
+                        "edit",
+                        url,
+                        "--repo",
+                        options.repository,
+                        "--add-label",
+                        LABEL,
+                    )
+                ),
+                f"opt in stacked pull request {url}",
+            )
+
+        if run_shepherd(executable, options, 1) != 0:
+            raise EvalFailure("stack parent Shepherd run failed")
+        assert_stack_transition(
+            pull_request(options.repository, parent_url),
+            pull_request(options.repository, child_url),
+            parent_url=parent_url,
+            parent_head=parent_head,
+            parent_base=base_branch,
+            child_head=child_head,
+            child_base=parent_branch,
+            state=PENDING_RETARGET,
+        )
+
+        if run_shepherd(executable, options, 1) != 0:
+            raise EvalFailure("stack retarget Shepherd run failed")
+        assert_stack_transition(
+            pull_request(options.repository, parent_url),
+            pull_request(options.repository, child_url),
+            parent_url=parent_url,
+            parent_head=parent_head,
+            parent_base=base_branch,
+            child_head=child_head,
+            child_base=parent_branch,
+            state=RETARGETED,
+        )
+
+        if run_shepherd(executable, options, 1) != 0:
+            raise EvalFailure("stack child Shepherd run failed")
+        assert_queue_result(
+            pull_request(options.repository, blocked_url),
+            pull_request(options.repository, child_url),
+            blocked_head,
+            child_head,
+        )
     except BaseException as error:
         failure = error
     cleanup_errors = cleanup(
@@ -468,7 +651,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 1
     print(
         "PASS shepherd-queue: created label, audited older draft blocker, "
-        "merged and audited eligible exact head, audited deferred candidate"
+        "merged and audited eligible exact head, audited deferred candidate, "
+        "and resumed a max_actions=1 stack through parent merge and safe child retarget"
     )
     return 0
 

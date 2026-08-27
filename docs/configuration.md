@@ -61,7 +61,9 @@ max_actions = 3
 queues the first run when it starts, then persists the next due time in SQLite. It never
 overlaps two Shepherd runs for one repository. If a run reaches its action limit, the next
 run inventories GitHub again and continues from durable pull request state and audit
-comments.
+comments. Before a stacked parent merge, Shepherd records the child's pending retarget so
+a later run cannot mistake the child for independent work when the parent used the final
+action.
 
 Schedules use the `agents.shepherd` definition and managed workers, because repository
 paths and GitHub credentials remain machine-local. Restart the control plane after changing
