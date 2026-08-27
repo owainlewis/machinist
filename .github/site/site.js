@@ -5,10 +5,21 @@ export function fallbackCopy(text, doc = document) {
   input.style.position = 'fixed';
   input.style.opacity = '0';
   doc.body.appendChild(input);
-  input.select();
-  const copied = doc.execCommand('copy');
-  input.remove();
-  return copied;
+  try {
+    input.select();
+    return doc.execCommand('copy');
+  } finally {
+    input.remove();
+  }
+}
+
+export function selectCommand(button, doc = document, selection = window.getSelection()) {
+  const code = button.querySelector('code');
+  code.textContent = button.dataset.copy;
+  const range = doc.createRange();
+  range.selectNodeContents(code);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 if (typeof document !== 'undefined') {
@@ -26,15 +37,18 @@ if (typeof document !== 'undefined') {
         await navigator.clipboard.writeText(button.dataset.copy);
         showResult('COPIED');
       } catch {
-        if (fallbackCopy(button.dataset.copy)) {
+        let copied = false;
+        try {
+          copied = fallbackCopy(button.dataset.copy);
+        } catch {
+          copied = false;
+        }
+        if (copied) {
           showResult('COPIED');
           return;
         }
 
-        const range = document.createRange();
-        range.selectNodeContents(button.querySelector('code'));
-        window.getSelection().removeAllRanges();
-        window.getSelection().addRange(range);
+        selectCommand(button);
         showResult('SELECTED');
       }
     });

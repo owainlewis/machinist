@@ -17,6 +17,9 @@
     <meta name="twitter:description" content="Run repeatable coding-agent workflows on your machine with your choice of model and harness.">
     <meta name="twitter:image" content="https://machinist.sh/og.png">
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&amp;family=Inter+Tight:wght@400;500;600;700;800&amp;display=swap">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
@@ -171,7 +174,7 @@
             <div><span><i class="pass"></i>Issue lifecycle</span><strong>PASS</strong><small>1.00</small></div>
             <div><span><i class="pass"></i>Independent review</span><strong>PASS</strong><small>1.00</small></div>
             <div><span><i class="pass"></i>Bounded repair</span><strong>PASS</strong><small>0.96</small></div>
-            <div><span><i class="warn"></i>Time to handoff</span><strong>WATCH</strong><small>0.78</small></div>
+            <div class="eval-warning"><span><i class="warn"></i>Time to handoff</span><strong>WATCH</strong><small>0.78</small></div>
           </div>
           <div class="compare-row"><span>CONFIG</span><strong>foreman-v12</strong><span>MODEL</span><strong>terra</strong></div>
           <div class="console-note"><span>→</span> Keep v12. Review improvement before rollout.</div>
@@ -193,7 +196,7 @@
           <div class="console-bar"><span>~/.machinist/worker.toml</span><span>LOCAL ONLY</span></div>
           <pre><code><span class="code-comment"># Bring your own harness and model aliases</span>
 [executors.codex]
-command = [<span class="code-string">"codex"</span>, <span class="code-string">"exec"</span>, <span class="code-string">"--model={{machinist.model}}"</span>, <span class="code-string">"-"</span>]
+command = [<span class="code-string">"codex"</span>, <span class="code-string">"exec"</span>, <span class="code-string">"--json"</span>, <span class="code-string">"--model={{machinist.model}}"</span>, <span class="code-string">"--sandbox"</span>, <span class="code-string">"danger-full-access"</span>, <span class="code-string">"-"</span>]
 models = { fast = <span class="code-string">"gpt-5.6-luna"</span>, deep = <span class="code-string">"gpt-5.6-sol"</span> }
 
 [executors.your_agent]
@@ -211,7 +214,7 @@ command = [<span class="code-string">"your-agent"</span>, <span class="code-stri
           <li>
             <span class="step-number">01</span>
             <div><h3>Build</h3><p>Compile one local binary from the open-source repository.</p></div>
-            <button class="copy-command" type="button" data-copy="go build -o ./bin/machinist ./cmd/machinist" aria-label="Copy build command"><code>go build -o ./bin/machinist ./cmd/machinist</code><span aria-live="polite">COPY</span></button>
+            <button class="copy-command" type="button" data-copy="mkdir -p ./bin &amp;&amp; go build -o ./bin/machinist ./cmd/machinist" aria-label="Copy build command"><code>mkdir -p ./bin &amp;&amp; go build -o ./bin/machinist ./cmd/machinist</code><span aria-live="polite">COPY</span></button>
           </li>
           <li>
             <span class="step-number">02</span>
