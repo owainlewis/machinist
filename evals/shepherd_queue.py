@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import sys
 import tempfile
 import time
@@ -78,12 +79,15 @@ def assert_audit_comment(
     base: str,
     state: str,
     classification: str,
+    trusted_author: str,
 ) -> None:
     comments = pull_request.get("comments")
     if not isinstance(comments, list):
         raise EvalFailure("GitHub returned invalid pull request comments")
     for comment in comments:
         if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
+            continue
+        if not trusted_actor_comment(comment, trusted_author):
             continue
         fields = audit_fields(comment["body"])
         if (
@@ -105,6 +109,7 @@ def assert_queue_result(
     eligible: Any,
     blocked_head: str,
     eligible_head: str,
+    trusted_author: str,
     *,
     require_eligible_audit: bool = True,
 ) -> None:
@@ -128,15 +133,21 @@ def assert_queue_result(
     eligible_base = eligible.get("baseRefName")
     if not isinstance(blocked_base, str) or not isinstance(eligible_base, str):
         raise EvalFailure("GitHub returned invalid pull request base evidence")
-    assert_audit_comment(blocked, blocked_head, blocked_base, "OPEN", "blocked")
+    assert_audit_comment(
+        blocked, blocked_head, blocked_base, "OPEN", "blocked", trusted_author
+    )
     if require_eligible_audit:
         assert_audit_comment(
-            eligible, eligible_head, eligible_base, "MERGED", "merged"
+            eligible, eligible_head, eligible_base, "MERGED", "merged", trusted_author
         )
 
 
 def assert_deferred_result(
-    deferred: Any, deferred_head: str, *, require_audit: bool = True
+    deferred: Any,
+    deferred_head: str,
+    trusted_author: str,
+    *,
+    require_audit: bool = True,
 ) -> None:
     if not isinstance(deferred, dict):
         raise EvalFailure("GitHub returned invalid deferred pull request evidence")
@@ -152,7 +163,12 @@ def assert_deferred_result(
         if not isinstance(deferred_base, str):
             raise EvalFailure("GitHub returned invalid deferred base evidence")
         assert_audit_comment(
-            deferred, deferred_head, deferred_base, "OPEN", "deferred"
+            deferred,
+            deferred_head,
+            deferred_base,
+            "OPEN",
+            "deferred",
+            trusted_author,
         )
 
 
@@ -221,15 +237,15 @@ def assert_stack_transition(
     if not isinstance(comments, list):
         raise EvalFailure("GitHub returned invalid stack child comments")
     records = [
-        fields
+        (fields, comment)
         for comment in comments
         if trusted_actor_comment(comment, trusted_author)
         and isinstance(comment.get("body"), str)
         if (fields := audit_fields(comment["body"])) is not None
     ]
-    expected = {
+    expected_pending = {
         "classification": STACK_CLASSIFICATION,
-        "state": state,
+        "state": PENDING_RETARGET,
         "parent": parent_url,
         "parent head": parent_head,
         "parent base": parent_base,
@@ -238,20 +254,53 @@ def assert_stack_transition(
         "dependent base": child_base,
         "dependent base sha": parent_head,
     }
-    if state == RETARGETED:
-        expected["retarget base sha"] = child["baseRefOid"]
-    if state == RETARGETED and any(
-        record.get("classification") == STACK_CLASSIFICATION
-        and record.get("state") == PENDING_RETARGET
-        for record in records
-    ):
-        raise EvalFailure("active pending-retarget transition remains after retarget")
-    if any(
-        all(record.get(key) == value for key, value in expected.items())
-        for record in records
-    ):
+    pending_records = [
+        (fields, comment)
+        for fields, comment in records
+        if all(fields.get(key) == value for key, value in expected_pending.items())
+        and isinstance(comment.get("id"), str)
+        and comment["id"]
+        and comment.get("includesCreatedEdit") is False
+    ]
+    # The pending record is authority to resume after its parent disappears from
+    # the open queue. It must be unedited and strictly predate the merge so an old
+    # comment cannot be rewritten into evidence after the fact.
+    if parent_state == "MERGED":
+        merged_at = github_timestamp(parent.get("mergedAt"), "parent merge")
+        pending_records = [
+            (fields, comment)
+            for fields, comment in pending_records
+            if github_timestamp(comment.get("createdAt"), "transition comment")
+            < merged_at
+        ]
+    if state == PENDING_RETARGET and pending_records:
         return
+    if state == RETARGETED:
+        for _, pending_comment in pending_records:
+            expected_completion = {
+                **expected_pending,
+                "state": RETARGETED,
+                "pending comment id": pending_comment["id"],
+                "retarget base sha": child["baseRefOid"],
+            }
+            if any(
+                all(record.get(key) == value for key, value in expected_completion.items())
+                for record, _ in records
+            ):
+                return
     raise EvalFailure(f"missing durable {state} stack transition evidence")
+
+
+def github_timestamp(value: Any, description: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise EvalFailure(f"GitHub returned invalid {description} timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise EvalFailure(f"GitHub returned invalid {description} timestamp") from error
+    if parsed.tzinfo is None:
+        raise EvalFailure(f"GitHub returned invalid {description} timestamp")
+    return parsed
 
 
 def assert_review_comment(
@@ -837,11 +886,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
             queue_pulls[eligible_url],
             blocked_head,
             eligible_head,
+            trusted_review_author,
             require_eligible_audit=False,
         )
         assert_deferred_result(
             queue_pulls[deferred_url],
             deferred_head,
+            trusted_review_author,
             require_audit=False,
         )
         checked(
@@ -1012,6 +1063,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             child_pulls[child_url],
             blocked_head,
             child_head,
+            trusted_review_author,
             require_eligible_audit=False,
         )
     except BaseException as error:

@@ -352,10 +352,16 @@ func runSelection(ctx context.Context, options *commandOptions) error {
 		if err != nil {
 			return err
 		}
+		if err := validateDirectAgents(definitionPath, []config.ResolvedAgent{agent}); err != nil {
+			return err
+		}
 		return runAgent(ctx, options, worker, agent)
 	}
 	agents, err := config.LoadPipeline(definitionPath, options.pipelineName)
 	if err != nil {
+		return err
+	}
+	if err := validateDirectAgents(definitionPath, agents); err != nil {
 		return err
 	}
 	if err := config.ValidateModelSelection(agents, options.model); err != nil {
@@ -372,6 +378,21 @@ func runSelection(ctx context.Context, options *commandOptions) error {
 		fmt.Fprintf(options.stderr, "machinist: pipeline %s: agent %d/%d %s\n", options.pipelineName, index+1, len(agents), agent.Name)
 		if err := runAgent(ctx, options, worker, agent); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateDirectAgents(definitionPath string, agents []config.ResolvedAgent) error {
+	for _, agent := range agents {
+		if agent.Name == "shepherd" {
+			schedules, err := config.LoadShepherdSchedules(definitionPath)
+			if err != nil {
+				return err
+			}
+			if len(schedules) > 0 {
+				return errors.New("scheduled Shepherd cannot run directly; submit managed work so the control plane can enforce per-repository overlap protection")
+			}
 		}
 	}
 	return nil

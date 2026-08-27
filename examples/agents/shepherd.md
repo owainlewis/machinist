@@ -99,8 +99,13 @@ exact head, and base before commenting. The comment must contain
 `pending-retarget`, the dependent head, base, and base SHA, and the parent pull request URL,
 exact head, expected base, and base SHA. Accept this transition only when GitHub proves the
 authenticated actor created the comment. Re-read the comment and live pull request state
-before merging the parent. If the transition cannot be recorded exactly, refresh the queue
-instead of merging the parent. Creating or editing this audit comment consumes one action,
+before merging the parent. After the parent merges, accept the transition only when the
+comment's server-provided creation time is strictly earlier than the parent's merge time
+and `includesCreatedEdit` is false. Preserve the pending comment and its immutable GitHub
+node ID. If the
+transition cannot be recorded exactly, refresh the queue
+instead of merging the parent. Create a new pending comment and never edit or delete it.
+Creating this audit comment consumes one action,
 and another action must remain for the parent merge. It is still forbidden on an unlabelled
 pull request. With `max_actions=1`, record the transition in one run and merge the parent in
 a later run. Use one field per line named exactly `parent`, `parent head`, `parent base`,
@@ -114,8 +119,9 @@ head into its recorded expected base and the dependent still has the label and r
 head. If the dependent still has the recorded base, retarget it to the parent's expected
 base through the exact-head gate and count the edit as one action. If the dependent already
 has that exact expected base, do not repeat the retarget. In either case, use a later action
-when necessary to edit the same transition record to `retargeted` so no active pending
-marker remains. The retargeted record must also contain the dependent's new base SHA. Do not
+when necessary to create a separate `retargeted` transition record. The retargeted record must contain the pending
+record's exact GitHub node ID in a field named `pending comment id` and the dependent's new
+base SHA. Treat a pending record as completed only when this exact reference matches. Do not
 process the pull request beyond this transition until GitHub confirms both the trusted
 comment provenance and every recorded ref and SHA against live parent and dependent facts.
 Require checks and a fresh independent review for the new comparison. If the live base is

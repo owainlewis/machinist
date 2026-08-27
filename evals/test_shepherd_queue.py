@@ -34,6 +34,9 @@ def pull_request(
     pull_request_author: str = "pull-request-author",
     pull_request_author_id: str = "PR_author_node_id",
     viewer_did_author: bool = True,
+    comment_created_at: str = "2026-08-27T11:00:00Z",
+    includes_created_edit: bool = False,
+    comment_id: str = "transition-comment-id",
 ):
     comments = []
     if classification is not None:
@@ -42,7 +45,12 @@ def pull_request(
                 "body": (
                     f"{AUDIT_MARKER}\nhead: {head}\nbase: {base}\nstate: {state}\n"
                     f"classification: {classification}"
-                )
+                ),
+                "author": {"login": comment_author},
+                "viewerDidAuthor": viewer_did_author,
+                "createdAt": comment_created_at,
+                "includesCreatedEdit": includes_created_edit,
+                "id": comment_id,
             }
         )
     if body is not None:
@@ -51,6 +59,9 @@ def pull_request(
                 "body": body,
                 "author": {"login": comment_author},
                 "viewerDidAuthor": viewer_did_author,
+                "createdAt": comment_created_at,
+                "includesCreatedEdit": includes_created_edit,
+                "id": comment_id,
             }
         )
     return {
@@ -317,6 +328,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
             ),
             "blocked",
             "eligible",
+            "trusted-reviewer",
         )
 
     def test_rejects_when_older_blocked_pull_request_stops_eligible_one(self) -> None:
@@ -328,6 +340,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 pull_request(state="OPEN", draft=False, head="eligible"),
                 "blocked",
                 "eligible",
+                "trusted-reviewer",
             )
 
     def test_rejects_merge_of_unexpected_head(self) -> None:
@@ -341,6 +354,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 ),
                 "blocked",
                 "eligible",
+                "trusted-reviewer",
             )
 
     def test_rejects_mutation_of_blocked_pull_request(self) -> None:
@@ -354,6 +368,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 ),
                 "blocked",
                 "eligible",
+                "trusted-reviewer",
             )
 
     def test_rejects_label_with_wrong_definition(self) -> None:
@@ -371,6 +386,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 ),
                 "blocked",
                 "eligible",
+                "trusted-reviewer",
             )
 
     def test_rejects_missing_merge_audit_comment(self) -> None:
@@ -382,6 +398,28 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 pull_request(state="MERGED", draft=False, head="eligible"),
                 "blocked",
                 "eligible",
+                "trusted-reviewer",
+            )
+
+    def test_rejects_forged_generic_audit_comment(self) -> None:
+        with self.assertRaisesRegex(EvalFailure, "missing blocked audit comment"):
+            assert_queue_result(
+                pull_request(
+                    state="OPEN",
+                    draft=True,
+                    head="blocked",
+                    classification="blocked",
+                    viewer_did_author=False,
+                ),
+                pull_request(
+                    state="MERGED",
+                    draft=False,
+                    head="eligible",
+                    classification="merged",
+                ),
+                "blocked",
+                "eligible",
+                "trusted-reviewer",
             )
 
     def test_accepts_merge_without_audit_when_action_budget_is_consumed(self) -> None:
@@ -392,6 +430,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
             pull_request(state="MERGED", draft=False, head="eligible"),
             "blocked",
             "eligible",
+            "trusted-reviewer",
             require_eligible_audit=False,
         )
 
@@ -412,6 +451,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 ),
                 "blocked",
                 "abc",
+                "trusted-reviewer",
             )
 
     def test_rejects_audit_comment_with_substring_classification(self) -> None:
@@ -432,6 +472,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 ),
                 "blocked",
                 "eligible",
+                "trusted-reviewer",
             )
 
     def test_rejects_audit_comment_from_old_base(self) -> None:
@@ -452,6 +493,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 ),
                 "blocked",
                 "eligible",
+                "trusted-reviewer",
             )
 
     def test_rejects_audit_comment_from_old_pull_request_state(self) -> None:
@@ -471,6 +513,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 ),
                 "blocked",
                 "eligible",
+                "trusted-reviewer",
             )
 
     def test_accepts_unchanged_deferred_pull_request_with_audit(self) -> None:
@@ -479,6 +522,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 state="OPEN", draft=False, head="deferred", classification="deferred"
             ),
             "deferred",
+            "trusted-reviewer",
         )
 
     def test_rejects_missing_deferred_audit_comment(self) -> None:
@@ -486,12 +530,14 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
             assert_deferred_result(
                 pull_request(state="OPEN", draft=False, head="deferred"),
                 "deferred",
+                "trusted-reviewer",
             )
 
     def test_accepts_unchanged_deferred_without_unbudgeted_comment(self) -> None:
         assert_deferred_result(
             pull_request(state="OPEN", draft=False, head="deferred"),
             "deferred",
+            "trusted-reviewer",
             require_audit=False,
         )
 
@@ -555,21 +601,135 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 trusted_author="trusted-reviewer",
             )
 
-    def test_accepts_retargeted_child_on_later_max_actions_one_run(self) -> None:
+    def test_rejects_transition_created_after_parent_merged(self) -> None:
         transition = (
             f"{AUDIT_MARKER}\nclassification: stack-transition\n"
-            f"state: {RETARGETED}\nparent: https://example.test/pull/1\n"
+            f"state: {PENDING_RETARGET}\nparent: https://example.test/pull/1\n"
             "parent head: parent-head\nparent base: main\nparent base sha: base-sha\n"
             "dependent head: child-head\ndependent base: parent-branch\n"
-            "dependent base sha: parent-head\nretarget base sha: base-sha"
+            "dependent base sha: parent-head"
+        )
+        with self.assertRaisesRegex(EvalFailure, "durable pending-retarget"):
+            assert_stack_transition(
+                pull_request(
+                    state="MERGED", draft=False, head="parent-head", base="main"
+                ),
+                pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="child-head",
+                    base="parent-branch",
+                    base_sha="parent-head",
+                    body=transition,
+                    comment_created_at="2026-08-27T13:00:00Z",
+                ),
+                parent_url="https://example.test/pull/1",
+                parent_head="parent-head",
+                parent_base="main",
+                child_head="child-head",
+                child_base="parent-branch",
+                state=PENDING_RETARGET,
+                trusted_author="trusted-reviewer",
+            )
+
+    def test_rejects_transition_edited_after_parent_merged(self) -> None:
+        transition = (
+            f"{AUDIT_MARKER}\nclassification: stack-transition\n"
+            f"state: {PENDING_RETARGET}\nparent: https://example.test/pull/1\n"
+            "parent head: parent-head\nparent base: main\nparent base sha: base-sha\n"
+            "dependent head: child-head\ndependent base: parent-branch\n"
+            "dependent base sha: parent-head"
+        )
+        with self.assertRaisesRegex(EvalFailure, "durable pending-retarget"):
+            assert_stack_transition(
+                pull_request(
+                    state="MERGED", draft=False, head="parent-head", base="main"
+                ),
+                pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="child-head",
+                    base="parent-branch",
+                    base_sha="parent-head",
+                    body=transition,
+                    comment_created_at="2026-08-27T11:00:00Z",
+                    includes_created_edit=True,
+                ),
+                parent_url="https://example.test/pull/1",
+                parent_head="parent-head",
+                parent_base="main",
+                child_head="child-head",
+                child_base="parent-branch",
+                state=PENDING_RETARGET,
+                trusted_author="trusted-reviewer",
+            )
+
+    def test_rejects_edited_transition_before_parent_merge(self) -> None:
+        transition = (
+            f"{AUDIT_MARKER}\nclassification: stack-transition\n"
+            f"state: {PENDING_RETARGET}\nparent: https://example.test/pull/1\n"
+            "parent head: parent-head\nparent base: main\nparent base sha: base-sha\n"
+            "dependent head: child-head\ndependent base: parent-branch\n"
+            "dependent base sha: parent-head"
+        )
+        with self.assertRaisesRegex(EvalFailure, "durable pending-retarget"):
+            assert_stack_transition(
+                pull_request(
+                    state="OPEN", draft=False, head="parent-head", base="main"
+                ),
+                pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="child-head",
+                    base="parent-branch",
+                    base_sha="parent-head",
+                    body=transition,
+                    includes_created_edit=True,
+                ),
+                parent_url="https://example.test/pull/1",
+                parent_head="parent-head",
+                parent_base="main",
+                child_head="child-head",
+                child_base="parent-branch",
+                state=PENDING_RETARGET,
+                trusted_author="trusted-reviewer",
+                parent_state="OPEN",
+            )
+
+    def test_accepts_retargeted_child_on_later_max_actions_one_run(self) -> None:
+        pending = (
+            f"{AUDIT_MARKER}\nclassification: stack-transition\n"
+            f"state: {PENDING_RETARGET}\nparent: https://example.test/pull/1\n"
+            "parent head: parent-head\nparent base: main\nparent base sha: base-sha\n"
+            "dependent head: child-head\ndependent base: parent-branch\n"
+            "dependent base sha: parent-head"
+        )
+        completion = pending.replace(
+            f"state: {PENDING_RETARGET}", f"state: {RETARGETED}"
+        ) + "\npending comment id: pending-id\nretarget base sha: base-sha"
+        child = pull_request(
+            state="OPEN",
+            draft=False,
+            head="child-head",
+            base="main",
+            body=pending,
+            comment_id="pending-id",
+        )
+        child["comments"].append(
+            {
+                "body": completion,
+                "author": {"login": "trusted-reviewer"},
+                "viewerDidAuthor": True,
+                "createdAt": "2026-08-27T13:00:00Z",
+                "includesCreatedEdit": False,
+                "id": "completion-id",
+            }
         )
         assert_stack_transition(
             pull_request(
                 state="MERGED", draft=False, head="parent-head", base="main"
             ),
-            pull_request(
-                state="OPEN", draft=False, head="child-head", base="main", body=transition
-            ),
+            child,
             parent_url="https://example.test/pull/1",
             parent_head="parent-head",
             parent_base="main",
@@ -661,7 +821,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 trusted_author="trusted-reviewer",
             )
 
-    def test_rejects_retargeted_transition_with_active_pending_marker(self) -> None:
+    def test_rejects_retargeted_transition_without_pending_reference(self) -> None:
         pending = (
             f"{AUDIT_MARKER}\nclassification: stack-transition\n"
             f"state: {PENDING_RETARGET}\nparent: https://example.test/pull/1\n"
@@ -671,18 +831,26 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
         )
         retargeted = pending.replace(
             f"state: {PENDING_RETARGET}", f"state: {RETARGETED}"
-        ) + "\nretarget base sha: base-sha"
+        ) + "\npending comment id: wrong-id\nretarget base sha: base-sha"
         child = pull_request(
-            state="OPEN", draft=False, head="child-head", base="main", body=retargeted
+            state="OPEN",
+            draft=False,
+            head="child-head",
+            base="main",
+            body=pending,
+            comment_id="pending-id",
         )
         child["comments"].append(
             {
-                "body": pending,
+                "body": retargeted,
                 "author": {"login": "trusted-reviewer"},
                 "viewerDidAuthor": True,
+                "createdAt": "2026-08-27T13:00:00Z",
+                "includesCreatedEdit": False,
+                "id": "completion-id",
             }
         )
-        with self.assertRaisesRegex(EvalFailure, "active pending-retarget"):
+        with self.assertRaisesRegex(EvalFailure, "durable retargeted"):
             assert_stack_transition(
                 pull_request(
                     state="MERGED", draft=False, head="parent-head", base="main"

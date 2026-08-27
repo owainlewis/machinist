@@ -13,7 +13,7 @@ func TestShepherdPromptKeepsAutomaticMergeAuthorityOptIn(t *testing.T) {
 		"label removal":           {"If the label was removed", "do not mutate it"},
 		"head change":             {"head SHA equals the expected head SHA", "failed safeguard is a state change"},
 		"audit comments":          {"Immediately before an audit comment", "Audit comments may", "document a labelled draft blocker", "classification `blocked`", "classification `merged`", "classification `deferred`", "Unlabelled pull"},
-		"exact audit state":        {"exactly `head`, `base`, `state`, and `classification`", "uppercase `OPEN` or `MERGED`", "Never accept a prefix", "exactly matching Shepherd"},
+		"exact audit state":       {"exactly `head`, `base`, `state`, and `classification`", "uppercase `OPEN` or `MERGED`", "Never accept a prefix", "exactly matching Shepherd"},
 		"checks and findings":     {"required checks to be present", "every current review thread or automated finding"},
 		"exact comparison review": {"exact head and", "base SHA comparison", "comparison-specific", "comparison values still match"},
 		"trusted review author":   {"authenticated GitHub actor's canonical login", "viewerDidAuthor", "authenticated actor must not be the pull request author", "any other account is untrusted"},
@@ -42,7 +42,7 @@ func TestShepherdPromptDefinesSerialRestartSafeQueue(t *testing.T) {
 		"serial refresh":          {"Process one pull request at a time", "rebuild the full queue"},
 		"action limit":            {"Once the limit is reached", "later scheduled run", "rediscover the queue", "durable queue state"},
 		"restart":                 {"Existing merged state is terminal", "restart.", "pending-retarget", "parent merge used the final action", "max_actions=1", "separate runs"},
-		"deferred stack retarget": {"Before merging a pull request that supplies", "persist a pending stack transition", "process a current `pending-retarget`", "parent is no longer open", "base SHA", "comment provenance", "no active pending", "Never infer that an", "obsolete parent branch"},
+		"deferred stack retarget": {"Before merging a pull request that supplies", "persist a pending stack transition", "process a current `pending-retarget`", "parent is no longer open", "base SHA", "comment provenance", "includesCreatedEdit", "never edit or delete it", "pending comment id", "Never infer that an", "obsolete parent branch"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, text := range required {

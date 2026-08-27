@@ -43,14 +43,17 @@ including the audit updates between those steps, consumes the single action avai
 its run. The smoke rejects review evidence from another base branch or base SHA even when
 the child head is unchanged, rejects review markers not provably written by an independent
 authenticated Shepherd actor, and rejects stack markers without that trusted provenance or
-exact ref and SHA facts. A first run also proves Shepherd creates the missing
+exact ref and SHA facts. It also rejects transition evidence created after the parent
+merged or edited at any time, and requires a later retarget record to reference the immutable pending
+comment ID. A first run proves Shepherd creates the missing
 `machinist:auto-merge` label definition. Cleanup
 closes open pull requests and deletes the temporary branches and label, so the repository's
 default branch is unchanged.
 
 The repository must start without the auto-merge label. Repeat its name with
 `--confirm-disposable` to acknowledge that the run creates and merges disposable pull
-requests:
+requests. Use a Machinist definition without a configured Shepherd schedule so the
+disposable direct smoke cannot overlap production scheduled work:
 
 ```sh
 just build
