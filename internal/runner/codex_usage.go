@@ -70,7 +70,12 @@ func (collector *codexUsageCollector) appendFragment(fragment []byte) {
 	if collector.discarding {
 		return
 	}
-	if len(collector.buffer)+len(fragment) > maxCodexEventBytes {
+	if len(fragment) > maxCodexEventBytes-len(collector.buffer) {
+		remainingCapacity := maxCodexEventBytes - len(collector.buffer)
+		collector.buffer = append(collector.buffer, fragment[:remainingCapacity]...)
+		if isCompletedTurnCandidate(collector.buffer) {
+			collector.usage = nil
+		}
 		collector.buffer = nil
 		collector.discarding = true
 		return

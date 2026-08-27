@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,16 @@ func TestCodexUsageCollectorInvalidatesUsageForTruncatedFinalCompletedTurn(t *te
 	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":8`))
 	if got := collector.tokenUsage(); got != nil {
 		t.Fatalf("token usage = %d, want unavailable for truncated final event", *got)
+	}
+}
+
+func TestCodexUsageCollectorInvalidatesUsageForOversizedFinalCompletedTurn(t *testing.T) {
+	collector := newCodexUsageCollector("codex", []string{"codex", "exec", "--json"})
+	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5}}` + "\n"))
+	oversized := `{"type":"turn.completed","usage":{"input_tokens":8,"output_tokens":` + strings.Repeat("1", maxCodexEventBytes) + `}}` + "\n"
+	_, _ = collector.Write([]byte(oversized))
+	if got := collector.tokenUsage(); got != nil {
+		t.Fatalf("token usage = %d, want unavailable for oversized final event", *got)
 	}
 }
 
