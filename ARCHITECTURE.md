@@ -62,7 +62,8 @@ labels, or prompt templates. The protocol does not know about local paths or com
 agents, ordered pipelines, and optional per-repository Shepherd schedules. Each agent
 selects an executor by logical name, points to a prompt file, and may set a timeout. Prompt
 paths are resolved relative to this file. A Shepherd schedule supplies a logical repository,
-interval, and maximum actions per run.
+interval, and maximum actions per run. The server may also set a positive global concurrent
+job limit. An omitted limit allows every available worker to lease a different job.
 
 `worker.toml` is machine-local. It declares executor argument arrays, optional model alias
 maps, repository-name to path mappings, a data directory, and the control-plane URL and
@@ -113,7 +114,9 @@ The managed path adds durable admission and leasing while reusing the same runne
 3. A managed worker polls with its random process instance ID, display name, executor
    names, repository names, and model capabilities.
 4. SQLite records the worker, reclaims expired leases, and selects the oldest compatible
-   queued run in one transaction. A worker instance receives at most one active run.
+   queued run in one transaction. A worker instance receives at most one active run. When
+   configured, the global concurrent-job limit prevents the transaction from starting a
+   new queued job after capacity is reached.
 5. The worker maps the run's logical executor and repository to its own command and path,
    then calls the same runner used by direct execution.
 6. The worker renews its 30-second lease every 10 seconds while execution or result
@@ -134,7 +137,10 @@ Polling is idempotent for one worker instance. If a lease response is lost, the 
 returns the same active run. If heartbeats stop, polling clears the expired lease and may
 redispatch the run with a new token. A stale worker can finish its local process, but it
 cannot update control-plane state after redispatch. This recovers abandoned runs. It does
-not provide exactly-once side effects or process resumption.
+not provide exactly-once side effects or process resumption. A running job keeps one global
+concurrency slot across pipeline steps and lease redispatch. At capacity, only queued runs
+belonging to an already-running job remain eligible, so recovery and pipelines cannot
+deadlock the queue.
 
 ## Persistence and artifacts
 
@@ -213,10 +219,11 @@ software outcome is correct.
 ## Verification
 
 The architecture was checked against the implementation and the focused tests under
-`cmd/machinist` and `internal/`. On 2026-08-26, `just check` passed the frontend tests and
+`cmd/machinist` and `internal/`. On 2026-08-27, `just check` passed the frontend tests and
 build, `go vet`, the race-enabled Go suite, and the Go build. The optional Python eval
-unit suite also passed. The external GitHub lifecycle eval was not run because it creates
-real issues and pull requests.
+unit suite also passed. Focused store tests covered concurrent worker polls, queued jobs,
+pipeline steps, and expired-lease redispatch under the global job limit. The external
+GitHub lifecycle eval was not run because it creates real issues and pull requests.
 
 A real-browser pass covered the embedded control plane and the public site at 1280px and
 390px widths. Navigation, the new-run form, theme switching, responsive menus, asset

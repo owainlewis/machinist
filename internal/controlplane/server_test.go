@@ -80,6 +80,38 @@ func TestServerProtectsSubmissionAndWorkerAPIs(t *testing.T) {
 	}
 }
 
+func TestServerAppliesConcurrentJobLimitToWorkerPolls(t *testing.T) {
+	server, webServer := newTestHTTPServerWithLimit(t, 1)
+	defer webServer.Close()
+	agent := config.ResolvedAgent{Name: "plan", Executor: "test", Prompt: "Plan request", Timeout: time.Minute}
+	for _, prompt := range []string{"first", "second"} {
+		if _, err := server.store.CreateJob(t.Context(), prompt, "machinist", "agent", "plan", []config.ResolvedAgent{agent}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	poll := func(instance string) *protocol.RunSpec {
+		t.Helper()
+		response := postJSON(t, webServer.URL+"/api/v1/workers/poll", protocol.PollRequest{
+			InstanceID: instance, Name: instance, Executors: []string{"test"}, Repositories: []string{"machinist"},
+		}, map[string]string{"Authorization": "Bearer secret"})
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("poll status = %d", response.StatusCode)
+		}
+		var body protocol.PollResponse
+		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body.Run
+	}
+	if first := poll("worker-a"); first == nil {
+		t.Fatal("first worker did not receive a job")
+	}
+	if blocked := poll("worker-b"); blocked != nil {
+		t.Fatalf("second worker received job at capacity: %#v", blocked)
+	}
+}
+
 func TestServerAcceptsBearerSubmissionAndRejectsInvalidToken(t *testing.T) {
 	_, webServer := newTestHTTPServer(t)
 	defer webServer.Close()
@@ -311,7 +343,7 @@ max_actions = 2
 		t.Fatal(err)
 	}
 	store := openTestStore(t, filepath.Join(directory, "machinist.db"))
-	server, err := NewServer(store, definitionPath, "secret")
+	server, err := NewServer(store, definitionPath, "secret", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +598,7 @@ max_actions = 2
 		t.Fatal(err)
 	}
 	store := openTestStore(t, filepath.Join(directory, "machinist.db"))
-	server, err := NewServer(store, definitionPath, "secret")
+	server, err := NewServer(store, definitionPath, "secret", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +632,7 @@ func TestServerCancellationAlwaysStopsHTTPServer(t *testing.T) {
 			t.Fatal(err)
 		}
 		store := openTestStore(t, filepath.Join(directory, "machinist.db"))
-		server, err := NewServer(store, definitionPath, "secret")
+		server, err := NewServer(store, definitionPath, "secret", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -709,7 +741,7 @@ max_actions = 2
 		t.Fatal(err)
 	}
 	store := openTestStore(t, filepath.Join(directory, "machinist.db"))
-	server, err := NewServer(store, definitionPath, "secret")
+	server, err := NewServer(store, definitionPath, "secret", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,6 +815,10 @@ func waitForServer(t *testing.T, address string) {
 }
 
 func newTestHTTPServer(t *testing.T) (*Server, *httptest.Server) {
+	return newTestHTTPServerWithLimit(t, 0)
+}
+
+func newTestHTTPServerWithLimit(t *testing.T, maxConcurrentJobs int) (*Server, *httptest.Server) {
 	t.Helper()
 	directory := t.TempDir()
 	promptPath := filepath.Join(directory, "plan.md")
@@ -794,7 +830,7 @@ func newTestHTTPServer(t *testing.T) (*Server, *httptest.Server) {
 		t.Fatal(err)
 	}
 	store := openTestStore(t, filepath.Join(directory, "machinist.db"))
-	server, err := NewServer(store, definitionPath, "secret")
+	server, err := NewServer(store, definitionPath, "secret", maxConcurrentJobs)
 	if err != nil {
 		t.Fatal(err)
 	}

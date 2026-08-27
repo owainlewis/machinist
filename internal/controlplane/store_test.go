@@ -207,6 +207,149 @@ func TestConcurrentPollsLeaseRunOnce(t *testing.T) {
 	}
 }
 
+func TestStoreConcurrentJobLimitLeavesAdditionalJobsQueued(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	firstJob, err := store.CreateJob(t.Context(), "first", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "First request")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJob, err := store.CreateJob(t.Context(), "second", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Second request")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), 1)
+	if err != nil || first == nil || first.JobID != firstJob {
+		t.Fatalf("first lease = %#v, %v", first, err)
+	}
+	blocked, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1)
+	if err != nil || blocked != nil {
+		t.Fatalf("poll at capacity = %#v, %v", blocked, err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := make(map[string]string, len(snapshot.Jobs))
+	for _, job := range snapshot.Jobs {
+		states[job.ID] = job.State
+	}
+	if states[firstJob] != "running" || states[secondJob] != "queued" {
+		t.Fatalf("jobs at capacity = %#v", snapshot.Jobs)
+	}
+
+	if err := store.Complete(t.Context(), first.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: first.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1)
+	if err != nil || second == nil || second.JobID != secondJob {
+		t.Fatalf("second lease = %#v, %v", second, err)
+	}
+}
+
+func TestStoreConcurrentJobLimitKeepsPipelineSlotBetweenSteps(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	pipelineJob, err := store.CreateJob(t.Context(), "pipeline", "machinist", "pipeline", "code", []config.ResolvedAgent{
+		testAgent("plan", "Plan request"),
+		testAgent("build", "Build request"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuedJob, err := store.CreateJob(t.Context(), "queued", "machinist", "agent", "review", []config.ResolvedAgent{testAgent("review", "Review request")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), 1)
+	if err != nil || first == nil || first.JobID != pipelineJob || first.Agent != "plan" {
+		t.Fatalf("first pipeline lease = %#v, %v", first, err)
+	}
+	if err := store.Complete(t.Context(), first.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: first.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1)
+	if err != nil || second == nil || second.JobID != pipelineJob || second.Agent != "build" {
+		t.Fatalf("second pipeline lease = %#v, %v", second, err)
+	}
+	blocked, err := store.poll(t.Context(), pollRequest("worker-c", []string{"codex"}, []string{"machinist"}), 1)
+	if err != nil || blocked != nil {
+		t.Fatalf("parallel poll = %#v, %v", blocked, err)
+	}
+	if err := store.Complete(t.Context(), second.ID, protocol.Completion{InstanceID: "worker-b", LeaseToken: second.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := store.poll(t.Context(), pollRequest("worker-c", []string{"codex"}, []string{"machinist"}), 1)
+	if err != nil || queued == nil || queued.JobID != queuedJob {
+		t.Fatalf("queued job lease = %#v, %v", queued, err)
+	}
+}
+
+func TestStoreConcurrentJobLimitRedispatchesExpiredActiveJob(t *testing.T) {
+	clock := newTestClock(time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC))
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	store.now = clock.Now
+	activeJob, err := store.CreateJob(t.Context(), "active", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Active request")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateJob(t.Context(), "queued", "machinist", "agent", "review", []config.ResolvedAgent{testAgent("review", "Queued request")}); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := store.poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), 1)
+	if err != nil || initial == nil || initial.JobID != activeJob {
+		t.Fatalf("initial lease = %#v, %v", initial, err)
+	}
+
+	clock.Advance(leaseDuration)
+	redispatched, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1)
+	if err != nil || redispatched == nil || redispatched.ID != initial.ID || redispatched.LeaseToken == initial.LeaseToken {
+		t.Fatalf("redispatched lease = %#v, %v", redispatched, err)
+	}
+}
+
+func TestConcurrentPollsRespectGlobalJobLimit(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	for _, prompt := range []string{"first", "second"} {
+		if _, err := store.CreateJob(t.Context(), prompt, "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", prompt)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := make(chan struct{})
+	results := make(chan *protocol.RunSpec, 2)
+	errorsChannel := make(chan error, 2)
+	var group sync.WaitGroup
+	for _, instance := range []string{"worker-a", "worker-b"} {
+		group.Add(1)
+		go func(instance string) {
+			defer group.Done()
+			<-start
+			run, err := store.poll(context.Background(), pollRequest(instance, []string{"codex"}, []string{"machinist"}), 1)
+			results <- run
+			errorsChannel <- err
+		}(instance)
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	close(errorsChannel)
+	for err := range errorsChannel {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	leased := 0
+	for run := range results {
+		if run != nil {
+			leased++
+		}
+	}
+	if leased != 1 {
+		t.Fatalf("leased jobs = %d, want 1", leased)
+	}
+}
+
 func TestStoreRenewsAndRedispatchesExpiredLease(t *testing.T) {
 	clock := newTestClock(time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC))
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))

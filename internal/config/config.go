@@ -56,10 +56,11 @@ type Repository struct {
 }
 
 type Server struct {
-	Listen          string `toml:"listen"`
-	Database        string `toml:"database"`
-	WorkerTokenFile string `toml:"worker_token_file"`
-	configDir       string
+	Listen            string `toml:"listen"`
+	Database          string `toml:"database"`
+	WorkerTokenFile   string `toml:"worker_token_file"`
+	MaxConcurrentJobs *int   `toml:"max_concurrent_jobs"`
+	configDir         string
 }
 
 type Config struct {
@@ -354,6 +355,13 @@ func (w Worker) RepositoryNames() []string { return sortedMapKeys(w.Repositories
 
 func (s Server) WorkerToken() (string, error) {
 	return readToken(s.WorkerTokenFile)
+}
+
+func (s Server) ConcurrentJobLimit() int {
+	if s.MaxConcurrentJobs == nil {
+		return 0
+	}
+	return *s.MaxConcurrentJobs
 }
 
 func LoadAgent(definitionPath, name string) (ResolvedAgent, error) {
@@ -658,6 +666,9 @@ func applyServerDefaults(server Server) (Server, error) {
 	}
 	if strings.TrimSpace(server.WorkerTokenFile) == "" {
 		return Server{}, errors.New("worker_token_file is required")
+	}
+	if server.MaxConcurrentJobs != nil && *server.MaxConcurrentJobs <= 0 {
+		return Server{}, errors.New("max_concurrent_jobs must be positive")
 	}
 	tokenPath, err := resolveConfigPath(server.WorkerTokenFile, server.configDir)
 	if err != nil {

@@ -1011,6 +1011,16 @@ func shepherdScheduleSignature(schedule config.ResolvedShepherdSchedule) (string
 }
 
 func (s *Store) Poll(ctx context.Context, request protocol.PollRequest) (*protocol.RunSpec, error) {
+	return s.poll(ctx, request, 0)
+}
+
+// poll allows at most maxConcurrentJobs running jobs. Zero leaves concurrency
+// unlimited. Runs in an already-running job remain eligible so pipelines and
+// expired leases can make progress.
+func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcurrentJobs int) (*protocol.RunSpec, error) {
+	if maxConcurrentJobs < 0 {
+		return nil, errors.New("max concurrent jobs cannot be negative")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -1042,19 +1052,31 @@ func (s *Store) Poll(ctx context.Context, request protocol.PollRequest) (*protoc
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
+	atCapacity := false
+	if maxConcurrentJobs > 0 {
+		var runningJobs int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE state='running'`).Scan(&runningJobs); err != nil {
+			return nil, fmt.Errorf("count running jobs: %w", err)
+		}
+		atCapacity = runningJobs >= maxConcurrentJobs
+	}
 
 	executors := stringSet(request.Executors)
 	repositories := stringSet(request.Repositories)
-	rows, err := tx.QueryContext(ctx, `SELECT id,job_id,agent,agent_hash,executor,model,repository,rendered_prompt,timeout_ms FROM runs WHERE state='queued' ORDER BY rowid`)
+	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.job_id,r.agent,r.agent_hash,r.executor,r.model,r.repository,r.rendered_prompt,r.timeout_ms,j.state FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.state='queued' ORDER BY r.rowid`)
 	if err != nil {
 		return nil, err
 	}
 	var selected protocol.RunSpec
 	for rows.Next() {
 		var candidate protocol.RunSpec
-		if err := rows.Scan(&candidate.ID, &candidate.JobID, &candidate.Agent, &candidate.AgentHash, &candidate.Executor, &candidate.Model, &candidate.Repository, &candidate.RenderedPrompt, &candidate.TimeoutMillis); err != nil {
+		var jobState string
+		if err := rows.Scan(&candidate.ID, &candidate.JobID, &candidate.Agent, &candidate.AgentHash, &candidate.Executor, &candidate.Model, &candidate.Repository, &candidate.RenderedPrompt, &candidate.TimeoutMillis, &jobState); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if atCapacity && jobState != "running" {
+			continue
 		}
 		if executors[candidate.Executor] && repositories[candidate.Repository] && supportsModel(request.Models, candidate.Executor, candidate.Model) {
 			selected = candidate
