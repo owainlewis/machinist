@@ -93,6 +93,19 @@ start work. The example uses a dedicated collaborator token because labels
 created with the normal `GITHUB_TOKEN` are attributed to `github-actions[bot]`,
 which has no collaborator permission for Machinist to verify.
 
+An opt-in integration test covers both direct-label and comment-to-label intake
+against a disposable repository. Install the shipped workflow on that repository,
+configure its `MACHINIST_INTAKE_TOKEN`, authenticate `gh` as a write-capable user,
+then run:
+
+```sh
+MACHINIST_GITHUB_INTEGRATION_REPOSITORY=OWNER/REPO \
+  go test ./internal/controlplane -run TestGitHubIntakeDisposableRepository -v
+```
+
+The test creates two issues and closes them during cleanup. It is skipped unless the
+repository environment variable is set.
+
 ## Interval schedules
 
 `every` must be from `1m` to `720h`. The first occurrence is one complete

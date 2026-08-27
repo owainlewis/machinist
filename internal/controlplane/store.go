@@ -22,6 +22,7 @@ var (
 	ErrLeaseConflict  = errors.New("run lease does not match")
 	ErrRunState       = errors.New("run is not active")
 	ErrTriggerMissing = errors.New("trigger state does not exist")
+	ErrTriggerStale   = errors.New("trigger state configuration changed")
 )
 
 const leaseDuration = 30 * time.Second
@@ -643,7 +644,7 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 
 // RecordTriggerAttempt records one poll or scheduling attempt. Candidate counts are
 // cumulative. Failed attempts do not advance the occurrence or next due time.
-func (s *Store) RecordTriggerAttempt(ctx context.Context, identity string, candidates int, attemptErr error) error {
+func (s *Store) RecordTriggerAttempt(ctx context.Context, identity, configSignature string, candidates int, attemptErr error) error {
 	if candidates < 0 {
 		return errors.New("trigger candidate count cannot be negative")
 	}
@@ -654,7 +655,7 @@ func (s *Store) RecordTriggerAttempt(ctx context.Context, identity string, candi
 		health = "failed"
 		latestError = boundedTriggerError(attemptErr.Error())
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET last_attempt_at=?,candidate_count=candidate_count+?,health=CASE WHEN ?='healthy' AND health='coalesced' THEN 'coalesced' WHEN ?='healthy' AND EXISTS (SELECT 1 FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.state IN ('queued','running')) THEN 'active' ELSE ? END,latest_error=?,updated_at=? WHERE identity=?`, now, candidates, health, health, health, latestError, now, identity)
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET last_attempt_at=?,candidate_count=candidate_count+?,health=CASE WHEN ?='healthy' AND health='coalesced' THEN 'coalesced' WHEN ?='healthy' AND EXISTS (SELECT 1 FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.state IN ('queued','running')) THEN 'active' ELSE ? END,latest_error=?,updated_at=? WHERE identity=? AND config_signature=?`, now, candidates, health, health, health, latestError, now, identity, configSignature)
 	if err != nil {
 		return fmt.Errorf("record trigger %q attempt: %w", identity, err)
 	}
@@ -663,13 +664,13 @@ func (s *Store) RecordTriggerAttempt(ctx context.Context, identity string, candi
 		return err
 	}
 	if changed != 1 {
-		return fmt.Errorf("%w: %s", ErrTriggerMissing, identity)
+		return fmt.Errorf("%w: %s", ErrTriggerStale, identity)
 	}
 	return nil
 }
 
-func (s *Store) SetTriggerNextDue(ctx context.Context, identity string, nextDue time.Time) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=?,updated_at=? WHERE identity=?`, nullableTimeText(nextDue), s.now().UTC().Format(time.RFC3339Nano), identity)
+func (s *Store) SetTriggerNextDue(ctx context.Context, identity, configSignature string, nextDue time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=?,updated_at=? WHERE identity=? AND config_signature=?`, nullableTimeText(nextDue), s.now().UTC().Format(time.RFC3339Nano), identity, configSignature)
 	if err != nil {
 		return fmt.Errorf("set trigger %q next due time: %w", identity, err)
 	}
@@ -678,16 +679,16 @@ func (s *Store) SetTriggerNextDue(ctx context.Context, identity string, nextDue 
 		return err
 	}
 	if changed != 1 {
-		return fmt.Errorf("%w: %s", ErrTriggerMissing, identity)
+		return fmt.Errorf("%w: %s", ErrTriggerStale, identity)
 	}
 	return nil
 }
 
-func (s *Store) SetTriggerPendingOccurrence(ctx context.Context, identity string, occurrence time.Time) error {
+func (s *Store) SetTriggerPendingOccurrence(ctx context.Context, identity, configSignature string, occurrence time.Time) error {
 	if occurrence.IsZero() {
 		return errors.New("trigger pending occurrence is required")
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET pending_occurrence_at=?,updated_at=? WHERE identity=?`, nullableTimeText(occurrence), s.now().UTC().Format(time.RFC3339Nano), identity)
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET pending_occurrence_at=?,updated_at=? WHERE identity=? AND config_signature=?`, nullableTimeText(occurrence), s.now().UTC().Format(time.RFC3339Nano), identity, configSignature)
 	if err != nil {
 		return fmt.Errorf("set trigger %q pending occurrence: %w", identity, err)
 	}
@@ -696,7 +697,7 @@ func (s *Store) SetTriggerPendingOccurrence(ctx context.Context, identity string
 		return err
 	}
 	if changed != 1 {
-		return fmt.Errorf("%w: %s", ErrTriggerMissing, identity)
+		return fmt.Errorf("%w: %s", ErrTriggerStale, identity)
 	}
 	return nil
 }
@@ -714,12 +715,12 @@ func (s *Store) TriggerOccurrenceExists(ctx context.Context, identity, occurrenc
 	return exists == 1, nil
 }
 
-func (s *Store) AddTriggerCoalesced(ctx context.Context, identity string, count int64) error {
+func (s *Store) AddTriggerCoalesced(ctx context.Context, identity, configSignature string, count int64) error {
 	if count < 0 {
 		return errors.New("trigger coalesced count cannot be negative")
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
-	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET coalesced_count=coalesced_count+?,health=CASE WHEN ?>0 THEN 'coalesced' ELSE health END,updated_at=? WHERE identity=?`, count, count, now, identity)
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET coalesced_count=coalesced_count+?,health=CASE WHEN ?>0 THEN 'coalesced' ELSE health END,updated_at=? WHERE identity=? AND config_signature=?`, count, count, now, identity, configSignature)
 	if err != nil {
 		return fmt.Errorf("record trigger %q coalesced occurrences: %w", identity, err)
 	}
@@ -728,7 +729,7 @@ func (s *Store) AddTriggerCoalesced(ctx context.Context, identity string, count 
 		return err
 	}
 	if changed != 1 {
-		return fmt.Errorf("%w: %s", ErrTriggerMissing, identity)
+		return fmt.Errorf("%w: %s", ErrTriggerStale, identity)
 	}
 	return nil
 }

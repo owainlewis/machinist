@@ -47,6 +47,9 @@ func (s *Server) processManagedTrigger(ctx context.Context, trigger config.Resol
 	if !found {
 		return errors.New("has no durable state")
 	}
+	if status.ConfigSignature != trigger.Signature {
+		return ErrTriggerStale
+	}
 	now := s.now().UTC()
 	if status.NextDueAt == nil || status.NextDueAt.After(now) {
 		return nil
@@ -63,12 +66,12 @@ func (s *Server) processFixedTrigger(ctx context.Context, trigger config.Resolve
 	}
 	occurrence, nextDue, coalesced, err := fixedOccurrenceWindow(trigger, firstDue, now, pending != nil)
 	if err != nil {
-		_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, 0, err)
+		_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, err)
 		return err
 	}
 	if pending == nil {
-		if err := s.store.SetTriggerPendingOccurrence(ctx, trigger.Identity, occurrence); err != nil {
-			_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, 0, err)
+		if err := s.store.SetTriggerPendingOccurrence(ctx, trigger.Identity, trigger.Signature, occurrence); err != nil {
+			_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, err)
 			return err
 		}
 	}
@@ -80,9 +83,9 @@ func (s *Server) processFixedTrigger(ctx context.Context, trigger config.Resolve
 	}
 	_, _, admissionErr := s.store.CreateTriggeredJob(ctx, admission)
 	if admissionErr == nil && coalesced > 0 {
-		admissionErr = s.store.AddTriggerCoalesced(ctx, trigger.Identity, coalesced)
+		admissionErr = s.store.AddTriggerCoalesced(ctx, trigger.Identity, trigger.Signature, coalesced)
 	}
-	recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, 0, admissionErr)
+	recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, admissionErr)
 	return errors.Join(admissionErr, recordErr)
 }
 
@@ -136,8 +139,8 @@ func (s *Server) processGitHubTrigger(ctx context.Context, trigger config.Resolv
 	sort.Slice(repositories, func(i, j int) bool { return strings.ToLower(repositories[i]) < strings.ToLower(repositories[j]) })
 	candidates, searchErr := s.github.SearchRequestedIssues(ctx, repositories, trigger.Label, maxGitHubCandidates)
 	if searchErr != nil {
-		recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, 0, searchErr)
-		nextErr := s.store.SetTriggerNextDue(ctx, trigger.Identity, s.now().UTC().Add(trigger.Every))
+		recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, searchErr)
+		nextErr := s.store.SetTriggerNextDue(ctx, trigger.Identity, trigger.Signature, s.now().UTC().Add(trigger.Every))
 		return errors.Join(searchErr, recordErr, nextErr)
 	}
 
@@ -148,9 +151,9 @@ func (s *Server) processGitHubTrigger(ctx context.Context, trigger config.Resolv
 		}
 	}
 	triggerErr := errors.Join(failures...)
-	recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, len(candidates), triggerErr)
+	recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, len(candidates), triggerErr)
 	// GitHub polling uses non-overlapping fixed delay, measured after the poll ends.
-	nextErr := s.store.SetTriggerNextDue(ctx, trigger.Identity, s.now().UTC().Add(trigger.Every))
+	nextErr := s.store.SetTriggerNextDue(ctx, trigger.Identity, trigger.Signature, s.now().UTC().Add(trigger.Every))
 	return errors.Join(triggerErr, recordErr, nextErr)
 }
 

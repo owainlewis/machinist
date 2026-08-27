@@ -724,11 +724,11 @@ func TestStoreSyncsDurableTriggerStateAcrossRestartAndConfigurationChanges(t *te
 	if err := store.SyncTriggers(t.Context(), definitions); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordTriggerAttempt(t.Context(), "github/intake", 3, errors.New(strings.Repeat("x", maxTriggerErrorLength+10))); err != nil {
+	if err := store.RecordTriggerAttempt(t.Context(), "github/intake", "v1", 3, errors.New(strings.Repeat("x", maxTriggerErrorLength+10))); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(time.Minute)
-	if err := store.SetTriggerNextDue(t.Context(), "interval/audit", firstDue.Add(time.Hour)); err != nil {
+	if err := store.SetTriggerNextDue(t.Context(), "interval/audit", "v1", firstDue.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -796,7 +796,7 @@ func TestStoreAdmitsUniqueFixedOccurrencesAndCoalescesOverlap(t *testing.T) {
 	if err != nil || created || activeID != jobID {
 		t.Fatalf("coalesced admission = %q, %v, %v", activeID, created, err)
 	}
-	if err := store.AddTriggerCoalesced(t.Context(), admission.Identity, 2); err != nil {
+	if err := store.AddTriggerCoalesced(t.Context(), admission.Identity, admission.ConfigSignature, 2); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.Snapshot(t.Context())
@@ -873,6 +873,37 @@ func TestStoreIgnoresCompletionFromPreviousTriggerConfiguration(t *testing.T) {
 				t.Fatalf("v2 status changed by v1 completion: %#v", statuses)
 			}
 		})
+	}
+}
+
+func TestStoreRejectsSchedulerWritesFromPreviousTriggerConfiguration(t *testing.T) {
+	clock := newTestClock(time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC))
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	store.now = clock.Now
+	identity := "interval/audit"
+	v2Due := clock.Now().Add(2 * time.Hour)
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: identity, Family: "interval", ConfigSignature: "v2", NextDueAt: v2Due}}); err != nil {
+		t.Fatal(err)
+	}
+	staleWrites := []func() error{
+		func() error {
+			return store.RecordTriggerAttempt(t.Context(), identity, "v1", 1, errors.New("stale failure"))
+		},
+		func() error { return store.SetTriggerNextDue(t.Context(), identity, "v1", clock.Now().Add(time.Hour)) },
+		func() error { return store.SetTriggerPendingOccurrence(t.Context(), identity, "v1", clock.Now()) },
+		func() error { return store.AddTriggerCoalesced(t.Context(), identity, "v1", 1) },
+	}
+	for index, write := range staleWrites {
+		if err := write(); !errors.Is(err, ErrTriggerStale) {
+			t.Fatalf("stale write %d error = %v, want ErrTriggerStale", index, err)
+		}
+	}
+	statuses, err := store.TriggerSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].ConfigSignature != "v2" || statuses[0].NextDueAt == nil || !statuses[0].NextDueAt.Equal(v2Due) || statuses[0].PendingOccurrenceAt != nil || statuses[0].LastAttemptAt != nil || statuses[0].Health != "healthy" || statuses[0].CandidateCount != 0 || statuses[0].CoalescedCount != 0 || statuses[0].LatestError != "" {
+		t.Fatalf("v2 status changed by stale scheduler: %#v", statuses)
 	}
 }
 

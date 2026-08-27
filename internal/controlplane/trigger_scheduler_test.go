@@ -219,6 +219,30 @@ func TestManagedTriggerSchedulersIsolateBlockedGitHubPoll(t *testing.T) {
 	}
 }
 
+func TestManagedTriggerRejectsStaleConfigurationSnapshot(t *testing.T) {
+	clock := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	trigger := config.ResolvedTrigger{
+		Identity: "interval/audit", Family: "interval", Every: time.Hour,
+		Repository: "machinist", Prompt: "Audit", SelectionKind: "agent", SelectionName: "audit", Signature: "v1",
+		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute}},
+	}
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: "v2", NextDueAt: clock}}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, now: func() time.Time { return clock }}
+	if err := server.processManagedTrigger(t.Context(), trigger); !errors.Is(err, ErrTriggerStale) {
+		t.Fatalf("stale trigger error = %v, want ErrTriggerStale", err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Jobs) != 0 {
+		t.Fatalf("stale trigger admitted jobs: %#v", snapshot.Jobs)
+	}
+}
+
 func TestManagedIntervalTriggerCoalescesBacklogAndActiveOccurrences(t *testing.T) {
 	startup := time.Date(2026, 8, 27, 8, 0, 0, 0, time.UTC)
 	clock := startup.Add(3*time.Hour + 30*time.Minute)
