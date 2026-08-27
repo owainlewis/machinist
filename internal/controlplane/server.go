@@ -223,7 +223,9 @@ func (s *Server) catalog(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBytes)
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
 	var input submitRequest
 	if err := decodeJSON(request, &input); err != nil {
 		writeDecodeError(response, err)
@@ -291,7 +293,9 @@ func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBytes)
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
 	var input protocol.PollRequest
 	if err := decodeJSON(request, &input); err != nil {
 		writeDecodeError(response, err)
@@ -310,7 +314,9 @@ func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) complete(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, maxCompletionBytes)
+	if !limitRequestBody(response, request, maxCompletionBytes) {
+		return
+	}
 	var input protocol.Completion
 	if err := decodeJSON(request, &input); err != nil {
 		writeDecodeError(response, err)
@@ -337,7 +343,9 @@ func (s *Server) complete(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBytes)
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
 	var input protocol.Heartbeat
 	if err := decodeJSON(request, &input); err != nil {
 		writeDecodeError(response, err)
@@ -447,6 +455,15 @@ func decodeJSON(request *http.Request, target any) error {
 		return errors.New("request contains multiple JSON values")
 	}
 	return nil
+}
+
+func limitRequestBody(response http.ResponseWriter, request *http.Request, limit int64) bool {
+	if request.ContentLength > limit {
+		writeError(response, http.StatusRequestEntityTooLarge, errors.New("request body is too large"))
+		return false
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, limit)
+	return true
 }
 
 func writeJSON(response http.ResponseWriter, status int, body any) {

@@ -294,6 +294,18 @@ func TestSizeLimitedEndpointsRejectOversizedJSON(t *testing.T) {
 	}
 
 	for _, endpoint := range endpoints {
+		t.Run(endpoint.name+"/known content length", func(t *testing.T) {
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, endpoint.path, strings.NewReader("x"))
+			request.ContentLength = endpoint.limit + 1
+			request.Header.Set("Authorization", "Bearer secret")
+			response := httptest.NewRecorder()
+
+			server.Handler().ServeHTTP(response, request)
+
+			if response.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+		})
 		for _, stage := range stages {
 			t.Run(endpoint.name+"/"+stage.name, func(t *testing.T) {
 				body := io.MultiReader(strings.NewReader(stage.prefix), io.LimitReader(repeatingByteReader(stage.fill), endpoint.limit+1))
