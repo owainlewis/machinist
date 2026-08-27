@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { completedRuns, formatDurationMillis, formatReportingCoverage, formatSuccessRate, formatTokenUsage, runDetails, taskAnalytics, tasksInWindow, tokenUsageSummary } from "./run-metrics.js";
+import { completedRuns, formatDurationMillis, formatReportingCoverage, formatSuccessRate, formatTokenUsage, runDetails, runModelSummary, taskAnalytics, tasksInWindow, tokenUsageSummary } from "./run-metrics.js";
 
 function localDate(year, month, day, hour = 0) {
   return new Date(year, month - 1, day, hour).toISOString();
@@ -107,6 +107,13 @@ test("tokenUsageSummary does not present missing usage as zero", () => {
   assert.equal(formatReportingCoverage(tokenUsageSummary([])), "No completed steps");
 });
 
+test("runModelSummary reports every distinct configured model and honest fallbacks", () => {
+  assert.equal(runModelSummary([{ model: "gpt-5.6-sol" }, { model: "gpt-5.6-sol" }]), "gpt-5.6-sol");
+  assert.equal(runModelSummary([{ model: "deepseek-v4-flash" }, { model: "gpt-5.6-sol" }]), "deepseek-v4-flash · gpt-5.6-sol");
+  assert.equal(runModelSummary([{ model: "gpt-5.6-sol" }, {}]), "gpt-5.6-sol · Not specified");
+  assert.equal(runModelSummary([]), "Not specified");
+});
+
 test("runDetails always surfaces the executor, even when a worker has claimed the run", () => {
   const claimed = { executor: "codex", worker_name: "my-macbook", model: "sonnet", duration_millis: 1250, completed_at: "2026-08-25T12:00:00Z", token_usage: "4321" };
   assert.equal(runDetails(claimed), "codex · my-macbook · sonnet · 1.25s · 4,321 tokens");
@@ -137,6 +144,26 @@ test("main.jsx no longer drops the executor in favor of the worker name", async 
   assert.match(runCard, /tokenUsageSummary\(job\.runs\)/);
   assert.match(runCard, /Usage/);
   assert.match(runCard, /unavailable/);
+});
+
+test("board cards and list rows report models and token usage", async () => {
+  const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
+  const runCard = source.match(/function RunCard[\s\S]+?function RunRow/)?.[0];
+  assert.ok(runCard);
+  assert.match(runCard, /runModelSummary\(job\.runs\)/);
+  assert.match(runCard, /Model/);
+  assert.match(runCard, /Tokens/);
+  assert.match(runCard, /usage\.unavailable/);
+  assert.match(runCard, /missing/);
+  assert.match(runCard, /<State value=\{job\.state\}/);
+  assert.doesNotMatch(runCard, /Needs attention/);
+
+  const runRow = source.match(/function RunRow[\s\S]+?function RunSteps/)?.[0];
+  assert.ok(runRow);
+  assert.match(runRow, /runModelSummary\(job\.runs\)/);
+  assert.match(runRow, /Model/);
+  assert.match(runRow, /tokenUsageSummary\(job\.runs\)/);
+  assert.match(runRow, /tokens/);
 });
 
 test("expanded run details keep token usage visible at mobile widths", async () => {
