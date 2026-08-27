@@ -21,39 +21,40 @@ type githubTriggerClient interface {
 }
 
 func (s *Server) processManagedTriggers(ctx context.Context) error {
-	if len(s.triggers) == 0 {
-		return nil
+	var failures []error
+	for _, trigger := range s.triggers {
+		if err := s.processManagedTrigger(ctx, trigger); err != nil {
+			failures = append(failures, fmt.Errorf("trigger %q: %w", trigger.Identity, err))
+		}
 	}
+	return errors.Join(failures...)
+}
+
+func (s *Server) processManagedTrigger(ctx context.Context, trigger config.ResolvedTrigger) error {
 	statuses, err := s.store.TriggerSnapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("read managed trigger state: %w", err)
 	}
-	byIdentity := make(map[string]TriggerStatus, len(statuses))
-	for _, status := range statuses {
-		byIdentity[status.Identity] = status
+	var status TriggerStatus
+	found := false
+	for _, candidate := range statuses {
+		if candidate.Identity == trigger.Identity {
+			status = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		return errors.New("has no durable state")
 	}
 	now := s.now().UTC()
-	var failures []error
-	for _, trigger := range s.triggers {
-		status, ok := byIdentity[trigger.Identity]
-		if !ok {
-			failures = append(failures, fmt.Errorf("trigger %q has no durable state", trigger.Identity))
-			continue
-		}
-		if status.NextDueAt == nil || status.NextDueAt.After(now) {
-			continue
-		}
-		var triggerErr error
-		if trigger.Family == "github" {
-			triggerErr = s.processGitHubTrigger(ctx, trigger)
-		} else {
-			triggerErr = s.processFixedTrigger(ctx, trigger, *status.NextDueAt, status.PendingOccurrenceAt, now)
-		}
-		if triggerErr != nil {
-			failures = append(failures, fmt.Errorf("trigger %q: %w", trigger.Identity, triggerErr))
-		}
+	if status.NextDueAt == nil || status.NextDueAt.After(now) {
+		return nil
 	}
-	return errors.Join(failures...)
+	if trigger.Family == "github" {
+		return s.processGitHubTrigger(ctx, trigger)
+	}
+	return s.processFixedTrigger(ctx, trigger, *status.NextDueAt, status.PendingOccurrenceAt, now)
 }
 
 func (s *Server) processFixedTrigger(ctx context.Context, trigger config.ResolvedTrigger, firstDue time.Time, pending *time.Time, now time.Time) error {
@@ -72,7 +73,7 @@ func (s *Server) processFixedTrigger(ctx context.Context, trigger config.Resolve
 		}
 	}
 	admission := TriggerAdmission{
-		Identity: trigger.Identity, Family: trigger.Family,
+		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature,
 		OccurrenceKey: occurrence.UTC().Format(time.RFC3339Nano), ScheduledAt: occurrence, NextDueAt: nextDue,
 		Prompt: trigger.Prompt, Repository: trigger.Repository,
 		SelectionKind: trigger.SelectionKind, SelectionName: trigger.SelectionName, Agents: trigger.Agents,
@@ -185,7 +186,7 @@ func (s *Server) processGitHubCandidate(ctx context.Context, trigger config.Reso
 	}
 	occurrenceKey := details.RequestedEvent.OccurrenceKey
 	_, created, err := s.store.CreateTriggeredJob(ctx, TriggerAdmission{
-		Identity: trigger.Identity, Family: trigger.Family, OccurrenceKey: occurrenceKey,
+		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, OccurrenceKey: occurrenceKey,
 		Subject: issueURL, ScheduledAt: details.RequestedEvent.CreatedAt,
 		Prompt: prompt, Repository: logicalRepository,
 		SelectionKind: trigger.SelectionKind, SelectionName: trigger.SelectionName, Agents: agents,

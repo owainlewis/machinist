@@ -17,12 +17,27 @@ type fakeGitHubTriggerClient struct {
 	details         GitHubIssueDetails
 	permission      string
 	searchErr       error
+	searchStarted   chan<- struct{}
+	searchRelease   <-chan struct{}
 	replaceErr      error
 	replaceCalls    int
 	permissionActor string
 }
 
-func (f *fakeGitHubTriggerClient) SearchRequestedIssues(context.Context, []string, string, int) ([]GitHubCandidate, error) {
+func (f *fakeGitHubTriggerClient) SearchRequestedIssues(ctx context.Context, _ []string, _ string, _ int) ([]GitHubCandidate, error) {
+	if f.searchStarted != nil {
+		select {
+		case f.searchStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.searchRelease != nil {
+		select {
+		case <-f.searchRelease:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return f.candidates, f.searchErr
 }
 
@@ -142,6 +157,65 @@ func TestManagedGitHubTriggerAdmitsAuthorizedWorkflowTokenActor(t *testing.T) {
 	}
 	if client.permissionActor != "machinist-intake-bot" || len(snapshot.Jobs) != 1 || client.replaceCalls != 1 {
 		t.Fatalf("workflow actor was not admitted: actor=%q jobs=%d replacements=%d", client.permissionActor, len(snapshot.Jobs), client.replaceCalls)
+	}
+}
+
+func TestManagedTriggerSchedulersIsolateBlockedGitHubPoll(t *testing.T) {
+	clock := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	githubTrigger := githubTestTrigger()
+	intervalTrigger := config.ResolvedTrigger{
+		Identity: "interval/audit", Family: "interval", Every: time.Hour,
+		Repository: "machinist", Prompt: "Audit", SelectionKind: "agent", SelectionName: "audit", Signature: "interval-signature",
+		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute}},
+	}
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{
+		{Identity: githubTrigger.Identity, Family: githubTrigger.Family, ConfigSignature: githubTrigger.Signature, NextDueAt: clock},
+		{Identity: intervalTrigger.Identity, Family: intervalTrigger.Family, ConfigSignature: intervalTrigger.Signature, NextDueAt: clock},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	searchStarted := make(chan struct{}, 1)
+	searchRelease := make(chan struct{})
+	server := &Server{
+		store: store, triggers: []config.ResolvedTrigger{githubTrigger, intervalTrigger},
+		github: &fakeGitHubTriggerClient{searchStarted: searchStarted, searchRelease: searchRelease},
+		now:    func() time.Time { return clock }, schedulerEvery: 5 * time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- server.runScheduler(ctx) }()
+	select {
+	case <-searchStarted:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("GitHub trigger did not start")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		snapshot, err := store.Snapshot(t.Context())
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		if len(snapshot.Jobs) == 1 && snapshot.Jobs[0].TriggerID == intervalTrigger.Identity {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("interval trigger was blocked by GitHub poll: %#v", snapshot.Jobs)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(searchRelease)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not stop")
 	}
 }
 

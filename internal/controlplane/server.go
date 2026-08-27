@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
@@ -203,17 +204,43 @@ func (s *Server) runScheduler(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
-	s.reportSchedulerError(errors.Join(s.enqueueScheduledRuns(ctx), s.processManagedTriggers(ctx)))
-	ticker := time.NewTicker(s.schedulerEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			s.reportSchedulerError(errors.Join(s.enqueueScheduledRuns(ctx), s.processManagedTriggers(ctx)))
-		}
+	var schedulers sync.WaitGroup
+	start := func(work func(context.Context) error) {
+		schedulers.Add(1)
+		go func() {
+			defer schedulers.Done()
+			for {
+				s.reportSchedulerError(work(ctx))
+				timer := time.NewTimer(s.schedulerEvery)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return
+				case <-timer.C:
+				}
+			}
+		}()
 	}
+	if len(s.schedules) > 0 {
+		start(s.enqueueScheduledRuns)
+	}
+	for _, trigger := range s.triggers {
+		trigger := trigger
+		start(func(ctx context.Context) error {
+			if err := s.processManagedTrigger(ctx, trigger); err != nil {
+				return fmt.Errorf("trigger %q: %w", trigger.Identity, err)
+			}
+			return nil
+		})
+	}
+	<-ctx.Done()
+	schedulers.Wait()
+	return nil
 }
 
 func (s *Server) enqueueScheduledRuns(ctx context.Context) error {

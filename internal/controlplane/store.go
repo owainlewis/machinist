@@ -90,17 +90,18 @@ type TriggerDefinition struct {
 // TriggerAdmission contains an already resolved job. Trigger scheduling code remains
 // responsible for validating configuration and rendering the prompt before admission.
 type TriggerAdmission struct {
-	Identity      string
-	Family        string
-	OccurrenceKey string
-	Subject       string
-	ScheduledAt   time.Time
-	NextDueAt     time.Time
-	Prompt        string
-	Repository    string
-	SelectionKind string
-	SelectionName string
-	Agents        []config.ResolvedAgent
+	Identity        string
+	Family          string
+	ConfigSignature string
+	OccurrenceKey   string
+	Subject         string
+	ScheduledAt     time.Time
+	NextDueAt       time.Time
+	Prompt          string
+	Repository      string
+	SelectionKind   string
+	SelectionName   string
+	Agents          []config.ResolvedAgent
 }
 
 type TriggerStatus struct {
@@ -157,6 +158,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   schedule_name TEXT NOT NULL DEFAULT '',
   has_shepherd INTEGER NOT NULL DEFAULT 0,
   trigger_identity TEXT NOT NULL DEFAULT '',
+  trigger_config_signature TEXT NOT NULL DEFAULT '',
   occurrence_key TEXT NOT NULL DEFAULT '',
   trigger_subject TEXT NOT NULL DEFAULT '',
   fixed_trigger INTEGER NOT NULL DEFAULT 0,
@@ -244,6 +246,9 @@ CREATE TABLE IF NOT EXISTS trigger_state (
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_identity", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_config_signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "jobs", "occurrence_key", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -524,6 +529,9 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 	if admission.Identity == "" || admission.Family == "" {
 		return "", false, errors.New("trigger identity and family are required")
 	}
+	if admission.ConfigSignature == "" {
+		return "", false, errors.New("trigger config signature is required")
+	}
 	if len(admission.Agents) == 0 {
 		return "", false, errors.New("triggered job must contain at least one agent")
 	}
@@ -540,8 +548,8 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 		return "", false, err
 	}
 	defer tx.Rollback()
-	var family string
-	if err := tx.QueryRowContext(ctx, `SELECT family FROM trigger_state WHERE identity=?`, admission.Identity).Scan(&family); err != nil {
+	var family, configSignature string
+	if err := tx.QueryRowContext(ctx, `SELECT family,config_signature FROM trigger_state WHERE identity=?`, admission.Identity).Scan(&family, &configSignature); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", false, fmt.Errorf("%w: %s", ErrTriggerMissing, admission.Identity)
 		}
@@ -549,6 +557,9 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 	}
 	if family != admission.Family {
 		return "", false, fmt.Errorf("trigger %q family is %q, not %q", admission.Identity, family, admission.Family)
+	}
+	if configSignature != admission.ConfigSignature {
+		return "", false, fmt.Errorf("trigger %q configuration changed before admission", admission.Identity)
 	}
 
 	var existingJob string
@@ -597,7 +608,7 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 	for _, agent := range admission.Agents {
 		hasShepherd = hasShepherd || agent.Name == "shepherd"
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,trigger_identity,occurrence_key,trigger_subject,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionKind, admission.SelectionName, hasShepherd, admission.Identity, admission.OccurrenceKey, admission.Subject, fixed, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,trigger_identity,trigger_config_signature,occurrence_key,trigger_subject,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionKind, admission.SelectionName, hasShepherd, admission.Identity, admission.ConfigSignature, admission.OccurrenceKey, admission.Subject, fixed, now, now); err != nil {
 		return "", false, fmt.Errorf("insert triggered job: %w", err)
 	}
 	for index, agent := range admission.Agents {
@@ -885,10 +896,10 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 		return err
 	}
 	defer tx.Rollback()
-	var jobID, state, instanceID, leaseToken, startedAt, triggerIdentity string
+	var jobID, state, instanceID, leaseToken, startedAt, triggerIdentity, triggerConfigSignature string
 	var leaseExpiresAt sql.NullInt64
 	var step int
-	if err := tx.QueryRowContext(ctx, `SELECT r.job_id,r.step,r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,COALESCE(r.started_at,''),COALESCE(j.trigger_identity,'') FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.id=?`, runID).Scan(&jobID, &step, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt, &triggerIdentity); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT r.job_id,r.step,r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,COALESCE(r.started_at,''),COALESCE(j.trigger_identity,''),COALESCE(j.trigger_config_signature,'') FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.id=?`, runID).Scan(&jobID, &step, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt, &triggerIdentity, &triggerConfigSignature); err != nil {
 		return err
 	}
 	if subtle.ConstantTimeCompare([]byte(instanceID), []byte(completion.InstanceID)) != 1 || subtle.ConstantTimeCompare([]byte(leaseToken), []byte(completion.LeaseToken)) != 1 {
@@ -932,7 +943,7 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 				return err
 			}
 			if triggerIdentity != "" {
-				if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_success_at=?,health='healthy',latest_error='',updated_at=? WHERE identity=?`, now, now, triggerIdentity); err != nil {
+				if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_success_at=?,health='healthy',latest_error='',updated_at=? WHERE identity=? AND config_signature=?`, now, now, triggerIdentity, triggerConfigSignature); err != nil {
 					return fmt.Errorf("record trigger success: %w", err)
 				}
 			}
@@ -949,7 +960,7 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 			if latestError == "" {
 				latestError = "triggered job " + completion.State
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET health='failed',latest_error=?,updated_at=? WHERE identity=?`, boundedTriggerError(latestError), now, triggerIdentity); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET health='failed',latest_error=?,updated_at=? WHERE identity=? AND config_signature=?`, boundedTriggerError(latestError), now, triggerIdentity, triggerConfigSignature); err != nil {
 				return fmt.Errorf("record trigger failure: %w", err)
 			}
 		}
