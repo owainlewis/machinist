@@ -3,7 +3,9 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,12 +13,13 @@ import (
 )
 
 type fakeGitHubTriggerClient struct {
-	candidates   []GitHubCandidate
-	details      GitHubIssueDetails
-	permission   string
-	searchErr    error
-	replaceErr   error
-	replaceCalls int
+	candidates      []GitHubCandidate
+	details         GitHubIssueDetails
+	permission      string
+	searchErr       error
+	replaceErr      error
+	replaceCalls    int
+	permissionActor string
 }
 
 func (f *fakeGitHubTriggerClient) SearchRequestedIssues(context.Context, []string, string, int) ([]GitHubCandidate, error) {
@@ -27,7 +30,8 @@ func (f *fakeGitHubTriggerClient) IssueDetails(context.Context, string, int, str
 	return f.details, nil
 }
 
-func (f *fakeGitHubTriggerClient) Permission(context.Context, string, string) (string, error) {
+func (f *fakeGitHubTriggerClient) Permission(_ context.Context, _, actor string) (string, error) {
+	f.permissionActor = actor
 	return f.permission, nil
 }
 
@@ -103,6 +107,44 @@ func TestManagedGitHubTriggerRejectsUnauthorizedActor(t *testing.T) {
 	}
 }
 
+func TestManagedGitHubTriggerAdmitsAuthorizedWorkflowTokenActor(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", "examples", "github-actions", "machinist-comment-intake.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(workflow), "github-token: ${{ secrets.MACHINIST_INTAKE_TOKEN }}") {
+		t.Fatal("comment intake workflow does not label with its documented collaborator token")
+	}
+
+	clock := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	trigger := githubTestTrigger()
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, NextDueAt: clock}}); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeGitHubTriggerClient{
+		candidates: []GitHubCandidate{{Repository: "owainlewis/machinist", Number: 396, State: "open", CreatedAt: clock}},
+		details: GitHubIssueDetails{
+			GitHubCandidate: GitHubCandidate{Repository: "owainlewis/machinist", Number: 396, State: "open", CreatedAt: clock},
+			Labels:          []string{"machinist:requested"},
+			RequestedEvent:  &GitHubLabelEvent{ID: "123", Actor: "machinist-intake-bot", CreatedAt: clock, OccurrenceKey: "github.com:123"},
+		},
+		permission: "write",
+	}
+	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
+
+	if err := server.processManagedTriggers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.permissionActor != "machinist-intake-bot" || len(snapshot.Jobs) != 1 || client.replaceCalls != 1 {
+		t.Fatalf("workflow actor was not admitted: actor=%q jobs=%d replacements=%d", client.permissionActor, len(snapshot.Jobs), client.replaceCalls)
+	}
+}
+
 func TestManagedIntervalTriggerCoalescesBacklogAndActiveOccurrences(t *testing.T) {
 	startup := time.Date(2026, 8, 27, 8, 0, 0, 0, time.UTC)
 	clock := startup.Add(3*time.Hour + 30*time.Minute)
@@ -136,7 +178,7 @@ func TestManagedIntervalTriggerCoalescesBacklogAndActiveOccurrences(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Jobs) != 1 || snapshot.Triggers[0].CoalescedCount != 3 || snapshot.Triggers[0].NextDueAt == nil || !snapshot.Triggers[0].NextDueAt.Equal(startup.Add(5*time.Hour)) {
+	if len(snapshot.Jobs) != 1 || snapshot.Triggers[0].CoalescedCount != 3 || snapshot.Triggers[0].Health != "coalesced" || snapshot.Triggers[0].NextDueAt == nil || !snapshot.Triggers[0].NextDueAt.Equal(startup.Add(5*time.Hour)) {
 		t.Fatalf("active coalescing state = %#v", snapshot)
 	}
 }

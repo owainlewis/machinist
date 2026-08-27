@@ -89,7 +89,9 @@ The optional [GitHub Actions comment example](../examples/github-actions/README.
 turns an authorized issue comment into the intake label. Only the first
 non-empty line controls whether the workflow accepts the comment. Comment text
 is not used as a job prompt. Edited comments and pull-request comments do not
-start work.
+start work. The example uses a dedicated collaborator token because labels
+created with the normal `GITHUB_TOKEN` are attributed to `github-actions[bot]`,
+which has no collaborator permission for Machinist to verify.
 
 ## Interval schedules
 

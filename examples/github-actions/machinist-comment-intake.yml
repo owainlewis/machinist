@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: read
-  issues: write
+  issues: read
 
 jobs:
   request:
@@ -16,6 +16,7 @@ jobs:
       - name: Validate request and add intake label
         uses: actions/github-script@v8
         with:
+          github-token: ${{ secrets.MACHINIST_INTAKE_TOKEN }}
           script: |
             const body = context.payload.comment?.body ?? "";
             const firstNonEmptyLine = body
