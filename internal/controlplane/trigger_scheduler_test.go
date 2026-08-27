@@ -589,7 +589,7 @@ func TestManagedFixedTriggerWaitsForPreviousConfigurationJobAcrossABA(t *testing
 		t.Fatal(err)
 	}
 	status := snapshot.Triggers[0]
-	if len(snapshot.Jobs) != 1 || status.PendingOccurrenceAt == nil || !status.PendingOccurrenceAt.Equal(clock) || status.NextDueAt == nil || !status.NextDueAt.Equal(clock) || status.CoalescedCount != 0 {
+	if len(snapshot.Jobs) != 1 || status.PendingOccurrenceAt == nil || !status.PendingOccurrenceAt.Equal(clock) || status.NextDueAt == nil || !status.NextDueAt.Equal(clock) || status.CoalescedCount != 0 || status.Health != "healthy" || status.ActiveJobID != "" {
 		t.Fatalf("new A occurrence was not preserved behind old A work: %#v", snapshot)
 	}
 	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"test"}, []string{"machinist"}))
