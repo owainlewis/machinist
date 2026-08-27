@@ -37,15 +37,27 @@ func structuredCodexCommand(executor string, command []string) []string {
 }
 
 func codexExecIndex(executor string, command []string) int {
-	programIndex := slices.IndexFunc(command, func(argument string) bool {
-		return codexExecutableName(argument) == "codex"
-	})
-	if programIndex < 0 {
-		if !codexExecutorName(executor) || len(command) == 0 {
+	for programIndex, argument := range command {
+		if codexExecutableName(argument) == "codex" {
+			if execIndex := codexExecIndexAfter(command, programIndex); execIndex >= 0 {
+				return execIndex
+			}
+		}
+	}
+	if !codexExecutorName(executor) || len(command) == 0 {
+		return -1
+	}
+	programIndex := 0
+	if codexExecutableName(command[0]) == "env" {
+		programIndex = envProgramIndex(command)
+		if programIndex < 0 {
 			return -1
 		}
-		programIndex = 0
 	}
+	return codexExecIndexAfter(command, programIndex)
+}
+
+func codexExecIndexAfter(command []string, programIndex int) int {
 	for index := programIndex + 1; index < len(command); index++ {
 		argument := command[index]
 		recognized, takesNextValue := codexRootOption(argument)
@@ -62,6 +74,37 @@ func codexExecIndex(executor string, command []string) int {
 			return index
 		}
 		return -1
+	}
+	return -1
+}
+
+func envProgramIndex(command []string) int {
+	for index := 1; index < len(command); index++ {
+		argument := command[index]
+		if argument == "--" {
+			if index+1 < len(command) {
+				return index + 1
+			}
+			return -1
+		}
+		if strings.Contains(argument, "=") && !strings.HasPrefix(argument, "-") {
+			continue
+		}
+		if slices.Contains([]string{"-i", "--ignore-environment", "-0", "--null"}, argument) {
+			continue
+		}
+		if slices.Contains([]string{"-u", "--unset", "-C", "--chdir", "-P", "-S", "--split-string"}, argument) {
+			index++
+			continue
+		}
+		if strings.HasPrefix(argument, "--unset=") || strings.HasPrefix(argument, "--chdir=") || strings.HasPrefix(argument, "--split-string=") ||
+			(len(argument) > 2 && slices.Contains([]string{"-u", "-C", "-P", "-S"}, argument[:2])) {
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return -1
+		}
+		return index
 	}
 	return -1
 }

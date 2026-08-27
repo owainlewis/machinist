@@ -98,6 +98,7 @@ func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) 
 		{name: "custom executor name", executor: "codex-local", command: []string{"codex", "exec", "--json"}},
 		{name: "wrapped executable", executor: "codex", command: []string{"/usr/bin/env", "codex", "exec", "--json"}},
 		{name: "renamed executable", executor: "codex", command: []string{"agent", "exec", "--json"}},
+		{name: "wrapped renamed executable", executor: "codex-local", command: []string{"/usr/bin/env", "agent", "exec", "--json"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if collector := newCodexUsageCollector(test.executor, test.command); collector == nil {
@@ -131,6 +132,7 @@ func TestStructuredCodexCommandAddsJSONToRecognizedLegacyCommands(t *testing.T) 
 		{name: "root option value matches subcommand", executor: "codex", command: []string{"codex", "--profile", "exec", "exec", "-"}, want: []string{"codex", "--profile", "exec", "exec", "--json", "-"}},
 		{name: "custom executor name", executor: "codex-local", command: []string{"agent", "exec", "-"}, want: []string{"agent", "exec", "--json", "-"}},
 		{name: "wrapped", executor: "custom", command: []string{"/usr/bin/env", "codex", "exec", "-"}, want: []string{"/usr/bin/env", "codex", "exec", "--json", "-"}},
+		{name: "wrapped renamed executable", executor: "codex-local", command: []string{"/usr/bin/env", "agent", "exec", "-"}, want: []string{"/usr/bin/env", "agent", "exec", "--json", "-"}},
 		{name: "wrapper has its own exec", executor: "custom", command: []string{"mise", "exec", "--", "codex", "exec", "-"}, want: []string{"mise", "exec", "--", "codex", "exec", "--json", "-"}},
 		{name: "already structured", executor: "codex", command: []string{"codex", "exec", "--json", "-"}, want: []string{"codex", "exec", "--json", "-"}},
 		{name: "other executor", executor: "claude", command: []string{"claude", "exec", "-"}, want: []string{"claude", "exec", "-"}},
@@ -186,6 +188,7 @@ func TestExecuteCollectsCodexUsageWithoutChangingOutput(t *testing.T) {
 		{name: "direct", executor: "codex-local", executableName: "codex"},
 		{name: "wrapped", executor: "codex", executableName: "codex", wrapped: true},
 		{name: "renamed", executor: "codex", executableName: "agent"},
+		{name: "wrapped renamed", executor: "codex-local", executableName: "agent", wrapped: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			agent := codexJSONAgentCommand(t, test.executor, test.executableName, test.wrapped, `cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s' '`+output+`'`, 5*time.Second)
