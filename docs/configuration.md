@@ -116,9 +116,10 @@ final `turn.completed` usage. Machinist records input tokens plus output tokens;
 cached input is already included in the input count and is not added again.
 Machinist automatically adds `--json` to recognized `codex exec` commands, so
 existing worker configurations collect usage after upgrading. Codex executor
-names such as `codex-local` may use an argv-preserving wrapper such as `env` or
-a renamed Codex executable as long as the command still contains the `exec`
-argument.
+names such as `codex-local` may place the `codex` executable behind an
+argv-preserving wrapper. Renamed Codex executables are recognized when invoked
+directly, through `env`, or through `mise exec`/`mise x`; the command must still
+contain the Codex `exec` argument.
 Other executors can report a non-negative integer through the
 `MACHINIST_TOKEN_USAGE_PATH` file exposed to every run. Missing or malformed
 usage remains unavailable and does not affect executor output or completion.

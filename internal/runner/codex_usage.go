@@ -37,6 +37,15 @@ func structuredCodexCommand(executor string, command []string) []string {
 }
 
 func codexExecIndex(executor string, command []string) int {
+	if codexExecutorName(executor) {
+		for programIndex, argument := range command {
+			if codexExecutableName(argument) == "codex" {
+				if execIndex := codexExecIndexAfter(command, programIndex); execIndex >= 0 {
+					return execIndex
+				}
+			}
+		}
+	}
 	programIndex := wrappedProgramIndex(command)
 	if programIndex < 0 || (codexExecutableName(command[programIndex]) != "codex" && !codexExecutorName(executor)) {
 		return -1
