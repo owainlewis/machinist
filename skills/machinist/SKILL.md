@@ -66,7 +66,7 @@ Keep exactly one lifecycle or exception label on the issue:
 | `machinist:verifying` | Independent review, CI, or automated review is running. | Wait for the current head to finish verification. |
 | `machinist:ready-for-review` | The pull request is verified and ready for a person. | Hand the pull request to a person. Do not merge it. |
 | `machinist:needs-human` | A product or technical decision is missing. | Answer the precise issue question, then assign the same issue again. |
-| `machinist:blocked` | Tooling, credentials, infrastructure, or the repair limit stopped work. | Read the evidence, remove the external blocker, then assign the same issue again. |
+| `machinist:blocked` | Tooling, credentials, or infrastructure stopped work. | Read the evidence, remove the external blocker, then assign the same issue again. |
 
 The foreman creates and transitions these labels. If a label is missing during manual
 recovery, create it with GitHub CLI, then add it to the issue:

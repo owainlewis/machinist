@@ -704,6 +704,18 @@ func TestWorkflowExampleDefinitionsLoad(t *testing.T) {
 	}
 }
 
+func TestMachinistSkillDoesNotDescribeARepairCap(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "skills", "machinist", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, obsolete := range []string{"repair limit", "at most two repair", "at most three repair"} {
+		if strings.Contains(string(body), obsolete) {
+			t.Fatalf("machinist skill still contains %q", obsolete)
+		}
+	}
+}
+
 func writeTestFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
