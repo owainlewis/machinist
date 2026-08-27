@@ -18,25 +18,54 @@ type codexUsageCollector struct {
 }
 
 func newCodexUsageCollector(executor string, command []string) *codexUsageCollector {
-	execIndex := slices.Index(command, "exec")
+	execIndex := codexExecIndex(command)
 	if execIndex < 1 || !slices.Contains(command[execIndex+1:], "--json") {
 		return nil
 	}
-	if !codexExecutorName(executor) && codexExecutableName(command[execIndex-1]) != "codex" {
+	if !recognizedCodexCommand(executor, command[:execIndex]) {
 		return nil
 	}
 	return &codexUsageCollector{}
 }
 
 func structuredCodexCommand(executor string, command []string) []string {
-	execIndex := slices.Index(command, "exec")
-	if execIndex < 1 || (!codexExecutorName(executor) && codexExecutableName(command[execIndex-1]) != "codex") || slices.Contains(command[execIndex+1:], "--json") {
+	execIndex := codexExecIndex(command)
+	if execIndex < 1 || !recognizedCodexCommand(executor, command[:execIndex]) || slices.Contains(command[execIndex+1:], "--json") {
 		return command
 	}
 	structured := make([]string, 0, len(command)+1)
 	structured = append(structured, command[:execIndex+1]...)
 	structured = append(structured, "--json")
 	return append(structured, command[execIndex+1:]...)
+}
+
+func codexExecIndex(command []string) int {
+	for index := 1; index < len(command); index++ {
+		argument := command[index]
+		if codexRootOptionTakesValue(argument) {
+			index++
+			continue
+		}
+		if argument == "exec" {
+			return index
+		}
+	}
+	return -1
+}
+
+func codexRootOptionTakesValue(argument string) bool {
+	for _, option := range []string{"-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env", "-i", "--image", "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd", "--add-dir", "-a", "--ask-for-approval"} {
+		if argument == option {
+			return true
+		}
+	}
+	return false
+}
+
+func recognizedCodexCommand(executor string, commandPrefix []string) bool {
+	return codexExecutorName(executor) || slices.ContainsFunc(commandPrefix, func(argument string) bool {
+		return codexExecutableName(argument) == "codex"
+	})
 }
 
 func codexExecutorName(executor string) bool {

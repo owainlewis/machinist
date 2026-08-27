@@ -128,6 +128,7 @@ func TestStructuredCodexCommandAddsJSONToRecognizedLegacyCommands(t *testing.T) 
 		want     []string
 	}{
 		{name: "direct", executor: "codex", command: []string{"codex", "exec", "-"}, want: []string{"codex", "exec", "--json", "-"}},
+		{name: "root option value matches subcommand", executor: "codex", command: []string{"codex", "--profile", "exec", "exec", "-"}, want: []string{"codex", "--profile", "exec", "exec", "--json", "-"}},
 		{name: "custom executor name", executor: "codex-local", command: []string{"agent", "exec", "-"}, want: []string{"agent", "exec", "--json", "-"}},
 		{name: "wrapped", executor: "custom", command: []string{"/usr/bin/env", "codex", "exec", "-"}, want: []string{"/usr/bin/env", "codex", "exec", "--json", "-"}},
 		{name: "already structured", executor: "codex", command: []string{"codex", "exec", "--json", "-"}, want: []string{"codex", "exec", "--json", "-"}},
