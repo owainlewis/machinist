@@ -235,7 +235,11 @@ def assert_stack_transition(
 
 
 def assert_review_comment(
-    pull_request: Any, head: str, base_branch: str, base_sha: str
+    pull_request: Any,
+    head: str,
+    base_branch: str,
+    base_sha: str,
+    trusted_author: str,
 ) -> None:
     if not isinstance(pull_request, dict):
         raise EvalFailure("GitHub returned invalid review evidence")
@@ -244,6 +248,9 @@ def assert_review_comment(
         raise EvalFailure("GitHub returned invalid review comments")
     for comment in comments:
         if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
+            continue
+        author = comment.get("author")
+        if not isinstance(author, dict) or author.get("login") != trusted_author:
             continue
         fields = marker_fields(comment["body"], REVIEW_MARKER)
         if fields is None:
@@ -258,7 +265,7 @@ def assert_review_comment(
         ):
             return
     raise EvalFailure(
-        "missing approved review audit comment for exact comparison "
+        "missing approved review audit comment from the trusted author for exact comparison "
         f"{head}...{base_branch}@{base_sha}"
     )
 
@@ -674,6 +681,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         executable = validate(options.repository, options.repo_path, options.machinist)
         ensure_label_absent(options.repository)
+        viewer = gh_json(("api", "user"))
+        trusted_review_author = viewer.get("login") if isinstance(viewer, dict) else None
+        if not isinstance(trusted_review_author, str) or not trusted_review_author:
+            raise EvalFailure("GitHub did not return the authenticated actor login")
         checked(
             command(("git", "fetch", "origin", "--prune"), cwd=options.repo_path),
             "fetch origin",
@@ -936,7 +947,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
         if not isinstance(child_base_sha, str) or not child_base_sha:
             raise EvalFailure("GitHub did not return the stack child's current base SHA")
         assert_review_comment(
-            review_pulls[child_url], child_head, base_branch, child_base_sha
+            review_pulls[child_url],
+            child_head,
+            base_branch,
+            child_base_sha,
+            trusted_review_author,
         )
 
         child_status, child_snapshot, child_mutations = run_shepherd_with_budget(

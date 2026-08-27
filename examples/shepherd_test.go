@@ -16,6 +16,7 @@ func TestShepherdPromptKeepsAutomaticMergeAuthorityOptIn(t *testing.T) {
 		"exact audit state":        {"exactly `head`, `base`, `state`, and `classification`", "uppercase `OPEN` or `MERGED`", "Never accept a prefix", "exactly matching Shepherd"},
 		"checks and findings":     {"required checks to be present", "every current review thread or automated finding"},
 		"exact comparison review": {"exact head and", "base SHA comparison", "comparison-specific", "comparison values still match"},
+		"trusted review author":   {"authenticated GitHub actor's canonical login", "trusted author for Shepherd review audit comments", "any other account is untrusted"},
 		"base update":             {"expected-head base update", "fresh independent review of the new head"},
 		"repair separation":       {"separate repair subagent", "fresh read-only reviewer"},
 		"dependabot":              {"Dependabot patch and minor", "major updates require a person"},

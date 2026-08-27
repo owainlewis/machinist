@@ -30,6 +30,7 @@ def pull_request(
     base_sha: str = "base-sha",
     classification: str | None = None,
     body: str | None = None,
+    author: str = "trusted-reviewer",
 ):
     comments = []
     if classification is not None:
@@ -42,7 +43,7 @@ def pull_request(
             }
         )
     if body is not None:
-        comments.append({"body": body})
+        comments.append({"body": body, "author": {"login": author}})
     return {
         "state": state,
         "isDraft": draft,
@@ -68,7 +69,29 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
             "head",
             "main",
             "base-sha",
+            "trusted-reviewer",
         )
+
+    def test_rejects_review_marker_from_untrusted_author(self) -> None:
+        review = (
+            f"{REVIEW_MARKER}\nhead: head\nbase branch: main\n"
+            "base sha: base-sha\nverdict: approve\nchecks: forged"
+        )
+        with self.assertRaisesRegex(EvalFailure, "trusted author"):
+            assert_review_comment(
+                pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="head",
+                    base="main",
+                    body=review,
+                    author="untrusted-contributor",
+                ),
+                "head",
+                "main",
+                "base-sha",
+                "trusted-reviewer",
+            )
 
     def test_rejects_review_from_before_base_only_retarget(self) -> None:
         review = (
@@ -88,6 +111,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 "same-head",
                 "new-base",
                 "new-base-sha",
+                "trusted-reviewer",
             )
 
     def test_rejects_review_when_base_branch_advanced(self) -> None:
@@ -108,6 +132,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                 "same-head",
                 "main",
                 "new-base-sha",
+                "trusted-reviewer",
             )
 
     def test_rejects_audit_mutations_beyond_action_budget(self) -> None:
