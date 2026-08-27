@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
@@ -37,7 +38,10 @@ type Server struct {
 	store             *Store
 	definitionPath    string
 	schedules         []config.ResolvedShepherdSchedule
+	triggers          []config.ResolvedTrigger
+	github            githubTriggerClient
 	schedulerEvery    time.Duration
+	now               func() time.Time
 	schedulerError    func(error)
 	shutdownTimeout   time.Duration
 	maxConcurrentJobs int
@@ -98,10 +102,26 @@ func NewServer(store *Store, definitionPath, workerToken string, maxConcurrentJo
 	if err != nil {
 		return nil, err
 	}
+	managedTriggers, err := config.LoadTriggers(definitionPath)
+	if err != nil {
+		return nil, err
+	}
+	startup := time.Now().UTC()
+	definitions := make([]TriggerDefinition, 0, len(managedTriggers))
+	for _, trigger := range managedTriggers {
+		definitions = append(definitions, TriggerDefinition{
+			Identity: trigger.Identity, Family: trigger.Family,
+			ConfigSignature: trigger.Signature, NextDueAt: trigger.FirstDue(startup),
+		})
+	}
+	if err := store.SyncTriggers(context.Background(), definitions); err != nil {
+		return nil, fmt.Errorf("restore managed triggers: %w", err)
+	}
 	server := &Server{
-		store: store, definitionPath: definitionPath, schedules: schedules,
+		store: store, definitionPath: definitionPath, schedules: schedules, triggers: managedTriggers,
+		github: NewGitHubCLI("gh", 30*time.Second), now: time.Now,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
-		schedulerError:    func(err error) { log.Printf("shepherd scheduler: %v", err) },
+		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
 		maxConcurrentJobs: maxConcurrentJobs, workerToken: workerToken, csrfToken: csrfToken,
 	}
 	server.handler, err = server.routes()
@@ -122,7 +142,6 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 		return fmt.Errorf("listen on %s: %w", listen, err)
 	}
 	defer listener.Close()
-	s.reportSchedulerError(s.enqueueScheduledRuns(ctx))
 	if onListening != nil {
 		onListening(listener.Addr())
 	}
@@ -170,32 +189,62 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 	}
 	select {
 	case err := <-done:
-		return err
+		stopScheduler()
+		return errors.Join(err, <-schedulerDone)
 	case err := <-schedulerDone:
 		if shutdownErr := stopHTTP(); shutdownErr != nil && err == nil {
 			return shutdownErr
 		}
 		return err
 	case <-ctx.Done():
-		return stopHTTP()
+		stopScheduler()
+		shutdownErr := stopHTTP()
+		return errors.Join(shutdownErr, <-schedulerDone)
 	}
 }
 
 func (s *Server) runScheduler(ctx context.Context) error {
-	if len(s.schedules) == 0 {
+	if len(s.schedules) == 0 && len(s.triggers) == 0 {
 		<-ctx.Done()
 		return nil
 	}
-	ticker := time.NewTicker(s.schedulerEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			s.reportSchedulerError(s.enqueueScheduledRuns(ctx))
-		}
+	var schedulers sync.WaitGroup
+	start := func(work func(context.Context) error) {
+		schedulers.Add(1)
+		go func() {
+			defer schedulers.Done()
+			for {
+				s.reportSchedulerError(work(ctx))
+				timer := time.NewTimer(s.schedulerEvery)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return
+				case <-timer.C:
+				}
+			}
+		}()
 	}
+	if len(s.schedules) > 0 {
+		start(s.enqueueScheduledRuns)
+	}
+	for _, trigger := range s.triggers {
+		trigger := trigger
+		start(func(ctx context.Context) error {
+			if err := s.processManagedTrigger(ctx, trigger); err != nil {
+				return fmt.Errorf("trigger %q: %w", trigger.Identity, err)
+			}
+			return nil
+		})
+	}
+	<-ctx.Done()
+	schedulers.Wait()
+	return nil
 }
 
 func (s *Server) enqueueScheduledRuns(ctx context.Context) error {

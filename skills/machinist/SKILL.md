@@ -12,7 +12,8 @@ reviewed, and checked pull request. It never merges the pull request.
 
 - A task is one open GitHub issue in the target repository.
 - Assigning a task means starting `machinist run` or queuing `machinist submit`.
-- Labels report workflow state. They do not assign or start work.
+- Foreman lifecycle labels report workflow state. Configured GitHub intake labels can
+  enqueue managed work.
 - Reassign the same issue to resume existing work. The foreman recovers its branch,
   worktree, pull request, checks, and repair count.
 - When `MACHINIST_RUN_ID` is set, the agent is already inside a Machinist run. Follow the
@@ -52,8 +53,14 @@ machinist submit \
   --prompt="Complete https://github.com/owner/repository/issues/123"
 ```
 
-`submit` prints a job ID. Follow managed work in the local control-plane UI. Do not treat
-adding a label as submission. Label-based delegation is not implemented.
+`submit` prints a job ID. Follow managed work in the local control-plane UI.
+
+When the shared configuration defines a `[triggers.github.<name>]` trigger, adding its
+configured input label, normally `machinist:requested`, delegates that issue through the
+managed queue. Machinist verifies the label event and actor, admits the job durably, then
+replaces the input label with `machinist:queued`. The label has no effect when that GitHub
+trigger or its repository is not configured. `machinist:requested` and
+`machinist:queued` are intake labels, not Foreman lifecycle labels.
 
 ## Lifecycle labels
 

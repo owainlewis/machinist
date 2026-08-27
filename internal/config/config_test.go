@@ -757,6 +757,23 @@ func TestShippedGuidanceDoesNotDescribeARepairCap(t *testing.T) {
 	}
 }
 
+func TestShippedMachinistSkillDescribesGitHubIntake(t *testing.T) {
+	path := filepath.Join("..", "..", "skills", "machinist", "SKILL.md")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance := string(body)
+	for _, required := range []string{"[triggers.github.<name>]", "machinist:requested", "machinist:queued", "intake labels"} {
+		if !strings.Contains(guidance, required) {
+			t.Fatalf("%s does not describe %q", path, required)
+		}
+	}
+	if strings.Contains(guidance, "Label-based delegation is not implemented") {
+		t.Fatalf("%s still rejects label-based delegation", path)
+	}
+}
+
 func writeTestFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
