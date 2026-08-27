@@ -141,6 +141,7 @@ func TestStructuredCodexCommandAddsJSONToRecognizedLegacyCommands(t *testing.T) 
 		{name: "wrapper has its own exec", executor: "custom", command: []string{"mise", "exec", "--", "codex", "exec", "-"}, want: []string{"mise", "exec", "--", "codex", "exec", "--json", "-"}},
 		{name: "already structured", executor: "codex", command: []string{"codex", "exec", "--json", "-"}, want: []string{"codex", "exec", "--json", "-"}},
 		{name: "other executor", executor: "claude", command: []string{"claude", "exec", "-"}, want: []string{"claude", "exec", "-"}},
+		{name: "Codex words are data", executor: "custom", command: []string{"echo", "codex", "exec"}, want: []string{"echo", "codex", "exec"}},
 		{name: "other codex command", executor: "codex", command: []string{"codex", "serve"}, want: []string{"codex", "serve"}},
 		{name: "exec argument to another Codex command", executor: "codex", command: []string{"codex", "review", "exec"}, want: []string{"codex", "review", "exec"}},
 		{name: "unknown Codex root option", executor: "codex", command: []string{"codex", "--future-option", "exec", "-"}, want: []string{"codex", "--future-option", "exec", "-"}},

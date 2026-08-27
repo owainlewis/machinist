@@ -37,24 +37,28 @@ func structuredCodexCommand(executor string, command []string) []string {
 }
 
 func codexExecIndex(executor string, command []string) int {
-	for programIndex, argument := range command {
-		if codexExecutableName(argument) == "codex" {
-			if execIndex := codexExecIndexAfter(command, programIndex); execIndex >= 0 {
-				return execIndex
+	programIndex := wrappedProgramIndex(command)
+	if programIndex < 0 || (codexExecutableName(command[programIndex]) != "codex" && !codexExecutorName(executor)) {
+		return -1
+	}
+	return codexExecIndexAfter(command, programIndex)
+}
+
+func wrappedProgramIndex(command []string) int {
+	if len(command) == 0 {
+		return -1
+	}
+	switch codexExecutableName(command[0]) {
+	case "env":
+		return envProgramIndex(command)
+	case "mise":
+		for index, argument := range command[1:] {
+			if argument == "--" && index+2 < len(command) {
+				return index + 2
 			}
 		}
 	}
-	if !codexExecutorName(executor) || len(command) == 0 {
-		return -1
-	}
-	programIndex := 0
-	if codexExecutableName(command[0]) == "env" {
-		programIndex = envProgramIndex(command)
-		if programIndex < 0 {
-			return -1
-		}
-	}
-	return codexExecIndexAfter(command, programIndex)
+	return 0
 }
 
 func codexExecIndexAfter(command []string, programIndex int) int {
