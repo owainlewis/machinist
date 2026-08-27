@@ -78,8 +78,20 @@ func TestCodexUsageCollectorIgnoresUnrelatedMalformedOutput(t *testing.T) {
 }
 
 func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) {
-	if collector := newCodexUsageCollector("codex-local", []string{"codex", "exec", "--json"}); collector == nil {
-		t.Fatal("collector disabled for custom executor using structured Codex output")
+	for _, test := range []struct {
+		name     string
+		executor string
+		command  []string
+	}{
+		{name: "custom executor name", executor: "codex-local", command: []string{"codex", "exec", "--json"}},
+		{name: "wrapped executable", executor: "codex", command: []string{"/usr/bin/env", "codex", "exec", "--json"}},
+		{name: "renamed executable", executor: "codex", command: []string{"agent", "exec", "--json"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if collector := newCodexUsageCollector(test.executor, test.command); collector == nil {
+				t.Fatalf("collector disabled for executor %q command %q", test.executor, test.command)
+			}
+		})
 	}
 	for _, test := range []struct {
 		executor string
@@ -87,7 +99,8 @@ func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) 
 	}{
 		{executor: "claude", command: []string{"claude", "--json"}},
 		{executor: "codex", command: []string{"codex", "exec"}},
-		{executor: "codex", command: []string{"agent", "exec", "--json"}},
+		{executor: "codex", command: []string{"agent", "serve", "--json"}},
+		{executor: "custom", command: []string{"agent", "exec", "--json"}},
 	} {
 		if collector := newCodexUsageCollector(test.executor, test.command); collector != nil {
 			t.Fatalf("collector enabled for executor %q command %q", test.executor, test.command)
@@ -97,26 +110,39 @@ func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) 
 
 func TestExecuteCollectsCodexUsageWithoutChangingOutput(t *testing.T) {
 	const output = "{\"type\":\"item.completed\",\"item\":{}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":100,\"cached_input_tokens\":80,\"output_tokens\":23}}\n"
-	agent := codexJSONAgent(t, `cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s' '`+output+`'`, 5*time.Second)
-	var stdout bytes.Buffer
-	result, err := Execute(t.Context(), Options{
-		Agent:         agent,
-		Repository:    newGitRepository(t),
-		DataDirectory: t.TempDir(),
-		Stdout:        &stdout,
-		Stderr:        io.Discard,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stdout.String() != output {
-		t.Fatalf("stdout = %q, want %q", stdout.String(), output)
-	}
-	if result.TokenUsage == nil || *result.TokenUsage != 123 {
-		t.Fatalf("token usage = %v, want 123", result.TokenUsage)
-	}
-	if got := outputFor(t, readEvents(t, result.EventsPath), "stdout"); got != output {
-		t.Fatalf("recorded stdout = %q, want %q", got, output)
+	for _, test := range []struct {
+		name           string
+		executor       string
+		executableName string
+		wrapped        bool
+	}{
+		{name: "direct", executor: "codex-local", executableName: "codex"},
+		{name: "wrapped", executor: "codex", executableName: "codex", wrapped: true},
+		{name: "renamed", executor: "codex", executableName: "agent"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			agent := codexJSONAgentCommand(t, test.executor, test.executableName, test.wrapped, `cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s' '`+output+`'`, 5*time.Second)
+			var stdout bytes.Buffer
+			result, err := Execute(t.Context(), Options{
+				Agent:         agent,
+				Repository:    newGitRepository(t),
+				DataDirectory: t.TempDir(),
+				Stdout:        &stdout,
+				Stderr:        io.Discard,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stdout.String() != output {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), output)
+			}
+			if result.TokenUsage == nil || *result.TokenUsage != 123 {
+				t.Fatalf("token usage = %v, want 123", result.TokenUsage)
+			}
+			if got := outputFor(t, readEvents(t, result.EventsPath), "stdout"); got != output {
+				t.Fatalf("recorded stdout = %q, want %q", got, output)
+			}
+		})
 	}
 }
 
@@ -139,15 +165,23 @@ func TestExecuteIgnoresMalformedCodexUsageWithoutChangingFailure(t *testing.T) {
 }
 
 func codexJSONAgent(t *testing.T, script string, timeout time.Duration) config.ResolvedAgent {
+	return codexJSONAgentCommand(t, "codex", "codex", false, script, timeout)
+}
+
+func codexJSONAgentCommand(t *testing.T, executor, executableName string, wrapped bool, script string, timeout time.Duration) config.ResolvedAgent {
 	t.Helper()
-	command := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(command, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+	executable := filepath.Join(t.TempDir(), executableName)
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
 		t.Fatal(err)
+	}
+	command := []string{executable, "exec", "--json"}
+	if wrapped {
+		command = append([]string{"/usr/bin/env"}, command...)
 	}
 	return config.ResolvedAgent{
 		Name:     "build",
-		Executor: "codex",
-		Command:  []string{command, "exec", "--json"},
+		Executor: executor,
+		Command:  command,
 		Prompt:   "complete prompt\n",
 		Timeout:  timeout,
 		Hash:     "codex-test-hash",

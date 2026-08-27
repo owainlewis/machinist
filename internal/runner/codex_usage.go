@@ -17,11 +17,22 @@ type codexUsageCollector struct {
 	usage      *int64
 }
 
-func newCodexUsageCollector(_ string, command []string) *codexUsageCollector {
-	if len(command) < 2 || codexExecutableName(command[0]) != "codex" || command[1] != "exec" || !slices.Contains(command[2:], "--json") {
+func newCodexUsageCollector(executor string, command []string) *codexUsageCollector {
+	execIndex := slices.Index(command, "exec")
+	if execIndex < 1 || !slices.Contains(command[execIndex+1:], "--json") {
+		return nil
+	}
+	if !codexExecutorName(executor) && codexExecutableName(command[execIndex-1]) != "codex" {
 		return nil
 	}
 	return &codexUsageCollector{}
+}
+
+func codexExecutorName(executor string) bool {
+	parts := strings.FieldsFunc(strings.ToLower(executor), func(character rune) bool {
+		return character == '-' || character == '_' || character == '.'
+	})
+	return slices.Contains(parts, "codex")
 }
 
 func codexExecutableName(command string) string {

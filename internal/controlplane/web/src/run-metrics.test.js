@@ -76,4 +76,10 @@ test("main.jsx no longer drops the executor in favor of the worker name", async 
   assert.match(source, /runDetails/);
   assert.match(source, /tokenUsageSummary\(job\.runs\)/);
   assert.match(source, /unavailable/);
+
+  const runCard = source.match(/function RunCard[\s\S]+?function RunRow/)?.[0];
+  assert.ok(runCard);
+  assert.match(runCard, /tokenUsageSummary\(job\.runs\)/);
+  assert.match(runCard, /Usage/);
+  assert.match(runCard, /unavailable/);
 });
