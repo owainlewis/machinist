@@ -28,6 +28,17 @@ func newCodexUsageCollector(executor string, command []string) *codexUsageCollec
 	return &codexUsageCollector{}
 }
 
+func structuredCodexCommand(executor string, command []string) []string {
+	execIndex := slices.Index(command, "exec")
+	if execIndex < 1 || (!codexExecutorName(executor) && codexExecutableName(command[execIndex-1]) != "codex") || slices.Contains(command[execIndex+1:], "--json") {
+		return command
+	}
+	structured := make([]string, 0, len(command)+1)
+	structured = append(structured, command[:execIndex+1]...)
+	structured = append(structured, "--json")
+	return append(structured, command[execIndex+1:]...)
+}
+
 func codexExecutorName(executor string) bool {
 	parts := strings.FieldsFunc(strings.ToLower(executor), func(character rune) bool {
 		return character == '-' || character == '_' || character == '.'

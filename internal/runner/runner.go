@@ -146,7 +146,8 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		return completeFailure(&result, log, runDirectory, fmt.Errorf("reset executor token usage report: %w", err))
 	}
 
-	command := exec.Command(options.Agent.Command[0], options.Agent.Command[1:]...)
+	executorCommand := structuredCodexCommand(options.Agent.Executor, options.Agent.Command)
+	command := exec.Command(executorCommand[0], executorCommand[1:]...)
 	command.Dir = repository
 	command.Env = append(sanitizedEnvironment(os.Environ()), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
 	configureProcess(command)
@@ -175,7 +176,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 
 	if err := command.Start(); err != nil {
 		closeFiles(stdinReader, stdinWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter)
-		return completeFailure(&result, log, runDirectory, fmt.Errorf("start agent command %q: %w", options.Agent.Command[0], err))
+		return completeFailure(&result, log, runDirectory, fmt.Errorf("start agent command %q: %w", executorCommand[0], err))
 	}
 	closeFiles(stdinReader, stdoutWriter, stderrWriter)
 	if err := log.append("process.started", "", fmt.Sprintf("pid=%d", command.Process.Pid)); err != nil {
@@ -191,7 +192,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	streamErrors := make(chan error, 2)
 	var streams sync.WaitGroup
 	streams.Add(2)
-	usageCollector := newCodexUsageCollector(options.Agent.Executor, options.Agent.Command)
+	usageCollector := newCodexUsageCollector(options.Agent.Executor, executorCommand)
 	stdoutDestination := options.Stdout
 	if usageCollector != nil {
 		stdoutDestination = io.MultiWriter(options.Stdout, usageCollector)

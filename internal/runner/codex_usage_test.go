@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,57 @@ func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) 
 		if collector := newCodexUsageCollector(test.executor, test.command); collector != nil {
 			t.Fatalf("collector enabled for executor %q command %q", test.executor, test.command)
 		}
+	}
+}
+
+func TestStructuredCodexCommandAddsJSONToRecognizedLegacyCommands(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		executor string
+		command  []string
+		want     []string
+	}{
+		{name: "direct", executor: "codex", command: []string{"codex", "exec", "-"}, want: []string{"codex", "exec", "--json", "-"}},
+		{name: "custom executor name", executor: "codex-local", command: []string{"agent", "exec", "-"}, want: []string{"agent", "exec", "--json", "-"}},
+		{name: "wrapped", executor: "custom", command: []string{"/usr/bin/env", "codex", "exec", "-"}, want: []string{"/usr/bin/env", "codex", "exec", "--json", "-"}},
+		{name: "already structured", executor: "codex", command: []string{"codex", "exec", "--json", "-"}, want: []string{"codex", "exec", "--json", "-"}},
+		{name: "other executor", executor: "claude", command: []string{"claude", "exec", "-"}, want: []string{"claude", "exec", "-"}},
+		{name: "other codex command", executor: "codex", command: []string{"codex", "serve"}, want: []string{"codex", "serve"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := slices.Clone(test.command)
+			if got := structuredCodexCommand(test.executor, test.command); !slices.Equal(got, test.want) {
+				t.Fatalf("command = %q, want %q", got, test.want)
+			}
+			if !slices.Equal(test.command, original) {
+				t.Fatalf("input command mutated: %q", test.command)
+			}
+		})
+	}
+}
+
+func TestExecuteEnablesStructuredUsageForLegacyCodexCommand(t *testing.T) {
+	const output = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":23}}\n"
+	executable := filepath.Join(t.TempDir(), "codex")
+	script := "#!/bin/sh\ncat >/dev/null\nif [ \"$2\" != \"--json\" ]; then exit 8; fi\nprintf '%s' '" + output + "'\n"
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	result, err := Execute(t.Context(), Options{
+		Agent: config.ResolvedAgent{
+			Name: "build", Executor: "codex", Command: []string{executable, "exec", "-"}, Prompt: "complete prompt\n", Timeout: 5 * time.Second, Hash: "legacy-codex-test-hash",
+		},
+		Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: &stdout, Stderr: io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TokenUsage == nil || *result.TokenUsage != 123 {
+		t.Fatalf("token usage = %v, want 123", result.TokenUsage)
+	}
+	if stdout.String() != output {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), output)
 	}
 }
 
