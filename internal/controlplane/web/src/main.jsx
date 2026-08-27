@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { runDetails } from "@/run-metrics";
+import { formatTokenUsage, runDetails, tokenUsageSummary } from "@/run-metrics";
 import { boardColumns, currentRun, filterJobs, groupJobsByBoardColumn, jobCounts, needsAttention, stepProgress } from "@/runs-board";
 import "./styles.css";
 
@@ -171,8 +171,8 @@ function App() {
             </div>
 
             {runsView === "board" ? <RunBoard jobs={visibleJobs} /> : <Card className="overflow-hidden">
-              <div className="hidden grid-cols-[7.5rem_minmax(10rem,1.2fr)_minmax(9rem,1fr)_minmax(9rem,1fr)_8rem_6.5rem] gap-4 border-b border-border bg-muted/35 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground xl:grid">
-                <span>State</span><span>Run</span><span>Run with</span><span>Worker</span><span>Submitted</span><span />
+              <div className="hidden grid-cols-[7.5rem_minmax(10rem,1.2fr)_minmax(9rem,1fr)_minmax(9rem,1fr)_8rem_11rem] gap-4 border-b border-border bg-muted/35 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground xl:grid">
+                <span>State</span><span>Run</span><span>Run with</span><span>Worker</span><span>Submitted</span><span>Usage</span>
               </div>
               {visibleJobs.length ? visibleJobs.map((job) => <RunRow key={job.id} job={job} open={expanded.has(job.id)} toggle={() => toggleJob(job.id)} />) : <EmptyRuns filtered={filter !== "all"} openComposer={() => setComposerOpen(true)} />}
             </Card>}
@@ -220,6 +220,7 @@ function RunBoard({ jobs }) {
 function RunCard({ job }) {
   const run = currentRun(job);
   const progress = stepProgress(job.runs);
+  const usage = tokenUsageSummary(job.runs);
   const attention = needsAttention(job.state);
   return <Card className={cn("min-w-0 p-3", attention && "border-danger/40 bg-danger/5")}>
     <div className="flex min-w-0 items-start justify-between gap-2">
@@ -230,6 +231,7 @@ function RunCard({ job }) {
       <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Run with</dt><dd className="flex min-w-0 items-center gap-1.5 text-right"><SelectionIcon kind={job.selection_kind} /><span className="min-w-0 break-all">{job.selection_name}</span><span className="shrink-0 capitalize text-muted-foreground">{job.selection_kind}</span></dd></div>
       <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Worker</dt><dd className="flex min-w-0 items-center gap-1.5 text-right"><Server className="size-3.5 shrink-0 text-muted-foreground" /><span className="break-all">{run?.worker_name || "Unassigned"}</span></dd></div>
       <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Progress</dt><dd>{progress.completed} of {progress.total} steps</dd></div>
+      <div className="flex min-w-0 items-start justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Usage</dt><dd className="text-right"><span className="block font-medium tabular-nums text-foreground">{usage.total === undefined ? "Unavailable" : `${formatTokenUsage(usage.total)} tokens`}</span>{usage.unavailable > 0 && <span className="mt-0.5 block text-muted-foreground">{usage.unavailable} unavailable</span>}</dd></div>
       <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Submitted</dt><dd><time dateTime={job.created_at}>{relativeTime(job.created_at)}</time></dd></div>
       {attention && <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">State</dt><dd className="break-all text-right capitalize text-danger">{stateLabel(job.state)}</dd></div>}
     </dl>
@@ -238,15 +240,16 @@ function RunCard({ job }) {
 
 function RunRow({ job, open, toggle }) {
   const current = currentRun(job);
+  const usage = tokenUsageSummary(job.runs);
   const detailsId = `${job.id}-steps`;
   return <article className="border-b border-border last:border-b-0">
-    <button onClick={toggle} aria-expanded={open} aria-controls={detailsId} className="grid w-full gap-3 px-4 py-3.5 text-left transition hover:bg-muted/35 xl:grid-cols-[7.5rem_minmax(10rem,1.2fr)_minmax(9rem,1fr)_minmax(9rem,1fr)_8rem_6.5rem] xl:items-center xl:gap-4">
+    <button onClick={toggle} aria-expanded={open} aria-controls={detailsId} className="grid w-full gap-3 px-4 py-3.5 text-left transition hover:bg-muted/35 xl:grid-cols-[7.5rem_minmax(10rem,1.2fr)_minmax(9rem,1fr)_minmax(9rem,1fr)_8rem_11rem] xl:items-center xl:gap-4">
       <div className="flex items-center justify-between xl:block"><State value={job.state} /><span className="text-xs text-muted-foreground xl:hidden">{relativeTime(job.created_at)}</span></div>
       <div className="min-w-0"><p className="font-mono text-sm font-medium">{shortId(job.id)}</p><p className="mt-1 break-all text-xs text-muted-foreground xl:truncate">{job.repository}</p></div>
       <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><SelectionIcon kind={job.selection_kind} /><span className="min-w-0 flex-1 truncate text-foreground">{job.selection_name}</span><span className="shrink-0 capitalize">{job.selection_kind}</span></div>
       <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><Server className="size-3.5 shrink-0" /><span className="truncate">{current?.worker_name || "Unassigned"}</span></div>
       <time className="hidden text-xs text-muted-foreground xl:block" dateTime={job.created_at}>{relativeTime(job.created_at)}</time>
-      <div className="flex items-center justify-between text-xs text-muted-foreground xl:justify-end"><span>{job.runs.length} step{job.runs.length === 1 ? "" : "s"}</span><ChevronDown className={cn("ml-2 size-4 transition-transform", open && "rotate-180")} /></div>
+      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground"><div><p className="font-medium tabular-nums text-foreground">{usage.total === undefined ? "Usage unavailable" : `${formatTokenUsage(usage.total)} tokens`}</p><p className="mt-0.5">{usage.unavailable ? `${usage.unavailable} unavailable · ` : ""}{job.runs.length} step{job.runs.length === 1 ? "" : "s"}</p></div><ChevronDown className={cn("size-4 shrink-0 transition-transform", open && "rotate-180")} /></div>
     </button>
     {open && <RunSteps id={detailsId} job={job} />}
   </article>;
@@ -255,7 +258,7 @@ function RunRow({ job, open, toggle }) {
 function RunSteps({ id, job }) {
   return <div id={id} className="border-t border-border bg-muted/20 px-4 py-4 xl:pl-[9rem]"><div className="grid gap-2 xl:grid-cols-3">{job.runs.map((run, index) => <div key={run.id} className="flex min-w-0 items-start gap-3 rounded-md border border-border bg-surface p-3">
     <span className="grid size-6 shrink-0 place-items-center rounded-full border border-border font-mono text-xs text-muted-foreground">{index + 1}</span>
-    <div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="truncate text-sm font-medium capitalize">{run.agent}</p><State value={run.state} /></div><p className="mt-1 truncate text-xs text-muted-foreground">{runDetails(run)}</p>{run.error && <p className="mt-2 break-words text-xs text-danger">{run.error}</p>}</div>
+    <div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="truncate text-sm font-medium capitalize">{run.agent}</p><State value={run.state} /></div><p className="mt-1 break-words text-xs text-muted-foreground">{runDetails(run)}</p>{run.error && <p className="mt-2 break-words text-xs text-danger">{run.error}</p>}</div>
   </div>)}</div></div>;
 }
 
