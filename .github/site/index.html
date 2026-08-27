@@ -1,72 +1,252 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Machinist runs dependable coding-agent workflows against your local Git repositories.">
-    <meta name="theme-color" content="#12100e">
-    <title>Machinist | Coding-agent workflows that stay under your control</title>
+    <meta name="description" content="Machinist runs repeatable coding-agent workflows on your machine. Plan, build, review, check, and hand off pull requests with your choice of model and harness.">
+    <meta name="theme-color" content="#0d0d0c">
+    <title>Machinist | The open-source software factory</title>
     <link rel="canonical" href="https://machinist.sh/">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://machinist.sh/">
+    <meta property="og:title" content="Machinist | The open-source software factory">
+    <meta property="og:description" content="Run repeatable coding-agent workflows on your machine with your choice of model and harness.">
+    <meta property="og:image" content="https://machinist.sh/og.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Machinist | The open-source software factory">
+    <meta name="twitter:description" content="Run repeatable coding-agent workflows on your machine with your choice of model and harness.">
+    <meta name="twitter:image" content="https://machinist.sh/og.png">
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&amp;family=Inter+Tight:wght@400;500;600;700;800&amp;display=swap">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <header class="nav">
-      <a class="wordmark" href="/" aria-label="Machinist home">
-        <span aria-hidden="true">M/</span> Machinist
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Machinist home">
+        <img src="machinist-mark.png" alt="" width="38" height="38">
+        <span>Machinist</span>
       </a>
-      <a class="nav-link" href="https://github.com/owainlewis/machinist">GitHub</a>
+      <nav aria-label="Primary navigation">
+        <a href="#why">Why Machinist</a>
+        <a href="#evaluation">Evaluation</a>
+        <a href="#setup">Setup</a>
+        <a href="https://github.com/owainlewis/machinist/tree/main/docs">Docs</a>
+        <a class="nav-cta" href="https://github.com/owainlewis/machinist">GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
     </header>
 
-    <main>
-      <section class="hero">
-        <p class="eyebrow">Local control plane for coding agents</p>
-        <h1>Build a workflow.<br>Let the agents run it.</h1>
-        <p class="lede">
-          Machinist turns reusable prompts into direct or managed coding-agent
-          runs, while commands, repositories, and credentials stay on your machines.
-        </p>
-        <div class="actions">
-          <a class="button primary" href="https://github.com/owainlewis/machinist#readme">Get started</a>
-          <a class="button secondary" href="https://github.com/owainlewis/machinist">View source</a>
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span></span> Open-source software factory</p>
+          <h1 id="hero-title">Scale your software factory.</h1>
+          <p class="lede">Give Machinist a GitHub issue. It plans the work, builds the change, sends it to a separate reviewer, waits for checks, and hands you the pull request. It runs on your machine and records each step.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/owainlewis/machinist#quick-start">Install Machinist <span aria-hidden="true">→</span></a>
+            <a class="button button-secondary" href="https://github.com/owainlewis/machinist">View on GitHub <span aria-hidden="true">↗</span></a>
+          </div>
+          <div class="command" role="group" aria-label="Install command">
+            <span class="prompt" aria-hidden="true">$</span>
+            <code>go install github.com/owainlewis/machinist/cmd/machinist@latest</code>
+          </div>
         </div>
-        <div class="install" aria-label="Install command">
-          <span>$</span>
-          <code>go install github.com/owainlewis/machinist/cmd/machinist@latest</code>
+
+        <div class="factory-panel" id="workflow" role="img" aria-label="Machinist issue to pull request workflow">
+          <div class="panel-topline">
+            <span>LIVE WORKFLOW</span>
+            <span class="status"><i></i> RUNNING</span>
+          </div>
+          <div class="work-order">
+            <div class="work-order-head">
+              <span class="work-id">ISSUE #184</span>
+              <span class="work-state">IN PROGRESS</span>
+            </div>
+            <strong>Add passkey authentication</strong>
+            <p>owainlewis / product-api</p>
+          </div>
+          <ol class="production-line">
+            <li class="complete">
+              <span class="station-index">01</span>
+              <div><strong>Plan</strong><small>Scope and acceptance criteria</small></div>
+              <span class="station-state">DONE</span>
+            </li>
+            <li class="active">
+              <span class="station-index">02</span>
+              <div><strong>Build</strong><small>Isolated worktree · Codex</small></div>
+              <span class="station-state">12:48</span>
+            </li>
+            <li>
+              <span class="station-index">03</span>
+              <div><strong>Review</strong><small>Independent agent review</small></div>
+              <span class="station-state">QUEUED</span>
+            </li>
+            <li>
+              <span class="station-index">04</span>
+              <div><strong>Verify</strong><small>Repository checks and handoff</small></div>
+              <span class="station-state">WAITING</span>
+            </li>
+          </ol>
+          <div class="panel-footer">
+            <span>HUMAN MERGE REQUIRED</span>
+            <span>4 STATIONS</span>
+          </div>
         </div>
       </section>
 
-      <section class="features" aria-label="Product capabilities">
-        <article>
-          <span class="number">01</span>
-          <h2>Define the work once</h2>
-          <p>Keep agents, prompts, models, and ordered pipelines in strict, reviewable configuration.</p>
-        </article>
-        <article>
-          <span class="number">02</span>
-          <h2>Run locally or managed</h2>
-          <p>Execute in the current worktree or submit durable jobs to workers through the local control plane.</p>
-        </article>
-        <article>
-          <span class="number">03</span>
-          <h2>Keep machine authority local</h2>
-          <p>Workers resolve logical names into local commands, repository paths, environments, and credentials.</p>
-        </article>
+      <section class="proof-strip" aria-label="Machinist product principles">
+        <div><span>01</span><strong>Open source</strong><small>MIT licensed</small></div>
+        <div><span>02</span><strong>Bring your own harness</strong><small>Codex, Claude, or any CLI</small></div>
+        <div><span>03</span><strong>Local authority</strong><small>Your repos and credentials</small></div>
+        <div><span>04</span><strong>Human handoff</strong><small>You decide what ships</small></div>
       </section>
 
-      <section class="principle">
-        <p class="eyebrow">A deliberate boundary</p>
-        <blockquote>“The control plane sends intent. The worker owns machine authority.”</blockquote>
-        <p>
-          One Go binary includes the CLI, control plane, managed worker, SQLite
-          state, and browser interface. No hosted account is required.
-        </p>
+      <section class="section problem-section" id="why">
+        <div class="section-kicker">WHY MACHINIST</div>
+        <div class="section-heading">
+          <h2>Agentic coding needs a process.</h2>
+          <p>A single agent can write code. A reliable system also needs to define the work, review the result, handle failures, run checks, and keep a record of what happened.</p>
+        </div>
+        <div class="tension-grid">
+          <article>
+            <span class="card-number">01 / PROOF</span>
+            <h3>Require proof</h3>
+            <p>Machinist records the run, sends the exact change to a separate reviewer, and waits for repository checks before it hands the work back.</p>
+          </article>
+          <article>
+            <span class="card-number">02 / FREEDOM</span>
+            <h3>Change models without changing the workflow</h3>
+            <p>Configure Codex, Claude Code, or another command-line harness on the worker. Choose a model for each task with a local alias.</p>
+          </article>
+          <article>
+            <span class="card-number">03 / LEARNING</span>
+            <h3>Improve the process</h3>
+            <p>Prompts, agent definitions, model aliases, and pipelines live in files. Change them in Git and use focused evaluations to check the result.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section factory-section" aria-labelledby="factory-title">
+        <div class="section-kicker">HOW IT WORKS</div>
+        <div class="section-heading">
+          <h2 id="factory-title">Give Machinist an issue. Get back a reviewed pull request.</h2>
+          <p>The foreman plans the task and delegates the build. A different agent reviews the change. Failed checks and valid findings go through a repair loop. Machinist never merges the pull request.</p>
+        </div>
+        <div class="flow-diagram" role="img" aria-label="A GitHub issue moves through planning, building, review, repair, checks, and human handoff">
+          <div class="flow-node flow-input"><span>INPUT</span><strong>GitHub issue</strong><small>Clear request</small></div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node"><span>FOREMAN</span><strong>Plan + dispatch</strong><small>Shortest safe path</small></div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node"><span>WORKER</span><strong>Build</strong><small>Isolated worktree</small></div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node flow-review"><span>GATE</span><strong>Review + checks</strong><small>Repair if needed</small></div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node flow-output"><span>HANDOFF</span><strong>Verified PR</strong><small>You decide to merge</small></div>
+        </div>
+        <div class="factory-values">
+          <article><span>DEFINED</span><h3>Configuration in files</h3><p>Prompts, agents, models, and pipelines use TOML and Markdown that you can review and version.</p></article>
+          <article><span>INDEPENDENT</span><h3>Separate builder and reviewer</h3><p>The agent that writes the code does not review it. A fresh agent reviews the exact commit before handoff.</p></article>
+          <article><span>BOUNDED</span><h3>Limited repair attempts</h3><p>Repair loops have a fixed limit. If the work still cannot pass, Machinist stops and reports why.</p></article>
+        </div>
+      </section>
+
+      <section class="section evaluation-section" id="evaluation">
+        <div class="evaluation-copy">
+          <div class="section-kicker">EVALUATION AND IMPROVEMENT</div>
+          <h2>Measure the workflow before you change it.</h2>
+          <p>Machinist stores ordered events, terminal outcomes, duration, and reported token use. It also includes a focused evaluation for the GitHub issue lifecycle. Broader outcome scoring and configuration comparison are planned, but are not part of the product yet.</p>
+          <ul class="check-list">
+            <li><span>✓</span> Capture ordered events, outcomes, duration, and token use</li>
+            <li><span>✓</span> Run a deterministic issue-lifecycle evaluation today</li>
+            <li><span>✓</span> Version prompts and factory configuration in Git</li>
+            <li><span>→</span> Build toward outcome scoring without auto-applying changes</li>
+          </ul>
+          <a class="text-link" href="https://github.com/owainlewis/machinist/tree/main/evals">Explore the evaluation suite <span aria-hidden="true">→</span></a>
+        </div>
+        <div class="eval-console" role="img" aria-label="Example evaluation results">
+          <div class="console-bar"><span>PRODUCT DIRECTION · ILLUSTRATIVE</span><span>NOT CURRENT UI</span></div>
+          <div class="eval-score">
+            <div><span>PASS RATE</span><strong>94<small>%</small></strong></div>
+            <div class="delta">+7.2% <span>vs. baseline</span></div>
+          </div>
+          <div class="eval-rows">
+            <div><span><i class="pass"></i>Issue lifecycle</span><strong>PASS</strong><small>1.00</small></div>
+            <div><span><i class="pass"></i>Independent review</span><strong>PASS</strong><small>1.00</small></div>
+            <div><span><i class="pass"></i>Bounded repair</span><strong>PASS</strong><small>0.96</small></div>
+            <div class="eval-warning"><span><i class="warn"></i>Time to handoff</span><strong>WATCH</strong><small>0.78</small></div>
+          </div>
+          <div class="compare-row"><span>CONFIG</span><strong>foreman-v12</strong><span>MODEL</span><strong>terra</strong></div>
+          <div class="console-note"><span>→</span> Keep v12. Review improvement before rollout.</div>
+        </div>
+      </section>
+
+      <section class="section freedom-section">
+        <div class="section-kicker">MODELS AND HARNESSES</div>
+        <div class="section-heading">
+          <h2>Use Codex, Claude Code, or another CLI.</h2>
+          <p>Machinist runs command-line executors configured on your worker. The worker maps model aliases to real model names and keeps credentials on the machine that runs the task.</p>
+        </div>
+        <div class="harness-grid">
+          <article class="harness-card"><span class="harness-mark">C</span><div><strong>Codex</strong><small>Included configuration</small></div><span>READY</span></article>
+          <article class="harness-card"><span class="harness-mark">CL</span><div><strong>Claude Code</strong><small>Included configuration</small></div><span>READY</span></article>
+          <article class="harness-card harness-custom"><span class="harness-mark">$</span><div><strong>Your CLI harness</strong><small>Configure any executable</small></div><span>OPEN</span></article>
+        </div>
+        <div class="code-window">
+          <div class="console-bar"><span>~/.machinist/worker.toml</span><span>LOCAL ONLY</span></div>
+          <pre><code><span class="code-comment"># Bring your own harness and model aliases</span>
+[executors.codex]
+command = [<span class="code-string">"codex"</span>, <span class="code-string">"exec"</span>, <span class="code-string">"--json"</span>, <span class="code-string">"--model={{machinist.model}}"</span>, <span class="code-string">"--sandbox"</span>, <span class="code-string">"danger-full-access"</span>, <span class="code-string">"-"</span>]
+models = { fast = <span class="code-string">"gpt-5.6-luna"</span>, deep = <span class="code-string">"gpt-5.6-sol"</span> }
+
+[executors.your_agent]
+command = [<span class="code-string">"your-agent"</span>, <span class="code-string">"run"</span>, <span class="code-string">"--model={{machinist.model}}"</span>]</code></pre>
+        </div>
+      </section>
+
+      <section class="section setup-section" id="setup">
+        <div class="setup-intro">
+          <div class="section-kicker">SETUP</div>
+          <h2>Build Machinist. Start with one issue.</h2>
+          <p>One Go binary contains the CLI, local control plane, managed worker, SQLite history, and browser interface. No hosted account is required.</p>
+        </div>
+        <ol class="setup-steps">
+          <li>
+            <span class="step-number">01</span>
+            <div><h3>Build</h3><p>Compile one local binary from the open-source repository.</p></div>
+            <button class="copy-command" type="button" data-copy="mkdir -p ./bin &amp;&amp; go build -o ./bin/machinist ./cmd/machinist" aria-label="Copy build command"><code>mkdir -p ./bin &amp;&amp; go build -o ./bin/machinist ./cmd/machinist</code><span aria-live="polite">COPY</span></button>
+          </li>
+          <li>
+            <span class="step-number">02</span>
+            <div><h3>Initialize</h3><p>Create editable defaults for agents, executors, and your local worker.</p></div>
+            <button class="copy-command" type="button" data-copy="./bin/machinist init" aria-label="Copy initialize command"><code>./bin/machinist init</code><span aria-live="polite">COPY</span></button>
+          </li>
+          <li>
+            <span class="step-number">03</span>
+            <div><h3>Run</h3><p>Send a narrow GitHub issue through the supervised production line.</p></div>
+            <button class="copy-command" type="button" data-copy="./bin/machinist run --agent=foreman --repo=/path/to/repo --prompt='Complete issue #123'" aria-label="Copy run command"><code>machinist run --agent=foreman ...</code><span aria-live="polite">COPY</span></button>
+          </li>
+        </ol>
+      </section>
+
+      <section class="final-cta">
+        <img src="machinist-mark.png" alt="" width="152" height="152">
+        <div>
+          <span class="section-kicker">OPEN SOURCE · MIT LICENSE</span>
+          <h2>Run Machinist on a real issue.</h2>
+          <p>Start with a small issue that has a clear result. Machinist will plan it, build it, review it, wait for checks, and hand the pull request back to you.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/owainlewis/machinist#quick-start">Read the setup guide <span aria-hidden="true">→</span></a>
+            <a class="button button-secondary" href="https://github.com/owainlewis/machinist/tree/main/docs">Read the docs <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
       </section>
     </main>
-
     <footer>
-      <span>Machinist</span>
-      <span>Open source under the MIT License</span>
+      <a class="brand" href="#top" aria-label="Machinist home"><img src="machinist-mark.png" alt="" width="32" height="32"><span>Machinist</span></a>
+      <p>The open-source software factory for supervised coding agents.</p>
+      <div><a href="https://github.com/owainlewis/machinist">GitHub</a><a href="https://github.com/owainlewis/machinist/tree/main/docs">Docs</a><span>MIT License · 2026</span></div>
     </footer>
+    <script type="module" src="site.js"></script>
   </body>
 </html>

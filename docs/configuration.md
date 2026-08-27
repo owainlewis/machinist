@@ -93,7 +93,7 @@ are machine-specific:
 
 ```toml
 [executors.codex]
-command = ["codex", "exec", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
+command = ["codex", "exec", "--json", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
 models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
 
 [executors.claude]
@@ -110,6 +110,16 @@ GitHub and worktrees outside the current repository. Change them to match your
 own prompts and trust boundary. Provider credentials come from the executable's
 own configuration or the worker process environment; they are not fields in
 `worker.toml`.
+
+The shipped Codex command uses its JSONL event stream so Machinist can read the
+final `turn.completed` usage. Machinist records input tokens plus output tokens;
+cached input is already included in the input count and is not added again.
+Codex executor names such as `codex-local` may use an argv-preserving wrapper
+such as `env` or a renamed Codex executable as long as the command still passes
+the `exec` and `--json` arguments.
+Other executors can report a non-negative integer through the
+`MACHINIST_TOKEN_USAGE_PATH` file exposed to every run. Missing or malformed
+usage remains unavailable and does not affect executor output or completion.
 
 ## Select models per task
 

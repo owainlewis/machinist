@@ -243,6 +243,54 @@ func TestServerServesEmbeddedReactAppAndRejectsRemoteListen(t *testing.T) {
 	}
 }
 
+func TestServerServeReportsBoundListenerAndReleasesItOnImmediateCancellation(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	webServer.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var address net.Addr
+	err := server.Serve(ctx, "127.0.0.1:0", func(bound net.Addr) {
+		address = bound
+		duplicate, listenErr := net.Listen("tcp", bound.String())
+		if listenErr == nil {
+			duplicate.Close()
+			t.Fatalf("reported address %s was not bound", bound)
+		}
+		cancel()
+	})
+	if err != nil {
+		t.Fatalf("Serve returned after cancellation: %v", err)
+	}
+	if address == nil {
+		t.Fatal("Serve did not report listening")
+	}
+	rebound, err := net.Listen("tcp", address.String())
+	if err != nil {
+		t.Fatalf("reported address %s was not released: %v", address, err)
+	}
+	rebound.Close()
+}
+
+func TestServerServeDoesNotReportListeningWhenAddressIsInUse(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	webServer.Close()
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	reported := false
+	err = server.Serve(t.Context(), occupied.Addr().String(), func(net.Addr) {
+		reported = true
+	})
+	if err == nil || !strings.Contains(err.Error(), "listen on "+occupied.Addr().String()) {
+		t.Fatalf("Serve error = %v", err)
+	}
+	if reported {
+		t.Fatal("Serve reported listening after bind failed")
+	}
+}
+
 func TestServerExposesReadOnlyDefinitions(t *testing.T) {
 	_, webServer := newTestHTTPServer(t)
 	defer webServer.Close()
@@ -270,6 +318,105 @@ func TestCompletionLimitFitsMaximumRecordedOutput(t *testing.T) {
 	if maxCompletionBytes < worstCaseEncodedEvents+envelopeAllowance {
 		t.Fatalf("completion limit %d cannot hold encoded events and envelope %d", maxCompletionBytes, worstCaseEncodedEvents+envelopeAllowance)
 	}
+}
+
+func TestSizeLimitedEndpointsRejectOversizedJSON(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+
+	endpoints := []struct {
+		name  string
+		path  string
+		limit int64
+	}{
+		{name: "submit", path: "/api/v1/jobs", limit: 1 << 20},
+		{name: "poll", path: "/api/v1/workers/poll", limit: 1 << 20},
+		{name: "heartbeat", path: "/api/v1/runs/missing/heartbeat", limit: 1 << 20},
+		{name: "complete", path: "/api/v1/runs/missing/complete", limit: maxCompletionBytes},
+	}
+	stages := []struct {
+		name   string
+		prefix string
+		fill   byte
+	}{
+		{name: "first decode", prefix: `{"padding":"`, fill: 'x'},
+		{name: "trailing decode", prefix: `{}`, fill: ' '},
+	}
+
+	for _, endpoint := range endpoints {
+		t.Run(endpoint.name+"/known content length", func(t *testing.T) {
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, endpoint.path, strings.NewReader("x"))
+			request.ContentLength = endpoint.limit + 1
+			request.Header.Set("Authorization", "Bearer secret")
+			response := httptest.NewRecorder()
+
+			server.Handler().ServeHTTP(response, request)
+
+			if response.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+		})
+		for _, stage := range stages {
+			t.Run(endpoint.name+"/"+stage.name, func(t *testing.T) {
+				body := io.MultiReader(strings.NewReader(stage.prefix), io.LimitReader(repeatingByteReader(stage.fill), endpoint.limit+1))
+				request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, endpoint.path, body)
+				request.Header.Set("Authorization", "Bearer secret")
+				response := httptest.NewRecorder()
+
+				server.Handler().ServeHTTP(response, request)
+
+				if response.Code != http.StatusRequestEntityTooLarge {
+					t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+				}
+				if response.Header().Get("Content-Type") != "application/json" {
+					t.Fatalf("content type = %q", response.Header().Get("Content-Type"))
+				}
+				if response.Body.Len() > 256 {
+					t.Fatalf("error response is not bounded: %d bytes", response.Body.Len())
+				}
+				var result map[string]string
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				if len(result) != 1 || result["error"] != "request body is too large" {
+					t.Fatalf("error response = %#v", result)
+				}
+			})
+		}
+	}
+}
+
+func TestSizeLimitedEndpointsKeepMalformedJSONAtBadRequest(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+
+	for name, path := range map[string]string{
+		"submit":    "/api/v1/jobs",
+		"poll":      "/api/v1/workers/poll",
+		"heartbeat": "/api/v1/runs/missing/heartbeat",
+		"complete":  "/api/v1/runs/missing/complete",
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(`{`))
+			request.Header.Set("Authorization", "Bearer secret")
+			response := httptest.NewRecorder()
+
+			server.Handler().ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+		})
+	}
+}
+
+type repeatingByteReader byte
+
+func (reader repeatingByteReader) Read(buffer []byte) (int, error) {
+	for index := range buffer {
+		buffer[index] = byte(reader)
+	}
+	return len(buffer), nil
 }
 
 func TestHeartbeatEndpointAuthenticatesAndRejectsInvalidLeases(t *testing.T) {
@@ -427,7 +574,7 @@ func TestServerCancellationAlwaysStopsHTTPServer(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		serveDone := make(chan error, 1)
-		go func() { serveDone <- server.Serve(ctx, address) }()
+		go func() { serveDone <- server.Serve(ctx, address, nil) }()
 		waitForServer(t, address)
 		cancel()
 		select {
@@ -484,7 +631,7 @@ max_actions = 2
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- server.Serve(ctx, address) }()
+	go func() { serveDone <- server.Serve(ctx, address, nil) }()
 	waitForServer(t, address)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)

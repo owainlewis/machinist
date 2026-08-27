@@ -25,6 +25,8 @@ import (
 // below this limit, including per-event and string-escaping overhead.
 const maxCompletionBytes = 96 << 20
 
+const maxRequestBytes = 1 << 20
+
 const workerAvailabilityWindow = 10 * time.Second
 
 //go:embed web/dist/* web/dist/assets/*
@@ -99,7 +101,7 @@ func NewServer(store *Store, definitionPath, workerToken string) (*Server, error
 
 func (s *Server) Handler() http.Handler { return s.handler }
 
-func (s *Server) Serve(ctx context.Context, listen string) error {
+func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.Addr)) error {
 	if err := validateLoopbackListen(listen); err != nil {
 		return err
 	}
@@ -107,6 +109,10 @@ func (s *Server) Serve(ctx context.Context, listen string) error {
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listen, err)
+	}
+	defer listener.Close()
+	if onListening != nil {
+		onListening(listener.Addr())
 	}
 	httpServer := &http.Server{
 		Handler:           s.handler,
@@ -125,23 +131,33 @@ func (s *Server) Serve(ctx context.Context, listen string) error {
 	defer stopScheduler()
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- s.runScheduler(schedulerCtx) }()
+	stopHTTP := func() error {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownErr := httpServer.Shutdown(shutdownCtx)
+		// Shutdown can run before Serve registers the listener when the
+		// callback cancels the context. Close it explicitly and wait for the
+		// serving goroutine so every cancellation path releases the socket.
+		closeErr := listener.Close()
+		<-done
+		if shutdownErr != nil {
+			return fmt.Errorf("stop control plane: %w", shutdownErr)
+		}
+		if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			return fmt.Errorf("stop control plane listener: %w", closeErr)
+		}
+		return nil
+	}
 	select {
 	case err := <-done:
 		return err
 	case err := <-schedulerDone:
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if shutdownErr := httpServer.Shutdown(shutdownCtx); shutdownErr != nil && err == nil {
-			return fmt.Errorf("stop control plane: %w", shutdownErr)
+		if shutdownErr := stopHTTP(); shutdownErr != nil && err == nil {
+			return shutdownErr
 		}
 		return err
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("stop control plane: %w", err)
-		}
-		return nil
+		return stopHTTP()
 	}
 }
 
@@ -265,10 +281,12 @@ func (s *Server) catalog(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, 1<<20)
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
 	var input submitRequest
 	if err := decodeJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, err)
+		writeDecodeError(response, err)
 		return
 	}
 	if strings.TrimSpace(input.Repository) == "" {
@@ -333,10 +351,12 @@ func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, 1<<20)
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
 	var input protocol.PollRequest
 	if err := decodeJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, err)
+		writeDecodeError(response, err)
 		return
 	}
 	if strings.TrimSpace(input.InstanceID) == "" || strings.TrimSpace(input.Name) == "" {
@@ -352,10 +372,12 @@ func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) complete(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, maxCompletionBytes)
+	if !limitRequestBody(response, request, maxCompletionBytes) {
+		return
+	}
 	var input protocol.Completion
 	if err := decodeJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, err)
+		writeDecodeError(response, err)
 		return
 	}
 	if input.InstanceID == "" || input.LeaseToken == "" {
@@ -379,10 +401,12 @@ func (s *Server) complete(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(response, request.Body, 1<<20)
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
 	var input protocol.Heartbeat
 	if err := decodeJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, err)
+		writeDecodeError(response, err)
 		return
 	}
 	if input.InstanceID == "" || input.LeaseToken == "" {
@@ -491,6 +515,15 @@ func decodeJSON(request *http.Request, target any) error {
 	return nil
 }
 
+func limitRequestBody(response http.ResponseWriter, request *http.Request, limit int64) bool {
+	if request.ContentLength > limit {
+		writeError(response, http.StatusRequestEntityTooLarge, errors.New("request body is too large"))
+		return false
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, limit)
+	return true
+}
+
 func writeJSON(response http.ResponseWriter, status int, body any) {
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(status)
@@ -499,6 +532,15 @@ func writeJSON(response http.ResponseWriter, status int, body any) {
 
 func writeError(response http.ResponseWriter, status int, err error) {
 	writeJSON(response, status, map[string]string{"error": err.Error()})
+}
+
+func writeDecodeError(response http.ResponseWriter, err error) {
+	var maxBytesError *http.MaxBytesError
+	if errors.As(err, &maxBytesError) {
+		writeError(response, http.StatusRequestEntityTooLarge, errors.New("request body is too large"))
+		return
+	}
+	writeError(response, http.StatusBadRequest, err)
 }
 
 func securityHeaders(next http.Handler) http.Handler {
