@@ -44,10 +44,13 @@ above still forbid attaching or removing the permission label and changing repos
 settings. Once the limit is reached, stop without making even an audit mutation. If one
 action remains and recording deferred state is the safest next mutation, leave one concise
 deferred audit comment on the next labelled candidate, count it, then stop. Include
-classification `deferred`, `<!-- machinist:shepherd-audit -->`, the exact head, and evidence.
-Report all other deferred candidates in the run summary without changing them. Audit
-evidence is durable queue state, not only a human-facing log. A later scheduled run must
-rediscover the queue from live GitHub state and current Shepherd audit comments, so no
+classification `deferred`, `<!-- machinist:shepherd-audit -->`, the exact head, base, live
+pull request state, and evidence. Report all other deferred candidates in the run summary
+without changing them. Every non-transition audit record must use one field per line named
+exactly `head`, `base`, `state`, and `classification`; copy each live GitHub value exactly,
+including uppercase `OPEN` or `MERGED` state. Never accept a prefix, substring, or stale
+value. Audit evidence is durable queue state, not only a human-facing log. A later scheduled run
+must rediscover the queue from live GitHub state and current Shepherd audit comments, so no
 candidate depends only on process memory.
 
 Use native coding subagents for all code changes and independent review. A code author may
@@ -135,23 +138,27 @@ fact changed, do not comment; refresh and reclassify the pull request. Unlabelle
 requests are never changed.
 
 For a merge, additionally require the exact current head to be mergeable, all applicable
-required checks to be present and successful, an independent current-head review to approve,
-and every current review thread or automated finding to be resolved or proven stale. Do not
-treat an approval, check, or Shepherd audit from an older head as evidence for a new head.
-Use the repository's permitted merge method and never delete a branch that is the base of
-another open pull request.
+required checks to be present and successful, an independent review of the exact head and
+base comparison to approve, and every current review thread or automated finding to be
+resolved or proven stale. Do not treat an approval, check, or Shepherd audit from an older
+head, base branch, or base SHA as evidence for a new comparison. Use the repository's
+permitted merge method and never delete a branch that is the base of another open pull
+request.
 
 # Verification, updates, and repairs
 
 Discover required checks from branch protection and applicable workflows. Discover
-independent review from current-head human or automated review evidence. When that evidence
-is absent, give a fresh read-only native review subagent the pull request URL, trusted rules,
-base SHA, exact head SHA, and worktree. It must inspect every changed line, run safe checks
-derived from repository entry points, and return an Approve or Request changes verdict with
-bounded evidence. It must not edit, commit, push, merge, or change GitHub. Record a concise
-current-head review audit comment containing `<!-- machinist:shepherd-review -->`, the head
-SHA, verdict, and checks only when an action remains, and count its creation or edit as one
-action.
+independent review from human or automated review evidence for the exact head SHA, base
+branch, and base SHA comparison. When that evidence is absent, give a fresh read-only native
+review subagent the pull request URL, trusted rules, base branch, base SHA, exact head SHA,
+and worktree. It must inspect every changed line, run safe checks derived from repository
+entry points, and return an Approve or Request changes verdict with bounded evidence. It
+must not edit, commit, push, merge, or change GitHub. Record a concise comparison-specific
+review audit comment containing `<!-- machinist:shepherd-review -->`, the head SHA, base
+branch, base SHA, verdict, and checks only when an action remains, and count its creation or
+edit as one action. Accept that audit as review evidence only while all three recorded
+comparison values still match GitHub exactly. Use one field per line named exactly `head`,
+`base branch`, `base sha`, `verdict`, and `checks`.
 
 If the branch is behind its expected base and repository policy permits an update, recheck
 the exact-head gate and use an expected-head base update. Count the update, then wait for all
@@ -170,24 +177,24 @@ Wait for checks and independent review of the pushed head before merge.
 A failed check, valid unresolved finding, conflict, missing product decision, unavailable
 reviewer, or unsafe dependency blocks only that pull request. When an action remains, leave
 a concise audit comment containing `<!-- machinist:shepherd-audit -->`, the exact head,
-classification `blocked`, and evidence, and count it. Otherwise report the blocker in the
-run summary without changing the pull request, then continue inventorying. Do not spend
-actions on infrastructure failures or human decisions unless recording audit evidence is
-the selected bounded action.
+base, live pull request state, classification `blocked`, and evidence, and count it.
+Otherwise report the blocker in the run summary without changing the pull request, then
+continue inventorying. Do not spend actions on infrastructure failures or human decisions
+unless recording audit evidence is the selected bounded action.
 
 # Restart and completion
 
 Before merging, perform the full exact-head gate again, including a final label check, then
 merge with the expected head SHA. Confirm the pull request is merged at that SHA before
 recording success. Leave a concise audit comment containing
-`<!-- machinist:shepherd-audit -->`, the exact head, classification `merged`, and evidence.
-Creating or editing that comment is a separate action and may happen on a later run if the
-merged pull request remains part of a live durable transition. Otherwise the confirmed
-GitHub merge state and the run summary are the audit evidence when the merge consumed the
-final action. Existing merged state is terminal and must never be repeated after a restart.
-Leave at most one concise audit comment per material head and outcome; update an existing
-matching Shepherd marker when practical instead of duplicating it, and count either
-operation.
+`<!-- machinist:shepherd-audit -->`, the exact head, base, live pull request state,
+classification `merged`, and evidence. Creating or editing that comment is a separate
+action and may happen on a later run if the merged pull request remains part of a live
+durable transition. Otherwise the confirmed GitHub merge state and the run summary are the
+audit evidence when the merge consumed the final action. Existing merged state is terminal
+and must never be repeated after a restart. Leave at most one concise audit comment per
+material head, base, state, and outcome; update an existing exactly matching Shepherd
+marker when practical instead of duplicating it, and count either operation.
 
 A restart may happen immediately after a merge. The pre-merge `pending-retarget` record is
 therefore authoritative only as a pointer to facts that must be reverified from GitHub; it

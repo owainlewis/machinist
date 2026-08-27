@@ -9,11 +9,13 @@ from evals.shepherd_queue import (
     LABEL_COLOR,
     LABEL_DESCRIPTION,
     PENDING_RETARGET,
+    REVIEW_MARKER,
     RETARGETED,
     assert_action_budget,
     assert_deferred_result,
     assert_label,
     assert_queue_result,
+    assert_review_comment,
     assert_stack_transition,
     assert_unlabelled_unchanged,
 )
@@ -25,13 +27,19 @@ def pull_request(
     draft: bool,
     head: str,
     base: str = "main",
+    base_sha: str = "base-sha",
     classification: str | None = None,
     body: str | None = None,
 ):
     comments = []
     if classification is not None:
         comments.append(
-            {"body": f"{AUDIT_MARKER}\nhead: {head}\nclassification: {classification}"}
+            {
+                "body": (
+                    f"{AUDIT_MARKER}\nhead: {head}\nbase: {base}\nstate: {state}\n"
+                    f"classification: {classification}"
+                )
+            }
         )
     if body is not None:
         comments.append({"body": body})
@@ -40,6 +48,7 @@ def pull_request(
         "isDraft": draft,
         "headRefOid": head,
         "baseRefName": base,
+        "baseRefOid": base_sha,
         "mergedAt": "2026-08-27T12:00:00Z" if state == "MERGED" else None,
         "labels": [{"name": LABEL}],
         "comments": comments,
@@ -47,6 +56,60 @@ def pull_request(
 
 
 class ShepherdQueueEvidenceTests(unittest.TestCase):
+    def test_accepts_review_for_exact_head_and_base_comparison(self) -> None:
+        review = (
+            f"{REVIEW_MARKER}\nhead: head\nbase branch: main\n"
+            "base sha: base-sha\nverdict: approve\nchecks: just check passed"
+        )
+        assert_review_comment(
+            pull_request(
+                state="OPEN", draft=False, head="head", base="main", body=review
+            ),
+            "head",
+            "main",
+            "base-sha",
+        )
+
+    def test_rejects_review_from_before_base_only_retarget(self) -> None:
+        review = (
+            f"{REVIEW_MARKER}\nhead: same-head\nbase branch: old-base\n"
+            "base sha: old-base-sha\nverdict: approve\nchecks: just check passed"
+        )
+        with self.assertRaisesRegex(EvalFailure, "exact comparison"):
+            assert_review_comment(
+                pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="same-head",
+                    base="new-base",
+                    base_sha="new-base-sha",
+                    body=review,
+                ),
+                "same-head",
+                "new-base",
+                "new-base-sha",
+            )
+
+    def test_rejects_review_when_base_branch_advanced(self) -> None:
+        review = (
+            f"{REVIEW_MARKER}\nhead: same-head\nbase branch: main\n"
+            "base sha: old-base-sha\nverdict: approve\nchecks: just check passed"
+        )
+        with self.assertRaisesRegex(EvalFailure, "exact comparison"):
+            assert_review_comment(
+                pull_request(
+                    state="OPEN",
+                    draft=False,
+                    head="same-head",
+                    base="main",
+                    base_sha="new-base-sha",
+                    body=review,
+                ),
+                "same-head",
+                "main",
+                "new-base-sha",
+            )
+
     def test_rejects_audit_mutations_beyond_action_budget(self) -> None:
         before = {
             "label": {"name": LABEL},
@@ -229,7 +292,7 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
         )
 
     def test_rejects_audit_comment_with_prefix_matched_head(self) -> None:
-        with self.assertRaisesRegex(EvalFailure, "exact head"):
+        with self.assertRaisesRegex(EvalFailure, "exact state"):
             assert_queue_result(
                 pull_request(
                     state="OPEN", draft=True, head="blocked", classification="blocked"
@@ -238,7 +301,10 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                     state="MERGED",
                     draft=False,
                     head="abc",
-                    body=f"{AUDIT_MARKER}\nhead: abcd\nclassification: merged",
+                    body=(
+                        f"{AUDIT_MARKER}\nhead: abcd\nbase: main\nstate: MERGED\n"
+                        "classification: merged"
+                    ),
                 ),
                 "blocked",
                 "abc",
@@ -256,7 +322,47 @@ class ShepherdQueueEvidenceTests(unittest.TestCase):
                     head="eligible",
                     body=(
                         f"{AUDIT_MARKER}\nhead: eligible\n"
+                        "base: main\nstate: MERGED\n"
                         "classification: not-merged"
+                    ),
+                ),
+                "blocked",
+                "eligible",
+            )
+
+    def test_rejects_audit_comment_from_old_base(self) -> None:
+        with self.assertRaisesRegex(EvalFailure, "exact state"):
+            assert_queue_result(
+                pull_request(
+                    state="OPEN", draft=True, head="blocked", classification="blocked"
+                ),
+                pull_request(
+                    state="MERGED",
+                    draft=False,
+                    head="eligible",
+                    base="new-base",
+                    body=(
+                        f"{AUDIT_MARKER}\nhead: eligible\nbase: old-base\n"
+                        "state: MERGED\nclassification: merged"
+                    ),
+                ),
+                "blocked",
+                "eligible",
+            )
+
+    def test_rejects_audit_comment_from_old_pull_request_state(self) -> None:
+        with self.assertRaisesRegex(EvalFailure, "exact state"):
+            assert_queue_result(
+                pull_request(
+                    state="OPEN", draft=True, head="blocked", classification="blocked"
+                ),
+                pull_request(
+                    state="MERGED",
+                    draft=False,
+                    head="eligible",
+                    body=(
+                        f"{AUDIT_MARKER}\nhead: eligible\nbase: main\n"
+                        "state: OPEN\nclassification: merged"
                     ),
                 ),
                 "blocked",

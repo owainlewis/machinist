@@ -40,9 +40,11 @@ deferred. It then exercises a parent and child stack across separate `max_action
 the transition is recorded, the parent merges, the persisted transition is recovered, the
 child is retargeted, and a later run merges the newly verified child. Each GitHub mutation,
 including the audit updates between those steps, consumes the single action available in
-its run. A first run also proves Shepherd creates the missing `machinist:auto-merge` label
-definition. Cleanup closes open pull requests and deletes the temporary branches and label,
-so the repository's default branch is unchanged.
+its run. The smoke rejects review evidence from another base branch or base SHA even when
+the child head is unchanged, and requires exact head, base, state, and outcome audit fields.
+A first run also proves Shepherd creates the missing `machinist:auto-merge` label definition.
+Cleanup closes open pull requests and deletes the temporary branches and label, so the
+repository's default branch is unchanged.
 
 The repository must start without the auto-merge label. Repeat its name with
 `--confirm-disposable` to acknowledge that the run creates and merges disposable pull

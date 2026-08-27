@@ -564,7 +564,12 @@ func TestStoreReconcilesDuplicateActiveShepherdJobsBeforeAddingOverlapGuard(t *t
 }
 
 func TestStoreReschedulesWhenScheduleConfigurationChanges(t *testing.T) {
-	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	database := filepath.Join(t.TempDir(), "machinist.db")
+	store, err := OpenStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
 	clock := newTestClock(time.Date(2026, 8, 27, 8, 0, 0, 0, time.UTC))
 	store.now = clock.Now
 	schedule := config.ResolvedShepherdSchedule{
@@ -581,6 +586,14 @@ func TestStoreReschedulesWhenScheduleConfigurationChanges(t *testing.T) {
 	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = clock.Now
 
 	schedule.Repository = "web"
 	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || !created {
@@ -593,6 +606,14 @@ func TestStoreReschedulesWhenScheduleConfigurationChanges(t *testing.T) {
 	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-b", LeaseToken: run.LeaseToken, State: "succeeded"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = clock.Now
 
 	schedule.Every = 10 * time.Minute
 	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || !created {

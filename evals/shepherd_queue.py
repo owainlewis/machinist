@@ -65,7 +65,11 @@ def audit_fields(body: str) -> dict[str, str] | None:
 
 
 def assert_audit_comment(
-    pull_request: dict[str, Any], head: str, classification: str
+    pull_request: dict[str, Any],
+    head: str,
+    base: str,
+    state: str,
+    classification: str,
 ) -> None:
     comments = pull_request.get("comments")
     if not isinstance(comments, list):
@@ -77,11 +81,14 @@ def assert_audit_comment(
         if (
             fields is not None
             and fields.get("head") == head
+            and fields.get("base") == base
+            and fields.get("state") == state
             and fields.get("classification") == classification
         ):
             return
     raise EvalFailure(
-        f"missing {classification} audit comment for exact head {head}"
+        f"missing {classification} audit comment for exact state "
+        f"head={head} base={base} state={state}"
     )
 
 
@@ -109,9 +116,15 @@ def assert_queue_result(
         or LABEL not in label_names(eligible)
     ):
         raise EvalFailure(f"eligible pull request was not merged at its exact head: {eligible!r}")
-    assert_audit_comment(blocked, blocked_head, "blocked")
+    blocked_base = blocked.get("baseRefName")
+    eligible_base = eligible.get("baseRefName")
+    if not isinstance(blocked_base, str) or not isinstance(eligible_base, str):
+        raise EvalFailure("GitHub returned invalid pull request base evidence")
+    assert_audit_comment(blocked, blocked_head, blocked_base, "OPEN", "blocked")
     if require_eligible_audit:
-        assert_audit_comment(eligible, eligible_head, "merged")
+        assert_audit_comment(
+            eligible, eligible_head, eligible_base, "MERGED", "merged"
+        )
 
 
 def assert_deferred_result(
@@ -127,7 +140,12 @@ def assert_deferred_result(
     ):
         raise EvalFailure(f"deferred pull request changed unexpectedly: {deferred!r}")
     if require_audit:
-        assert_audit_comment(deferred, deferred_head, "deferred")
+        deferred_base = deferred.get("baseRefName")
+        if not isinstance(deferred_base, str):
+            raise EvalFailure("GitHub returned invalid deferred base evidence")
+        assert_audit_comment(
+            deferred, deferred_head, deferred_base, "OPEN", "deferred"
+        )
 
 
 def assert_unlabelled_unchanged(
@@ -216,7 +234,9 @@ def assert_stack_transition(
     raise EvalFailure(f"missing durable {state} stack transition evidence")
 
 
-def assert_review_comment(pull_request: Any, head: str) -> None:
+def assert_review_comment(
+    pull_request: Any, head: str, base_branch: str, base_sha: str
+) -> None:
     if not isinstance(pull_request, dict):
         raise EvalFailure("GitHub returned invalid review evidence")
     comments = pull_request.get("comments")
@@ -231,11 +251,16 @@ def assert_review_comment(pull_request: Any, head: str) -> None:
         recorded_head = fields.get("head") or fields.get("head sha")
         if (
             recorded_head == head
+            and fields.get("base branch") == base_branch
+            and fields.get("base sha") == base_sha
             and fields.get("verdict", "").lower() == "approve"
             and fields.get("checks")
         ):
             return
-    raise EvalFailure(f"missing approved review audit comment for exact head {head}")
+    raise EvalFailure(
+        "missing approved review audit comment for exact comparison "
+        f"{head}...{base_branch}@{base_sha}"
+    )
 
 
 def ensure_label_absent(repository: str) -> None:
@@ -259,7 +284,7 @@ def pull_request(repository: str, url: str) -> dict[str, Any]:
             "--repo",
             repository,
             "--json",
-            "state,isDraft,headRefOid,baseRefName,mergedAt,labels,comments,reviews,"
+            "state,isDraft,headRefOid,baseRefName,baseRefOid,mergedAt,labels,comments,reviews,"
             "title,body,url",
         )
     )
@@ -907,7 +932,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
             child_base=parent_branch,
             state=RETARGETED,
         )
-        assert_review_comment(review_pulls[child_url], child_head)
+        child_base_sha = review_pulls[child_url].get("baseRefOid")
+        if not isinstance(child_base_sha, str) or not child_base_sha:
+            raise EvalFailure("GitHub did not return the stack child's current base SHA")
+        assert_review_comment(
+            review_pulls[child_url], child_head, base_branch, child_base_sha
+        )
 
         child_status, child_snapshot, child_mutations = run_shepherd_with_budget(
             executable, options, 1, pull_requests
