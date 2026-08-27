@@ -94,7 +94,7 @@ func ParseCron(expression, timezone string) (*Cron, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Cron{
+	schedule := &Cron{
 		expression: strings.Join(parts, " "),
 		location:   location,
 		minute:     minute,
@@ -102,7 +102,14 @@ func ParseCron(expression, timezone string) (*Cron, error) {
 		day:        day,
 		month:      month,
 		weekday:    weekday,
-	}, nil
+	}
+	// Eight years cover every weekday alignment and at least one leap year.
+	// Reject schedules whose calendar constraints can never produce an instant
+	// instead of allowing Next to return zero forever at runtime.
+	if schedule.Next(time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)).IsZero() {
+		return nil, fmt.Errorf("cron schedule has no possible occurrence")
+	}
+	return schedule, nil
 }
 
 func parseCronField(input, fieldName string, min, max int, named map[string]int, sunday7 bool) (cronField, error) {
@@ -124,9 +131,6 @@ func parseCronField(input, fieldName string, min, max int, named map[string]int,
 		}
 		// In cron syntax, a step on one value means "from this value through
 		// the field maximum" (for example, 5/15 in the minute field).
-		if step > 1 && base != "*" && !strings.Contains(base, "-") {
-			end = max
-		}
 		if step > 1 && base != "*" && !strings.Contains(base, "-") {
 			end = max
 		}

@@ -47,7 +47,7 @@ func (s *Server) processManagedTriggers(ctx context.Context) error {
 		if trigger.Family == "github" {
 			triggerErr = s.processGitHubTrigger(ctx, trigger)
 		} else {
-			triggerErr = s.processFixedTrigger(ctx, trigger, *status.NextDueAt, now)
+			triggerErr = s.processFixedTrigger(ctx, trigger, *status.NextDueAt, status.PendingOccurrenceAt, now)
 		}
 		if triggerErr != nil {
 			failures = append(failures, fmt.Errorf("trigger %q: %w", trigger.Identity, triggerErr))
@@ -56,11 +56,20 @@ func (s *Server) processManagedTriggers(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-func (s *Server) processFixedTrigger(ctx context.Context, trigger config.ResolvedTrigger, firstDue, now time.Time) error {
-	occurrence, nextDue, coalesced, err := fixedOccurrenceWindow(trigger, firstDue, now)
+func (s *Server) processFixedTrigger(ctx context.Context, trigger config.ResolvedTrigger, firstDue time.Time, pending *time.Time, now time.Time) error {
+	if pending != nil {
+		firstDue = *pending
+	}
+	occurrence, nextDue, coalesced, err := fixedOccurrenceWindow(trigger, firstDue, now, pending != nil)
 	if err != nil {
 		_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, 0, err)
 		return err
+	}
+	if pending == nil {
+		if err := s.store.SetTriggerPendingOccurrence(ctx, trigger.Identity, occurrence); err != nil {
+			_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, 0, err)
+			return err
+		}
 	}
 	admission := TriggerAdmission{
 		Identity: trigger.Identity, Family: trigger.Family,
@@ -79,7 +88,7 @@ func (s *Server) processFixedTrigger(ctx context.Context, trigger config.Resolve
 // fixedOccurrenceWindow coalesces backlog into the latest due occurrence and advances
 // to the first future time. Intervals use arithmetic; cron schedules retain calendar
 // and daylight-saving behavior by walking their resolved occurrences.
-func fixedOccurrenceWindow(trigger config.ResolvedTrigger, firstDue, now time.Time) (time.Time, time.Time, int64, error) {
+func fixedOccurrenceWindow(trigger config.ResolvedTrigger, firstDue, now time.Time, preserveFirst bool) (time.Time, time.Time, int64, error) {
 	firstDue = firstDue.UTC()
 	now = now.UTC()
 	if firstDue.After(now) {
@@ -90,23 +99,30 @@ func fixedOccurrenceWindow(trigger config.ResolvedTrigger, firstDue, now time.Ti
 			return time.Time{}, time.Time{}, 0, errors.New("interval duration is not positive")
 		}
 		steps := int64(now.Sub(firstDue)/trigger.Every) + 1
-		occurrence := firstDue.Add(time.Duration(steps-1) * trigger.Every)
+		occurrence := firstDue
+		if !preserveFirst {
+			occurrence = firstDue.Add(time.Duration(steps-1) * trigger.Every)
+		}
 		return occurrence, firstDue.Add(time.Duration(steps) * trigger.Every), steps - 1, nil
 	}
 	if trigger.Family != "cron" {
 		return time.Time{}, time.Time{}, 0, fmt.Errorf("unsupported fixed trigger family %q", trigger.Family)
 	}
 	occurrence := firstDue
+	cursor := firstDue
 	var skipped int64
 	for {
-		next := trigger.NextDue(occurrence)
+		next := trigger.NextDue(cursor)
 		if next.IsZero() {
 			return time.Time{}, time.Time{}, 0, errors.New("cron schedule has no future occurrence")
 		}
 		if next.After(now) {
 			return occurrence, next, skipped, nil
 		}
-		occurrence = next
+		cursor = next
+		if !preserveFirst {
+			occurrence = next
+		}
 		skipped++
 	}
 }

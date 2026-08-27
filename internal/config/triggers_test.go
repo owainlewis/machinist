@@ -183,6 +183,16 @@ prompt="audit"
 `,
 			want: "exactly five fields",
 		},
+		"impossible cron date": {
+			body: `[triggers.cron.audit]
+schedule="0 0 31 2 *"
+timezone="UTC"
+repository="machinist"
+agent="audit"
+prompt="audit"
+`,
+			want: `trigger "cron/audit" schedule: cron schedule has no possible occurrence`,
+		},
 		"invalid timezone": {
 			body: `[triggers.cron.audit]
 schedule="0 0 * * *"

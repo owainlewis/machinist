@@ -183,6 +183,103 @@ func TestManagedIntervalTriggerCoalescesBacklogAndActiveOccurrences(t *testing.T
 	}
 }
 
+func TestManagedIntervalTriggerRetriesPendingOccurrenceAfterLaterDueTime(t *testing.T) {
+	startup := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
+	trigger := config.ResolvedTrigger{
+		Identity: "interval/audit", Family: "interval", Every: time.Hour,
+		Repository: "machinist", Prompt: "Audit", SelectionKind: "agent", SelectionName: "audit", Signature: "interval-signature",
+		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute}},
+	}
+	assertFixedTriggerRetriesPendingOccurrence(t, trigger, startup.Add(time.Hour), startup.Add(2*time.Hour+30*time.Minute), startup.Add(3*time.Hour))
+}
+
+func TestManagedCronTriggerRetriesPendingOccurrenceAfterLaterDueTime(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "audit.md"), []byte("Audit: {{machinist.prompt}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuration := `[agents.audit]
+executor="test"
+prompt_file="audit.md"
+[github.repositories]
+machinist="owainlewis/machinist"
+[triggers.cron.audit]
+schedule="0 * * * *"
+timezone="UTC"
+repository="machinist"
+agent="audit"
+prompt="Audit"
+`
+	path := filepath.Join(directory, "config.toml")
+	if err := os.WriteFile(path, []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := config.LoadTriggers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startup := time.Date(2026, 8, 27, 0, 30, 0, 0, time.UTC)
+	assertFixedTriggerRetriesPendingOccurrence(t, resolved[0], startup.Add(30*time.Minute), startup.Add(2*time.Hour), startup.Add(2*time.Hour+30*time.Minute))
+}
+
+func assertFixedTriggerRetriesPendingOccurrence(t *testing.T, trigger config.ResolvedTrigger, firstDue, retryAt, wantNext time.Time) {
+	t.Helper()
+	database := filepath.Join(t.TempDir(), "machinist.db")
+	clock := firstDue
+	store, err := OpenStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return clock }
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, NextDueAt: firstDue}}); err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := trigger
+	invalid.Agents = nil
+	server := &Server{store: store, triggers: []config.ResolvedTrigger{invalid}, now: func() time.Time { return clock }}
+	if err := server.processManagedTriggers(t.Context()); err == nil {
+		t.Fatal("expected first admission to fail")
+	}
+	statuses, err := store.TriggerSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statuses[0].PendingOccurrenceAt == nil || !statuses[0].PendingOccurrenceAt.Equal(firstDue) {
+		t.Fatalf("pending occurrence after failure = %#v, want %s", statuses[0].PendingOccurrenceAt, firstDue)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	clock = retryAt
+	reopened, err := OpenStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	reopened.now = func() time.Time { return clock }
+	if err := reopened.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, NextDueAt: trigger.FirstDue(clock)}}); err != nil {
+		t.Fatal(err)
+	}
+	server = &Server{store: reopened, triggers: []config.ResolvedTrigger{trigger}, now: func() time.Time { return clock }}
+	if err := server.processManagedTriggers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := reopened.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOccurrence := firstDue.Format(time.RFC3339Nano)
+	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].OccurrenceKey != wantOccurrence {
+		t.Fatalf("retried jobs = %#v, want occurrence %s", snapshot.Jobs, wantOccurrence)
+	}
+	status := snapshot.Triggers[0]
+	if status.PendingOccurrenceAt != nil || status.NextDueAt == nil || !status.NextDueAt.Equal(wantNext) || status.CoalescedCount != 1 {
+		t.Fatalf("trigger after retry = %#v, want next %s and one coalesced occurrence", status, wantNext)
+	}
+}
+
 func githubTestTrigger() config.ResolvedTrigger {
 	return config.ResolvedTrigger{
 		Identity: "github/intake", Family: "github", Every: 5 * time.Minute, Label: "machinist:requested",

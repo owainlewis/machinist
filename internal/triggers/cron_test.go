@@ -72,6 +72,7 @@ func TestParseCronRejectsNonFiveFieldAndUnsafeForms(t *testing.T) {
 		{"60 0 * * *", "UTC", "between 0 and 59"},
 		{"*/0 0 * * *", "UTC", "positive"},
 		{"0 0 * DEC-JAN *", "UTC", "must not precede"},
+		{"0 0 31 2 *", "UTC", "no possible occurrence"},
 	}
 	for _, test := range tests {
 		t.Run(test.expression+test.timezone, func(t *testing.T) {
@@ -80,5 +81,15 @@ func TestParseCronRejectsNonFiveFieldAndUnsafeForms(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestParseCronAllowsImpossibleDayOfMonthWhenRestrictedWeekdayCanMatch(t *testing.T) {
+	schedule, err := ParseCron("0 0 31 2 MON", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := schedule.Next(time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)), time.Date(2026, time.February, 2, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("next = %s, want %s", got, want)
 	}
 }
