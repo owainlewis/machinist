@@ -142,6 +142,10 @@ coding agent in an existing Git worktree and saves the run files locally.
 Shared settings live in `~/.machinist/config.toml`. Machine-specific executor,
 model, path, and worker settings live in `~/.machinist/worker.toml`.
 
+Managed jobs can also start from GitHub issue labels, fixed intervals, and cron
+schedules. See [Managed triggers](docs/managed-triggers.md) for configuration,
+authentication, timing, restart, and recovery behavior.
+
 To enable the optional scheduled merge queue, add a `[shepherd.<name>]` entry to
 `config.toml`. Shepherd ensures the repository defines the `machinist:auto-merge`
 label and advances only pull requests carrying it. See
