@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 type fakeGitHubTriggerClient struct {
@@ -50,7 +51,7 @@ func (f *fakeGitHubTriggerClient) Permission(_ context.Context, _, actor string)
 	return f.permission, nil
 }
 
-func (f *fakeGitHubTriggerClient) ReplaceRequestLabel(context.Context, string, int, string, string) error {
+func (f *fakeGitHubTriggerClient) ReplaceRequestLabel(context.Context, string, int, string, string, string) error {
 	f.replaceCalls++
 	return f.replaceErr
 }
@@ -318,6 +319,65 @@ prompt="Audit"
 	}
 	startup := time.Date(2026, 8, 27, 0, 30, 0, 0, time.UTC)
 	assertFixedTriggerRetriesPendingOccurrence(t, resolved[0], startup.Add(30*time.Minute), startup.Add(2*time.Hour), startup.Add(2*time.Hour+30*time.Minute))
+}
+
+func TestManagedFixedTriggerWaitsForPreviousConfigurationJob(t *testing.T) {
+	clock := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	identity := "interval/audit"
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: identity, Family: "interval", ConfigSignature: "v1", NextDueAt: clock}}); err != nil {
+		t.Fatal(err)
+	}
+	_, created, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{
+		Identity: identity, Family: "interval", ConfigSignature: "v1",
+		ScheduledAt: clock.Add(-time.Hour), NextDueAt: clock,
+		Prompt: "Old audit", Repository: "machinist", SelectionKind: "agent", SelectionName: "audit",
+		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "v1", Prompt: "Old audit", Timeout: time.Minute}},
+	})
+	if err != nil || !created {
+		t.Fatalf("admit v1 job = %v, %v", created, err)
+	}
+	trigger := config.ResolvedTrigger{
+		Identity: identity, Family: "interval", Every: time.Hour, Signature: "v2",
+		Repository: "machinist", Prompt: "New audit", SelectionKind: "agent", SelectionName: "audit",
+		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "v2", Prompt: "New audit", Timeout: time.Minute}},
+	}
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: identity, Family: "interval", ConfigSignature: "v2", NextDueAt: clock}}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, now: func() time.Time { return clock }}
+	if err := server.processManagedTrigger(t.Context(), trigger); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := snapshot.Triggers[0]
+	if len(snapshot.Jobs) != 1 || status.PendingOccurrenceAt == nil || !status.PendingOccurrenceAt.Equal(clock) || status.NextDueAt == nil || !status.NextDueAt.Equal(clock) || status.CoalescedCount != 0 {
+		t.Fatalf("v2 occurrence was not preserved behind v1 work: %#v", snapshot)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"test"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll v1 job = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.processManagedTrigger(t.Context(), trigger); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2Admitted := false
+	for _, job := range snapshot.Jobs {
+		v2Admitted = v2Admitted || job.OccurrenceKey == clock.Format(time.RFC3339Nano)
+	}
+	if len(snapshot.Jobs) != 2 || !v2Admitted || snapshot.Triggers[0].PendingOccurrenceAt != nil {
+		t.Fatalf("v2 occurrence was not admitted after v1 completion: %#v", snapshot)
+	}
 }
 
 func assertFixedTriggerRetriesPendingOccurrence(t *testing.T, trigger config.ResolvedTrigger, firstDue, retryAt, wantNext time.Time) {

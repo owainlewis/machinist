@@ -259,8 +259,9 @@ func GitHubPermissionCanWrite(permission string) bool {
 }
 
 // ReplaceRequestLabel adds the queued label before removing the request label.
-// This ordering makes partial failures repairable by the next request-label poll.
-func (g *GitHubCLI) ReplaceRequestLabel(ctx context.Context, repository string, number int, requestedLabel, queuedLabel string) error {
+// It verifies the admitted label event before and after removal so a newer request
+// created during admission remains visible to the next poll.
+func (g *GitHubCLI) ReplaceRequestLabel(ctx context.Context, repository string, number int, requestedLabel, queuedLabel, admittedOccurrenceKey string) error {
 	repository, err := normalizeGitHubRepository(repository)
 	if err != nil {
 		return err
@@ -277,12 +278,31 @@ func (g *GitHubCLI) ReplaceRequestLabel(ctx context.Context, repository string, 
 	if strings.EqualFold(requestedLabel, queuedLabel) {
 		return errors.New("requested and queued labels must differ")
 	}
+	if strings.TrimSpace(admittedOccurrenceKey) == "" || strings.ContainsRune(admittedOccurrenceKey, '\x00') {
+		return errors.New("admitted occurrence key is required")
+	}
 	issueURL := fmt.Sprintf("https://github.com/%s/issues/%d", repository, number)
 	if _, err := g.run(ctx, "add queued label", []string{"issue", "edit", issueURL, "--add-label", queuedLabel}); err != nil {
 		return err
 	}
+	before, err := g.IssueDetails(ctx, repository, number, requestedLabel)
+	if err != nil {
+		return fmt.Errorf("verify request label before replacement: %w", err)
+	}
+	if before.RequestedEvent == nil || before.RequestedEvent.OccurrenceKey != admittedOccurrenceKey || !hasGitHubLabel(before.Labels, requestedLabel) {
+		return nil
+	}
 	if _, err := g.run(ctx, "remove request label", []string{"issue", "edit", issueURL, "--remove-label", requestedLabel}); err != nil {
 		return err
+	}
+	after, err := g.IssueDetails(ctx, repository, number, requestedLabel)
+	if err != nil {
+		return fmt.Errorf("verify request label after replacement: %w", err)
+	}
+	if after.RequestedEvent != nil && after.RequestedEvent.OccurrenceKey != admittedOccurrenceKey && !hasGitHubLabel(after.Labels, requestedLabel) {
+		if _, err := g.run(ctx, "restore newer request label", []string{"issue", "edit", issueURL, "--add-label", requestedLabel}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

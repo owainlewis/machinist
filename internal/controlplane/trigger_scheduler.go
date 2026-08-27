@@ -17,7 +17,7 @@ type githubTriggerClient interface {
 	SearchRequestedIssues(context.Context, []string, string, int) ([]GitHubCandidate, error)
 	IssueDetails(context.Context, string, int, string) (GitHubIssueDetails, error)
 	Permission(context.Context, string, string) (string, error)
-	ReplaceRequestLabel(context.Context, string, int, string, string) error
+	ReplaceRequestLabel(context.Context, string, int, string, string, string) error
 }
 
 func (s *Server) processManagedTriggers(ctx context.Context) error {
@@ -82,6 +82,9 @@ func (s *Server) processFixedTrigger(ctx context.Context, trigger config.Resolve
 		SelectionKind: trigger.SelectionKind, SelectionName: trigger.SelectionName, Agents: trigger.Agents,
 	}
 	_, _, admissionErr := s.store.CreateTriggeredJob(ctx, admission)
+	if errors.Is(admissionErr, ErrTriggerPreviousGenerationActive) {
+		return s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, nil)
+	}
 	if admissionErr == nil && coalesced > 0 {
 		admissionErr = s.store.AddTriggerCoalesced(ctx, trigger.Identity, trigger.Signature, coalesced)
 	}
@@ -209,7 +212,7 @@ func (s *Server) processGitHubCandidate(ctx context.Context, trigger config.Reso
 		// label in place so the same occurrence is retried after it completes.
 		return nil
 	}
-	return s.github.ReplaceRequestLabel(ctx, details.Repository, details.Number, trigger.Label, queuedGitHubLabel)
+	return s.github.ReplaceRequestLabel(ctx, details.Repository, details.Number, trigger.Label, queuedGitHubLabel, occurrenceKey)
 }
 
 func logicalGitHubRepository(repositories map[string]string, slug string) (string, bool) {

@@ -107,7 +107,7 @@ func assertDisposableIntake(t *testing.T, ctx context.Context, adapter *GitHubCL
 	if !GitHubPermissionCanWrite(permission) {
 		t.Fatalf("label actor %q has permission %q", details.RequestedEvent.Actor, permission)
 	}
-	if err := adapter.ReplaceRequestLabel(ctx, repository, number, "machinist:requested", "machinist:queued"); err != nil {
+	if err := adapter.ReplaceRequestLabel(ctx, repository, number, "machinist:requested", "machinist:queued", details.RequestedEvent.OccurrenceKey); err != nil {
 		t.Fatal(err)
 	}
 	details, err = adapter.IssueDetails(ctx, repository, number, "machinist:requested")

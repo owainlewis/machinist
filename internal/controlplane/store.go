@@ -19,10 +19,11 @@ import (
 )
 
 var (
-	ErrLeaseConflict  = errors.New("run lease does not match")
-	ErrRunState       = errors.New("run is not active")
-	ErrTriggerMissing = errors.New("trigger state does not exist")
-	ErrTriggerStale   = errors.New("trigger state configuration changed")
+	ErrLeaseConflict                   = errors.New("run lease does not match")
+	ErrRunState                        = errors.New("run is not active")
+	ErrTriggerMissing                  = errors.New("trigger state does not exist")
+	ErrTriggerStale                    = errors.New("trigger state configuration changed")
+	ErrTriggerPreviousGenerationActive = errors.New("previous trigger configuration still has active work")
 )
 
 const leaseDuration = 30 * time.Second
@@ -578,8 +579,12 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 	}
 
 	if fixed {
-		err = tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE trigger_identity=? AND fixed_trigger=1 AND state IN ('queued','running')`, admission.Identity).Scan(&existingJob)
+		var activeConfigSignature string
+		err = tx.QueryRowContext(ctx, `SELECT id,trigger_config_signature FROM jobs WHERE trigger_identity=? AND fixed_trigger=1 AND state IN ('queued','running')`, admission.Identity).Scan(&existingJob, &activeConfigSignature)
 		if err == nil {
+			if activeConfigSignature != admission.ConfigSignature {
+				return existingJob, false, fmt.Errorf("%w: %s", ErrTriggerPreviousGenerationActive, admission.Identity)
+			}
 			now := s.now().UTC().Format(time.RFC3339Nano)
 			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=COALESCE(?,next_due_at),pending_occurrence_at=NULL,last_attempt_at=?,health='coalesced',latest_error='',coalesced_count=coalesced_count+1,updated_at=? WHERE identity=?`, nullableTimeText(admission.NextDueAt), now, now, admission.Identity); err != nil {
 				return "", false, fmt.Errorf("coalesce trigger %q: %w", admission.Identity, err)

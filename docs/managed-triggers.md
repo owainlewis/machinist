@@ -83,7 +83,9 @@ then replaces `machinist:requested` with `machinist:queued`. If that label updat
 fails, later polls repair the labels without creating a second job. Removing and
 reapplying `machinist:requested` after the prior work is terminal creates a new
 attempt. Reapplying it while work is active does not create overlapping work for
-the issue.
+the issue. If a newer request-label event arrives while an earlier event is being
+admitted, Machinist leaves or restores the request label so the newer event remains
+visible to the next poll.
 
 The optional [GitHub Actions comment example](../examples/github-actions/README.md)
 turns an authorized issue comment into the intake label. Only the first
@@ -132,7 +134,8 @@ Each fixed trigger may have only one queued or running job. If another
 occurrence arrives while that work is active, Machinist coalesces it instead of
 creating overlapping work. It records the coalesced count, skips old backlog,
 and advances to the first future occurrence. A failed job does not stop later
-occurrences.
+occurrences. When the active job belongs to an older trigger configuration, the
+new configuration keeps its first occurrence pending until that job finishes.
 
 If admission itself fails, Machinist records the error and retries that same
 occurrence. Failures in one trigger do not stop other triggers.

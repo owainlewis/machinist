@@ -197,26 +197,52 @@ func TestGitHubCLIPermissionAndWritePolicy(t *testing.T) {
 func TestGitHubCLIReplaceLabelIsRepairableAfterPartialFailure(t *testing.T) {
 	cli, runner := newScriptedGitHubCLI(
 		scriptedGitHubResult{},
+		scriptedGitHubResult{stdout: `{"number":7,"html_url":"https://github.com/o/r/issues/7","state":"open","created_at":"2026-01-01T00:00:00Z","labels":[{"name":"machinist:requested"},{"name":"machinist:queued"}]}`},
+		scriptedGitHubResult{stdout: `[[{"id":41,"event":"labeled","created_at":"2026-01-02T00:00:00Z","actor":{"login":"maintainer"},"label":{"name":"machinist:requested"}}]]`},
 		scriptedGitHubResult{stderr: "temporary API failure", err: errors.New("exit 1")},
 	)
-	err := cli.ReplaceRequestLabel(context.Background(), "o/r", 7, "machinist:requested", "machinist:queued")
+	err := cli.ReplaceRequestLabel(context.Background(), "o/r", 7, "machinist:requested", "machinist:queued", "github.com:41")
 	if err == nil {
 		t.Fatal("expected partial label update failure")
 	}
-	if len(runner.calls) != 2 {
-		t.Fatalf("calls = %d, want 2", len(runner.calls))
+	if len(runner.calls) != 4 {
+		t.Fatalf("calls = %d, want 4", len(runner.calls))
 	}
 	if got := strings.Join(runner.calls[0], " "); !strings.Contains(got, "--add-label machinist:queued") {
 		t.Fatalf("queued label was not added first: %s", got)
 	}
-	if got := strings.Join(runner.calls[1], " "); !strings.Contains(got, "--remove-label machinist:requested") {
+	if got := strings.Join(runner.calls[3], " "); !strings.Contains(got, "--remove-label machinist:requested") {
 		t.Fatalf("request label was not removed second: %s", got)
+	}
+}
+
+func TestGitHubCLIReplaceLabelRestoresRequestCreatedDuringAdmission(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI(
+		scriptedGitHubResult{},
+		scriptedGitHubResult{stdout: `{"number":7,"html_url":"https://github.com/o/r/issues/7","state":"open","created_at":"2026-01-01T00:00:00Z","labels":[{"name":"machinist:requested"},{"name":"machinist:queued"}]}`},
+		scriptedGitHubResult{stdout: `[[{"id":41,"event":"labeled","created_at":"2026-01-02T00:00:00Z","actor":{"login":"maintainer"},"label":{"name":"machinist:requested"}}]]`},
+		scriptedGitHubResult{},
+		scriptedGitHubResult{stdout: `{"number":7,"html_url":"https://github.com/o/r/issues/7","state":"open","created_at":"2026-01-01T00:00:00Z","labels":[{"name":"machinist:queued"}]}`},
+		scriptedGitHubResult{stdout: `[[
+  {"id":41,"event":"labeled","created_at":"2026-01-02T00:00:00Z","actor":{"login":"maintainer"},"label":{"name":"machinist:requested"}},
+  {"id":42,"event":"labeled","created_at":"2026-01-03T00:00:00Z","actor":{"login":"maintainer"},"label":{"name":"machinist:requested"}}
+]]`},
+		scriptedGitHubResult{},
+	)
+	if err := cli.ReplaceRequestLabel(context.Background(), "o/r", 7, "machinist:requested", "machinist:queued", "github.com:41"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 7 {
+		t.Fatalf("calls = %d, want 7", len(runner.calls))
+	}
+	if got := strings.Join(runner.calls[6], " "); !strings.Contains(got, "--add-label machinist:requested") {
+		t.Fatalf("newer request label was not restored: %s", got)
 	}
 }
 
 func TestGitHubCLIReplaceLabelRejectsCaseInsensitiveCollision(t *testing.T) {
 	cli, runner := newScriptedGitHubCLI()
-	err := cli.ReplaceRequestLabel(context.Background(), "o/r", 7, "Machinist:Queued", "machinist:queued")
+	err := cli.ReplaceRequestLabel(context.Background(), "o/r", 7, "Machinist:Queued", "machinist:queued", "github.com:41")
 	if err == nil || !strings.Contains(err.Error(), "must differ") {
 		t.Fatalf("error = %v", err)
 	}
