@@ -13,6 +13,22 @@ Machinist definition for `machinist start` and the worker file for `machinist ru
 `machinist submit`, or `machinist worker start`. For direct runs, select a separate
 Machinist definition with `--machinist-config`.
 
+## Limit concurrent managed jobs
+
+By default, every available worker may lease a different job. Set a positive global
+limit when the control plane should run fewer jobs at once:
+
+```toml
+[server]
+max_concurrent_jobs = 1
+```
+
+The limit counts jobs, not individual pipeline steps. Additional submissions remain
+in the durable queue. An active pipeline keeps its slot between steps, and an expired
+lease can be redispatched without consuming another slot. Lowering the value does not
+cancel active work; the control plane starts no additional queued jobs until the active
+count falls below the new limit. Restart the control plane after changing this setting.
+
 ## Define an agent
 
 Agents live in the Machinist definition:
@@ -114,9 +130,12 @@ own configuration or the worker process environment; they are not fields in
 The shipped Codex command uses its JSONL event stream so Machinist can read the
 final `turn.completed` usage. Machinist records input tokens plus output tokens;
 cached input is already included in the input count and is not added again.
-Codex executor names such as `codex-local` may use an argv-preserving wrapper
-such as `env` or a renamed Codex executable as long as the command still passes
-the `exec` and `--json` arguments.
+Machinist automatically adds `--json` to recognized `codex exec` commands, so
+existing worker configurations collect usage after upgrading. Codex executor
+names such as `codex-local` may place the `codex` executable behind an
+argv-preserving wrapper. Renamed Codex executables are recognized when invoked
+directly, through `env`, or through `mise exec`/`mise x`; the command must still
+contain the Codex `exec` argument.
 Other executors can report a non-negative integer through the
 `MACHINIST_TOKEN_USAGE_PATH` file exposed to every run. Missing or malformed
 usage remains unavailable and does not affect executor output or completion.

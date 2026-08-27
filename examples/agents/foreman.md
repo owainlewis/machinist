@@ -52,8 +52,8 @@ At each phase boundary print only:
 
 `FOREMAN phase=<planning|building|reviewing|repairing|ci> attempt=<number> outcome=<started|passed|failed|needs-human>`
 
-Attempt `0` covers the initial path. Attempts `1` and `2` are the two allowed repairs,
-shared across local review, CI, and pull request feedback. Finish with the issue and
+Attempt `0` is initial. Positive numbers are repairs and increase without a cap
+across local review, CI, pull request feedback, and resumes. Finish with the issue and
 pull request URLs, final label, checks, review verdict, and repair count. Do not print a
 complete diff, issue body, review, bot comment, or generated asset. Use summaries,
 paths, URLs, and SHAs.
@@ -108,9 +108,9 @@ worktree existed or was recovered, fast-forward a clean local head that is an an
 the remote pull request head to that exact remote SHA. Preserve dirty, ahead, or unpublished
 state; send divergent history to `machinist:needs-human`.
 
-Reconstruct used repair attempts from the state comment, repair commits, and issue or pull
-request history. Use the greatest proved count. A resumed run still has at most two total
-repair attempts.
+Reconstruct the repair count from the state comment, commits, and issue or pull request
+history. Use the greatest proved count. Reserve the next number for each code repair. Never
+reset, reuse, or cap it on resume.
 
 If `machinist:ready-for-review` or a verified ready/completed state exists, first require a
 clean worktree and equality between the local branch head, remote pull request head, and
@@ -224,7 +224,7 @@ including feedback found on a resumed run:
 1. Recheck findings against the current head and keep only valid unresolved code defects.
    If none remain, return to the originating stage without consuming an attempt. The
    Automation gate handles terminal non-code failures.
-2. Reserve the next repair count and block if it would exceed two.
+2. Reserve the next positive repair count without a maximum.
 3. Set `machinist:building` and prompt a fresh repair subagent with only the refined task,
    verified branch and worktree, current head, exact failing evidence, and valid findings.
    It fixes only those findings, runs affected checks, inspects its diff, commits without an

@@ -17,3 +17,7 @@ setup and run commands:
 - issue to pull request;
 - Codex and Claude Code multi-review;
 - read-only code audit and issue creation.
+
+The [GitHub comment intake example](github-actions/README.md) safely turns a new,
+authorized `@machinist` issue comment into a `machinist:requested` label for a
+managed GitHub trigger.

@@ -86,6 +86,21 @@ export function tokenUsageSummary(runs) {
   };
 }
 
+export function runModelSummary(runs) {
+  const models = [];
+  let hasUnspecifiedModel = false;
+  for (const run of runs) {
+    const model = typeof run.model === "string" ? run.model.trim() : "";
+    if (!model) {
+      hasUnspecifiedModel = true;
+      continue;
+    }
+    if (!models.includes(model)) models.push(model);
+  }
+  if (hasUnspecifiedModel) models.push("Not specified (default)");
+  return models.length ? models.join(" · ") : "Not specified (default)";
+}
+
 export function formatReportingCoverage(summary) {
   if (!summary.completed) return "No completed steps";
   return `${summary.reported} of ${summary.completed} step${summary.completed === 1 ? "" : "s"}`;

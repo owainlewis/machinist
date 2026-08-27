@@ -18,14 +18,234 @@ type codexUsageCollector struct {
 }
 
 func newCodexUsageCollector(executor string, command []string) *codexUsageCollector {
-	execIndex := slices.Index(command, "exec")
+	execIndex := codexExecIndex(executor, command)
 	if execIndex < 1 || !slices.Contains(command[execIndex+1:], "--json") {
 		return nil
 	}
-	if !codexExecutorName(executor) && codexExecutableName(command[execIndex-1]) != "codex" {
-		return nil
-	}
 	return &codexUsageCollector{}
+}
+
+func structuredCodexCommand(executor string, command []string) []string {
+	execIndex := codexExecIndex(executor, command)
+	if execIndex < 1 || slices.Contains(command[execIndex+1:], "--json") {
+		return command
+	}
+	structured := make([]string, 0, len(command)+1)
+	structured = append(structured, command[:execIndex+1]...)
+	structured = append(structured, "--json")
+	return append(structured, command[execIndex+1:]...)
+}
+
+func codexExecIndex(executor string, command []string) int {
+	if codexExecutorName(executor) {
+		for programIndex, argument := range command {
+			if codexExecutableName(argument) == "codex" {
+				if execIndex := codexExecIndexAfter(command, programIndex); execIndex >= 0 {
+					return execIndex
+				}
+			}
+		}
+	}
+	programIndex := wrappedProgramIndex(command)
+	if programIndex < 0 || (codexExecutableName(command[programIndex]) != "codex" && !codexExecutorName(executor)) {
+		return -1
+	}
+	return codexExecIndexAfter(command, programIndex)
+}
+
+func wrappedProgramIndex(command []string) int {
+	if len(command) == 0 {
+		return -1
+	}
+	programIndex := 0
+	for programIndex < len(command) {
+		var nestedProgramIndex int
+		switch codexExecutableName(command[programIndex]) {
+		case "env":
+			nestedProgramIndex = envProgramIndex(command[programIndex:])
+		case "mise":
+			nestedProgramIndex = miseProgramIndex(command[programIndex:])
+		case "direnv":
+			nestedProgramIndex = direnvProgramIndex(command[programIndex:])
+		default:
+			return programIndex
+		}
+		if nestedProgramIndex < 1 {
+			return -1
+		}
+		programIndex += nestedProgramIndex
+	}
+	return -1
+}
+
+func direnvProgramIndex(command []string) int {
+	if len(command) < 4 || command[1] != "exec" || command[2] == "" || strings.HasPrefix(command[2], "-") {
+		return -1
+	}
+	return 3
+}
+
+func miseProgramIndex(command []string) int {
+	for index := 1; index < len(command); index++ {
+		argument := command[index]
+		recognized, takesNextValue := miseGlobalOption(argument)
+		if recognized {
+			if takesNextValue {
+				index++
+			}
+			continue
+		}
+		if argument != "exec" && argument != "x" {
+			return -1
+		}
+		for commandIndex := index + 1; commandIndex < len(command); commandIndex++ {
+			if command[commandIndex] == "--" && commandIndex+1 < len(command) {
+				return commandIndex + 1
+			}
+		}
+		return -1
+	}
+	return -1
+}
+
+func miseGlobalOption(argument string) (bool, bool) {
+	for _, option := range []string{"--cd", "--env", "--jobs", "--output"} {
+		if argument == option {
+			return true, true
+		}
+		if strings.HasPrefix(argument, option+"=") {
+			return true, false
+		}
+	}
+	if slices.Contains([]string{"--quiet", "--verbose", "--yes", "--raw", "--locked", "--silent", "--no-config", "--no-env", "--no-hooks", "--help"}, argument) {
+		return true, false
+	}
+	if len(argument) >= 2 && argument[0] == '-' && argument[1] != '-' {
+		for index, option := range argument[1:] {
+			if strings.ContainsRune("qvyh", option) {
+				continue
+			}
+			if strings.ContainsRune("CEj", option) {
+				if index+2 < len(argument) {
+					return true, false
+				}
+				return true, true
+			}
+			return false, false
+		}
+		return true, false
+	}
+	return false, false
+}
+
+func codexExecIndexAfter(command []string, programIndex int) int {
+	for index := programIndex + 1; index < len(command); index++ {
+		argument := command[index]
+		recognized, takesNextValue := codexRootOption(argument)
+		if recognized {
+			if takesNextValue {
+				index++
+			}
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return -1
+		}
+		if argument == "exec" {
+			return index
+		}
+		return -1
+	}
+	return -1
+}
+
+func envProgramIndex(command []string) int {
+	for index := 1; index < len(command); index++ {
+		argument := command[index]
+		if argument == "--" {
+			if index+1 < len(command) {
+				return index + 1
+			}
+			return -1
+		}
+		if strings.Contains(argument, "=") && !strings.HasPrefix(argument, "-") {
+			continue
+		}
+		if argument == "-" || slices.Contains([]string{"--ignore-environment", "--null", "--debug", "--block-signal", "--default-signal", "--ignore-signal", "--list-signal-handling"}, argument) {
+			continue
+		}
+		if envSplitStringOption(argument) {
+			return -1
+		}
+		if recognized, takesNextValue := envShortOptions(argument); recognized {
+			if takesNextValue {
+				index++
+			}
+			continue
+		}
+		if argument == "--split-string" || strings.HasPrefix(argument, "--split-string=") {
+			return -1
+		}
+		if slices.Contains([]string{"--unset", "--chdir", "--argv0"}, argument) {
+			index++
+			continue
+		}
+		if strings.HasPrefix(argument, "--unset=") || strings.HasPrefix(argument, "--chdir=") || strings.HasPrefix(argument, "--argv0=") ||
+			strings.HasPrefix(argument, "--block-signal=") || strings.HasPrefix(argument, "--default-signal=") || strings.HasPrefix(argument, "--ignore-signal=") {
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return -1
+		}
+		return index
+	}
+	return -1
+}
+
+func envSplitStringOption(argument string) bool {
+	if len(argument) < 2 || argument[0] != '-' || argument[1] == '-' {
+		return false
+	}
+	for _, option := range argument[1:] {
+		if strings.ContainsRune("iv0", option) {
+			continue
+		}
+		return option == 'S'
+	}
+	return false
+}
+
+func envShortOptions(argument string) (bool, bool) {
+	if len(argument) < 2 || argument[0] != '-' || argument[1] == '-' {
+		return false, false
+	}
+	for index, option := range argument[1:] {
+		if strings.ContainsRune("iv0", option) {
+			continue
+		}
+		if strings.ContainsRune("uCPSa", option) {
+			return true, index+2 == len(argument)
+		}
+		return false, false
+	}
+	return true, false
+}
+
+func codexRootOption(argument string) (bool, bool) {
+	for _, option := range []string{"-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env", "-i", "--image", "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd", "--add-dir", "-a", "--ask-for-approval"} {
+		if argument == option {
+			return true, true
+		}
+		if strings.HasPrefix(argument, option+"=") || (len(option) == 2 && strings.HasPrefix(argument, option) && len(argument) > len(option)) {
+			return true, false
+		}
+	}
+	for _, option := range []string{"--strict-config", "--oss", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "--approve-for-me", "--not-so-yolo", "--search", "--no-alt-screen", "-h", "--help", "-V", "--version"} {
+		if argument == option {
+			return true, false
+		}
+	}
+	return false, false
 }
 
 func codexExecutorName(executor string) bool {
