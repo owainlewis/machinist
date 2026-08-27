@@ -143,6 +143,10 @@ lease token, and changes the run to running for that instance in one SQLite tran
 The lease expires after 30 seconds. Completion requires the lease token. Two concurrent
 polls cannot receive the same run.
 
+After a newer process with the same configured name registers, maintenance removes older
+disconnected registrations that do not own an active run. Runs store the worker name at
+claim time so historical attribution survives that cleanup.
+
 Polling is idempotent for a worker instance. If a lease commits but its HTTP response is
 lost, the instance's next poll before expiry returns the same active run and lease token
 instead of claiming new work. A worker instance therefore has at most one active run.
@@ -150,10 +154,10 @@ instead of claiming new work. A worker instance therefore has at most one active
 While its agent process runs or its completion is awaiting acknowledgement, the worker
 renews the lease every 10 seconds. It also renews once immediately before completion
 delivery begins. Each accepted heartbeat extends the expiry to 30 seconds after the
-server receives it. Polling first
-returns every expired running lease to queued in the same transaction used to select
-work. Reclaim clears the old worker, token, expiry, and attempt start time while leaving
-the job running. A compatible worker can then receive a new token and execute the run.
+server receives it. Periodic server maintenance returns expired running leases to queued,
+and polling performs the same reclaim in the transaction used to select work. Reclaim
+clears the old worker, token, expiry, and attempt start time while leaving the job running.
+A compatible worker can then receive a new token and execute the run.
 The old worker may continue locally during a network partition, but its stale token
 cannot renew or complete the redispatched run. This provides abandoned-run recovery, not
 exactly-once agent side effects or process resumption.
@@ -198,6 +202,9 @@ terminate the local agent process, including when heartbeat delivery temporarily
 - `POST /api/v1/jobs`: submit an agent or pipeline job. CLI submissions require the
   worker bearer token. Browser submissions require a server-generated CSRF token plus
   matching loopback Host and Origin headers.
+- `DELETE /api/v1/jobs/{id}`: permanently delete a terminal job and its stored runs.
+  Browser requests use the same CSRF and origin checks as submission. Active jobs return
+  HTTP 409 and are left unchanged.
 - `POST /api/v1/workers/poll`: authenticate a worker, update last-seen state, and lease
   one compatible run when available. The request includes the worker name and its
   process instance ID, executor names, repository names, and per-executor model aliases

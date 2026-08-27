@@ -102,6 +102,47 @@ func TestServerMarksStaleWorkerDisconnected(t *testing.T) {
 	}
 }
 
+func TestServerDeletesOnlyTerminalJobsWithSubmissionAuthorization(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+	jobID, err := server.store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized := deleteRequest(t, webServer.URL+"/api/v1/jobs/"+jobID, nil)
+	if unauthorized.StatusCode != http.StatusForbidden {
+		t.Fatalf("unauthorized delete status = %d", unauthorized.StatusCode)
+	}
+	unauthorized.Body.Close()
+	status := getStatus(t, webServer.URL)
+	headers := map[string]string{"Origin": webServer.URL, "X-Machinist-CSRF": status.CSRFToken}
+	active := deleteRequest(t, webServer.URL+"/api/v1/jobs/"+jobID, headers)
+	if active.StatusCode != http.StatusConflict {
+		t.Fatalf("active delete status = %d", active.StatusCode)
+	}
+	active.Body.Close()
+	run, err := server.store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := server.store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	deleted := deleteRequest(t, webServer.URL+"/api/v1/jobs/"+jobID, headers)
+	if deleted.StatusCode != http.StatusNoContent {
+		t.Fatalf("terminal delete status = %d", deleted.StatusCode)
+	}
+	deleted.Body.Close()
+	if jobs := getStatus(t, webServer.URL).Jobs; len(jobs) != 0 {
+		t.Fatalf("jobs after delete = %#v", jobs)
+	}
+	missing := deleteRequest(t, webServer.URL+"/api/v1/jobs/"+jobID, headers)
+	if missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing delete status = %d", missing.StatusCode)
+	}
+	missing.Body.Close()
+}
+
 func TestServerAppliesConcurrentJobLimitToWorkerPolls(t *testing.T) {
 	server, webServer := newTestHTTPServerWithLimit(t, 1)
 	defer webServer.Close()
@@ -768,7 +809,7 @@ max_actions = 2
 		t.Fatal(err)
 	}
 	server.schedulerEvery = time.Millisecond
-	schedulerErrors := make(chan error, 1)
+	schedulerErrors := make(chan error, 16)
 	server.schedulerError = func(err error) {
 		select {
 		case schedulerErrors <- err:
@@ -790,13 +831,18 @@ max_actions = 2
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-schedulerErrors:
-		if !strings.Contains(err.Error(), "queue shepherd schedule") {
-			t.Fatalf("scheduler admission failure was not identified: %v", err)
+	deadline := time.After(time.Second)
+
+waitForSchedulerFailure:
+	for {
+		select {
+		case err := <-schedulerErrors:
+			if strings.Contains(err.Error(), "queue shepherd schedule") {
+				break waitForSchedulerFailure
+			}
+		case <-deadline:
+			t.Fatal("scheduler admission failure was not reported")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("scheduler admission failure was not reported")
 	}
 	allFailures := server.enqueueScheduledRuns(t.Context())
 	if allFailures == nil || !strings.Contains(allFailures.Error(), `schedule "machinist"`) || !strings.Contains(allFailures.Error(), `schedule "other"`) {
@@ -884,6 +930,22 @@ func postJSON(t *testing.T, endpoint string, body any, headers map[string]string
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+func deleteRequest(t *testing.T, endpoint string, headers map[string]string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodDelete, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, value := range headers {
 		request.Header.Set(name, value)
 	}

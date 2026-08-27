@@ -501,7 +501,7 @@ func TestOpenStoreMigratesExistingDatabaseAndRecoversRunningLease(t *testing.T) 
 	if err := rows.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"lease_expires_at", "model", "duration_millis", "token_usage"} {
+	for _, name := range []string{"lease_expires_at", "model", "worker_name", "duration_millis", "token_usage"} {
 		if columns[name] != 1 {
 			t.Fatalf("%s columns = %d", name, columns[name])
 		}
@@ -520,6 +520,9 @@ func TestOpenStoreMigratesExistingDatabaseAndRecoversRunningLease(t *testing.T) 
 	}
 	if migrated.Model != "" {
 		t.Fatalf("migrated model = %q", migrated.Model)
+	}
+	if migrated.WorkerName != "old worker" {
+		t.Fatalf("migrated worker name = %q", migrated.WorkerName)
 	}
 
 	run, err := store.Poll(t.Context(), pollRequest("worker-new", []string{"codex"}, []string{"machinist"}))
@@ -550,6 +553,143 @@ func TestStorePersistsCurrentWorkerRepositories(t *testing.T) {
 	}
 	if len(snapshot.Workers[0].Repositories) != 1 || snapshot.Workers[0].Repositories[0] != "machinist" {
 		t.Fatalf("workers = %#v", snapshot.Workers)
+	}
+}
+
+func TestStorePrunesSupersededWorkerAndPreservesRunWorkerName(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	clock := newTestClock(time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC))
+	store.now = clock.Now
+	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Poll(t.Context(), protocol.PollRequest{InstanceID: "worker-old", Name: "builder", Executors: []string{"codex"}, Repositories: []string{"machinist"}})
+	if err != nil || run == nil {
+		t.Fatalf("old worker poll = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-old", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Minute)
+	if _, err := store.Poll(t.Context(), protocol.PollRequest{InstanceID: "worker-new", Name: "builder", Executors: []string{"codex"}, Repositories: []string{"machinist"}}); err != nil {
+		t.Fatal(err)
+	}
+	pruned, err := store.PruneSupersededWorkers(t.Context(), clock.Now().Add(-workerAvailabilityWindow))
+	if err != nil || pruned != 1 {
+		t.Fatalf("pruned workers = %d, %v", pruned, err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Workers) != 1 || snapshot.Workers[0].InstanceID != "worker-new" {
+		t.Fatalf("workers = %#v", snapshot.Workers)
+	}
+	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID || snapshot.Jobs[0].Runs[0].WorkerName != "builder" {
+		t.Fatalf("jobs = %#v", snapshot.Jobs)
+	}
+}
+
+func TestStoreRetainsLatestDisconnectedWorkerRegistration(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	if _, err := store.Poll(t.Context(), protocol.PollRequest{InstanceID: "worker-only", Name: "builder", Executors: []string{"codex"}, Repositories: []string{"machinist"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE workers SET last_seen_at=?`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	pruned, err := store.PruneSupersededWorkers(t.Context(), time.Now().Add(-time.Minute))
+	if err != nil || pruned != 0 {
+		t.Fatalf("pruned workers = %d, %v", pruned, err)
+	}
+}
+
+func TestStoreReclaimsExpiredLeaseWithoutWorkerPoll(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	clock := newTestClock(time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC))
+	store.now = clock.Now
+	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-old", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	clock.Advance(leaseDuration + time.Second)
+	reclaimed, err := store.ReclaimExpiredLeases(t.Context())
+	if err != nil || reclaimed != 1 {
+		t.Fatalf("reclaimed leases = %d, %v", reclaimed, err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID || snapshot.Jobs[0].State != "running" || snapshot.Jobs[0].Runs[0].State != "queued" || snapshot.Jobs[0].Runs[0].WorkerName != "" || !snapshot.Jobs[0].Runs[0].StartedAt.IsZero() {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestStoreDeletesTerminalJobAndRejectsActiveJob(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	jobID, err := store.CreateJob(t.Context(), "active", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteJob(t.Context(), jobID); !errors.Is(err, ErrJobActive) {
+		t.Fatalf("active delete error = %v", err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0, Result: []byte(`{"answer":42}`), Events: "event\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteJob(t.Context(), jobID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RunOutput(t.Context(), run.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted run output error = %v", err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil || len(snapshot.Jobs) != 0 {
+		t.Fatalf("snapshot = %#v, %v", snapshot, err)
+	}
+}
+
+func TestStoreDeletingTriggeredJobPreservesPendingReconciliation(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: "github/intake", Family: "github", ConfigSignature: "v1"}}); err != nil {
+		t.Fatal(err)
+	}
+	admission := TriggerAdmission{
+		Identity: "github/intake", Family: "github", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "github/intake"),
+		OccurrenceKey: "github.com/event/1", Subject: "https://github.com/owainlewis/machinist/issues/396", ScheduledAt: time.Now().UTC(),
+		Prompt: "Complete issue", Repository: "machinist", SelectionKind: "agent", SelectionName: "foreman", Agents: []config.ResolvedAgent{testAgent("foreman", "Complete issue")},
+		GitHubRepository: "owainlewis/machinist", GitHubIssueNumber: 396, RequestActor: "owner", RequestLabel: "machinist:requested",
+	}
+	jobID, created, err := store.CreateTriggeredJob(t.Context(), admission)
+	if err != nil || !created {
+		t.Fatalf("triggered job = %q, %v, %v", jobID, created, err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteJob(t.Context(), jobID); err != nil {
+		t.Fatal(err)
+	}
+	reconciliations, err := store.GitHubTriggerReconciliations(t.Context(), admission.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciliations) != 1 || reconciliations[0].OccurrenceKey != admission.OccurrenceKey || reconciliations[0].State != "admitted" || reconciliations[0].JobID != "" {
+		t.Fatalf("reconciliations = %#v", reconciliations)
 	}
 }
 
@@ -1355,13 +1495,13 @@ func assertLeaseExpiry(t *testing.T, store *Store, runID string, want time.Time)
 
 func assertReclaimedRun(t *testing.T, store *Store, runID, jobID string) {
 	t.Helper()
-	var state string
+	var state, workerName string
 	var worker, token, expiry, started any
-	if err := store.db.QueryRowContext(t.Context(), `SELECT state,worker_instance,lease_token,lease_expires_at,started_at FROM runs WHERE id=?`, runID).Scan(&state, &worker, &token, &expiry, &started); err != nil {
+	if err := store.db.QueryRowContext(t.Context(), `SELECT state,worker_instance,worker_name,lease_token,lease_expires_at,started_at FROM runs WHERE id=?`, runID).Scan(&state, &worker, &workerName, &token, &expiry, &started); err != nil {
 		t.Fatal(err)
 	}
-	if state != "queued" || worker != nil || token != nil || expiry != nil || started != nil {
-		t.Fatalf("reclaimed run = state %q worker %v token %v expiry %v started %v", state, worker, token, expiry, started)
+	if state != "queued" || worker != nil || workerName != "" || token != nil || expiry != nil || started != nil {
+		t.Fatalf("reclaimed run = state %q worker %v worker name %q token %v expiry %v started %v", state, worker, workerName, token, expiry, started)
 	}
 	var jobState string
 	if err := store.db.QueryRowContext(t.Context(), `SELECT state FROM jobs WHERE id=?`, jobID).Scan(&jobState); err != nil {

@@ -1,16 +1,16 @@
 export const boardColumns = [
-  { id: "planning", title: "Planning", description: "Queued" },
-  { id: "building", title: "Building", description: "Active or needs attention" },
-  { id: "ready", title: "Ready", description: "Succeeded" },
+  { id: "queued", title: "Queued", description: "Waiting to start" },
+  { id: "running", title: "Running", description: "In progress" },
+  { id: "finished", title: "Finished", description: "Terminal tasks" },
 ];
 
 const activeStates = new Set(["queued", "running"]);
 const failedStates = new Set(["failed", "timed_out"]);
 
 export function boardColumnForState(state) {
-  if (state === "queued") return "planning";
-  if (state === "succeeded") return "ready";
-  return "building";
+  if (state === "queued") return "queued";
+  if (state === "running") return "running";
+  return "finished";
 }
 
 export function needsAttention(state) {
@@ -27,7 +27,7 @@ export function filterJobs(jobs, filter) {
 }
 
 export function groupJobsByBoardColumn(jobs) {
-  const groups = { planning: [], building: [], ready: [] };
+  const groups = { queued: [], running: [], finished: [] };
   for (const job of jobs) groups[boardColumnForState(job.state)].push(job);
   return groups;
 }

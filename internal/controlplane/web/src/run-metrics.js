@@ -16,9 +16,8 @@ export function taskAnalytics(jobs, days, now = new Date()) {
   const tasks = tasksInWindow(jobs, days, now);
   const terminalTasks = tasks.filter((task) => terminalTaskStates.has(task.state));
   const contributingDurations = terminalTasks.flatMap((task) => {
-    const measuredRuns = task.runs.filter((run) => run.state !== "skipped");
-    if (!measuredRuns.length || !measuredRuns.every((run) => validDuration(run.duration_millis))) return [];
-    return [measuredRuns.reduce((total, run) => total + run.duration_millis, 0)];
+    const duration = taskDurationMillis(task.runs);
+    return duration === undefined ? [] : [duration];
   });
   const succeededTasks = terminalTasks.filter((task) => task.state === "succeeded").length;
 
@@ -97,8 +96,14 @@ export function runModelSummary(runs) {
     }
     if (!models.includes(model)) models.push(model);
   }
-  if (hasUnspecifiedModel) models.push("Not specified (default)");
-  return models.length ? models.join(" · ") : "Not specified (default)";
+  if (hasUnspecifiedModel) models.push("Executor default");
+  return models.length ? models.join(" · ") : "Executor default";
+}
+
+export function taskDurationMillis(runs) {
+  const executedRuns = runs.filter((run) => run.state !== "skipped");
+  if (!executedRuns.length || !executedRuns.every((run) => validDuration(run.duration_millis))) return undefined;
+  return executedRuns.reduce((total, run) => total + run.duration_millis, 0);
 }
 
 export function formatReportingCoverage(summary) {

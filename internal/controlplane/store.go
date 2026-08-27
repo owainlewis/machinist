@@ -21,6 +21,7 @@ import (
 var (
 	ErrLeaseConflict                   = errors.New("run lease does not match")
 	ErrRunState                        = errors.New("run is not active")
+	ErrJobActive                       = errors.New("active job cannot be deleted")
 	ErrTriggerMissing                  = errors.New("trigger state does not exist")
 	ErrTriggerStale                    = errors.New("trigger state configuration changed")
 	ErrTriggerPreviousGenerationActive = errors.New("previous trigger configuration still has active work")
@@ -203,6 +204,7 @@ CREATE TABLE IF NOT EXISTS runs (
   timeout_ms INTEGER NOT NULL,
   state TEXT NOT NULL,
   worker_instance TEXT,
+  worker_name TEXT NOT NULL DEFAULT '',
   lease_token TEXT,
   lease_expires_at INTEGER,
   exit_code INTEGER,
@@ -276,6 +278,9 @@ CREATE TABLE IF NOT EXISTS github_trigger_requests (
 	if err := s.addColumnIfMissing(ctx, "runs", "model", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing(ctx, "runs", "worker_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := s.addColumnIfMissing(ctx, "runs", "duration_millis", "INTEGER"); err != nil {
 		return err
 	}
@@ -329,6 +334,9 @@ CREATE TABLE IF NOT EXISTS github_trigger_requests (
 	}
 	if err := s.addColumnIfMissing(ctx, "github_trigger_requests", "request_label", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE runs SET worker_name=COALESCE((SELECT name FROM workers WHERE instance_id=runs.worker_instance),'') WHERE worker_name='' AND worker_instance IS NOT NULL`); err != nil {
+		return fmt.Errorf("migrate run worker names: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE jobs SET has_shepherd=1 WHERE has_shepherd=0 AND EXISTS (SELECT 1 FROM runs WHERE runs.job_id=jobs.id AND runs.agent='shepherd')`); err != nil {
 		return fmt.Errorf("migrate Shepherd job membership: %w", err)
@@ -1032,7 +1040,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	if _, err := tx.ExecContext(ctx, `INSERT INTO workers(instance_id,name,last_seen_at) VALUES(?,?,?) ON CONFLICT(instance_id) DO UPDATE SET name=excluded.name,last_seen_at=excluded.last_seen_at`, request.InstanceID, request.Name, now); err != nil {
 		return nil, fmt.Errorf("update worker: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runs SET state='queued',worker_instance=NULL,lease_token=NULL,lease_expires_at=NULL,started_at=NULL WHERE state='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?)`, nowTime.UnixNano()); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET state='queued',worker_instance=NULL,worker_name='',lease_token=NULL,lease_expires_at=NULL,started_at=NULL WHERE state='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?)`, nowTime.UnixNano()); err != nil {
 		return nil, fmt.Errorf("reclaim expired leases: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM worker_repositories WHERE worker_instance=?`, request.InstanceID); err != nil {
@@ -1098,7 +1106,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 		return nil, err
 	}
 	expiresAt := nowTime.Add(leaseDuration).UnixNano()
-	result, err := tx.ExecContext(ctx, `UPDATE runs SET state='running',worker_instance=?,lease_token=?,lease_expires_at=?,started_at=? WHERE id=? AND state='queued'`, request.InstanceID, selected.LeaseToken, expiresAt, now, selected.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE runs SET state='running',worker_instance=?,worker_name=?,lease_token=?,lease_expires_at=?,started_at=? WHERE id=? AND state='queued'`, request.InstanceID, request.Name, selected.LeaseToken, expiresAt, now, selected.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1232,6 +1240,56 @@ func (s *Store) Heartbeat(ctx context.Context, runID string, heartbeat protocol.
 	return tx.Commit()
 }
 
+func (s *Store) DeleteJob(ctx context.Context, jobID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM jobs WHERE id=?`, jobID).Scan(&state); err != nil {
+		return err
+	}
+	if !terminalJobState(state) {
+		return ErrJobActive
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `UPDATE github_trigger_requests SET job_id=NULL,updated_at=? WHERE job_id=?`, now, jobID); err != nil {
+		return fmt.Errorf("clear deleted job trigger links: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE job_id=?`, jobID); err != nil {
+		return fmt.Errorf("delete job runs: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE id=?`, jobID); err != nil {
+		return fmt.Errorf("delete job: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ReclaimExpiredLeases(ctx context.Context) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE runs SET state='queued',worker_instance=NULL,worker_name='',lease_token=NULL,lease_expires_at=NULL,started_at=NULL WHERE state='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?)`, s.now().UTC().UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("reclaim expired leases: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+func (s *Store) PruneSupersededWorkers(ctx context.Context, seenAfter time.Time) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM workers AS old
+WHERE julianday(old.last_seen_at) < julianday(?)
+  AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.worker_instance=old.instance_id AND r.state='running')
+  AND EXISTS (
+    SELECT 1 FROM workers newer
+    WHERE newer.name=old.name
+      AND (julianday(newer.last_seen_at) > julianday(old.last_seen_at)
+        OR (newer.last_seen_at=old.last_seen_at AND newer.instance_id>old.instance_id))
+  )`, seenAfter.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, fmt.Errorf("prune superseded workers: %w", err)
+	}
+	return result.RowsAffected()
+}
+
 func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 	jobs, err := s.listJobs(ctx)
 	if err != nil {
@@ -1353,7 +1411,7 @@ func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
 }
 
 func (s *Store) listRuns(ctx context.Context, jobID string) ([]Run, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.step,r.agent,r.executor,r.model,r.state,COALESCE(w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage FROM runs r LEFT JOIN workers w ON w.instance_id=r.worker_instance WHERE r.job_id=? ORDER BY r.step`, jobID)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.step,r.agent,r.executor,r.model,r.state,COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage FROM runs r LEFT JOIN workers w ON w.instance_id=r.worker_instance WHERE r.job_id=? ORDER BY r.step`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -1508,6 +1566,10 @@ func boundedTriggerError(message string) string {
 
 func terminalRunState(state string) bool {
 	return state == "succeeded" || state == "failed" || state == "timed_out" || state == "cancelled" || state == "skipped"
+}
+
+func terminalJobState(state string) bool {
+	return state == "succeeded" || state == "failed"
 }
 
 func validateOutcome(state string, exitCode int) error {

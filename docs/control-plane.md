@@ -66,6 +66,8 @@ machinist worker start
 Open [http://127.0.0.1:7331](http://127.0.0.1:7331). The server owns the job
 queue and agent definitions. The worker advertises its executor names,
 repository names, and model aliases, then accepts one compatible run at a time.
+Run cards open a task detail view with step metadata and terminal results.
+Terminal tasks can be permanently deleted there; active tasks cannot be deleted.
 
 Node.js is not needed at runtime. The React application is embedded in the
 Machinist binary.
@@ -123,10 +125,11 @@ A worker receives one run with an opaque lease token. The lease lasts 30 seconds
 and the worker renews it every 10 seconds while the process runs and while it is
 delivering the result.
 
-Polling requeues an abandoned run after its lease expires. A compatible worker
-can then receive a new token and execute a new attempt. The stale worker may
-finish locally after losing connectivity, but it cannot renew or upload with the
-old token.
+The server periodically requeues an abandoned run after its lease expires;
+worker polling also performs the same recovery. A compatible worker can then
+receive a new token and execute a new attempt. The stale worker may finish
+locally after losing connectivity, but it cannot renew or upload with the old
+token.
 
 This recovers abandoned work. It does not provide exactly-once agent side
 effects or resume an interrupted process. Separate attempt directories preserve
@@ -141,7 +144,9 @@ advancing a pipeline twice.
 SQLite stores jobs, ordered runs, workers, terminal results, and completed event logs. It
 also stores the next due time for every Shepherd schedule. The default database is
 `~/.machinist/server/machinist.db`. Restarting the server against the same database restores
-that state without repeating a not-yet-due scheduled run.
+that state without repeating a not-yet-due scheduled run. When a worker process restarts,
+the server removes superseded registrations for the same worker name after they disconnect,
+while completed runs retain the worker name that executed them.
 
 For protocol details, invariants, and acceptance criteria, read the full
 [control-plane design](control-plane/design.md).

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { completedRuns, formatDurationMillis, formatReportingCoverage, formatSuccessRate, formatTokenUsage, runDetails, runModelSummary, taskAnalytics, tasksInWindow, tokenUsageSummary } from "./run-metrics.js";
+import { completedRuns, formatDurationMillis, formatReportingCoverage, formatSuccessRate, formatTokenUsage, runDetails, runModelSummary, taskAnalytics, taskDurationMillis, tasksInWindow, tokenUsageSummary } from "./run-metrics.js";
 
 function localDate(year, month, day, hour = 0) {
   return new Date(year, month - 1, day, hour).toISOString();
@@ -65,6 +65,12 @@ test("taskAnalytics excludes terminal tasks with any missing or invalid non-skip
   assert.equal(metrics.successRate, 2 / 3);
 });
 
+test("taskDurationMillis excludes skipped pipeline steps", () => {
+  assert.equal(taskDurationMillis([{ state: "failed", duration_millis: 1250 }, { state: "skipped" }]), 1250);
+  assert.equal(taskDurationMillis([{ state: "failed" }, { state: "skipped" }]), undefined);
+  assert.equal(taskDurationMillis([{ state: "skipped" }]), undefined);
+});
+
 test("taskAnalytics returns explicit zero counts and unavailable rates for no data", () => {
   const metrics = taskAnalytics([], "30", new Date(2026, 7, 25, 15));
   assert.deepEqual(metrics, { tasks: [], totalTasks: 0, successRate: null, failedTasks: 0, activeTasks: 0, averageTaskDurationMillis: null, contributingTasks: 0 });
@@ -110,11 +116,11 @@ test("tokenUsageSummary does not present missing usage as zero", () => {
 test("runModelSummary reports every distinct configured model and honest fallbacks", () => {
   assert.equal(runModelSummary([{ model: "gpt-5.6-sol" }, { model: "gpt-5.6-sol" }]), "gpt-5.6-sol");
   assert.equal(runModelSummary([{ model: "deepseek-v4-flash" }, { model: "gpt-5.6-sol" }]), "deepseek-v4-flash · gpt-5.6-sol");
-  assert.equal(runModelSummary([{ model: "gpt-5.6-sol" }, {}]), "gpt-5.6-sol · Not specified (default)");
+  assert.equal(runModelSummary([{ model: "gpt-5.6-sol" }, {}]), "gpt-5.6-sol · Executor default");
   assert.equal(runModelSummary([{ model: "Not specified" }]), "Not specified");
-  assert.equal(runModelSummary([{}]), "Not specified (default)");
-  assert.equal(runModelSummary([{ model: "Not specified" }, {}]), "Not specified · Not specified (default)");
-  assert.equal(runModelSummary([]), "Not specified (default)");
+  assert.equal(runModelSummary([{}]), "Executor default");
+  assert.equal(runModelSummary([{ model: "Not specified" }, {}]), "Not specified · Executor default");
+  assert.equal(runModelSummary([]), "Executor default");
 });
 
 test("runDetails always surfaces the executor, even when a worker has claimed the run", () => {
@@ -135,48 +141,41 @@ test("analytics presents task KPIs while retaining completed run metrics", async
   }
 });
 
-test("main.jsx no longer drops the executor in favor of the worker name", async () => {
+test("task detail keeps executor, model, and usage reporting explicit", async () => {
   const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
   assert.doesNotMatch(source, /run\.worker_name\s*\|\|\s*run\.executor/);
-  assert.match(source, /runDetails/);
   assert.match(source, /tokenUsageSummary\(job\.runs\)/);
-  assert.match(source, /unavailable/);
-
-  const runCard = source.match(/function RunCard[\s\S]+?function RunRow/)?.[0];
-  assert.ok(runCard);
-  assert.match(runCard, /tokenUsageSummary\(job\.runs\)/);
-  assert.match(runCard, /Usage/);
-  assert.match(runCard, /unavailable/);
+  const taskDetail = source.match(/function TaskDetail[\s\S]+?function DetailMetric/)?.[0];
+  assert.ok(taskDetail);
+  assert.match(taskDetail, /label="Executor" value=\{run\.executor\}/);
+  assert.match(taskDetail, /run\.model \|\| "Executor default"/);
+  assert.match(taskDetail, /"Not reported"/);
 });
 
-test("board cards and list rows report models and token usage", async () => {
+test("board cards are compact links while list rows retain model and usage", async () => {
   const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
   const runCard = source.match(/function RunCard[\s\S]+?function RunRow/)?.[0];
   assert.ok(runCard);
-  assert.match(runCard, /runModelSummary\(job\.runs\)/);
-  assert.match(runCard, /Model/);
-  assert.match(runCard, /Tokens/);
-  assert.match(runCard, /usage\.unavailable/);
-  assert.match(runCard, /missing/);
-  assert.doesNotMatch(runCard, /usage\.total\s*!==\s*undefined\s*&&\s*usage\.unavailable/);
+  assert.match(runCard, /href=\{`#\/runs\/\$\{encodeURIComponent\(job\.id\)\}`\}/);
+  assert.doesNotMatch(runCard, /Progress|Tokens|Submitted/);
   assert.match(runCard, /<State value=\{job\.state\}/);
   assert.doesNotMatch(runCard, /Needs attention/);
 
-  const runRow = source.match(/function RunRow[\s\S]+?function RunSteps/)?.[0];
+  const runRow = source.match(/function RunRow[\s\S]+?function State/)?.[0];
   assert.ok(runRow);
   assert.match(runRow, /runModelSummary\(job\.runs\)/);
-  assert.match(runRow, /Model/);
   assert.match(runRow, /tokenUsageSummary\(job\.runs\)/);
   assert.match(runRow, /tokens/);
 });
 
-test("expanded run details keep token usage visible at mobile widths", async () => {
+test("task detail provides deletion and complete step metadata", async () => {
   const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
-  const runSteps = source.match(/function RunSteps[\s\S]+?function State/)?.[0];
-  assert.ok(runSteps);
-
-  const details = runSteps.match(/<p className="([^"]+)">\{runDetails\(run\)\}<\/p>/);
-  assert.ok(details);
-  assert.match(details[1], /\bbreak-words\b/);
-  assert.doesNotMatch(details[1], /\btruncate\b/);
+  const taskDetail = source.match(/function TaskDetail[\s\S]+?function DetailMetric/)?.[0];
+  assert.ok(taskDetail);
+  for (const label of ["Prompt", "Execution", "Repository", "Run with", "Requested model", "Duration", "Token usage", "Executor", "Worker", "Started", "Completed", "Exit code", "Error"]) {
+    assert.match(taskDetail, new RegExp(label));
+  }
+  assert.match(source, /method: "DELETE"/);
+  assert.match(source, /"X-Machinist-CSRF": status\.csrf_token/);
+  assert.match(source, /Delete task/);
 });

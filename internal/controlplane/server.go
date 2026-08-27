@@ -204,10 +204,6 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 }
 
 func (s *Server) runScheduler(ctx context.Context) error {
-	if len(s.schedules) == 0 && len(s.triggers) == 0 {
-		<-ctx.Done()
-		return nil
-	}
 	var schedulers sync.WaitGroup
 	start := func(work func(context.Context) error) {
 		schedulers.Add(1)
@@ -242,9 +238,34 @@ func (s *Server) runScheduler(ctx context.Context) error {
 			return nil
 		})
 	}
+	schedulers.Add(1)
+	go func() {
+		defer schedulers.Done()
+		for {
+			timer := time.NewTimer(s.schedulerEvery)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return
+			case <-timer.C:
+				s.reportSchedulerError(s.maintainState(ctx))
+			}
+		}
+	}()
 	<-ctx.Done()
 	schedulers.Wait()
 	return nil
+}
+
+func (s *Server) maintainState(ctx context.Context) error {
+	_, reclaimErr := s.store.ReclaimExpiredLeases(ctx)
+	_, pruneErr := s.store.PruneSupersededWorkers(ctx, s.store.now().UTC().Add(-workerAvailabilityWindow))
+	return errors.Join(reclaimErr, pruneErr)
 }
 
 func (s *Server) enqueueScheduledRuns(ctx context.Context) error {
@@ -258,7 +279,7 @@ func (s *Server) enqueueScheduledRuns(ctx context.Context) error {
 }
 
 func (s *Server) reportSchedulerError(err error) {
-	if err != nil && s.schedulerError != nil {
+	if err != nil && !errors.Is(err, context.Canceled) && s.schedulerError != nil {
 		s.schedulerError(err)
 	}
 }
@@ -273,6 +294,7 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/catalog", s.catalog)
 	mux.HandleFunc("GET /api/v1/definitions", s.definitions)
 	mux.HandleFunc("POST /api/v1/jobs", s.authorizeSubmission(s.submit))
+	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
 	mux.HandleFunc("POST /api/v1/workers/poll", s.authorizeWorker(s.poll))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.authorizeWorker(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.authorizeWorker(s.complete))
@@ -313,6 +335,10 @@ func (s *Server) definitions(response http.ResponseWriter, request *http.Request
 }
 
 func (s *Server) status(response http.ResponseWriter, request *http.Request) {
+	if err := s.maintainState(request.Context()); err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
 	snapshot, err := s.store.Snapshot(request.Context())
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
@@ -428,6 +454,23 @@ func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(response, http.StatusCreated, map[string]string{"id": jobID})
+}
+
+func (s *Server) deleteJob(response http.ResponseWriter, request *http.Request) {
+	err := s.store.DeleteJob(request.Context(), request.PathValue("id"))
+	if errors.Is(err, ErrJobActive) {
+		writeError(response, http.StatusConflict, err)
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(response, http.StatusNotFound, errors.New("job not found"))
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
