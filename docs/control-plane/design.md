@@ -171,6 +171,8 @@ SQLite stores:
   process outcome, and timestamps. Existing databases add the nullable expiry field on
   open; a running row without an expiry is recoverable on the next poll.
 - `workers`: worker instance ID, display name, and last poll time.
+- `known_repositories`: every repository name advertised by a worker, retained when old
+  worker registrations are pruned.
 
 The worker writes `events.jsonl` and `result.json` under a directory keyed by both the run
 ID and lease token. A redispatched lease therefore keeps its files separate from an

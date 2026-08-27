@@ -228,6 +228,9 @@ CREATE TABLE IF NOT EXISTS worker_repositories (
   repository TEXT NOT NULL,
   PRIMARY KEY(worker_instance, repository)
 );
+CREATE TABLE IF NOT EXISTS known_repositories (
+  repository TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS schedule_state (
   name TEXT PRIMARY KEY,
   next_run_at TEXT NOT NULL,
@@ -337,6 +340,12 @@ CREATE TABLE IF NOT EXISTS github_trigger_requests (
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE runs SET worker_name=COALESCE((SELECT name FROM workers WHERE instance_id=runs.worker_instance),'') WHERE worker_name='' AND worker_instance IS NOT NULL`); err != nil {
 		return fmt.Errorf("migrate run worker names: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO known_repositories(repository)
+SELECT repository FROM worker_repositories
+UNION
+SELECT repository FROM jobs`); err != nil {
+		return fmt.Errorf("migrate known repositories: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE jobs SET has_shepherd=1 WHERE has_shepherd=0 AND EXISTS (SELECT 1 FROM runs WHERE runs.job_id=jobs.id AND runs.agent='shepherd')`); err != nil {
 		return fmt.Errorf("migrate Shepherd job membership: %w", err)
@@ -1047,6 +1056,9 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 		return nil, fmt.Errorf("clear worker repositories: %w", err)
 	}
 	for repository := range stringSet(request.Repositories) {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO known_repositories(repository) VALUES(?)`, repository); err != nil {
+			return nil, fmt.Errorf("store known repository: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO worker_repositories(worker_instance,repository) VALUES(?,?)`, request.InstanceID, repository); err != nil {
 			return nil, fmt.Errorf("store worker repository: %w", err)
 		}
@@ -1357,7 +1369,7 @@ ORDER BY wr.repository`, seenAfter.UTC().Format(time.RFC3339Nano))
 }
 
 func (s *Store) KnownRepositories(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT repository FROM worker_repositories ORDER BY repository`)
+	rows, err := s.db.QueryContext(ctx, `SELECT repository FROM known_repositories ORDER BY repository`)
 	if err != nil {
 		return nil, err
 	}

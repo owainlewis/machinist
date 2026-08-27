@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -524,6 +525,10 @@ func TestOpenStoreMigratesExistingDatabaseAndRecoversRunningLease(t *testing.T) 
 	if migrated.WorkerName != "old worker" {
 		t.Fatalf("migrated worker name = %q", migrated.WorkerName)
 	}
+	repositories, err := store.KnownRepositories(t.Context())
+	if err != nil || len(repositories) != 1 || repositories[0] != "machinist" {
+		t.Fatalf("migrated known repositories = %#v, %v", repositories, err)
+	}
 
 	run, err := store.Poll(t.Context(), pollRequest("worker-new", []string{"codex"}, []string{"machinist"}))
 	if err != nil || run == nil || run.ID != "run-running" || run.LeaseToken == "old-token" {
@@ -554,6 +559,13 @@ func TestStorePersistsCurrentWorkerRepositories(t *testing.T) {
 	if len(snapshot.Workers[0].Repositories) != 1 || snapshot.Workers[0].Repositories[0] != "machinist" {
 		t.Fatalf("workers = %#v", snapshot.Workers)
 	}
+	repositories, err := store.KnownRepositories(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(repositories, []string{"machinist", "other"}) {
+		t.Fatalf("known repositories = %#v", repositories)
+	}
 }
 
 func TestStorePrunesSupersededWorkerAndPreservesRunWorkerName(t *testing.T) {
@@ -564,7 +576,7 @@ func TestStorePrunesSupersededWorkerAndPreservesRunWorkerName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := store.Poll(t.Context(), protocol.PollRequest{InstanceID: "worker-old", Name: "builder", Executors: []string{"codex"}, Repositories: []string{"machinist"}})
+	run, err := store.Poll(t.Context(), protocol.PollRequest{InstanceID: "worker-old", Name: "builder", Executors: []string{"codex"}, Repositories: []string{"machinist", "retired"}})
 	if err != nil || run == nil {
 		t.Fatalf("old worker poll = %#v, %v", run, err)
 	}
@@ -588,6 +600,13 @@ func TestStorePrunesSupersededWorkerAndPreservesRunWorkerName(t *testing.T) {
 	}
 	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID || snapshot.Jobs[0].Runs[0].WorkerName != "builder" {
 		t.Fatalf("jobs = %#v", snapshot.Jobs)
+	}
+	repositories, err := store.KnownRepositories(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(repositories, []string{"machinist", "retired"}) {
+		t.Fatalf("known repositories = %#v", repositories)
 	}
 }
 
