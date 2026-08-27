@@ -33,7 +33,7 @@ func TestServerProtectsSubmissionAndWorkerAPIs(t *testing.T) {
 	}
 	workerPoll.Body.Close()
 	status = getStatus(t, webServer.URL)
-	if len(status.Workers) != 1 || len(status.Workers[0].Repositories) != 1 || status.Workers[0].Repositories[0] != "machinist" || len(status.Repositories) != 1 || status.Repositories[0] != "machinist" {
+	if len(status.Workers) != 1 || !status.Workers[0].Connected || len(status.Workers[0].Repositories) != 1 || status.Workers[0].Repositories[0] != "machinist" || len(status.Repositories) != 1 || status.Repositories[0] != "machinist" {
 		t.Fatalf("status = %#v", status)
 	}
 
@@ -77,6 +77,28 @@ func TestServerProtectsSubmissionAndWorkerAPIs(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid selection status = %d", response.Code)
+	}
+}
+
+func TestServerMarksStaleWorkerDisconnected(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+
+	workerPoll := postJSON(t, webServer.URL+"/api/v1/workers/poll", map[string]any{
+		"instance_id": "worker-stale", "name": "test-worker", "executors": []string{"test"}, "repositories": []string{"machinist"},
+	}, map[string]string{"Authorization": "Bearer secret"})
+	if workerPoll.StatusCode != http.StatusOK {
+		t.Fatalf("worker poll status = %d", workerPoll.StatusCode)
+	}
+	workerPoll.Body.Close()
+
+	lastSeen := server.store.now().Add(-workerAvailabilityWindow - time.Second).UTC().Format(time.RFC3339Nano)
+	if _, err := server.store.db.ExecContext(t.Context(), `UPDATE workers SET last_seen_at=? WHERE instance_id='worker-stale'`, lastSeen); err != nil {
+		t.Fatal(err)
+	}
+	status := getStatus(t, webServer.URL)
+	if len(status.Workers) != 1 || status.Workers[0].Connected {
+		t.Fatalf("workers = %#v", status.Workers)
 	}
 }
 

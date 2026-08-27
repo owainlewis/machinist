@@ -230,11 +230,19 @@ func TestStoreRenewsAndRedispatchesExpiredLease(t *testing.T) {
 	}
 	assertLeaseExpiry(t, store, first.ID, time.Date(2026, time.August, 25, 12, 0, 30, 0, time.UTC))
 
+	clock.Advance(5 * time.Second)
 	heartbeat := protocol.Heartbeat{InstanceID: "worker-a", LeaseToken: first.LeaseToken}
 	if err := store.Heartbeat(t.Context(), first.ID, heartbeat); err != nil {
 		t.Fatal(err)
 	}
 	assertLeaseExpiry(t, store, first.ID, clock.Now().Add(leaseDuration))
+	var lastSeen string
+	if err := store.db.QueryRowContext(t.Context(), `SELECT last_seen_at FROM workers WHERE instance_id='worker-a'`).Scan(&lastSeen); err != nil {
+		t.Fatal(err)
+	}
+	if lastSeen != clock.Now().Format(time.RFC3339Nano) {
+		t.Fatalf("worker last seen = %q, want %q", lastSeen, clock.Now().Format(time.RFC3339Nano))
+	}
 	if err := store.Heartbeat(t.Context(), first.ID, protocol.Heartbeat{InstanceID: "worker-b", LeaseToken: first.LeaseToken}); !errors.Is(err, ErrLeaseConflict) {
 		t.Fatalf("cross-worker heartbeat error = %v", err)
 	}

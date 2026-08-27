@@ -93,6 +93,7 @@ function App() {
   const visibleJobs = useMemo(() => filterJobs(status.jobs, filter), [filter, status.jobs]);
 
   const latestWorkerSeen = status.workers.reduce((latest, worker) => !latest || Date.parse(worker.last_seen_at) > Date.parse(latest) ? worker.last_seen_at : latest, "");
+  const connectedWorkers = status.workers.filter((worker) => worker.connected).length;
 
   async function submit(event) {
     event.preventDefault();
@@ -142,7 +143,7 @@ function App() {
           <a href="#/pipelines" aria-current={view === "pipelines" ? "page" : undefined} className={cn("nav-item", view === "pipelines" && "nav-item-active")}><Workflow className="size-4" /><span>Pipelines</span></a>
         </nav>
         <div className="hidden border-t border-border pt-3 md:block">
-          <div className="nav-item h-auto py-2"><Server className="size-4" /><span><span className="block">{status.workers.length} registered</span><span className="mt-0.5 block text-xs">{latestWorkerSeen ? `Last poll ${relativeTime(latestWorkerSeen)}` : "No workers"}</span></span></div>
+          <div className="nav-item h-auto py-2"><Server className="size-4" /><span><span className="block">{connectedWorkers} connected · {status.workers.length} registered</span><span className="mt-0.5 block text-xs">{latestWorkerSeen ? `Last poll ${relativeTime(latestWorkerSeen)}` : "No workers"}</span></span></div>
           <button onClick={() => setDark((value) => !value)} className="nav-item w-full" aria-label={`Switch to ${dark ? "light" : "dark"} theme`}>
             {dark ? <Moon className="size-4" /> : <Sun className="size-4" />}<span>{dark ? "Dark" : "Light"} theme</span>
           </button>

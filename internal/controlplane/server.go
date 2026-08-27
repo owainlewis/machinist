@@ -28,7 +28,7 @@ const maxCompletionBytes = 96 << 20
 
 const maxRequestBytes = 1 << 20
 
-const workerAvailabilityWindow = 10 * time.Second
+const workerAvailabilityWindow = 15 * time.Second
 
 //go:embed web/dist/* web/dist/assets/*
 var webAssets embed.FS
@@ -270,7 +270,11 @@ func (s *Server) status(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
-	repositories, repositoryErr := s.store.AvailableRepositories(request.Context(), time.Now().Add(-workerAvailabilityWindow))
+	now := s.store.now().UTC()
+	for index := range snapshot.Workers {
+		snapshot.Workers[index].Connected = !snapshot.Workers[index].LastSeenAt.Before(now.Add(-workerAvailabilityWindow))
+	}
+	repositories, repositoryErr := s.store.AvailableRepositories(request.Context(), now.Add(-workerAvailabilityWindow))
 	if repositoryErr != nil {
 		writeError(response, http.StatusInternalServerError, repositoryErr)
 		return

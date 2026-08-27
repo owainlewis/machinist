@@ -64,6 +64,7 @@ type Worker struct {
 	Name         string    `json:"name"`
 	LastSeenAt   time.Time `json:"last_seen_at"`
 	Repositories []string  `json:"repositories"`
+	Connected    bool      `json:"connected"`
 }
 
 type Snapshot struct {
@@ -606,6 +607,9 @@ func (s *Store) Heartbeat(ctx context.Context, runID string, heartbeat protocol.
 	}
 	if changed != 1 {
 		return ErrLeaseConflict
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE workers SET last_seen_at=? WHERE instance_id=?`, now.Format(time.RFC3339Nano), heartbeat.InstanceID); err != nil {
+		return fmt.Errorf("update worker heartbeat: %w", err)
 	}
 	return tx.Commit()
 }
