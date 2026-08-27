@@ -48,13 +48,23 @@ func wrappedProgramIndex(command []string) int {
 	if len(command) == 0 {
 		return -1
 	}
-	switch codexExecutableName(command[0]) {
-	case "env":
-		return envProgramIndex(command)
-	case "mise":
-		return miseProgramIndex(command)
+	programIndex := 0
+	for programIndex < len(command) {
+		var nestedProgramIndex int
+		switch codexExecutableName(command[programIndex]) {
+		case "env":
+			nestedProgramIndex = envProgramIndex(command[programIndex:])
+		case "mise":
+			nestedProgramIndex = miseProgramIndex(command[programIndex:])
+		default:
+			return programIndex
+		}
+		if nestedProgramIndex < 1 {
+			return -1
+		}
+		programIndex += nestedProgramIndex
 	}
-	return 0
+	return -1
 }
 
 func miseProgramIndex(command []string) int {

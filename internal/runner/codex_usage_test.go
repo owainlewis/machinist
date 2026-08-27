@@ -141,6 +141,8 @@ func TestStructuredCodexCommandAddsJSONToRecognizedLegacyCommands(t *testing.T) 
 		{name: "wrapper has its own exec", executor: "custom", command: []string{"mise", "exec", "--", "codex", "exec", "-"}, want: []string{"mise", "exec", "--", "codex", "exec", "--json", "-"}},
 		{name: "wrapper has global options", executor: "custom", command: []string{"mise", "-q", "exec", "--", "codex", "exec", "-"}, want: []string{"mise", "-q", "exec", "--", "codex", "exec", "--json", "-"}},
 		{name: "wrapper has compact global options", executor: "custom", command: []string{"mise", "-qC/tmp", "exec", "--", "codex", "exec", "-"}, want: []string{"mise", "-qC/tmp", "exec", "--", "codex", "exec", "--json", "-"}},
+		{name: "nested wrappers", executor: "codex-local", command: []string{"env", "mise", "exec", "--", "codex", "exec", "-"}, want: []string{"env", "mise", "exec", "--", "codex", "exec", "--json", "-"}},
+		{name: "reverse nested wrappers", executor: "codex-local", command: []string{"mise", "exec", "--", "env", "agent", "exec", "-"}, want: []string{"mise", "exec", "--", "env", "agent", "exec", "--json", "-"}},
 		{name: "already structured", executor: "codex", command: []string{"codex", "exec", "--json", "-"}, want: []string{"codex", "exec", "--json", "-"}},
 		{name: "other executor", executor: "claude", command: []string{"claude", "exec", "-"}, want: []string{"claude", "exec", "-"}},
 		{name: "Codex words are data", executor: "custom", command: []string{"echo", "codex", "exec"}, want: []string{"echo", "codex", "exec"}},
