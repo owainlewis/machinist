@@ -83,3 +83,14 @@ test("main.jsx no longer drops the executor in favor of the worker name", async 
   assert.match(runCard, /Usage/);
   assert.match(runCard, /unavailable/);
 });
+
+test("expanded run details keep token usage visible at mobile widths", async () => {
+  const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
+  const runSteps = source.match(/function RunSteps[\s\S]+?function State/)?.[0];
+  assert.ok(runSteps);
+
+  const details = runSteps.match(/<p className="([^"]+)">\{runDetails\(run\)\}<\/p>/);
+  assert.ok(details);
+  assert.match(details[1], /\bbreak-words\b/);
+  assert.doesNotMatch(details[1], /\btruncate\b/);
+});

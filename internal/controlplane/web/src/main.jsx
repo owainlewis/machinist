@@ -258,7 +258,7 @@ function RunRow({ job, open, toggle }) {
 function RunSteps({ id, job }) {
   return <div id={id} className="border-t border-border bg-muted/20 px-4 py-4 xl:pl-[9rem]"><div className="grid gap-2 xl:grid-cols-3">{job.runs.map((run, index) => <div key={run.id} className="flex min-w-0 items-start gap-3 rounded-md border border-border bg-surface p-3">
     <span className="grid size-6 shrink-0 place-items-center rounded-full border border-border font-mono text-xs text-muted-foreground">{index + 1}</span>
-    <div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="truncate text-sm font-medium capitalize">{run.agent}</p><State value={run.state} /></div><p className="mt-1 truncate text-xs text-muted-foreground">{runDetails(run)}</p>{run.error && <p className="mt-2 break-words text-xs text-danger">{run.error}</p>}</div>
+    <div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="truncate text-sm font-medium capitalize">{run.agent}</p><State value={run.state} /></div><p className="mt-1 break-words text-xs text-muted-foreground">{runDetails(run)}</p>{run.error && <p className="mt-2 break-words text-xs text-danger">{run.error}</p>}</div>
   </div>)}</div></div>;
 }
 
