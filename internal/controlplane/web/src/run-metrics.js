@@ -97,8 +97,8 @@ export function runModelSummary(runs) {
     }
     if (!models.includes(model)) models.push(model);
   }
-  if (hasUnspecifiedModel) models.push("Not specified");
-  return models.length ? models.join(" · ") : "Not specified";
+  if (hasUnspecifiedModel) models.push("Not specified (default)");
+  return models.length ? models.join(" · ") : "Not specified (default)";
 }
 
 export function formatReportingCoverage(summary) {

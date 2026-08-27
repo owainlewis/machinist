@@ -110,8 +110,11 @@ test("tokenUsageSummary does not present missing usage as zero", () => {
 test("runModelSummary reports every distinct configured model and honest fallbacks", () => {
   assert.equal(runModelSummary([{ model: "gpt-5.6-sol" }, { model: "gpt-5.6-sol" }]), "gpt-5.6-sol");
   assert.equal(runModelSummary([{ model: "deepseek-v4-flash" }, { model: "gpt-5.6-sol" }]), "deepseek-v4-flash · gpt-5.6-sol");
-  assert.equal(runModelSummary([{ model: "gpt-5.6-sol" }, {}]), "gpt-5.6-sol · Not specified");
-  assert.equal(runModelSummary([]), "Not specified");
+  assert.equal(runModelSummary([{ model: "gpt-5.6-sol" }, {}]), "gpt-5.6-sol · Not specified (default)");
+  assert.equal(runModelSummary([{ model: "Not specified" }]), "Not specified");
+  assert.equal(runModelSummary([{}]), "Not specified (default)");
+  assert.equal(runModelSummary([{ model: "Not specified" }, {}]), "Not specified · Not specified (default)");
+  assert.equal(runModelSummary([]), "Not specified (default)");
 });
 
 test("runDetails always surfaces the executor, even when a worker has claimed the run", () => {
@@ -155,6 +158,7 @@ test("board cards and list rows report models and token usage", async () => {
   assert.match(runCard, /Tokens/);
   assert.match(runCard, /usage\.unavailable/);
   assert.match(runCard, /missing/);
+  assert.doesNotMatch(runCard, /usage\.total\s*!==\s*undefined\s*&&\s*usage\.unavailable/);
   assert.match(runCard, /<State value=\{job\.state\}/);
   assert.doesNotMatch(runCard, /Needs attention/);
 
