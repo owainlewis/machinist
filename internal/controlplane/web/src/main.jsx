@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, BarChart3, Bot, ChevronDown, GitBranch, Moon, Play, Plus, Server, Sun, Workflow, X } from "lucide-react";
+import { Activity, BarChart3, Bot, ChevronDown, GitBranch, LayoutDashboard, Moon, Play, Plus, Server, Sun, Table2, Workflow, X } from "lucide-react";
 import { Analytics } from "@/analytics";
 import { AgentsPage, PipelinesPage, WorkersPage } from "@/catalog";
 import { Badge } from "@/components/ui/badge";
@@ -8,9 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { formatTokenUsage, runDetails, tokenUsageSummary } from "@/run-metrics";
+import { boardColumns, currentRun, filterJobs, groupJobsByBoardColumn, jobCounts, needsAttention, stepProgress } from "@/runs-board";
 import "./styles.css";
 
-const activeStates = new Set(["queued", "running"]);
 const zeroTime = "0001-01-01T00:00:00Z";
 
 function App() {
@@ -25,6 +25,7 @@ function App() {
   const [submitting, setSubmitting] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [filter, setFilter] = useState("all");
+  const [runsView, setRunsView] = useState("board");
   const [expanded, setExpanded] = useState(new Set());
   const [dark, setDark] = useState(() => localStorage.getItem("machinist-theme") !== "light");
   const [view, setView] = useState(() => viewFromHash(window.location.hash));
@@ -80,20 +81,8 @@ function App() {
 
   const repositories = status.repositories;
 
-  const counts = useMemo(() => status.jobs.reduce((result, job) => {
-    result.all += 1;
-    if (activeStates.has(job.state)) result.active += 1;
-    if (job.state === "failed" || job.state === "timed_out") result.failed += 1;
-    if (job.state === "succeeded") result.succeeded += 1;
-    return result;
-  }, { all: 0, active: 0, failed: 0, succeeded: 0 }), [status.jobs]);
-
-  const visibleJobs = useMemo(() => status.jobs.filter((job) => {
-    if (filter === "active") return activeStates.has(job.state);
-    if (filter === "failed") return job.state === "failed" || job.state === "timed_out";
-    if (filter === "succeeded") return job.state === "succeeded";
-    return true;
-  }), [filter, status.jobs]);
+  const counts = useMemo(() => jobCounts(status.jobs), [status.jobs]);
+  const visibleJobs = useMemo(() => filterJobs(status.jobs, filter), [filter, status.jobs]);
 
   const latestWorkerSeen = status.workers.reduce((latest, worker) => !latest || Date.parse(worker.last_seen_at) > Date.parse(latest) ? worker.last_seen_at : latest, "");
 
@@ -166,21 +155,27 @@ function App() {
           {(statusError || submitError) && <div role="alert" className="rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">{submitError || statusError}</div>}
 
           <section>
-            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-1 overflow-x-auto" role="group" aria-label="Filter runs">
+            <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Filter runs">
                 {[["all", "All"], ["active", "Active"], ["failed", "Failed"], ["succeeded", "Succeeded"]].map(([value, label]) => (
                   <Button key={value} variant={filter === value ? "outline" : "ghost"} size="sm" aria-pressed={filter === value} onClick={() => setFilter(value)} className={cn("text-xs!", filter === value && "bg-surface")}>{label}<span className="text-muted-foreground">{counts[value]}</span></Button>
                 ))}
               </div>
-              <p className="text-xs text-muted-foreground">{counts.all} run{counts.all === 1 ? "" : "s"}</p>
+              <div className="flex flex-wrap items-center justify-between gap-3 lg:justify-end">
+                <p className="text-xs text-muted-foreground">{counts.all} run{counts.all === 1 ? "" : "s"}</p>
+                <div className="inline-flex rounded-md border border-border bg-surface p-0.5" role="group" aria-label="Runs view">
+                  <Button variant={runsView === "board" ? "outline" : "ghost"} size="sm" className={cn("h-7 border-transparent px-2.5 text-xs!", runsView === "board" && "border-border bg-muted")} aria-pressed={runsView === "board"} onClick={() => setRunsView("board")}><LayoutDashboard className="size-3.5" />Board</Button>
+                  <Button variant={runsView === "table" ? "outline" : "ghost"} size="sm" className={cn("h-7 border-transparent px-2.5 text-xs!", runsView === "table" && "border-border bg-muted")} aria-pressed={runsView === "table"} onClick={() => setRunsView("table")}><Table2 className="size-3.5" />Table</Button>
+                </div>
+              </div>
             </div>
 
-            <Card className="overflow-hidden">
+            {runsView === "board" ? <RunBoard jobs={visibleJobs} /> : <Card className="overflow-hidden">
               <div className="hidden grid-cols-[7.5rem_minmax(10rem,1.2fr)_minmax(9rem,1fr)_minmax(9rem,1fr)_8rem_11rem] gap-4 border-b border-border bg-muted/35 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground xl:grid">
                 <span>State</span><span>Run</span><span>Run with</span><span>Worker</span><span>Submitted</span><span>Usage</span>
               </div>
               {visibleJobs.length ? visibleJobs.map((job) => <RunRow key={job.id} job={job} open={expanded.has(job.id)} toggle={() => toggleJob(job.id)} />) : <EmptyRuns filtered={filter !== "all"} openComposer={() => setComposerOpen(true)} />}
-            </Card>
+            </Card>}
           </section>
 
         </div>}
@@ -207,8 +202,44 @@ function RunComposer({ choices, repositories, selection, setSelection, repositor
   </Card>;
 }
 
+function RunBoard({ jobs }) {
+  const groupedJobs = groupJobsByBoardColumn(jobs);
+  return <div className="grid min-w-0 gap-4 lg:grid-cols-3">
+    {boardColumns.map((column) => <section key={column.id} className="min-w-0 rounded-lg border border-border bg-muted/20" aria-labelledby={`board-${column.id}`}>
+      <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
+        <div className="min-w-0"><h2 id={`board-${column.id}`} className="text-sm font-semibold">{column.title}</h2><p className="break-words text-xs text-muted-foreground">{column.description}</p></div>
+        <Badge className="shrink-0 border-border bg-surface text-muted-foreground" aria-label={`${groupedJobs[column.id].length} visible ${column.title.toLowerCase()} runs`}>{groupedJobs[column.id].length}</Badge>
+      </header>
+      <div className="grid min-w-0 gap-2 p-2">
+        {groupedJobs[column.id].length ? groupedJobs[column.id].map((job) => <RunCard key={job.id} job={job} />) : <p className="px-2 py-8 text-center text-xs text-muted-foreground">No runs</p>}
+      </div>
+    </section>)}
+  </div>;
+}
+
+function RunCard({ job }) {
+  const run = currentRun(job);
+  const progress = stepProgress(job.runs);
+  const usage = tokenUsageSummary(job.runs);
+  const attention = needsAttention(job.state);
+  return <Card className={cn("min-w-0 p-3", attention && "border-danger/40 bg-danger/5")}>
+    <div className="flex min-w-0 items-start justify-between gap-2">
+      <div className="min-w-0"><p className="font-mono text-sm font-medium" title={job.id}>{shortId(job.id)}</p><p className="mt-0.5 break-all text-xs text-muted-foreground">{job.repository}</p></div>
+      {attention ? <Badge className="shrink-0 border-danger/25 bg-danger/10 text-danger"><span className="size-1.5 rounded-full bg-current" />Needs attention</Badge> : <State value={job.state} />}
+    </div>
+    <dl className="mt-3 grid min-w-0 gap-2 text-xs">
+      <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Run with</dt><dd className="flex min-w-0 items-center gap-1.5 text-right"><SelectionIcon kind={job.selection_kind} /><span className="min-w-0 break-all">{job.selection_name}</span><span className="shrink-0 capitalize text-muted-foreground">{job.selection_kind}</span></dd></div>
+      <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Worker</dt><dd className="flex min-w-0 items-center gap-1.5 text-right"><Server className="size-3.5 shrink-0 text-muted-foreground" /><span className="break-all">{run?.worker_name || "Unassigned"}</span></dd></div>
+      <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Progress</dt><dd>{progress.completed} of {progress.total} steps</dd></div>
+      <div className="flex min-w-0 items-start justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Usage</dt><dd className="text-right"><span className="block font-medium tabular-nums text-foreground">{usage.total === undefined ? "Unavailable" : `${formatTokenUsage(usage.total)} tokens`}</span>{usage.unavailable > 0 && <span className="mt-0.5 block text-muted-foreground">{usage.unavailable} unavailable</span>}</dd></div>
+      <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">Submitted</dt><dd><time dateTime={job.created_at}>{relativeTime(job.created_at)}</time></dd></div>
+      {attention && <div className="flex min-w-0 items-center justify-between gap-3"><dt className="shrink-0 text-muted-foreground">State</dt><dd className="break-all text-right capitalize text-danger">{stateLabel(job.state)}</dd></div>}
+    </dl>
+  </Card>;
+}
+
 function RunRow({ job, open, toggle }) {
-  const current = [...job.runs].reverse().find((run) => run.state !== "pending" && run.state !== "skipped") || job.runs[0];
+  const current = currentRun(job);
   const usage = tokenUsageSummary(job.runs);
   const detailsId = `${job.id}-steps`;
   return <article className="border-b border-border last:border-b-0">
@@ -233,7 +264,7 @@ function RunSteps({ id, job }) {
 
 function State({ value }) {
   const tones = { running: "border-warning/25 bg-warning/10 text-warning", queued: "border-warning/25 bg-warning/10 text-warning", succeeded: "border-success/25 bg-success/10 text-success", failed: "border-danger/25 bg-danger/10 text-danger", timed_out: "border-danger/25 bg-danger/10 text-danger", cancelled: "border-danger/25 bg-danger/10 text-danger", pending: "border-border bg-muted text-muted-foreground", skipped: "border-border bg-muted text-muted-foreground" };
-  return <Badge className={cn("gap-1.5", tones[value] || tones.pending)}><span className="size-1.5 rounded-full bg-current" />{value.replaceAll("_", " ")}</Badge>;
+  return <Badge className={cn("gap-1.5", tones[value] || tones.pending)}><span className="size-1.5 rounded-full bg-current" />{stateLabel(value)}</Badge>;
 }
 
 function SelectionIcon({ kind }) { return kind === "pipeline" ? <Workflow className="size-3.5 shrink-0" /> : <Bot className="size-3.5 shrink-0" />; }
@@ -246,4 +277,5 @@ function firstSelection(status) { if (status.pipelines?.length) return `pipeline
 function viewFromHash(hash) { const value = hash.replace(/^#\//, ""); return ["runs", "analytics", "workers", "agents", "pipelines"].includes(value) ? value : "runs"; }
 function shortId(id) { const [, value = id] = id.split("_", 2); return value.slice(0, 8); }
 function relativeTime(value) { if (!value || value === zeroTime) return "Not started"; const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 1000)); if (seconds < 10) return "just now"; if (seconds < 60) return `${seconds}s ago`; const minutes = Math.floor(seconds / 60); if (minutes < 60) return `${minutes}m ago`; const hours = Math.floor(minutes / 60); if (hours < 24) return `${hours}h ago`; return `${Math.floor(hours / 24)}d ago`; }
+function stateLabel(value) { return String(value || "unknown").replaceAll("_", " "); }
 createRoot(document.getElementById("root")).render(<App />);
