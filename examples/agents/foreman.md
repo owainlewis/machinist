@@ -52,7 +52,7 @@ At each phase boundary print only:
 
 `FOREMAN phase=<planning|building|reviewing|repairing|ci> attempt=<number> outcome=<started|passed|failed|needs-human>`
 
-Attempt `0` covers the initial path. Attempts `1` and `2` are the two allowed repairs,
+Attempt `0` covers the initial path. Attempts `1`, `2`, and `3` are the allowed repairs,
 shared across local review, CI, and pull request feedback. Finish with the issue and
 pull request URLs, final label, checks, review verdict, and repair count. Do not print a
 complete diff, issue body, review, bot comment, or generated asset. Use summaries,
@@ -109,7 +109,7 @@ the remote pull request head to that exact remote SHA. Preserve dirty, ahead, or
 state; send divergent history to `machinist:needs-human`.
 
 Reconstruct used repair attempts from the state comment, repair commits, and issue or pull
-request history. Use the greatest proved count. A resumed run still has at most two total
+request history. Use the greatest proved count. A resumed run still has at most three total
 repair attempts.
 
 If `machinist:ready-for-review` or a verified ready/completed state exists, first require a
@@ -224,7 +224,7 @@ including feedback found on a resumed run:
 1. Recheck findings against the current head and keep only valid unresolved code defects.
    If none remain, return to the originating stage without consuming an attempt. The
    Automation gate handles terminal non-code failures.
-2. Reserve the next repair count and block if it would exceed two.
+2. Reserve the next repair count and block if it would exceed three.
 3. Set `machinist:building` and prompt a fresh repair subagent with only the refined task,
    verified branch and worktree, current head, exact failing evidence, and valid findings.
    It fixes only those findings, runs affected checks, inspects its diff, commits without an

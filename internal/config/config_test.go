@@ -517,7 +517,9 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 		"**New issue:**",
 		"a verified branch without an open pull request",
 		"any dirty or incomplete work",
-		"at most two total",
+		"Attempts `1`, `2`, and `3` are the allowed repairs",
+		"at most three total",
+		"block if it would exceed three",
 		"Existing work must reuse its branch, worktree, and pull request",
 		"create a second pull request for the issue",
 		"`machinist:ready-for-review` or a verified ready/completed state",
@@ -587,6 +589,9 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 		"mark the pull request ready for human review",
 		"branch, complete diff",
 		"SUBAGENT role=<role>",
+		"Attempts `1` and `2` are the two allowed repairs",
+		"at most two total",
+		"block if it would exceed two",
 	} {
 		if strings.Contains(foreman.Prompt, forbidden) {
 			t.Fatalf("foreman prompt still contains %q", forbidden)
@@ -658,6 +663,18 @@ func TestWorkflowExampleDefinitionsLoad(t *testing.T) {
 				}
 				if !strings.Contains(agent.Prompt, promptParameter) {
 					t.Fatalf("agent %q prompt does not contain %s", name, promptParameter)
+				}
+				if test.name == "issue-to-pr" {
+					for _, rule := range []string{"at most three repair rounds", "after all three repair rounds"} {
+						if !strings.Contains(agent.Prompt, rule) {
+							t.Fatalf("agent %q prompt does not contain %q", name, rule)
+						}
+					}
+					for _, obsolete := range []string{"at most two repair rounds", "same two-round limit", "after both repair rounds"} {
+						if strings.Contains(agent.Prompt, obsolete) {
+							t.Fatalf("agent %q prompt still contains %q", name, obsolete)
+						}
+					}
 				}
 				for _, section := range []string{"# Role", "# Input", "# Required result", "# Procedure", "# Boundaries"} {
 					if !strings.Contains(agent.Prompt, section) {

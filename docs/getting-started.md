@@ -80,7 +80,7 @@ The default foreman:
 1. turns the issue into a small specification;
 2. gives implementation to a fresh coding agent;
 3. gives the finished change to a different review agent;
-4. sends valid findings through at most two repair attempts;
+4. sends valid findings through at most three repair attempts;
 5. opens a non-draft pull request and waits for available checks; and
 6. hands the verified pull request back without merging it.
 

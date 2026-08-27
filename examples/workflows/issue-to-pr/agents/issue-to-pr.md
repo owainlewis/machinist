@@ -59,7 +59,7 @@ Finish with one line:
    commit, push, or change GitHub state.
 6. If review finds a valid defect, give its exact finding to a repair subagent in the same
    worktree, require a focused commit and affected checks, then use a new reviewer. Allow
-   at most two repair rounds. Repair subagents must not push. If defects remain, set the
+   at most three repair rounds. Repair subagents must not push. If defects remain, set the
    state to `machinist:blocked`, comment with the evidence, and stop.
 7. Only the foreman may push. Before every push, verify that
    `refs/heads/<branch>` equals the exact SHA approved by the latest local reviewer. If it
@@ -74,10 +74,10 @@ Finish with one line:
    treat an empty set as stable while expected automation is missing. Then wait until
    every discovered check and reviewer for the current head is terminal. Poll no more
    often than every 30 seconds and wait at most 20 minutes for registration and completion
-   together. Repair confirmed code defects within the same two-round limit and run a
+   together. Repair confirmed code defects within the same three-round limit and run a
    fresh local review before each push, then repeat registration and completion checks for
    the new head. Do not spend a repair round on unavailable infrastructure. If a confirmed
-   code defect remains after both repair rounds, set the state to `machinist:blocked`,
+   code defect remains after all three repair rounds, set the state to `machinist:blocked`,
    comment with the unresolved evidence, and stop. If expected automation is missing or
    any discovered check or reviewer is still pending at the deadline, set the state to
    `machinist:blocked`, comment with the missing or pending names and elapsed time, and stop.

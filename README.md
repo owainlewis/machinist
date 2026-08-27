@@ -40,7 +40,7 @@ Machinist stops instead of carrying on with a broken result.
 
 The default `foreman` plans a GitHub issue, gives implementation and review to
 fresh agents, opens a pull request, and waits for repository CI. Review or CI
-failures go back for repair. The foreman allows up to two repair attempts and
+failures go back for repair. The foreman allows up to three repair attempts and
 does not merge the pull request.
 
 ```mermaid
