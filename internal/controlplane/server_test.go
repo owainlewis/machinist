@@ -113,14 +113,18 @@ func TestServerDeletesOnlyTerminalJobsWithSubmissionAuthorization(t *testing.T) 
 	if unauthorized.StatusCode != http.StatusForbidden {
 		t.Fatalf("unauthorized delete status = %d", unauthorized.StatusCode)
 	}
-	unauthorized.Body.Close()
+	if err := unauthorized.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	status := getStatus(t, webServer.URL)
 	headers := map[string]string{"Origin": webServer.URL, "X-Machinist-CSRF": status.CSRFToken}
 	active := deleteRequest(t, webServer.URL+"/api/v1/jobs/"+jobID, headers)
 	if active.StatusCode != http.StatusConflict {
 		t.Fatalf("active delete status = %d", active.StatusCode)
 	}
-	active.Body.Close()
+	if err := active.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	run, err := server.store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
 	if err != nil || run == nil {
 		t.Fatalf("poll = %#v, %v", run, err)
@@ -132,7 +136,9 @@ func TestServerDeletesOnlyTerminalJobsWithSubmissionAuthorization(t *testing.T) 
 	if deleted.StatusCode != http.StatusNoContent {
 		t.Fatalf("terminal delete status = %d", deleted.StatusCode)
 	}
-	deleted.Body.Close()
+	if err := deleted.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if jobs := getStatus(t, webServer.URL).Jobs; len(jobs) != 0 {
 		t.Fatalf("jobs after delete = %#v", jobs)
 	}
@@ -140,7 +146,9 @@ func TestServerDeletesOnlyTerminalJobsWithSubmissionAuthorization(t *testing.T) 
 	if missing.StatusCode != http.StatusNotFound {
 		t.Fatalf("missing delete status = %d", missing.StatusCode)
 	}
-	missing.Body.Close()
+	if err := missing.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestServerAppliesConcurrentJobLimitToWorkerPolls(t *testing.T) {
@@ -942,7 +950,7 @@ func postJSON(t *testing.T, endpoint string, body any, headers map[string]string
 
 func deleteRequest(t *testing.T, endpoint string, headers map[string]string) *http.Response {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodDelete, endpoint, nil)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, endpoint, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
