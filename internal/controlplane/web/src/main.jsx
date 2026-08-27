@@ -134,7 +134,7 @@ function App() {
     <div className="min-h-screen bg-background text-foreground md:flex">
       <aside className="sticky top-0 z-20 flex shrink-0 items-center border-b border-border bg-sidebar px-3 py-2 md:h-screen md:w-52 md:flex-col md:items-stretch md:border-b-0 md:border-r md:px-3 md:py-4">
         <div className="flex h-10 items-center gap-2.5 px-2 text-sm font-semibold tracking-tight">
-          <span className="grid size-7 place-items-center rounded-md border border-border bg-surface text-primary shadow-xs"><Workflow className="size-4" /></span>
+          <span className="grid size-7 place-items-center rounded-md border border-border bg-surface text-primary shadow-xs"><Workflow className="size-[18px]" /></span>
           <span>Machinist</span>
         </div>
         <nav className="ml-4 flex flex-1 gap-1 overflow-x-auto md:ml-0 md:mt-6 md:block md:overflow-visible" aria-label="Primary">
