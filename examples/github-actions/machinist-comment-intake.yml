@@ -12,6 +12,9 @@ jobs:
   request:
     if: ${{ !github.event.issue.pull_request }}
     runs-on: ubuntu-latest
+    env:
+      # Keep this equal to triggers.github.<name>.label in config.toml.
+      MACHINIST_REQUEST_LABEL: machinist:requested
     steps:
       - name: Validate request and add intake label
         uses: actions/github-script@v8
@@ -30,11 +33,18 @@ jobs:
             }
 
             const actor = context.payload.comment.user.login;
-            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              username: actor,
-            });
+            let data;
+            try {
+              ({ data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: actor,
+              }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.notice(`Ignoring a request from ${actor}: user is not a repository collaborator.`);
+              return;
+            }
             const allowed = new Set(["write", "maintain", "admin"]);
             if (!allowed.has(data.permission)) {
               core.notice(`Ignoring a request from ${actor}: repository permission is ${data.permission}.`);
@@ -45,5 +55,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              labels: ["machinist:requested"],
+              labels: [process.env.MACHINIST_REQUEST_LABEL],
             });

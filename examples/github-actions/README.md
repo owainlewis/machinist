@@ -11,7 +11,9 @@ comment adds `machinist:requested`. It does not check out or run repository
 code.
 
 Create the `machinist:requested` and `machinist:queued` labels before enabling
-the workflow. Create a fine-grained personal access token owned by a dedicated
+the workflow. If the GitHub trigger uses a different input label, change
+`MACHINIST_REQUEST_LABEL` in the workflow to exactly match its configured
+`label`. Create a fine-grained personal access token owned by a dedicated
 user with write access to the repository and grant it read and write access to
 issues. Store it as the `MACHINIST_INTAKE_TOKEN` Actions secret. The workflow
 uses this token to check the comment author and apply the label, so the label

@@ -17,7 +17,7 @@ type githubTriggerClient interface {
 	SearchRequestedIssues(context.Context, []string, string, int) ([]GitHubCandidate, error)
 	IssueDetails(context.Context, string, int, string) (GitHubIssueDetails, error)
 	Permission(context.Context, string, string) (string, error)
-	ReplaceRequestLabel(context.Context, string, int, string, string, string) error
+	AcknowledgeRequest(context.Context, string, int, string, string, bool) error
 }
 
 func (s *Server) processManagedTriggers(ctx context.Context) error {
@@ -55,40 +55,40 @@ func (s *Server) processManagedTrigger(ctx context.Context, trigger config.Resol
 		return nil
 	}
 	if trigger.Family == "github" {
-		return s.processGitHubTrigger(ctx, trigger)
+		return s.processGitHubTrigger(ctx, trigger, status.ConfigGeneration)
 	}
-	return s.processFixedTrigger(ctx, trigger, *status.NextDueAt, status.PendingOccurrenceAt, now)
+	return s.processFixedTrigger(ctx, trigger, status.ConfigGeneration, *status.NextDueAt, status.PendingOccurrenceAt, now)
 }
 
-func (s *Server) processFixedTrigger(ctx context.Context, trigger config.ResolvedTrigger, firstDue time.Time, pending *time.Time, now time.Time) error {
+func (s *Server) processFixedTrigger(ctx context.Context, trigger config.ResolvedTrigger, generation string, firstDue time.Time, pending *time.Time, now time.Time) error {
 	if pending != nil {
 		firstDue = *pending
 	}
 	occurrence, nextDue, coalesced, err := fixedOccurrenceWindow(trigger, firstDue, now, pending != nil)
 	if err != nil {
-		_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, err)
+		_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, generation, 0, err)
 		return err
 	}
 	if pending == nil {
-		if err := s.store.SetTriggerPendingOccurrence(ctx, trigger.Identity, trigger.Signature, occurrence); err != nil {
-			_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, err)
+		if err := s.store.SetTriggerPendingOccurrence(ctx, trigger.Identity, generation, occurrence); err != nil {
+			_ = s.store.RecordTriggerAttempt(ctx, trigger.Identity, generation, 0, err)
 			return err
 		}
 	}
 	admission := TriggerAdmission{
-		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature,
+		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, ConfigGeneration: generation,
 		OccurrenceKey: occurrence.UTC().Format(time.RFC3339Nano), ScheduledAt: occurrence, NextDueAt: nextDue,
 		Prompt: trigger.Prompt, Repository: trigger.Repository,
 		SelectionKind: trigger.SelectionKind, SelectionName: trigger.SelectionName, Agents: trigger.Agents,
 	}
 	_, _, admissionErr := s.store.CreateTriggeredJob(ctx, admission)
 	if errors.Is(admissionErr, ErrTriggerPreviousGenerationActive) {
-		return s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, nil)
+		return s.store.RecordTriggerAttempt(ctx, trigger.Identity, generation, 0, nil)
 	}
 	if admissionErr == nil && coalesced > 0 {
-		admissionErr = s.store.AddTriggerCoalesced(ctx, trigger.Identity, trigger.Signature, coalesced)
+		admissionErr = s.store.AddTriggerCoalesced(ctx, trigger.Identity, generation, coalesced)
 	}
-	recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, admissionErr)
+	recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, generation, 0, admissionErr)
 	return errors.Join(admissionErr, recordErr)
 }
 
@@ -134,33 +134,42 @@ func fixedOccurrenceWindow(trigger config.ResolvedTrigger, firstDue, now time.Ti
 	}
 }
 
-func (s *Server) processGitHubTrigger(ctx context.Context, trigger config.ResolvedTrigger) error {
+func (s *Server) processGitHubTrigger(ctx context.Context, trigger config.ResolvedTrigger, generation string) error {
 	repositories := make([]string, 0, len(trigger.GitHubRepositories))
 	for _, slug := range trigger.GitHubRepositories {
 		repositories = append(repositories, slug)
 	}
 	sort.Slice(repositories, func(i, j int) bool { return strings.ToLower(repositories[i]) < strings.ToLower(repositories[j]) })
-	candidates, searchErr := s.github.SearchRequestedIssues(ctx, repositories, trigger.Label, maxGitHubCandidates)
-	if searchErr != nil {
-		recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, 0, searchErr)
-		nextErr := s.store.SetTriggerNextDue(ctx, trigger.Identity, trigger.Signature, s.now().UTC().Add(trigger.Every))
-		return errors.Join(searchErr, recordErr, nextErr)
+	var failures []error
+	reconciliations, err := s.store.GitHubTriggerReconciliations(ctx, trigger.Identity)
+	if err != nil {
+		failures = append(failures, err)
+	} else {
+		for _, request := range reconciliations {
+			if err := s.reconcileGitHubRequest(ctx, trigger, generation, repositories, request); err != nil {
+				failures = append(failures, fmt.Errorf("%s#%d reconciliation: %w", request.Repository, request.IssueNumber, err))
+			}
+		}
 	}
 
-	var failures []error
-	for _, candidate := range candidates {
-		if err := s.processGitHubCandidate(ctx, trigger, repositories, candidate); err != nil {
-			failures = append(failures, fmt.Errorf("%s#%d: %w", candidate.Repository, candidate.Number, err))
+	candidates, searchErr := s.github.SearchRequestedIssues(ctx, repositories, trigger.Label, maxGitHubCandidates)
+	if searchErr != nil {
+		failures = append(failures, searchErr)
+	} else {
+		for _, candidate := range candidates {
+			if err := s.processGitHubCandidate(ctx, trigger, generation, repositories, candidate); err != nil {
+				failures = append(failures, fmt.Errorf("%s#%d: %w", candidate.Repository, candidate.Number, err))
+			}
 		}
 	}
 	triggerErr := errors.Join(failures...)
-	recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, trigger.Signature, len(candidates), triggerErr)
+	recordErr := s.store.RecordTriggerAttempt(ctx, trigger.Identity, generation, len(candidates), triggerErr)
 	// GitHub polling uses non-overlapping fixed delay, measured after the poll ends.
-	nextErr := s.store.SetTriggerNextDue(ctx, trigger.Identity, trigger.Signature, s.now().UTC().Add(trigger.Every))
+	nextErr := s.store.SetTriggerNextDue(ctx, trigger.Identity, generation, s.now().UTC().Add(trigger.Every))
 	return errors.Join(triggerErr, recordErr, nextErr)
 }
 
-func (s *Server) processGitHubCandidate(ctx context.Context, trigger config.ResolvedTrigger, repositories []string, candidate GitHubCandidate) error {
+func (s *Server) processGitHubCandidate(ctx context.Context, trigger config.ResolvedTrigger, generation string, repositories []string, candidate GitHubCandidate) error {
 	details, err := s.github.IssueDetails(ctx, candidate.Repository, candidate.Number, trigger.Label)
 	if err != nil {
 		return err
@@ -168,18 +177,34 @@ func (s *Server) processGitHubCandidate(ctx context.Context, trigger config.Reso
 	if !GitHubIssueIsEligible(details, repositories) || !hasGitHubLabel(details.Labels, trigger.Label) {
 		return nil
 	}
+	return s.processGitHubDetails(ctx, trigger, generation, repositories, trigger.Label, details)
+}
+
+func (s *Server) processGitHubDetails(ctx context.Context, trigger config.ResolvedTrigger, generation string, repositories []string, requestLabel string, details GitHubIssueDetails) error {
+	if !GitHubIssueIsEligible(details, repositories) {
+		return nil
+	}
+	issueURL := fmt.Sprintf("https://github.com/%s/issues/%d", details.Repository, details.Number)
+	request := GitHubTriggerRequest{
+		TriggerIdentity: trigger.Identity, OccurrenceKey: details.RequestedEvent.OccurrenceKey, ConfigGeneration: generation,
+		Repository: details.Repository, IssueNumber: details.Number, Subject: issueURL,
+		Actor: details.RequestedEvent.Actor, RequestLabel: requestLabel, RequestedAt: details.RequestedEvent.CreatedAt,
+	}
 	permission, err := s.github.Permission(ctx, details.Repository, details.RequestedEvent.Actor)
 	if err != nil {
 		return err
 	}
 	if !GitHubPermissionCanWrite(permission) {
-		return nil
+		request.State = "rejected"
+		if err := s.store.RejectGitHubTriggerRequest(ctx, request); err != nil {
+			return err
+		}
+		return s.reconcileGitHubRequest(ctx, trigger, generation, repositories, request)
 	}
 	logicalRepository, ok := logicalGitHubRepository(trigger.GitHubRepositories, details.Repository)
 	if !ok {
 		return nil
 	}
-	issueURL := fmt.Sprintf("https://github.com/%s/issues/%d", details.Repository, details.Number)
 	prompt := "Complete " + issueURL
 	agents := make([]config.ResolvedAgent, len(trigger.Agents))
 	for index, agent := range trigger.Agents {
@@ -192,10 +217,11 @@ func (s *Server) processGitHubCandidate(ctx context.Context, trigger config.Reso
 	}
 	occurrenceKey := details.RequestedEvent.OccurrenceKey
 	_, created, err := s.store.CreateTriggeredJob(ctx, TriggerAdmission{
-		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, OccurrenceKey: occurrenceKey,
+		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, ConfigGeneration: generation, OccurrenceKey: occurrenceKey,
 		Subject: issueURL, ScheduledAt: details.RequestedEvent.CreatedAt,
 		Prompt: prompt, Repository: logicalRepository,
 		SelectionKind: trigger.SelectionKind, SelectionName: trigger.SelectionName, Agents: agents,
+		GitHubRepository: details.Repository, GitHubIssueNumber: details.Number, RequestActor: details.RequestedEvent.Actor, RequestLabel: requestLabel,
 	})
 	if err != nil {
 		return err
@@ -212,7 +238,58 @@ func (s *Server) processGitHubCandidate(ctx context.Context, trigger config.Reso
 		// label in place so the same occurrence is retried after it completes.
 		return nil
 	}
-	return s.github.ReplaceRequestLabel(ctx, details.Repository, details.Number, trigger.Label, queuedGitHubLabel, occurrenceKey)
+	request.State = "admitted"
+	return s.reconcileGitHubRequest(ctx, trigger, generation, repositories, request)
+}
+
+func (s *Server) reconcileGitHubRequest(ctx context.Context, trigger config.ResolvedTrigger, generation string, repositories []string, request GitHubTriggerRequest) error {
+	requestLabel := request.RequestLabel
+	if requestLabel == "" {
+		requestLabel = trigger.Label
+	}
+	details, err := s.github.IssueDetails(ctx, request.Repository, request.IssueNumber, requestLabel)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(details.State, "open") || details.IsPullRequest {
+		return s.store.CompleteGitHubTriggerReconciliation(ctx, request.TriggerIdentity, request.OccurrenceKey, request.ConfigGeneration)
+	}
+	if _, ok := logicalGitHubRepository(trigger.GitHubRepositories, details.Repository); !ok {
+		return s.store.CompleteGitHubTriggerReconciliation(ctx, request.TriggerIdentity, request.OccurrenceKey, request.ConfigGeneration)
+	}
+	if details.RequestedEvent == nil {
+		return errors.New("github issue timeline has no request-label event")
+	}
+	if details.RequestedEvent.OccurrenceKey != request.OccurrenceKey {
+		if err := s.processGitHubDetails(ctx, trigger, generation, repositories, requestLabel, details); err != nil {
+			return err
+		}
+		return s.store.CompleteGitHubTriggerReconciliation(ctx, request.TriggerIdentity, request.OccurrenceKey, request.ConfigGeneration)
+	}
+	if request.State == "pending" {
+		details.RequestedEvent.Actor = request.Actor
+		details.RequestedEvent.CreatedAt = request.RequestedAt
+		return s.processGitHubDetails(ctx, trigger, generation, repositories, requestLabel, details)
+	}
+	if !hasGitHubLabel(details.Labels, requestLabel) {
+		return s.store.CompleteGitHubTriggerReconciliation(ctx, request.TriggerIdentity, request.OccurrenceKey, request.ConfigGeneration)
+	}
+	if err := s.github.AcknowledgeRequest(ctx, request.Repository, request.IssueNumber, requestLabel, queuedGitHubLabel, request.State == "admitted"); err != nil {
+		return err
+	}
+	after, err := s.github.IssueDetails(ctx, request.Repository, request.IssueNumber, requestLabel)
+	if err != nil {
+		return err
+	}
+	if after.RequestedEvent != nil && after.RequestedEvent.OccurrenceKey != request.OccurrenceKey {
+		if err := s.processGitHubDetails(ctx, trigger, generation, repositories, requestLabel, after); err != nil {
+			return err
+		}
+	}
+	if hasGitHubLabel(after.Labels, requestLabel) && (after.RequestedEvent == nil || after.RequestedEvent.OccurrenceKey == request.OccurrenceKey) {
+		return errors.New("github request label remained after acknowledgement")
+	}
+	return s.store.CompleteGitHubTriggerReconciliation(ctx, request.TriggerIdentity, request.OccurrenceKey, request.ConfigGeneration)
 }
 
 func logicalGitHubRepository(repositories map[string]string, slug string) (string, bool) {

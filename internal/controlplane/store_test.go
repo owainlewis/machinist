@@ -724,11 +724,11 @@ func TestStoreSyncsDurableTriggerStateAcrossRestartAndConfigurationChanges(t *te
 	if err := store.SyncTriggers(t.Context(), definitions); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordTriggerAttempt(t.Context(), "github/intake", "v1", 3, errors.New(strings.Repeat("x", maxTriggerErrorLength+10))); err != nil {
+	if err := store.RecordTriggerAttempt(t.Context(), "github/intake", mustTriggerGeneration(t, store, "github/intake"), 3, errors.New(strings.Repeat("x", maxTriggerErrorLength+10))); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(time.Minute)
-	if err := store.SetTriggerNextDue(t.Context(), "interval/audit", "v1", firstDue.Add(time.Hour)); err != nil {
+	if err := store.SetTriggerNextDue(t.Context(), "interval/audit", mustTriggerGeneration(t, store, "interval/audit"), firstDue.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -778,7 +778,7 @@ func TestStoreAdmitsUniqueFixedOccurrencesAndCoalescesOverlap(t *testing.T) {
 		t.Fatal(err)
 	}
 	admission := TriggerAdmission{
-		Identity: "interval/audit", Family: "interval", ConfigSignature: "v1", ScheduledAt: clock.Now().Add(time.Hour), NextDueAt: clock.Now().Add(2 * time.Hour),
+		Identity: "interval/audit", Family: "interval", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "interval/audit"), ScheduledAt: clock.Now().Add(time.Hour), NextDueAt: clock.Now().Add(2 * time.Hour),
 		Prompt: "Audit", Repository: "machinist", SelectionKind: "agent", SelectionName: "audit", Agents: []config.ResolvedAgent{testAgent("audit", "Audit")},
 	}
 	jobID, created, err := store.CreateTriggeredJob(t.Context(), admission)
@@ -796,7 +796,7 @@ func TestStoreAdmitsUniqueFixedOccurrencesAndCoalescesOverlap(t *testing.T) {
 	if err != nil || created || activeID != jobID {
 		t.Fatalf("coalesced admission = %q, %v, %v", activeID, created, err)
 	}
-	if err := store.AddTriggerCoalesced(t.Context(), admission.Identity, admission.ConfigSignature, 2); err != nil {
+	if err := store.AddTriggerCoalesced(t.Context(), admission.Identity, admission.ConfigGeneration, 2); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.Snapshot(t.Context())
@@ -845,7 +845,7 @@ func TestStoreIgnoresCompletionFromPreviousTriggerConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, created, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{
-				Identity: identity, Family: "interval", ConfigSignature: "v1",
+				Identity: identity, Family: "interval", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, identity),
 				ScheduledAt: clock.Now(), NextDueAt: clock.Now().Add(time.Hour),
 				Prompt: "Audit", Repository: "machinist", SelectionKind: "agent", SelectionName: "audit",
 				Agents: []config.ResolvedAgent{testAgent("audit", "Audit")},
@@ -907,6 +907,34 @@ func TestStoreRejectsSchedulerWritesFromPreviousTriggerConfiguration(t *testing.
 	}
 }
 
+func TestStoreUsesDistinctTriggerGenerationsAcrossABAAndRecreation(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	identity := "interval/audit"
+	sync := func(signature string) string {
+		t.Helper()
+		if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: identity, Family: "interval", ConfigSignature: signature, NextDueAt: time.Now().UTC()}}); err != nil {
+			t.Fatal(err)
+		}
+		return mustTriggerGeneration(t, store, identity)
+	}
+	a1 := sync("a")
+	if got := sync("a"); got != a1 {
+		t.Fatalf("unchanged configuration generation changed: %q then %q", a1, got)
+	}
+	b := sync("b")
+	a2 := sync("a")
+	if a1 == b || b == a2 || a1 == a2 {
+		t.Fatalf("ABA generations are not unique: a1=%q b=%q a2=%q", a1, b, a2)
+	}
+	if err := store.SyncTriggers(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	a3 := sync("a")
+	if a3 == a2 || a3 == a1 {
+		t.Fatalf("recreated trigger reused a generation: a1=%q a2=%q a3=%q", a1, a2, a3)
+	}
+}
+
 func TestStoreRetriesUncommittedAdmissionAndPreventsSubjectOverlap(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{
@@ -915,7 +943,7 @@ func TestStoreRetriesUncommittedAdmissionAndPreventsSubjectOverlap(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	admission := TriggerAdmission{Identity: "github/intake", Family: "github", ConfigSignature: "v1", OccurrenceKey: "github.com/event/1", Subject: "https://github.com/owainlewis/machinist/issues/396", Prompt: "Complete issue", Repository: "machinist", SelectionKind: "agent", SelectionName: "foreman"}
+	admission := TriggerAdmission{Identity: "github/intake", Family: "github", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "github/intake"), OccurrenceKey: "github.com/event/1", Subject: "https://github.com/owainlewis/machinist/issues/396", Prompt: "Complete issue", Repository: "machinist", SelectionKind: "agent", SelectionName: "foreman", GitHubRepository: "owainlewis/machinist", GitHubIssueNumber: 396, RequestActor: "owner", RequestLabel: "machinist:requested", ScheduledAt: time.Now().UTC()}
 	if _, _, err := store.CreateTriggeredJob(t.Context(), admission); err == nil {
 		t.Fatal("expected incomplete admission to fail")
 	}
@@ -931,6 +959,7 @@ func TestStoreRetriesUncommittedAdmissionAndPreventsSubjectOverlap(t *testing.T)
 	reapplied := admission
 	reapplied.Identity = "github/security"
 	reapplied.ConfigSignature = "v1"
+	reapplied.ConfigGeneration = mustTriggerGeneration(t, store, "github/security")
 	reapplied.OccurrenceKey = "github.com/event/2"
 	activeID, created, err := store.CreateTriggeredJob(t.Context(), reapplied)
 	if err != nil || created || activeID != firstID {
@@ -955,6 +984,21 @@ func TestStoreRetriesUncommittedAdmissionAndPreventsSubjectOverlap(t *testing.T)
 	if err != nil || !created || secondID == firstID {
 		t.Fatalf("reapplied occurrence = %q, %v, %v", secondID, created, err)
 	}
+}
+
+func mustTriggerGeneration(t *testing.T, store *Store, identity string) string {
+	t.Helper()
+	statuses, err := store.TriggerSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range statuses {
+		if status.Identity == identity {
+			return status.ConfigGeneration
+		}
+	}
+	t.Fatalf("trigger %q has no generation", identity)
+	return ""
 }
 
 func openTestStore(t *testing.T, path string) *Store {

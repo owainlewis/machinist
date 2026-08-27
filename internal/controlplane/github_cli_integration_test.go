@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -107,7 +108,7 @@ func assertDisposableIntake(t *testing.T, ctx context.Context, adapter *GitHubCL
 	if !GitHubPermissionCanWrite(permission) {
 		t.Fatalf("label actor %q has permission %q", details.RequestedEvent.Actor, permission)
 	}
-	if err := adapter.ReplaceRequestLabel(ctx, repository, number, "machinist:requested", "machinist:queued", details.RequestedEvent.OccurrenceKey); err != nil {
+	if err := adapter.AcknowledgeRequest(ctx, repository, number, "machinist:requested", "machinist:queued", true); err != nil {
 		t.Fatal(err)
 	}
 	details, err = adapter.IssueDetails(ctx, repository, number, "machinist:requested")
@@ -140,9 +141,12 @@ func containsFold(values []string, want string) bool {
 
 func runIntegrationGH(t *testing.T, ctx context.Context, args ...string) string {
 	t.Helper()
-	output, err := exec.CommandContext(ctx, "gh", args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("gh %s failed: %v: %s", strings.Join(args, " "), err, sanitizeGitHubOutput(output))
+	command := exec.CommandContext(ctx, "gh", args...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		t.Fatalf("gh %s failed: %v: %s", strings.Join(args, " "), err, sanitizeGitHubOutput(stderr.Bytes()))
 	}
-	return strings.TrimSpace(string(output))
+	return strings.TrimSpace(stdout.String())
 }

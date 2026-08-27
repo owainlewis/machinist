@@ -92,24 +92,30 @@ type TriggerDefinition struct {
 // TriggerAdmission contains an already resolved job. Trigger scheduling code remains
 // responsible for validating configuration and rendering the prompt before admission.
 type TriggerAdmission struct {
-	Identity        string
-	Family          string
-	ConfigSignature string
-	OccurrenceKey   string
-	Subject         string
-	ScheduledAt     time.Time
-	NextDueAt       time.Time
-	Prompt          string
-	Repository      string
-	SelectionKind   string
-	SelectionName   string
-	Agents          []config.ResolvedAgent
+	Identity          string
+	Family            string
+	ConfigSignature   string
+	ConfigGeneration  string
+	OccurrenceKey     string
+	Subject           string
+	ScheduledAt       time.Time
+	NextDueAt         time.Time
+	Prompt            string
+	Repository        string
+	SelectionKind     string
+	SelectionName     string
+	Agents            []config.ResolvedAgent
+	GitHubRepository  string
+	GitHubIssueNumber int
+	RequestActor      string
+	RequestLabel      string
 }
 
 type TriggerStatus struct {
 	Identity            string     `json:"identity"`
 	Family              string     `json:"family"`
 	ConfigSignature     string     `json:"config_signature,omitempty"`
+	ConfigGeneration    string     `json:"-"`
 	NextDueAt           *time.Time `json:"next_due,omitempty"`
 	PendingOccurrenceAt *time.Time `json:"-"`
 	LastAttemptAt       *time.Time `json:"last_attempt,omitempty"`
@@ -120,6 +126,20 @@ type TriggerStatus struct {
 	CoalescedCount      int64      `json:"coalesced_count,omitempty"`
 	Health              string     `json:"health"`
 	LatestError         string     `json:"error,omitempty"`
+}
+
+type GitHubTriggerRequest struct {
+	TriggerIdentity  string
+	OccurrenceKey    string
+	ConfigGeneration string
+	Repository       string
+	IssueNumber      int
+	Subject          string
+	Actor            string
+	RequestLabel     string
+	RequestedAt      time.Time
+	State            string
+	JobID            string
 }
 
 type RunOutput struct {
@@ -161,6 +181,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   has_shepherd INTEGER NOT NULL DEFAULT 0,
   trigger_identity TEXT NOT NULL DEFAULT '',
   trigger_config_signature TEXT NOT NULL DEFAULT '',
+  trigger_generation_id TEXT NOT NULL DEFAULT '',
   occurrence_key TEXT NOT NULL DEFAULT '',
   trigger_subject TEXT NOT NULL DEFAULT '',
   fixed_trigger INTEGER NOT NULL DEFAULT 0,
@@ -215,6 +236,7 @@ CREATE TABLE IF NOT EXISTS trigger_state (
   identity TEXT PRIMARY KEY,
   family TEXT NOT NULL,
   config_signature TEXT NOT NULL,
+  generation_id TEXT NOT NULL,
   next_due_at TEXT,
   pending_occurrence_at TEXT,
   last_attempt_at TEXT,
@@ -225,6 +247,22 @@ CREATE TABLE IF NOT EXISTS trigger_state (
   admission_count INTEGER NOT NULL DEFAULT 0,
   coalesced_count INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS github_trigger_requests (
+  trigger_identity TEXT NOT NULL,
+  occurrence_key TEXT NOT NULL,
+  config_generation TEXT NOT NULL,
+  repository TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  request_label TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('pending','admitted','rejected')),
+  job_id TEXT,
+  needs_reconciliation INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(trigger_identity, occurrence_key)
 );`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
@@ -253,6 +291,9 @@ CREATE TABLE IF NOT EXISTS trigger_state (
 	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_config_signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_generation_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := s.addColumnIfMissing(ctx, "jobs", "occurrence_key", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
@@ -274,6 +315,12 @@ CREATE TABLE IF NOT EXISTS trigger_state (
 	if err := s.addColumnIfMissing(ctx, "trigger_state", "pending_occurrence_at", "TEXT"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing(ctx, "trigger_state", "generation_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "github_trigger_requests", "request_label", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE jobs SET has_shepherd=1 WHERE has_shepherd=0 AND EXISTS (SELECT 1 FROM runs WHERE runs.job_id=jobs.id AND runs.agent='shepherd')`); err != nil {
 		return fmt.Errorf("migrate Shepherd job membership: %w", err)
 	}
@@ -291,6 +338,12 @@ CREATE TABLE IF NOT EXISTS trigger_state (
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running')`); err != nil {
 		return fmt.Errorf("create trigger subject overlap guard: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,config_generation,needs_reconciliation,requested_at)`); err != nil {
+		return fmt.Errorf("create github trigger reconciliation index: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation_v2 ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at)`); err != nil {
+		return fmt.Errorf("create cross-generation github trigger reconciliation index: %w", err)
 	}
 	return s.migrateRunMetrics(ctx)
 }
@@ -473,12 +526,17 @@ func (s *Store) SyncTriggers(ctx context.Context, definitions []TriggerDefinitio
 	defer tx.Rollback()
 	now := s.now().UTC().Format(time.RFC3339Nano)
 	for _, definition := range definitions {
+		generationID, err := randomID("trigger", 12)
+		if err != nil {
+			return fmt.Errorf("generate trigger %q configuration generation: %w", definition.Identity, err)
+		}
 		nextDue := nullableTimeText(definition.NextDueAt)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO trigger_state(identity,family,config_signature,next_due_at,health,updated_at)
-VALUES(?,?,?,?,'healthy',?)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO trigger_state(identity,family,config_signature,generation_id,next_due_at,health,updated_at)
+VALUES(?,?,?,?,?,'healthy',?)
 ON CONFLICT(identity) DO UPDATE SET
   family=excluded.family,
   config_signature=excluded.config_signature,
+  generation_id=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature OR trigger_state.generation_id='' THEN excluded.generation_id ELSE trigger_state.generation_id END,
   next_due_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN excluded.next_due_at ELSE trigger_state.next_due_at END,
   pending_occurrence_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.pending_occurrence_at END,
   last_attempt_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.last_attempt_at END,
@@ -488,7 +546,7 @@ ON CONFLICT(identity) DO UPDATE SET
   candidate_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.candidate_count END,
   admission_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.admission_count END,
   coalesced_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.coalesced_count END,
-  updated_at=excluded.updated_at`, definition.Identity, definition.Family, definition.ConfigSignature, nextDue, now); err != nil {
+  updated_at=excluded.updated_at`, definition.Identity, definition.Family, definition.ConfigSignature, generationID, nextDue, now); err != nil {
 			return fmt.Errorf("sync trigger %q: %w", definition.Identity, err)
 		}
 	}
@@ -534,6 +592,9 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 	if admission.ConfigSignature == "" {
 		return "", false, errors.New("trigger config signature is required")
 	}
+	if admission.ConfigGeneration == "" {
+		return "", false, errors.New("trigger config generation is required")
+	}
 	if len(admission.Agents) == 0 {
 		return "", false, errors.New("triggered job must contain at least one agent")
 	}
@@ -550,8 +611,8 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 		return "", false, err
 	}
 	defer tx.Rollback()
-	var family, configSignature string
-	if err := tx.QueryRowContext(ctx, `SELECT family,config_signature FROM trigger_state WHERE identity=?`, admission.Identity).Scan(&family, &configSignature); err != nil {
+	var family, configSignature, configGeneration string
+	if err := tx.QueryRowContext(ctx, `SELECT family,config_signature,generation_id FROM trigger_state WHERE identity=?`, admission.Identity).Scan(&family, &configSignature, &configGeneration); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", false, fmt.Errorf("%w: %s", ErrTriggerMissing, admission.Identity)
 		}
@@ -561,12 +622,41 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 		return "", false, fmt.Errorf("trigger %q family is %q, not %q", admission.Identity, family, admission.Family)
 	}
 	if configSignature != admission.ConfigSignature {
-		return "", false, fmt.Errorf("trigger %q configuration changed before admission", admission.Identity)
+		return "", false, fmt.Errorf("%w: trigger %q configuration signature changed before admission", ErrTriggerStale, admission.Identity)
+	}
+	if configGeneration != admission.ConfigGeneration {
+		return "", false, fmt.Errorf("%w: %s", ErrTriggerStale, admission.Identity)
+	}
+	if admission.Family == "github" {
+		if admission.GitHubRepository == "" || admission.GitHubIssueNumber <= 0 || admission.Subject == "" || admission.RequestActor == "" || admission.RequestLabel == "" || admission.ScheduledAt.IsZero() {
+			return "", false, errors.New("github trigger request metadata is required")
+		}
+		now := s.now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO github_trigger_requests(trigger_identity,occurrence_key,config_generation,repository,issue_number,subject,actor,request_label,requested_at,state,needs_reconciliation,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?, 'pending',1,?)
+ON CONFLICT(trigger_identity,occurrence_key) DO UPDATE SET
+  config_generation=excluded.config_generation,
+  repository=excluded.repository,
+  issue_number=excluded.issue_number,
+  subject=excluded.subject,
+  actor=excluded.actor,
+  request_label=excluded.request_label,
+  requested_at=excluded.requested_at,
+  needs_reconciliation=1,
+  updated_at=excluded.updated_at
+WHERE github_trigger_requests.state='pending'`, admission.Identity, admission.OccurrenceKey, admission.ConfigGeneration, admission.GitHubRepository, admission.GitHubIssueNumber, admission.Subject, admission.RequestActor, admission.RequestLabel, admission.ScheduledAt.UTC().Format(time.RFC3339Nano), now); err != nil {
+			return "", false, fmt.Errorf("persist github trigger request: %w", err)
+		}
 	}
 
 	var existingJob string
 	err = tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE trigger_identity=? AND occurrence_key=?`, admission.Identity, admission.OccurrenceKey).Scan(&existingJob)
 	if err == nil {
+		if admission.Family == "github" {
+			if _, updateErr := tx.ExecContext(ctx, `UPDATE github_trigger_requests SET state='admitted',job_id=?,config_generation=?,needs_reconciliation=1,updated_at=? WHERE trigger_identity=? AND occurrence_key=?`, existingJob, admission.ConfigGeneration, s.now().UTC().Format(time.RFC3339Nano), admission.Identity, admission.OccurrenceKey); updateErr != nil {
+				return "", false, fmt.Errorf("repair github trigger request: %w", updateErr)
+			}
+		}
 		if fixed {
 			if _, updateErr := tx.ExecContext(ctx, `UPDATE trigger_state SET pending_occurrence_at=NULL,next_due_at=COALESCE(?,next_due_at),updated_at=? WHERE identity=?`, nullableTimeText(admission.NextDueAt), s.now().UTC().Format(time.RFC3339Nano), admission.Identity); updateErr != nil {
 				return "", false, fmt.Errorf("finish duplicate trigger occurrence: %w", updateErr)
@@ -579,10 +669,10 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 	}
 
 	if fixed {
-		var activeConfigSignature string
-		err = tx.QueryRowContext(ctx, `SELECT id,trigger_config_signature FROM jobs WHERE trigger_identity=? AND fixed_trigger=1 AND state IN ('queued','running')`, admission.Identity).Scan(&existingJob, &activeConfigSignature)
+		var activeGeneration string
+		err = tx.QueryRowContext(ctx, `SELECT id,trigger_generation_id FROM jobs WHERE trigger_identity=? AND fixed_trigger=1 AND state IN ('queued','running')`, admission.Identity).Scan(&existingJob, &activeGeneration)
 		if err == nil {
-			if activeConfigSignature != admission.ConfigSignature {
+			if activeGeneration != admission.ConfigGeneration {
 				return existingJob, false, fmt.Errorf("%w: %s", ErrTriggerPreviousGenerationActive, admission.Identity)
 			}
 			now := s.now().UTC().Format(time.RFC3339Nano)
@@ -614,8 +704,13 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 	for _, agent := range admission.Agents {
 		hasShepherd = hasShepherd || agent.Name == "shepherd"
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,trigger_identity,trigger_config_signature,occurrence_key,trigger_subject,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionKind, admission.SelectionName, hasShepherd, admission.Identity, admission.ConfigSignature, admission.OccurrenceKey, admission.Subject, fixed, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,trigger_identity,trigger_config_signature,trigger_generation_id,occurrence_key,trigger_subject,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionKind, admission.SelectionName, hasShepherd, admission.Identity, admission.ConfigSignature, admission.ConfigGeneration, admission.OccurrenceKey, admission.Subject, fixed, now, now); err != nil {
 		return "", false, fmt.Errorf("insert triggered job: %w", err)
+	}
+	if admission.Family == "github" {
+		if _, err := tx.ExecContext(ctx, `UPDATE github_trigger_requests SET state='admitted',job_id=?,needs_reconciliation=1,updated_at=? WHERE trigger_identity=? AND occurrence_key=?`, jobID, now, admission.Identity, admission.OccurrenceKey); err != nil {
+			return "", false, fmt.Errorf("admit github trigger request: %w", err)
+		}
 	}
 	for index, agent := range admission.Agents {
 		runID, err := randomID("run", 12)
@@ -649,7 +744,7 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 
 // RecordTriggerAttempt records one poll or scheduling attempt. Candidate counts are
 // cumulative. Failed attempts do not advance the occurrence or next due time.
-func (s *Store) RecordTriggerAttempt(ctx context.Context, identity, configSignature string, candidates int, attemptErr error) error {
+func (s *Store) RecordTriggerAttempt(ctx context.Context, identity, configGeneration string, candidates int, attemptErr error) error {
 	if candidates < 0 {
 		return errors.New("trigger candidate count cannot be negative")
 	}
@@ -660,7 +755,7 @@ func (s *Store) RecordTriggerAttempt(ctx context.Context, identity, configSignat
 		health = "failed"
 		latestError = boundedTriggerError(attemptErr.Error())
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET last_attempt_at=?,candidate_count=candidate_count+?,health=CASE WHEN ?='healthy' AND health='coalesced' THEN 'coalesced' WHEN ?='healthy' AND EXISTS (SELECT 1 FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.state IN ('queued','running')) THEN 'active' ELSE ? END,latest_error=?,updated_at=? WHERE identity=? AND config_signature=?`, now, candidates, health, health, health, latestError, now, identity, configSignature)
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET last_attempt_at=?,candidate_count=candidate_count+?,health=CASE WHEN ?='healthy' AND health='coalesced' THEN 'coalesced' WHEN ?='healthy' AND EXISTS (SELECT 1 FROM jobs WHERE jobs.trigger_identity=trigger_state.identity AND jobs.state IN ('queued','running')) THEN 'active' ELSE ? END,latest_error=?,updated_at=? WHERE identity=? AND generation_id=?`, now, candidates, health, health, health, latestError, now, identity, configGeneration)
 	if err != nil {
 		return fmt.Errorf("record trigger %q attempt: %w", identity, err)
 	}
@@ -674,8 +769,8 @@ func (s *Store) RecordTriggerAttempt(ctx context.Context, identity, configSignat
 	return nil
 }
 
-func (s *Store) SetTriggerNextDue(ctx context.Context, identity, configSignature string, nextDue time.Time) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=?,updated_at=? WHERE identity=? AND config_signature=?`, nullableTimeText(nextDue), s.now().UTC().Format(time.RFC3339Nano), identity, configSignature)
+func (s *Store) SetTriggerNextDue(ctx context.Context, identity, configGeneration string, nextDue time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=?,updated_at=? WHERE identity=? AND generation_id=?`, nullableTimeText(nextDue), s.now().UTC().Format(time.RFC3339Nano), identity, configGeneration)
 	if err != nil {
 		return fmt.Errorf("set trigger %q next due time: %w", identity, err)
 	}
@@ -689,11 +784,11 @@ func (s *Store) SetTriggerNextDue(ctx context.Context, identity, configSignature
 	return nil
 }
 
-func (s *Store) SetTriggerPendingOccurrence(ctx context.Context, identity, configSignature string, occurrence time.Time) error {
+func (s *Store) SetTriggerPendingOccurrence(ctx context.Context, identity, configGeneration string, occurrence time.Time) error {
 	if occurrence.IsZero() {
 		return errors.New("trigger pending occurrence is required")
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET pending_occurrence_at=?,updated_at=? WHERE identity=? AND config_signature=?`, nullableTimeText(occurrence), s.now().UTC().Format(time.RFC3339Nano), identity, configSignature)
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET pending_occurrence_at=?,updated_at=? WHERE identity=? AND generation_id=?`, nullableTimeText(occurrence), s.now().UTC().Format(time.RFC3339Nano), identity, configGeneration)
 	if err != nil {
 		return fmt.Errorf("set trigger %q pending occurrence: %w", identity, err)
 	}
@@ -720,12 +815,89 @@ func (s *Store) TriggerOccurrenceExists(ctx context.Context, identity, occurrenc
 	return exists == 1, nil
 }
 
-func (s *Store) AddTriggerCoalesced(ctx context.Context, identity, configSignature string, count int64) error {
+// RejectGitHubTriggerRequest durably consumes an unauthorized request before
+// its label is removed. Reconciliation remains pending until GitHub confirms
+// that no newer request event was hidden by the label transition.
+func (s *Store) RejectGitHubTriggerRequest(ctx context.Context, request GitHubTriggerRequest) error {
+	if request.TriggerIdentity == "" || request.OccurrenceKey == "" || request.ConfigGeneration == "" || request.Repository == "" || request.IssueNumber <= 0 || request.Subject == "" || request.Actor == "" || request.RequestLabel == "" || request.RequestedAt.IsZero() {
+		return errors.New("complete github trigger request metadata is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var generation string
+	if err := tx.QueryRowContext(ctx, `SELECT generation_id FROM trigger_state WHERE identity=?`, request.TriggerIdentity).Scan(&generation); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrTriggerMissing, request.TriggerIdentity)
+		}
+		return err
+	}
+	if generation != request.ConfigGeneration {
+		return fmt.Errorf("%w: %s", ErrTriggerStale, request.TriggerIdentity)
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO github_trigger_requests(trigger_identity,occurrence_key,config_generation,repository,issue_number,subject,actor,request_label,requested_at,state,needs_reconciliation,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?, 'rejected',1,?)
+ON CONFLICT(trigger_identity,occurrence_key) DO UPDATE SET
+  state=CASE WHEN github_trigger_requests.state='admitted' THEN 'admitted' ELSE 'rejected' END,
+  config_generation=excluded.config_generation,
+  request_label=excluded.request_label,
+  needs_reconciliation=1,
+  updated_at=excluded.updated_at`, request.TriggerIdentity, request.OccurrenceKey, request.ConfigGeneration, request.Repository, request.IssueNumber, request.Subject, request.Actor, request.RequestLabel, request.RequestedAt.UTC().Format(time.RFC3339Nano), now); err != nil {
+		return fmt.Errorf("persist rejected github trigger request: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GitHubTriggerReconciliations(ctx context.Context, identity string) ([]GitHubTriggerRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT trigger_identity,occurrence_key,config_generation,repository,issue_number,subject,actor,request_label,requested_at,state,COALESCE(job_id,'')
+FROM github_trigger_requests
+WHERE trigger_identity=? AND needs_reconciliation=1
+ORDER BY requested_at, occurrence_key`, identity)
+	if err != nil {
+		return nil, fmt.Errorf("read github trigger reconciliations: %w", err)
+	}
+	defer rows.Close()
+	var requests []GitHubTriggerRequest
+	for rows.Next() {
+		var request GitHubTriggerRequest
+		var requestedAt string
+		if err := rows.Scan(&request.TriggerIdentity, &request.OccurrenceKey, &request.ConfigGeneration, &request.Repository, &request.IssueNumber, &request.Subject, &request.Actor, &request.RequestLabel, &requestedAt, &request.State, &request.JobID); err != nil {
+			return nil, fmt.Errorf("read github trigger reconciliation: %w", err)
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, requestedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse github trigger request time: %w", err)
+		}
+		request.RequestedAt = parsed
+		requests = append(requests, request)
+	}
+	return requests, rows.Err()
+}
+
+func (s *Store) CompleteGitHubTriggerReconciliation(ctx context.Context, identity, occurrenceKey, generation string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE github_trigger_requests SET needs_reconciliation=0,updated_at=? WHERE trigger_identity=? AND occurrence_key=? AND config_generation=?`, s.now().UTC().Format(time.RFC3339Nano), identity, occurrenceKey, generation)
+	if err != nil {
+		return fmt.Errorf("complete github trigger reconciliation: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("%w: %s", ErrTriggerStale, identity)
+	}
+	return nil
+}
+
+func (s *Store) AddTriggerCoalesced(ctx context.Context, identity, configGeneration string, count int64) error {
 	if count < 0 {
 		return errors.New("trigger coalesced count cannot be negative")
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
-	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET coalesced_count=coalesced_count+?,health=CASE WHEN ?>0 THEN 'coalesced' ELSE health END,updated_at=? WHERE identity=? AND config_signature=?`, count, count, now, identity, configSignature)
+	result, err := s.db.ExecContext(ctx, `UPDATE trigger_state SET coalesced_count=coalesced_count+?,health=CASE WHEN ?>0 THEN 'coalesced' ELSE health END,updated_at=? WHERE identity=? AND generation_id=?`, count, count, now, identity, configGeneration)
 	if err != nil {
 		return fmt.Errorf("record trigger %q coalesced occurrences: %w", identity, err)
 	}
@@ -902,10 +1074,10 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 		return err
 	}
 	defer tx.Rollback()
-	var jobID, state, instanceID, leaseToken, startedAt, triggerIdentity, triggerConfigSignature string
+	var jobID, state, instanceID, leaseToken, startedAt, triggerIdentity, triggerGeneration string
 	var leaseExpiresAt sql.NullInt64
 	var step int
-	if err := tx.QueryRowContext(ctx, `SELECT r.job_id,r.step,r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,COALESCE(r.started_at,''),COALESCE(j.trigger_identity,''),COALESCE(j.trigger_config_signature,'') FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.id=?`, runID).Scan(&jobID, &step, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt, &triggerIdentity, &triggerConfigSignature); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT r.job_id,r.step,r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,COALESCE(r.started_at,''),COALESCE(j.trigger_identity,''),COALESCE(j.trigger_generation_id,'') FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.id=?`, runID).Scan(&jobID, &step, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt, &triggerIdentity, &triggerGeneration); err != nil {
 		return err
 	}
 	if subtle.ConstantTimeCompare([]byte(instanceID), []byte(completion.InstanceID)) != 1 || subtle.ConstantTimeCompare([]byte(leaseToken), []byte(completion.LeaseToken)) != 1 {
@@ -949,7 +1121,7 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 				return err
 			}
 			if triggerIdentity != "" {
-				if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_success_at=?,health='healthy',latest_error='',updated_at=? WHERE identity=? AND config_signature=?`, now, now, triggerIdentity, triggerConfigSignature); err != nil {
+				if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_success_at=?,health='healthy',latest_error='',updated_at=? WHERE identity=? AND generation_id=?`, now, now, triggerIdentity, triggerGeneration); err != nil {
 					return fmt.Errorf("record trigger success: %w", err)
 				}
 			}
@@ -966,7 +1138,7 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 			if latestError == "" {
 				latestError = "triggered job " + completion.State
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET health='failed',latest_error=?,updated_at=? WHERE identity=? AND config_signature=?`, boundedTriggerError(latestError), now, triggerIdentity, triggerConfigSignature); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET health='failed',latest_error=?,updated_at=? WHERE identity=? AND generation_id=?`, boundedTriggerError(latestError), now, triggerIdentity, triggerGeneration); err != nil {
 				return fmt.Errorf("record trigger failure: %w", err)
 			}
 		}
@@ -1026,7 +1198,7 @@ func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 }
 
 func (s *Store) TriggerSnapshot(ctx context.Context) ([]TriggerStatus, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT t.identity,t.family,t.config_signature,COALESCE(t.next_due_at,''),COALESCE(t.pending_occurrence_at,''),COALESCE(t.last_attempt_at,''),COALESCE(t.last_success_at,''),COALESCE((SELECT j.id FROM jobs j WHERE j.trigger_identity=t.identity AND j.state IN ('queued','running') ORDER BY j.created_at LIMIT 1),''),t.candidate_count,t.admission_count,t.coalesced_count,t.health,t.latest_error FROM trigger_state t ORDER BY t.identity`)
+	rows, err := s.db.QueryContext(ctx, `SELECT t.identity,t.family,t.config_signature,t.generation_id,COALESCE(t.next_due_at,''),COALESCE(t.pending_occurrence_at,''),COALESCE(t.last_attempt_at,''),COALESCE(t.last_success_at,''),COALESCE((SELECT j.id FROM jobs j WHERE j.trigger_identity=t.identity AND j.state IN ('queued','running') ORDER BY j.created_at LIMIT 1),''),t.candidate_count,t.admission_count,t.coalesced_count,t.health,t.latest_error FROM trigger_state t ORDER BY t.identity`)
 	if err != nil {
 		return nil, fmt.Errorf("read trigger snapshot: %w", err)
 	}
@@ -1035,7 +1207,7 @@ func (s *Store) TriggerSnapshot(ctx context.Context) ([]TriggerStatus, error) {
 	for rows.Next() {
 		var status TriggerStatus
 		var nextDue, pendingOccurrence, lastAttempt, lastSuccess string
-		if err := rows.Scan(&status.Identity, &status.Family, &status.ConfigSignature, &nextDue, &pendingOccurrence, &lastAttempt, &lastSuccess, &status.ActiveJobID, &status.CandidateCount, &status.AdmissionCount, &status.CoalescedCount, &status.Health, &status.LatestError); err != nil {
+		if err := rows.Scan(&status.Identity, &status.Family, &status.ConfigSignature, &status.ConfigGeneration, &nextDue, &pendingOccurrence, &lastAttempt, &lastSuccess, &status.ActiveJobID, &status.CandidateCount, &status.AdmissionCount, &status.CoalescedCount, &status.Health, &status.LatestError); err != nil {
 			return nil, fmt.Errorf("read trigger snapshot: %w", err)
 		}
 		status.NextDueAt = parseOptionalTime(nextDue)

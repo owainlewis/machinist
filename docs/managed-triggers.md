@@ -80,12 +80,13 @@ repositories and events it has already seen.
 
 Admission writes the request event and job to SQLite before changing labels. It
 then replaces `machinist:requested` with `machinist:queued`. If that label update
-fails, later polls repair the labels without creating a second job. Removing and
-reapplying `machinist:requested` after the prior work is terminal creates a new
-attempt. Reapplying it while work is active does not create overlapping work for
-the issue. If a newer request-label event arrives while an earlier event is being
-admitted, Machinist leaves or restores the request label so the newer event remains
-visible to the next poll.
+or the following timeline read fails, a durable reconciliation record makes later
+polls repair the labels without creating a second job. Removing and reapplying
+`machinist:requested` after the prior work is terminal creates a new attempt.
+Reapplying it while work is active stores the newer event and its original actor,
+then waits without creating overlapping work for the issue. Requests from actors
+without write access are durably rejected before their request label is removed,
+so rejected items cannot permanently occupy the 100-result intake window.
 
 The optional [GitHub Actions comment example](../examples/github-actions/README.md)
 turns an authorized issue comment into the intake label. Only the first
@@ -143,8 +144,10 @@ occurrence. Failures in one trigger do not stop other triggers.
 On restart, an unchanged trigger restores its persisted schedule. Missed time
 becomes at most one catch-up job, then the schedule advances to the first future
 occurrence. A new or changed trigger starts from the new startup time without
-old backfill. Removing a trigger stops future admissions but does not cancel
-jobs already admitted.
+old backfill. Each configured lifetime has a distinct internal generation, so
+changing A to B to A or removing and recreating A cannot confuse old active work
+with the new trigger. Removing a trigger stops future admissions but does not
+cancel jobs already admitted.
 
 Trigger loops start only after SQLite and the HTTP listener are ready. Shutdown
 cancels polling and waits for the schedulers to stop without admitting new work.
