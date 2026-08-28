@@ -113,7 +113,7 @@ command = ["codex", "exec", "--json", "--model={{machinist.model}}", "--sandbox"
 models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
 
 [executors.claude]
-command = ["claude", "--print", "--output-format", "stream-json", "--model={{machinist.model}}", "--dangerously-skip-permissions"]
+command = ["claude", "--print", "--verbose", "--output-format", "stream-json", "--model={{machinist.model}}", "--dangerously-skip-permissions"]
 models = { haiku = "haiku", sonnet = "sonnet", opus = "opus" }
 ```
 

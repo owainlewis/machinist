@@ -57,8 +57,11 @@ func structuredClaudeCommand(executor string, command []string) []string {
 	if !ok || info.hasOutputFormat {
 		return command
 	}
-	structured := make([]string, 0, len(command)+2)
+	structured := make([]string, 0, len(command)+3)
 	structured = append(structured, command[:info.printIndex+1]...)
+	if !info.hasVerbose {
+		structured = append(structured, "--verbose")
+	}
 	structured = append(structured, "--output-format", "stream-json")
 	return append(structured, command[info.printIndex+1:]...)
 }
@@ -67,6 +70,7 @@ type claudeCommand struct {
 	printIndex      int
 	hasOutputFormat bool
 	outputFormat    string
+	hasVerbose      bool
 }
 
 func claudeCommandInfo(executor string, command []string) (claudeCommand, bool) {
@@ -80,10 +84,10 @@ func claudeCommandInfo(executor string, command []string) (claudeCommand, bool) 
 func claudeProgramIndex(command []string) int {
 	programIndex := wrappedProgramIndex(command)
 	if programIndex >= 0 && claudeExecutableName(command[programIndex]) == "nice" {
-		if len(command) < 2 {
+		programIndex++
+		if programIndex >= len(command) {
 			return -1
 		}
-		programIndex++
 		if command[programIndex] == "-n" {
 			programIndex += 2
 		} else if strings.HasPrefix(command[programIndex], "-n") {
@@ -124,6 +128,10 @@ func claudeCommandInfoAfter(command []string, programIndex int) (claudeCommand, 
 		} else if strings.HasPrefix(argument, "--output-format=") {
 			info.hasOutputFormat = true
 			info.outputFormat = strings.TrimPrefix(argument, "--output-format=")
+		} else if argument == "--verbose" || argument == "-v" {
+			info.hasVerbose = true
+		} else if argument == "--debug" && index+1 < len(command) && !strings.HasPrefix(command[index+1], "-") {
+			index++
 		} else if takesNextValue {
 			if index+1 >= len(command) {
 				return claudeCommand{}, false
@@ -138,9 +146,12 @@ func claudeCommandInfoAfter(command []string, programIndex int) (claudeCommand, 
 }
 
 func claudeRootOption(argument string) (bool, bool) {
+	if argument == "--debug" || strings.HasPrefix(argument, "--debug=") {
+		return true, false
+	}
 	valueOptions := []string{
 		"--add-dir", "--advisor", "--agents", "--allowedTools", "--allowed-tools", "--append-subagent-system-prompt",
-		"--append-system-prompt", "--append-system-prompt-file", "--betas", "--debug", "--debug-file", "--disallowedTools",
+		"--append-system-prompt", "--append-system-prompt-file", "--betas", "--debug-file", "--disallowedTools",
 		"--dangerously-load-development-channels", "--disallowed-tools", "--effort", "--fallback-model", "--from-pr", "--input-format", "--json-schema", "--max-budget-usd", "--max-turns",
 		"--mcp-config", "--model", "--name", "-n", "--output-format", "--permission-mode", "--permission-prompt-tool",
 		"--plugin-dir", "--plugin-url", "--resume", "-r", "--session-id", "--settings", "--system-prompt",
@@ -157,7 +168,7 @@ func claudeRootOption(argument string) (bool, bool) {
 	booleanOptions := []string{
 		"--allow-dangerously-skip-permissions", "--ax-screen-reader", "--bare", "--chrome", "--continue", "-c",
 		"--dangerously-skip-permissions", "--disable-slash-commands", "--enable-auto-mode", "--exclude-dynamic-system-prompt-sections",
-		"--fork-session", "--forward-subagent-text", "--ide", "--include-hook-events", "--include-partial-messages", "--init",
+		"--debug", "--fork-session", "--forward-subagent-text", "--ide", "--include-hook-events", "--include-partial-messages", "--init",
 		"--init-only", "--maintenance", "--no-chrome", "--no-session-persistence", "--print", "-p", "--prompt-suggestions",
 		"--replay-user-messages", "--restricted", "--safe-mode", "--teleport", "--verbose", "-v",
 	}

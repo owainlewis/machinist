@@ -20,13 +20,14 @@ func TestStructuredClaudeCommandAddsStreamJSONToPrintCommands(t *testing.T) {
 		command  []string
 		want     []string
 	}{
-		{name: "direct", executor: "claude", command: []string{"claude", "--print"}, want: []string{"claude", "--print", "--output-format", "stream-json"}},
-		{name: "short print", executor: "claude", command: []string{"claude", "-p", "--dangerously-skip-permissions"}, want: []string{"claude", "-p", "--output-format", "stream-json", "--dangerously-skip-permissions"}},
-		{name: "renamed executable", executor: "claude-local", command: []string{"agent", "--print"}, want: []string{"agent", "--print", "--output-format", "stream-json"}},
-		{name: "env wrapper", executor: "custom", command: []string{"env", "claude", "--print"}, want: []string{"env", "claude", "--print", "--output-format", "stream-json"}},
-		{name: "mise wrapper", executor: "custom", command: []string{"mise", "exec", "--", "claude", "--print"}, want: []string{"mise", "exec", "--", "claude", "--print", "--output-format", "stream-json"}},
-		{name: "nice wrapper", executor: "custom", command: []string{"nice", "claude", "--print"}, want: []string{"nice", "claude", "--print", "--output-format", "stream-json"}},
-		{name: "max turns", executor: "claude", command: []string{"claude", "--print", "--max-turns", "3"}, want: []string{"claude", "--print", "--output-format", "stream-json", "--max-turns", "3"}},
+		{name: "direct", executor: "claude", command: []string{"claude", "--print"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json"}},
+		{name: "short print", executor: "claude", command: []string{"claude", "-p", "--dangerously-skip-permissions"}, want: []string{"claude", "-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"}},
+		{name: "renamed executable", executor: "claude-local", command: []string{"agent", "--print"}, want: []string{"agent", "--print", "--verbose", "--output-format", "stream-json"}},
+		{name: "env wrapper", executor: "custom", command: []string{"env", "claude", "--print"}, want: []string{"env", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
+		{name: "mise wrapper", executor: "custom", command: []string{"mise", "exec", "--", "claude", "--print"}, want: []string{"mise", "exec", "--", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
+		{name: "nice wrapper", executor: "custom", command: []string{"nice", "claude", "--print"}, want: []string{"nice", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
+		{name: "max turns", executor: "claude", command: []string{"claude", "--print", "--max-turns", "3"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--max-turns", "3"}},
+		{name: "existing verbose", executor: "claude", command: []string{"claude", "--print", "--verbose"}, want: []string{"claude", "--print", "--output-format", "stream-json", "--verbose"}},
 		{name: "explicit text", executor: "claude", command: []string{"claude", "--print", "--output-format", "text"}, want: []string{"claude", "--print", "--output-format", "text"}},
 		{name: "explicit json", executor: "claude", command: []string{"claude", "--output-format=json", "--print"}, want: []string{"claude", "--output-format=json", "--print"}},
 		{name: "explicit stream json", executor: "claude", command: []string{"claude", "--print", "--output-format", "stream-json"}, want: []string{"claude", "--print", "--output-format", "stream-json"}},
@@ -40,6 +41,39 @@ func TestStructuredClaudeCommandAddsStreamJSONToPrintCommands(t *testing.T) {
 				t.Fatalf("input command mutated: %q", test.command)
 			}
 		})
+	}
+}
+
+func TestClaudeDebugFlagPreservesExplicitOutputFormat(t *testing.T) {
+	command := []string{"claude", "--debug", "--output-format=json", "--print"}
+	if got := structuredClaudeCommand("claude", command); !slices.Equal(got, command) {
+		t.Fatalf("command = %q, want unchanged", got)
+	}
+	if got := newClaudeUsageCollector("claude", command); got == nil {
+		t.Fatal("collector = nil, want enabled for explicit JSON output")
+	}
+}
+
+func TestClaudeDebugFilterRemainsAnOptionalValue(t *testing.T) {
+	command := []string{"claude", "--debug", "api,hooks", "--print"}
+	want := []string{"claude", "--debug", "api,hooks", "--print", "--verbose", "--output-format", "stream-json"}
+	if got := structuredClaudeCommand("claude", command); !slices.Equal(got, want) {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+}
+
+func TestClaudeCommandRecognitionRejectsTrailingNiceWrappers(t *testing.T) {
+	for _, command := range [][]string{
+		{"env", "nice"},
+		{"mise", "exec", "--", "nice"},
+		{"direnv", "exec", ".", "nice"},
+	} {
+		if got := structuredClaudeCommand("claude", command); !slices.Equal(got, command) {
+			t.Fatalf("command = %q, want unchanged", got)
+		}
+		if got := newClaudeUsageCollector("claude", command); got != nil {
+			t.Fatalf("collector = %#v, want disabled", got)
+		}
 	}
 }
 
@@ -105,7 +139,7 @@ func TestClaudeUsageCollectorRejectsInvalidFinalUsage(t *testing.T) {
 
 func TestExecuteCollectsClaudeUsageAndPreservesOutput(t *testing.T) {
 	const output = `{"type":"result","usage":{"input_tokens":100,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":4}}` + "\n"
-	claude := claudeAgent(t, `cat >/dev/null; if [ "$2" != "--output-format" ] || [ "$3" != "stream-json" ]; then exit 8; fi; printf '%s' '`+output+`'; printf 'claude stderr\n' >&2`, 5*time.Second)
+	claude := claudeAgent(t, `cat >/dev/null; if [ "$2" != "--verbose" ] || [ "$3" != "--output-format" ] || [ "$4" != "stream-json" ]; then exit 8; fi; printf '%s' '`+output+`'; printf 'claude stderr\n' >&2`, 5*time.Second)
 	var stdout, stderr bytes.Buffer
 	result, err := Execute(t.Context(), Options{
 		Agent: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: &stdout, Stderr: &stderr,
