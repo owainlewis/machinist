@@ -113,7 +113,7 @@ command = ["codex", "exec", "--json", "--model={{machinist.model}}", "--sandbox"
 models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
 
 [executors.claude]
-command = ["claude", "--print", "--model={{machinist.model}}", "--dangerously-skip-permissions"]
+command = ["claude", "--print", "--output-format", "stream-json", "--model={{machinist.model}}", "--dangerously-skip-permissions"]
 models = { haiku = "haiku", sonnet = "sonnet", opus = "opus" }
 ```
 
@@ -136,6 +136,12 @@ names such as `codex-local` may place the `codex` executable behind an
 argv-preserving wrapper. Renamed Codex executables are recognized when invoked
 directly, through `env`, or through `mise exec`/`mise x`; the command must still
 contain the Codex `exec` argument.
+The shipped Claude command uses `stream-json` so Machinist can read the terminal
+`result` usage. Recognized Claude Code `--print` commands are normalized to that
+format when no output format is configured. Claude usage totals input,
+`cache_creation_input_tokens`, `cache_read_input_tokens`, and output tokens once
+each. Explicit `text` output is left unchanged and can use the token-usage file
+fallback; explicit `json` and `stream-json` output are parsed directly.
 Other executors can report a non-negative integer through the
 `MACHINIST_TOKEN_USAGE_PATH` file exposed to every run. Missing or malformed
 usage remains unavailable and does not affect executor output or completion.
