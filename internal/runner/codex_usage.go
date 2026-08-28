@@ -550,29 +550,70 @@ func isUsageResultCandidate(line []byte, resultType string) bool {
 }
 
 func hasJSONFieldValue(line []byte, field, want string) bool {
-	needle := []byte(`"` + field + `"`)
-	for offset := 0; offset < len(line); {
-		relativeIndex := bytes.Index(line[offset:], needle)
-		if relativeIndex < 0 {
-			return false
+	depth := 0
+	for index := 0; index < len(line); index++ {
+		switch line[index] {
+		case '"':
+			end, ok := scanJSONString(line, index)
+			if !ok {
+				return false
+			}
+			if depth == 1 {
+				var key string
+				if err := json.Unmarshal(line[index:end+1], &key); err != nil || key != field {
+					index = end
+					continue
+				}
+				valueStart := end + 1
+				for valueStart < len(line) && isJSONWhitespace(line[valueStart]) {
+					valueStart++
+				}
+				if valueStart >= len(line) || line[valueStart] != ':' {
+					index = end
+					continue
+				}
+				valueStart++
+				for valueStart < len(line) && isJSONWhitespace(line[valueStart]) {
+					valueStart++
+				}
+				if valueStart >= len(line) || line[valueStart] != '"' {
+					index = end
+					continue
+				}
+				valueEnd, ok := scanJSONString(line, valueStart)
+				if !ok {
+					return false
+				}
+				var value string
+				if err := json.Unmarshal(line[valueStart:valueEnd+1], &value); err == nil && value == want {
+					return true
+				}
+			}
+			index = end
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth > 0 {
+				depth--
+			}
 		}
-		index := offset + relativeIndex
-		prefix := bytes.TrimSpace(line[:index])
-		if len(prefix) > 0 && prefix[len(prefix)-1] != '{' && prefix[len(prefix)-1] != ',' {
-			offset = index + len(needle)
-			continue
-		}
-		remainder := bytes.TrimSpace(line[index+len(needle):])
-		if len(remainder) == 0 || remainder[0] != ':' {
-			offset = index + len(needle)
-			continue
-		}
-		decoder := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(remainder[1:])))
-		var value string
-		if err := decoder.Decode(&value); err == nil && value == want {
-			return true
-		}
-		offset = index + len(needle)
 	}
 	return false
+}
+
+func scanJSONString(line []byte, start int) (int, bool) {
+	for index := start + 1; index < len(line); index++ {
+		if line[index] == '\\' {
+			index++
+			continue
+		}
+		if line[index] == '"' {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+func isJSONWhitespace(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\n' || value == '\r'
 }
