@@ -20,6 +20,7 @@ var initialFiles = []string{
 	"agents/foreman.md",
 	"agents/audit.md",
 	"agents/shepherd.md",
+	"agents/pr-risk-reviewer.md",
 }
 
 func newInitCommand(options *commandOptions) *cobra.Command {

@@ -19,6 +19,25 @@ executor = "codex"
 prompt_file = "agents/shepherd.md"
 timeout = "120m"
 
+# Review all open pull requests every 24 hours, classify their merge risk, and merge
+# only verified low-risk changes. This example stays disabled until every line in both
+# blocks is uncommented and "my-project" names a configured repository.
+#
+# [agents.pr-risk-reviewer]
+# executor = "codex"
+# prompt_file = "agents/pr-risk-reviewer.md"
+# timeout = "120m"
+#
+# [github.repositories]
+# my-project = "OWNER/REPOSITORY"
+#
+# [triggers.interval.pr-risk-review]
+# every = "24h"
+# repository = "my-project"
+# agent = "pr-risk-reviewer"
+# model = "sol"
+# prompt = "Review every open pull request, classify its merge risk, and merge only verified low-risk changes."
+
 # Opt in one configured repository by adding a schedule like this:
 # [shepherd.my-project]
 # repository = "my-project"

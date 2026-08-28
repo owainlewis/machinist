@@ -33,6 +33,7 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 	wantFiles := []string{
 		"agents/audit.md",
 		"agents/foreman.md",
+		"agents/pr-risk-reviewer.md",
 		"agents/shepherd.md",
 		"config.toml",
 		"server/worker.token",
@@ -90,6 +91,9 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 	}
 	if len(definitions.Agents) != 3 || len(definitions.Pipelines) != 0 {
 		t.Fatalf("installed definitions = agents %#v, pipelines %#v", definitions.Agents, definitions.Pipelines)
+	}
+	if len(definitions.Triggers.Interval) != 0 {
+		t.Fatalf("installed definitions enabled example interval triggers: %#v", definitions.Triggers.Interval)
 	}
 	for _, name := range []string{"foreman", "audit", "shepherd"} {
 		if _, err := config.LoadAgent(definition, name); err != nil {

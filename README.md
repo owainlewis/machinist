@@ -146,6 +146,11 @@ Managed jobs can also start from GitHub issue labels, fixed intervals, and cron
 schedules. See [Managed triggers](docs/managed-triggers.md) for configuration,
 authentication, timing, restart, and recovery behavior.
 
+The sample configuration includes a disabled 24-hour pull request risk review. It
+classifies open pull requests as low, medium, or high risk and merges only verified
+low-risk changes. See [Configuration](docs/configuration.md#schedule-pull-request-risk-reviews)
+before enabling this merge-capable example.
+
 To enable the optional scheduled merge queue, add a `[shepherd.<name>]` entry to
 `config.toml`. Shepherd ensures the repository defines the `machinist:auto-merge`
 label and advances only pull requests carrying it. See

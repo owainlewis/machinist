@@ -102,6 +102,53 @@ An unlabelled pull request remains inventory-only. A repository policy may apply
 to Dependabot patch and minor updates. Keep major updates unlabelled unless a person opts in
 that specific pull request.
 
+## Schedule pull request risk reviews
+
+The shipped `pr-risk-reviewer` prompt is a separate example of an interval trigger. It
+reviews every open pull request, records a low, medium, or high risk classification for
+the exact head and base comparison, and merges only a low-risk change that also passes
+deterministic checks and fresh independent review. Unlike Shepherd, the configured
+schedule itself grants merge authority; no pull request opt-in label is required.
+
+The example in `examples/config.toml` is commented out. To enable it, define the agent
+and one interval trigger per repository:
+
+```toml
+[agents.pr-risk-reviewer]
+executor = "codex"
+prompt_file = "agents/pr-risk-reviewer.md"
+timeout = "120m"
+
+[github.repositories]
+api = "OWNER/REPOSITORY"
+
+[triggers.interval.pr-risk-review]
+every = "24h"
+repository = "api"
+agent = "pr-risk-reviewer"
+model = "sol"
+prompt = "Review every open pull request, classify its merge risk, and merge only verified low-risk changes."
+```
+
+The logical repository name must also exist in the worker configuration:
+
+```toml
+[repositories.api]
+path = "/absolute/path/to/repository"
+```
+
+The first review is due one complete interval after control-plane startup. Machinist
+records the selected model, duration, output, and available token usage like any other
+managed run. The reviewer also maintains `machinist:risk-low`,
+`machinist:risk-medium`, and `machinist:risk-high` labels plus a comparison-specific
+audit comment on GitHub.
+
+This automation can merge code. Use a trusted executor identity with only the GitHub
+permissions it needs, keep branch protection enabled, and start with a strong model.
+The prompt forbids executing candidate code on a credentialed host, administrator bypass,
+delayed auto-merge, branch changes, and merges when branch protection cannot reject a base
+change after review.
+
 ## Configure an executor
 
 Executors live in the worker file because commands and execution environments

@@ -679,6 +679,80 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 	}
 }
 
+func TestExamplePRRiskReviewTriggerIsDisabledAndPromptIsSafe(t *testing.T) {
+	definition := filepath.Join("..", "..", "examples", "config.toml")
+	definitions, err := LoadDefinitions(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(definitions.Triggers.Interval) != 0 {
+		t.Fatalf("example interval triggers = %#v, want disabled examples only", definitions.Triggers.Interval)
+	}
+
+	configBody, err := os.ReadFile(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"[agents.pr-risk-reviewer]", "[github.repositories]", "[triggers.interval.pr-risk-review]", "every = \"24h\"", "model = \"sol\""} {
+		if !strings.Contains(string(configBody), required) {
+			t.Fatalf("%s does not contain disabled PR risk review example %q", definition, required)
+		}
+	}
+
+	promptPath := filepath.Join("..", "..", "examples", "agents", "pr-risk-reviewer.md")
+	prompt, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance := string(prompt)
+	for _, required := range []string{
+		promptParameter,
+		"classify its merge risk",
+		"low, medium, or high",
+		"base branch, and base SHA",
+		"fresh read-only subagent",
+		"Never execute candidate-controlled code",
+		"viewerDidAuthor",
+		"independent review required before a merge",
+		"Trusted branch protection",
+		"auto-merge, a merge queue, or another delayed merge",
+		"Keep change risk separate from merge",
+		"eligibility: a low-risk change can remain low risk",
+		"branch readiness affects merge",
+		"eligibility only when the change itself is otherwise fully understood",
+		"request state is authoritative for the merge outcome",
+		"machinist:risk-low",
+		"<!-- machinist:pr-risk-review -->",
+	} {
+		if !strings.Contains(guidance, required) {
+			t.Fatalf("%s does not describe %q", promptPath, required)
+		}
+	}
+
+	enabledDir := t.TempDir()
+	writeTestFile(t, filepath.Join(enabledDir, "pr-risk-reviewer.md"), guidance)
+	writeTestFile(t, filepath.Join(enabledDir, "config.toml"), `[agents.pr-risk-reviewer]
+executor="codex"
+prompt_file="pr-risk-reviewer.md"
+timeout="120m"
+[github.repositories]
+api="example/api"
+[triggers.interval.pr-risk-review]
+every="24h"
+repository="api"
+agent="pr-risk-reviewer"
+model="sol"
+prompt="Review every open pull request."
+`)
+	triggers, err := LoadTriggers(filepath.Join(enabledDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(triggers) != 1 || triggers[0].Identity != "interval/pr-risk-review" || triggers[0].Repository != "api" || triggers[0].Model != "sol" {
+		t.Fatalf("enabled PR risk review trigger = %#v", triggers)
+	}
+}
+
 func TestWorkflowExampleDefinitionsLoad(t *testing.T) {
 	tests := []struct {
 		name     string
