@@ -72,6 +72,7 @@ func NewGitHubCLI(executable string, timeout time.Duration) *GitHubCLI {
 type GitHubCandidate struct {
 	Repository    string    `json:"repository"`
 	Number        int       `json:"number"`
+	Title         string    `json:"title"`
 	URL           string    `json:"url"`
 	State         string    `json:"state"`
 	IsPullRequest bool      `json:"is_pull_request"`
@@ -487,6 +488,7 @@ func deduplicateGitHubCandidates(candidates []GitHubCandidate) []GitHubCandidate
 
 type githubIssueResponse struct {
 	Number      int             `json:"number"`
+	Title       string          `json:"title"`
 	HTMLURL     string          `json:"html_url"`
 	State       string          `json:"state"`
 	PullRequest json.RawMessage `json:"pull_request"`
@@ -519,7 +521,7 @@ func parseGitHubIssueDetails(repository string, output []byte) (GitHubIssueDetai
 	isPullRequest := len(raw.PullRequest) > 0 && string(raw.PullRequest) != "null"
 	return GitHubIssueDetails{
 		GitHubCandidate: GitHubCandidate{
-			Repository: repository, Number: raw.Number, URL: raw.HTMLURL, State: raw.State,
+			Repository: repository, Number: raw.Number, Title: strings.TrimSpace(raw.Title), URL: raw.HTMLURL, State: raw.State,
 			IsPullRequest: isPullRequest, CreatedAt: createdAt,
 		},
 		Labels: labels,

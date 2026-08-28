@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardColumnForState, filterJobs, groupJobsByBoardColumn, needsAttention } from "./runs-board.js";
+import { boardColumnForState, filterJobs, githubIssueReference, groupJobsByBoardColumn, jobDisplayTitle, needsAttention } from "./runs-board.js";
 
 test("job states map to the three board columns without hiding attention states", () => {
   assert.equal(boardColumnForState("queued"), "queued");
@@ -32,4 +32,11 @@ test("board and table filters use the same filtered job set", () => {
   const visibleJobs = filterJobs(jobs, "active");
   const grouped = groupJobsByBoardColumn(visibleJobs);
   assert.equal(grouped.queued.length + grouped.running.length + grouped.finished.length, visibleJobs.length);
+});
+
+test("GitHub issue titles are preferred over prompts and hashes", () => {
+  const job = { id: "job_12345678", prompt: "Complete https://github.com/o/r/issues/7", github_issue_title: "Make cards readable", trigger_subject: "https://github.com/o/r/issues/7" };
+  assert.equal(jobDisplayTitle(job), "Make cards readable");
+  assert.equal(githubIssueReference(job), "#7");
+  assert.equal(jobDisplayTitle({ id: "job_12345678", prompt: "Run an audit" }), "Run an audit");
 });

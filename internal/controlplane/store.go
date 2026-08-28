@@ -36,19 +36,20 @@ type Store struct {
 }
 
 type Job struct {
-	ID             string    `json:"id"`
-	Prompt         string    `json:"prompt"`
-	Repository     string    `json:"repository"`
-	SelectionKind  string    `json:"selection_kind"`
-	SelectionName  string    `json:"selection_name"`
-	ScheduleName   string    `json:"schedule_name,omitempty"`
-	TriggerID      string    `json:"trigger_id,omitempty"`
-	OccurrenceKey  string    `json:"occurrence_key,omitempty"`
-	TriggerSubject string    `json:"trigger_subject,omitempty"`
-	State          string    `json:"state"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Runs           []Run     `json:"runs"`
+	ID               string    `json:"id"`
+	Prompt           string    `json:"prompt"`
+	Repository       string    `json:"repository"`
+	GitHubIssueTitle string    `json:"github_issue_title,omitempty"`
+	SelectionKind    string    `json:"selection_kind"`
+	SelectionName    string    `json:"selection_name"`
+	ScheduleName     string    `json:"schedule_name,omitempty"`
+	TriggerID        string    `json:"trigger_id,omitempty"`
+	OccurrenceKey    string    `json:"occurrence_key,omitempty"`
+	TriggerSubject   string    `json:"trigger_subject,omitempty"`
+	State            string    `json:"state"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	Runs             []Run     `json:"runs"`
 }
 
 type Run struct {
@@ -109,6 +110,7 @@ type TriggerAdmission struct {
 	Agents            []config.ResolvedAgent
 	GitHubRepository  string
 	GitHubIssueNumber int
+	GitHubIssueTitle  string
 	RequestActor      string
 	RequestLabel      string
 }
@@ -186,6 +188,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   trigger_generation_id TEXT NOT NULL DEFAULT '',
   occurrence_key TEXT NOT NULL DEFAULT '',
   trigger_subject TEXT NOT NULL DEFAULT '',
+  github_issue_title TEXT NOT NULL DEFAULT '',
   fixed_trigger INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -309,6 +312,9 @@ CREATE TABLE IF NOT EXISTS github_trigger_requests (
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_subject", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "jobs", "github_issue_title", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "jobs", "fixed_trigger", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -681,6 +687,11 @@ WHERE github_trigger_requests.state='pending'`, admission.Identity, admission.Oc
 	err = tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE trigger_identity=? AND occurrence_key=?`, admission.Identity, admission.OccurrenceKey).Scan(&existingJob)
 	if err == nil {
 		if admission.Family == "github" {
+			if admission.GitHubIssueTitle != "" {
+				if _, updateErr := tx.ExecContext(ctx, `UPDATE jobs SET github_issue_title=? WHERE id=? AND github_issue_title=''`, admission.GitHubIssueTitle, existingJob); updateErr != nil {
+					return "", false, fmt.Errorf("update existing github job title: %w", updateErr)
+				}
+			}
 			if _, updateErr := tx.ExecContext(ctx, `UPDATE github_trigger_requests SET state='admitted',job_id=?,config_generation=?,needs_reconciliation=1,updated_at=? WHERE trigger_identity=? AND occurrence_key=?`, existingJob, admission.ConfigGeneration, s.now().UTC().Format(time.RFC3339Nano), admission.Identity, admission.OccurrenceKey); updateErr != nil {
 				return "", false, fmt.Errorf("repair github trigger request: %w", updateErr)
 			}
@@ -716,6 +727,11 @@ WHERE github_trigger_requests.state='pending'`, admission.Identity, admission.Oc
 	if admission.Subject != "" {
 		err = tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE trigger_subject=? AND state IN ('queued','running')`, admission.Subject).Scan(&existingJob)
 		if err == nil {
+			if admission.Family == "github" && admission.GitHubIssueTitle != "" {
+				if _, updateErr := tx.ExecContext(ctx, `UPDATE jobs SET github_issue_title=? WHERE id=? AND github_issue_title=''`, admission.GitHubIssueTitle, existingJob); updateErr != nil {
+					return "", false, fmt.Errorf("update existing github job title: %w", updateErr)
+				}
+			}
 			return existingJob, false, tx.Commit()
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -732,7 +748,7 @@ WHERE github_trigger_requests.state='pending'`, admission.Identity, admission.Oc
 	for _, agent := range admission.Agents {
 		hasShepherd = hasShepherd || agent.Name == "shepherd"
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,trigger_identity,trigger_config_signature,trigger_generation_id,occurrence_key,trigger_subject,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionKind, admission.SelectionName, hasShepherd, admission.Identity, admission.ConfigSignature, admission.ConfigGeneration, admission.OccurrenceKey, admission.Subject, fixed, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,trigger_identity,trigger_config_signature,trigger_generation_id,occurrence_key,trigger_subject,github_issue_title,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionKind, admission.SelectionName, hasShepherd, admission.Identity, admission.ConfigSignature, admission.ConfigGeneration, admission.OccurrenceKey, admission.Subject, admission.GitHubIssueTitle, fixed, now, now); err != nil {
 		return "", false, fmt.Errorf("insert triggered job: %w", err)
 	}
 	if admission.Family == "github" {
@@ -1392,7 +1408,7 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 }
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,prompt,repository,selection_kind,selection_name,schedule_name,trigger_identity,occurrence_key,trigger_subject,state,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,prompt,repository,github_issue_title,selection_kind,selection_name,schedule_name,trigger_identity,occurrence_key,trigger_subject,state,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1400,7 +1416,7 @@ func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
 	for rows.Next() {
 		var job Job
 		var created, updated string
-		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.SelectionKind, &job.SelectionName, &job.ScheduleName, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated); err != nil {
+		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.GitHubIssueTitle, &job.SelectionKind, &job.SelectionName, &job.ScheduleName, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated); err != nil {
 			return nil, err
 		}
 		job.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
