@@ -137,6 +137,20 @@ func TestExecuteUsesClaudeFileFallbackForExplicitText(t *testing.T) {
 	}
 }
 
+func TestExecuteLeavesClaudeFileFallbackUsageUnavailableAfterTimeout(t *testing.T) {
+	claude := claudeAgentWithCommand(t, []string{"--print", "--output-format", "text"}, `cat >/dev/null; printf 2468 > "$MACHINIST_TOKEN_USAGE_PATH"; sleep 60`, 100*time.Millisecond)
+	result, err := Execute(t.Context(), Options{
+		Agent: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
+	})
+	var outcome *OutcomeError
+	if !errors.As(err, &outcome) || outcome.State != StateTimedOut || outcome.ExitCode != 124 {
+		t.Fatalf("error = %#v", err)
+	}
+	if result.TokenUsage != nil {
+		t.Fatalf("token usage = %d, want unavailable after timeout", *result.TokenUsage)
+	}
+}
+
 func TestExecuteCollectsClaudeExplicitJSONUsageWithoutNormalizing(t *testing.T) {
 	const output = `{"type":"result","usage":{"input_tokens":5,"cache_creation_input_tokens":6,"cache_read_input_tokens":7,"output_tokens":8}}`
 	claude := claudeAgentWithCommand(t, []string{"--print", "--output-format", "json"}, `cat >/dev/null; if [ "$1" != "--print" ] || [ "$2" != "--output-format" ] || [ "$3" != "json" ] || [ -n "$4" ]; then exit 8; fi; printf '%s' '`+output+`'`, 5*time.Second)

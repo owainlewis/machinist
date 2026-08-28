@@ -147,6 +147,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	}
 
 	executorCommand := structuredAgentCommand(options.Agent.Executor, options.Agent.Command)
+	_, isClaudeCommand := claudeCommandInfo(options.Agent.Executor, executorCommand)
 	command := exec.Command(executorCommand[0], executorCommand[1:]...)
 	command.Dir = repository
 	command.Env = append(sanitizedEnvironment(os.Environ()), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
@@ -217,10 +218,15 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	closeStreams := func() { closeFiles(stdoutReader, stderrReader) }
 	state, exitCode, outcome := supervise(ctx, command.Process, options.Agent.Timeout, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr)
 	var collectedTokenUsage *int64
+	collectedTokenUsageIsAuthoritative := usageCollector != nil
 	if usageCollector != nil {
 		collectedTokenUsage = usageCollector.tokenUsage()
 	}
-	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage, usageCollector != nil); err != nil {
+	if state == StateTimedOut && isClaudeCommand {
+		collectedTokenUsage = nil
+		collectedTokenUsageIsAuthoritative = true
+	}
+	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage, collectedTokenUsageIsAuthoritative); err != nil {
 		if outcome != nil {
 			return result, &OutcomeError{State: state, ExitCode: exitCode, Cause: errors.Join(outcome, err)}
 		}
