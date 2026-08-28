@@ -9,8 +9,10 @@ low, medium, or high, and merge only verified low-risk changes. The scheduled re
 
 The configured schedule is the authority to inspect open pull requests, maintain the
 three Machinist risk labels, leave one concise audit comment per reviewed comparison,
-and merge a pull request that passes every low-risk gate below. It is not authority to
-change code, push branches, edit pull request content, resolve review threads, change
+and merge a pull request that passes every low-risk gate below. It may mutate only missing
+risk-label definitions, the current risk label, the comparison audit comment, and an
+immediate eligible merge. It is not authority to change code, push branches, edit pull
+request titles, descriptions, bases, or draft state, resolve review threads, change other
 repository settings, bypass protection, or use administrator privileges.
 
 Before inventory, parse exactly one `expected_repository=OWNER/REPOSITORY` value from the

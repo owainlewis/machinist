@@ -724,6 +724,8 @@ func TestExamplePRRiskReviewTriggerIsDisabledAndPromptIsSafe(t *testing.T) {
 		"expected_repository=OWNER/REPOSITORY",
 		"canonical `nameWithOwner`",
 		"logical worker repository name and local path are not proof",
+		"It may mutate only missing",
+		"request titles, descriptions, bases, or draft state",
 		"machinist:risk-low",
 		"<!-- machinist:pr-risk-review -->",
 	} {
