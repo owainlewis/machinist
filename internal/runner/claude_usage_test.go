@@ -200,8 +200,8 @@ func TestExecuteUsesClaudeFileFallbackForExplicitText(t *testing.T) {
 	}
 }
 
-func TestExecuteLeavesClaudeFileFallbackUsageUnavailableAfterTimeout(t *testing.T) {
-	claude := claudeAgentWithCommand(t, []string{"--print", "--output-format", "text"}, `cat >/dev/null; printf 2468 > "$MACHINIST_TOKEN_USAGE_PATH"; sleep 60`, 100*time.Millisecond)
+func TestExecuteUsesClaudeFileFallbackForExplicitTextAfterTimeout(t *testing.T) {
+	claude := claudeAgentWithCommand(t, []string{"--print", "--output-format", "text"}, `cat >/dev/null; printf 2468 > "$MACHINIST_TOKEN_USAGE_PATH"; sleep 60`, time.Second)
 	result, err := Execute(t.Context(), Options{
 		Agent: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
 	})
@@ -209,8 +209,8 @@ func TestExecuteLeavesClaudeFileFallbackUsageUnavailableAfterTimeout(t *testing.
 	if !errors.As(err, &outcome) || outcome.State != StateTimedOut || outcome.ExitCode != 124 {
 		t.Fatalf("error = %#v", err)
 	}
-	if result.TokenUsage != nil {
-		t.Fatalf("token usage = %d, want unavailable after timeout", *result.TokenUsage)
+	if result.TokenUsage == nil || *result.TokenUsage != 2468 {
+		t.Fatalf("token usage = %v, want 2468 after timeout", result.TokenUsage)
 	}
 }
 

@@ -147,7 +147,6 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	}
 
 	executorCommand := structuredAgentCommand(options.Agent.Executor, options.Agent.Command)
-	_, isClaudeCommand := claudeCommandInfo(options.Agent.Executor, executorCommand)
 	command := exec.Command(executorCommand[0], executorCommand[1:]...)
 	command.Dir = repository
 	command.Env = append(sanitizedEnvironment(os.Environ()), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
@@ -194,8 +193,10 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	var streams sync.WaitGroup
 	streams.Add(2)
 	usageCollector := newCodexUsageCollector(options.Agent.Executor, executorCommand)
+	structuredClaudeCollectorActive := false
 	if usageCollector == nil {
 		usageCollector = newClaudeUsageCollector(options.Agent.Executor, executorCommand)
+		structuredClaudeCollectorActive = usageCollector != nil
 	}
 	stdoutDestination := options.Stdout
 	if usageCollector != nil {
@@ -222,7 +223,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	if usageCollector != nil {
 		collectedTokenUsage = usageCollector.tokenUsage()
 	}
-	if state == StateTimedOut && isClaudeCommand {
+	if state == StateTimedOut && structuredClaudeCollectorActive {
 		collectedTokenUsage = nil
 		collectedTokenUsageIsAuthoritative = true
 	}
