@@ -29,7 +29,9 @@ func TestStructuredClaudeCommandAddsStreamJSONToPrintCommands(t *testing.T) {
 		{name: "max turns", executor: "claude", command: []string{"claude", "--print", "--max-turns", "3"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--max-turns", "3"}},
 		{name: "agent", executor: "claude", command: []string{"claude", "--print", "--agent", "reviewer"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--agent", "reviewer"}},
 		{name: "strict MCP config", executor: "claude", command: []string{"claude", "--print", "--strict-mcp-config"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--strict-mcp-config"}},
-		{name: "prompt suggestions explicit value", executor: "claude", command: []string{"claude", "--print", "--prompt-suggestions", "false"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--prompt-suggestions", "false"}},
+		{name: "prompt suggestions flag", executor: "claude", command: []string{"claude", "--print", "--prompt-suggestions"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--prompt-suggestions"}},
+		{name: "prompt suggestions separate value", executor: "claude", command: []string{"claude", "--print", "--prompt-suggestions", "false"}, want: []string{"claude", "--print", "--prompt-suggestions", "false"}},
+		{name: "prompt suggestions equals value", executor: "claude", command: []string{"claude", "--print", "--prompt-suggestions=false"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--prompt-suggestions=false"}},
 		{name: "existing verbose", executor: "claude", command: []string{"claude", "--print", "--verbose"}, want: []string{"claude", "--print", "--output-format", "stream-json", "--verbose"}},
 		{name: "explicit text", executor: "claude", command: []string{"claude", "--print", "--output-format", "text"}, want: []string{"claude", "--print", "--output-format", "text"}},
 		{name: "explicit json", executor: "claude", command: []string{"claude", "--output-format=json", "--print"}, want: []string{"claude", "--output-format=json", "--print"}},
@@ -57,9 +59,19 @@ func TestClaudeDebugFlagPreservesExplicitOutputFormat(t *testing.T) {
 	}
 }
 
-func TestClaudeDebugFilterRemainsAnOptionalValue(t *testing.T) {
+func TestClaudeDebugFilterSeparateValueIsRejected(t *testing.T) {
 	command := []string{"claude", "--debug", "api,hooks", "--print"}
-	want := []string{"claude", "--debug", "api,hooks", "--print", "--verbose", "--output-format", "stream-json"}
+	if got := structuredClaudeCommand("claude", command); !slices.Equal(got, command) {
+		t.Fatalf("command = %q, want unchanged", got)
+	}
+	if got := newClaudeUsageCollector("claude", command); got != nil {
+		t.Fatalf("collector = %#v, want disabled", got)
+	}
+}
+
+func TestClaudeDebugFilterEqualsValueIsRecognized(t *testing.T) {
+	command := []string{"claude", "--debug=api,hooks", "--print"}
+	want := []string{"claude", "--debug=api,hooks", "--print", "--verbose", "--output-format", "stream-json"}
 	if got := structuredClaudeCommand("claude", command); !slices.Equal(got, want) {
 		t.Fatalf("command = %q, want %q", got, want)
 	}
@@ -69,7 +81,7 @@ func TestClaudeUsageCollectorAcceptsCurrentPrintOptions(t *testing.T) {
 	for _, command := range [][]string{
 		{"claude", "--print", "--agent", "reviewer"},
 		{"claude", "--print", "--strict-mcp-config"},
-		{"claude", "--print", "--prompt-suggestions", "false"},
+		{"claude", "--print", "--prompt-suggestions=false"},
 	} {
 		if got := newClaudeUsageCollector("claude", command); got == nil {
 			t.Fatalf("collector disabled for command %q", command)
@@ -103,6 +115,7 @@ func TestClaudeCommandRecognitionRejectsAmbiguousArguments(t *testing.T) {
 		{name: "short version option is not verbose", executor: "claude", command: []string{"claude", "--print", "-v"}},
 		{name: "unknown option", executor: "claude", command: []string{"claude", "--future-option", "--print"}},
 		{name: "missing option value", executor: "claude", command: []string{"claude", "--print", "--model"}},
+		{name: "prompt suggestions optional value", executor: "claude", command: []string{"claude", "--print", "--prompt-suggestions", "false"}},
 		{name: "invalid output format", executor: "claude", command: []string{"claude", "--print", "--output-format", "yaml"}},
 		{name: "misleading data", executor: "custom", command: []string{"echo", "claude", "--print"}},
 		{name: "misleading data with Claude executor", executor: "claude", command: []string{"echo", "claude", "--print"}},

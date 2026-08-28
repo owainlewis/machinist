@@ -130,10 +130,6 @@ func claudeCommandInfoAfter(command []string, programIndex int) (claudeCommand, 
 			info.outputFormat = strings.TrimPrefix(argument, "--output-format=")
 		} else if argument == "--verbose" {
 			info.hasVerbose = true
-		} else if argument == "--debug" && index+1 < len(command) && !strings.HasPrefix(command[index+1], "-") {
-			index++
-		} else if argument == "--prompt-suggestions" && index+1 < len(command) && !strings.HasPrefix(command[index+1], "-") {
-			index++
 		} else if takesNextValue {
 			if index+1 >= len(command) {
 				return claudeCommand{}, false
