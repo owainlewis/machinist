@@ -27,6 +27,9 @@ func TestStructuredClaudeCommandAddsStreamJSONToPrintCommands(t *testing.T) {
 		{name: "mise wrapper", executor: "custom", command: []string{"mise", "exec", "--", "claude", "--print"}, want: []string{"mise", "exec", "--", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
 		{name: "nice wrapper", executor: "custom", command: []string{"nice", "claude", "--print"}, want: []string{"nice", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
 		{name: "max turns", executor: "claude", command: []string{"claude", "--print", "--max-turns", "3"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--max-turns", "3"}},
+		{name: "agent", executor: "claude", command: []string{"claude", "--print", "--agent", "reviewer"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--agent", "reviewer"}},
+		{name: "strict MCP config", executor: "claude", command: []string{"claude", "--print", "--strict-mcp-config"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--strict-mcp-config"}},
+		{name: "prompt suggestions explicit value", executor: "claude", command: []string{"claude", "--print", "--prompt-suggestions", "false"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--prompt-suggestions", "false"}},
 		{name: "existing verbose", executor: "claude", command: []string{"claude", "--print", "--verbose"}, want: []string{"claude", "--print", "--output-format", "stream-json", "--verbose"}},
 		{name: "explicit text", executor: "claude", command: []string{"claude", "--print", "--output-format", "text"}, want: []string{"claude", "--print", "--output-format", "text"}},
 		{name: "explicit json", executor: "claude", command: []string{"claude", "--output-format=json", "--print"}, want: []string{"claude", "--output-format=json", "--print"}},
@@ -62,6 +65,18 @@ func TestClaudeDebugFilterRemainsAnOptionalValue(t *testing.T) {
 	}
 }
 
+func TestClaudeUsageCollectorAcceptsCurrentPrintOptions(t *testing.T) {
+	for _, command := range [][]string{
+		{"claude", "--print", "--agent", "reviewer"},
+		{"claude", "--print", "--strict-mcp-config"},
+		{"claude", "--print", "--prompt-suggestions", "false"},
+	} {
+		if got := newClaudeUsageCollector("claude", command); got == nil {
+			t.Fatalf("collector disabled for command %q", command)
+		}
+	}
+}
+
 func TestClaudeCommandRecognitionRejectsTrailingNiceWrappers(t *testing.T) {
 	for _, command := range [][]string{
 		{"env", "nice"},
@@ -85,6 +100,7 @@ func TestClaudeCommandRecognitionRejectsAmbiguousArguments(t *testing.T) {
 	}{
 		{name: "missing print", executor: "claude", command: []string{"claude", "--verbose"}},
 		{name: "prompt argument", executor: "claude", command: []string{"claude", "--print", "prompt"}},
+		{name: "short version option is not verbose", executor: "claude", command: []string{"claude", "--print", "-v"}},
 		{name: "unknown option", executor: "claude", command: []string{"claude", "--future-option", "--print"}},
 		{name: "missing option value", executor: "claude", command: []string{"claude", "--print", "--model"}},
 		{name: "invalid output format", executor: "claude", command: []string{"claude", "--print", "--output-format", "yaml"}},

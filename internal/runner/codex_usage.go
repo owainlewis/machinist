@@ -128,9 +128,11 @@ func claudeCommandInfoAfter(command []string, programIndex int) (claudeCommand, 
 		} else if strings.HasPrefix(argument, "--output-format=") {
 			info.hasOutputFormat = true
 			info.outputFormat = strings.TrimPrefix(argument, "--output-format=")
-		} else if argument == "--verbose" || argument == "-v" {
+		} else if argument == "--verbose" {
 			info.hasVerbose = true
 		} else if argument == "--debug" && index+1 < len(command) && !strings.HasPrefix(command[index+1], "-") {
+			index++
+		} else if argument == "--prompt-suggestions" && index+1 < len(command) && !strings.HasPrefix(command[index+1], "-") {
 			index++
 		} else if takesNextValue {
 			if index+1 >= len(command) {
@@ -150,7 +152,7 @@ func claudeRootOption(argument string) (bool, bool) {
 		return true, false
 	}
 	valueOptions := []string{
-		"--add-dir", "--advisor", "--agents", "--allowedTools", "--allowed-tools", "--append-subagent-system-prompt",
+		"--add-dir", "--advisor", "--agent", "--agents", "--allowedTools", "--allowed-tools", "--append-subagent-system-prompt",
 		"--append-system-prompt", "--append-system-prompt-file", "--betas", "--debug-file", "--disallowedTools",
 		"--dangerously-load-development-channels", "--disallowed-tools", "--effort", "--fallback-model", "--from-pr", "--input-format", "--json-schema", "--max-budget-usd", "--max-turns",
 		"--mcp-config", "--model", "--name", "-n", "--output-format", "--permission-mode", "--permission-prompt-tool",
@@ -169,10 +171,16 @@ func claudeRootOption(argument string) (bool, bool) {
 		"--allow-dangerously-skip-permissions", "--ax-screen-reader", "--bare", "--chrome", "--continue", "-c",
 		"--dangerously-skip-permissions", "--disable-slash-commands", "--enable-auto-mode", "--exclude-dynamic-system-prompt-sections",
 		"--debug", "--fork-session", "--forward-subagent-text", "--ide", "--include-hook-events", "--include-partial-messages", "--init",
-		"--init-only", "--maintenance", "--no-chrome", "--no-session-persistence", "--print", "-p", "--prompt-suggestions",
-		"--replay-user-messages", "--restricted", "--safe-mode", "--teleport", "--verbose", "-v",
+		"--init-only", "--maintenance", "--no-chrome", "--no-session-persistence", "--print", "-p",
+		"--replay-user-messages", "--restricted", "--safe-mode", "--strict-mcp-config", "--teleport", "--verbose",
 	}
-	return slices.Contains(booleanOptions, argument), false
+	if slices.Contains(booleanOptions, argument) {
+		return true, false
+	}
+	if argument == "--prompt-suggestions" || strings.HasPrefix(argument, "--prompt-suggestions=") {
+		return true, false
+	}
+	return false, false
 }
 
 func claudeExecutorName(executor string) bool {
