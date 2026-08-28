@@ -36,7 +36,7 @@ timeout = "120m"
 # repository = "my-project"
 # agent = "pr-risk-reviewer"
 # model = "sol"
-# prompt = "Review every open pull request, classify its merge risk, and merge only verified low-risk changes."
+# prompt = "expected_repository=OWNER/REPOSITORY. Review every open pull request, classify its merge risk, and merge only verified low-risk changes."
 
 # Opt in one configured repository by adding a schedule like this:
 # [shepherd.my-project]

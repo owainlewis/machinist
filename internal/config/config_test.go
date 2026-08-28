@@ -693,7 +693,7 @@ func TestExamplePRRiskReviewTriggerIsDisabledAndPromptIsSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"[agents.pr-risk-reviewer]", "[github.repositories]", "[triggers.interval.pr-risk-review]", "every = \"24h\"", "model = \"sol\""} {
+	for _, required := range []string{"[agents.pr-risk-reviewer]", "[github.repositories]", "[triggers.interval.pr-risk-review]", "every = \"24h\"", "model = \"sol\"", "expected_repository=OWNER/REPOSITORY"} {
 		if !strings.Contains(string(configBody), required) {
 			t.Fatalf("%s does not contain disabled PR risk review example %q", definition, required)
 		}
@@ -721,6 +721,9 @@ func TestExamplePRRiskReviewTriggerIsDisabledAndPromptIsSafe(t *testing.T) {
 		"branch readiness affects merge",
 		"eligibility only when the change itself is otherwise fully understood",
 		"request state is authoritative for the merge outcome",
+		"expected_repository=OWNER/REPOSITORY",
+		"canonical `nameWithOwner`",
+		"logical worker repository name and local path are not proof",
 		"machinist:risk-low",
 		"<!-- machinist:pr-risk-review -->",
 	} {
@@ -742,7 +745,7 @@ every="24h"
 repository="api"
 agent="pr-risk-reviewer"
 model="sol"
-prompt="Review every open pull request."
+prompt="expected_repository=example/api. Review every open pull request."
 `)
 	triggers, err := LoadTriggers(filepath.Join(enabledDir, "config.toml"))
 	if err != nil {

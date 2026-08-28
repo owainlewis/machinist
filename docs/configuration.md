@@ -127,7 +127,7 @@ every = "24h"
 repository = "api"
 agent = "pr-risk-reviewer"
 model = "sol"
-prompt = "Review every open pull request, classify its merge risk, and merge only verified low-risk changes."
+prompt = "expected_repository=OWNER/REPOSITORY. Review every open pull request, classify its merge risk, and merge only verified low-risk changes."
 ```
 
 The logical repository name must also exist in the worker configuration:
@@ -147,7 +147,9 @@ This automation can merge code. Use a trusted executor identity with only the Gi
 permissions it needs, keep branch protection enabled, and start with a strong model.
 The prompt forbids executing candidate code on a credentialed host, administrator bypass,
 delayed auto-merge, branch changes, and merges when branch protection cannot reject a base
-change after review.
+change after review. The `expected_repository` value is a second trusted binding beside
+the shared mapping; the reviewer verifies it against the checkout's canonical GitHub
+identity before every mutation.
 
 ## Configure an executor
 
