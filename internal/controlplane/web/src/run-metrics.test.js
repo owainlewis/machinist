@@ -159,6 +159,37 @@ test("task detail keeps executor, model, and usage reporting explicit", async ()
   assert.match(taskDetail, /"Not reported"/);
 });
 
+test("task detail metrics use visual row boundaries at each responsive breakpoint", async () => {
+  const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
+  const taskDetail = source.match(/function TaskDetail[\s\S]+?function RunComposer/)?.[0];
+  assert.ok(taskDetail);
+  assert.match(taskDetail, /<dl className="grid border-y border-border sm:grid-cols-2 lg:grid-cols-4">/);
+
+  const metric = taskDetail.match(/function DetailMetric[\s\S]+?function RunMetric/)?.[0];
+  assert.ok(metric);
+  assert.deepEqual(
+    [...taskDetail.matchAll(/<DetailMetric label="([^"]+)"/g)].map((match) => match[1]),
+    ["Repository", "Run with", "Requested model", "Submitted", "Steps", "Duration", "Token usage", "Updated"],
+  );
+  for (const className of [
+    "last:border-b-0",
+    "sm:border-r",
+    "sm:px-4",
+    "sm:[&:nth-child(2n+1)]:pl-0",
+    "sm:[&:nth-child(2n)]:border-r-0",
+    "lg:border-b-0",
+    "lg:[&:nth-child(4n+1)]:pl-0",
+    "lg:[&:nth-child(4n+2)]:border-r",
+    "lg:[&:nth-child(4n+3)]:pl-4",
+    "lg:[&:nth-child(4n)]:border-r-0",
+  ]) {
+    assert.match(metric, new RegExp(className.replace(/[()[\]+*?.]/g, "\\$&")));
+  }
+  assert.doesNotMatch(metric, /sm:first:pl-0/);
+  assert.match(metric, /<dt className=/);
+  assert.match(metric, /<dd className=\{cn\("mt-1 truncate/);
+});
+
 test("board cards are compact links while list rows retain model and usage", async () => {
   const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
   const runCard = source.match(/function RunCard[\s\S]+?function RunRow/)?.[0];

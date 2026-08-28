@@ -259,7 +259,7 @@ function TaskDetail({ job, loaded, error, deleting, onDelete }) {
   </div>;
 }
 
-function DetailMetric({ label, value, mono = false }) { return <div className="min-w-0 border-b border-border py-3 last:border-b-0 sm:border-r sm:px-4 sm:first:pl-0 lg:border-b-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={cn("mt-1 truncate text-sm font-medium", mono && "font-mono")} title={value}>{value}</dd></div>; }
+function DetailMetric({ label, value, mono = false }) { return <div className="min-w-0 border-b border-border py-3 last:border-b-0 sm:border-r sm:px-4 sm:[&:nth-child(2n+1)]:pl-0 sm:[&:nth-child(2n)]:border-r-0 lg:border-b-0 lg:[&:nth-child(4n+1)]:pl-0 lg:[&:nth-child(4n+2)]:border-r lg:[&:nth-child(4n+3)]:pl-4 lg:[&:nth-child(4n)]:border-r-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={cn("mt-1 truncate text-sm font-medium", mono && "font-mono")} title={value}>{value}</dd></div>; }
 function RunMetric({ label, value, mono = false }) { return <div className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={cn("mt-0.5 truncate text-sm", mono && "font-mono")} title={value}>{value}</dd></div>; }
 
 function RunComposer({ choices, repositories, selection, setSelection, repository, setRepository, prompt, setPrompt, model, setModel, submitting, submit, close }) {
