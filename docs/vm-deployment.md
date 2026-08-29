@@ -195,6 +195,7 @@ brackets.
 Enable and start the worker now that it has a repository:
 
 ```sh
+machinist worker validate
 systemctl enable --now machinist-worker.service
 ```
 
@@ -249,6 +250,7 @@ Verify the configuration and credentials before assigning a real issue:
 ```sh
 machinist version
 machinist update
+machinist worker validate
 systemctl is-active machinist-control-plane.service machinist-worker.service
 gh auth status
 ssh -T git@github.com

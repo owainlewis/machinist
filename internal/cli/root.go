@@ -78,6 +78,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	worker := &cobra.Command{Use: "worker", Short: "Run or connect a Machinist Worker"}
 	worker.AddCommand(newRunCommand(options, false))
 	worker.AddCommand(newWorkerStartCommand(options))
+	worker.AddCommand(newWorkerValidateCommand(options))
 	root.AddCommand(worker)
 
 	root.AddCommand(&cobra.Command{
@@ -89,6 +90,25 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 		},
 	})
 	return root
+}
+
+func newWorkerValidateCommand(options *commandOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate",
+		Short: "Validate the managed worker configuration",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			workerConfig, err := config.LoadWorker(options.configPath)
+			if err != nil {
+				return err
+			}
+			if _, err := managedworker.New(workerConfig, io.Discard, io.Discard); err != nil {
+				return err
+			}
+			fmt.Fprintln(options.stdout, "worker configuration is valid")
+			return nil
+		},
+	}
 }
 
 func newUpdateCommand(options *commandOptions) *cobra.Command {
