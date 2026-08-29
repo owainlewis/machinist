@@ -94,3 +94,45 @@ func TestReviewLoopReviewsFinalRepair(t *testing.T) {
 		t.Fatalf("review count = %q, %v", got, err)
 	}
 }
+
+func TestReviewLoopPropagatesFeedbackReaderFailure(t *testing.T) {
+	directory := t.TempDir()
+	scripts := filepath.Join(directory, "scripts")
+	bin := filepath.Join(directory, "bin")
+	if err := os.Mkdir(scripts, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	falsePath, err := exec.LookPath("false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(truePath, filepath.Join(bin, "codex")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(falsePath, filepath.Join(scripts, "wait-for-review.sh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scripts, "read-review-feedback.sh"), []byte("#!/bin/sh\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	absoluteScript, err := filepath.Abs(filepath.Join("workflows", "review-loop", "review-loop.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("/bin/sh", absoluteScript)
+	command.Dir = directory
+	command.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin")
+	command.Stdin = bytes.NewBufferString("implement request")
+	output, err := command.CombinedOutput()
+	exitError, ok := err.(*exec.ExitError)
+	if !ok || exitError.ExitCode() != 7 {
+		t.Fatalf("feedback failure = %v, output %q", err, output)
+	}
+}

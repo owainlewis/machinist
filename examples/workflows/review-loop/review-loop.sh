@@ -19,7 +19,8 @@ while :; do
   fi
   repair=$((repair + 1))
   printf '%s\n' "fix feedback: repair $repair/$max_repairs"
-  ./scripts/read-review-feedback.sh | codex exec --json -
+  feedback=$(./scripts/read-review-feedback.sh)
+  printf '%s\n' "$feedback" | codex exec --json -
 done
 
 printf '%s\n' "review was not approved after $max_repairs repairs" >&2
