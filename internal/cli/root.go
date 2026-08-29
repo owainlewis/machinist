@@ -17,6 +17,7 @@ import (
 	"github.com/owainlewis/machinist/internal/controlplane"
 	"github.com/owainlewis/machinist/internal/managedworker"
 	"github.com/owainlewis/machinist/internal/runner"
+	"github.com/owainlewis/machinist/internal/updater"
 	"github.com/spf13/cobra"
 )
 
@@ -72,6 +73,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newRunCommand(options, true))
 	root.AddCommand(newSubmitCommand(options))
 	root.AddCommand(newStartCommand(options))
+	root.AddCommand(newUpdateCommand(options))
 
 	worker := &cobra.Command{Use: "worker", Short: "Run or connect a Machinist Worker"}
 	worker.AddCommand(newRunCommand(options, false))
@@ -87,6 +89,32 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 		},
 	})
 	return root
+}
+
+func newUpdateCommand(options *commandOptions) *cobra.Command {
+	var requestedVersion string
+	update := &cobra.Command{
+		Use:   "update",
+		Short: "Update Machinist to a released version",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			result, err := updater.Update(command.Context(), updater.Options{
+				Version: requestedVersion,
+				Current: options.version,
+			})
+			if err != nil {
+				return err
+			}
+			if result.AlreadyCurrent {
+				fmt.Fprintf(options.stdout, "machinist %s is already installed\n", result.Version)
+				return nil
+			}
+			fmt.Fprintf(options.stdout, "updated machinist to %s\n", result.Version)
+			return nil
+		},
+	}
+	update.Flags().StringVar(&requestedVersion, "version", "", "release version to install, such as v0.2.0 (default latest)")
+	return update
 }
 
 type submitCatalog struct {

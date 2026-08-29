@@ -20,7 +20,7 @@ repositories, and order of work.
 [![MIT licensed](https://img.shields.io/badge/license-MIT-7c3aed)](LICENSE)
 
 [Getting started](docs/getting-started.md) · [How it works](docs/how-it-works.md) ·
-[Architecture](ARCHITECTURE.md)
+[Architecture](ARCHITECTURE.md) · [VM deployment](docs/vm-deployment.md)
 
 </div>
 
@@ -84,6 +84,12 @@ Build Machinist and create the default config:
 mkdir -p ./bin
 go build -o ./bin/machinist ./cmd/machinist
 ./bin/machinist init
+```
+
+Or install the latest published binary:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/install.sh | sh
 ```
 
 `machinist init` writes editable agent and worker settings to `~/.machinist`.
@@ -213,6 +219,7 @@ lifecycle labels, resume work, and hand a verified pull request to a person.
 - [Local control plane](docs/control-plane.md)
 - [Architecture](ARCHITECTURE.md)
 - [Development](docs/development.md)
+- [VM deployment](docs/vm-deployment.md)
 - [Migration from Factory](docs/migration-from-factory.md)
 
 ## Project status
