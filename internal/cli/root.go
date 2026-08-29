@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -95,7 +96,8 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 }
 
 func newValidateCommand(options *commandOptions) *cobra.Command {
-	return &cobra.Command{
+	var workerConfigPath string
+	validate := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate the complete local Machinist configuration",
 		Args:  cobra.NoArgs,
@@ -117,11 +119,17 @@ func newValidateCommand(options *commandOptions) *cobra.Command {
 			if _, err := config.LoadTriggers(machinistConfig.Path()); err != nil {
 				return err
 			}
-			workerConfig, err := config.LoadWorker(filepath.Join(filepath.Dir(machinistConfig.Path()), "worker.toml"))
+			if workerConfigPath == "" {
+				workerConfigPath = filepath.Join(filepath.Dir(machinistConfig.Path()), "worker.toml")
+			}
+			workerConfig, err := config.LoadWorker(workerConfigPath)
 			if err != nil {
 				return err
 			}
 			if _, err := managedworker.New(workerConfig, io.Discard, io.Discard); err != nil {
+				return err
+			}
+			if err := validateConfiguredCommands(machinistConfig.Path(), workerConfig); err != nil {
 				return err
 			}
 			workerToken, err := workerConfig.WorkerToken()
@@ -135,6 +143,30 @@ func newValidateCommand(options *commandOptions) *cobra.Command {
 			return err
 		},
 	}
+	validate.Flags().StringVar(&workerConfigPath, "worker-config", "", "managed worker configuration file")
+	return validate
+}
+
+func validateConfiguredCommands(definitionPath string, worker config.Worker) error {
+	definitions, err := config.LoadDefinitions(definitionPath)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(definitions.Commands))
+	for name := range definitions.Commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		command, err := config.LoadCommand(definitionPath, name)
+		if err != nil {
+			return err
+		}
+		if _, err := worker.ResolveCommand(command); err != nil {
+			return fmt.Errorf("validate command %q: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func newWorkerValidateCommand(options *commandOptions) *cobra.Command {

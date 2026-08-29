@@ -720,6 +720,69 @@ func TestValidateAcceptsExplicitControlPlaneConfiguration(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsSeparateWorkerConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+	addCLIWorkerRepository(t, home)
+	configPath := filepath.Join(home, ".machinist", "config.toml")
+	workerPath := filepath.Join(t.TempDir(), "custom-worker.toml")
+	workerBody, err := os.ReadFile(filepath.Join(home, ".machinist", "worker.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workerPath, workerBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(home, ".machinist", "worker.toml")); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"validate", "--config=" + configPath, "--worker-config=" + workerPath}, strings.NewReader(""), &stdout, &stderr, "test")
+	if exitCode != 0 || strings.TrimSpace(stdout.String()) != "configuration is valid" {
+		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
+	}
+}
+
+func TestValidateRejectsInvalidUnusedCommand(t *testing.T) {
+	for name, command := range map[string]string{
+		"prompt":   "[commands.unused]\nexecutor = \"codex\"\nprompt_file = \"prompts/missing.md\"\n",
+		"timeout":  "[commands.unused]\nexecutor = \"codex\"\ntimeout = \"never\"\n",
+		"executor": "[commands.unused]\nexecutor = \"missing\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+				t.Fatalf("init exit code = %d", exitCode)
+			}
+			addCLIWorkerRepository(t, home)
+			configPath := filepath.Join(home, ".machinist", "config.toml")
+			file, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.WriteString("\n" + command); err != nil {
+				_ = file.Close()
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			var stderr bytes.Buffer
+			exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+			if exitCode != 2 || !strings.Contains(stderr.String(), "command \"unused\"") {
+				t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+			}
+		})
+	}
+}
+
 func TestValidateRejectsInvalidControlPlaneConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

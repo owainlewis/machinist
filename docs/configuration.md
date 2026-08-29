@@ -27,6 +27,13 @@ path = "/absolute/path/to/my-project"
 Managed triggers select one command with `command = "audit"`. Model selection remains
 available when the executor command includes `{{machinist.model}}`.
 
+Validate a control-plane configuration together with its sibling `worker.toml` using
+`machinist validate`. When the files live in different directories, supply both paths:
+
+```sh
+machinist validate --config=/path/to/config.toml --worker-config=/path/to/worker.toml
+```
+
 ## Migration
 
 The `agents` table was renamed to `commands`. Move `[agents.NAME]` to `[commands.NAME]`
