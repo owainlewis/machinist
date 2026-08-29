@@ -77,6 +77,35 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	}
 }
 
+func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "machinist.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=2;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if store, err := OpenStore(path); err == nil || !strings.Contains(err.Error(), "newer than supported") {
+		if store != nil {
+			store.Close()
+		}
+		t.Fatalf("open newer schema error = %v", err)
+	}
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var value string
+	if err := db.QueryRow(`SELECT value FROM future_data`).Scan(&value); err != nil || value != "preserved" {
+		t.Fatalf("future data = %q, %v", value, err)
+	}
+}
+
 func TestConcurrentPollsLeaseRunOnce(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	if _, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request")); err != nil {
