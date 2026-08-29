@@ -11,6 +11,8 @@
 - [Managed triggers](managed-triggers.md): start jobs from GitHub labels,
   intervals, and cron schedules
 - [Development](development.md): build, test, and navigate the repository
+- [Remote VM setup](vm-deployment.md): install Machinist and its coding agents,
+  configure GitHub SSH and CLI authentication, and connect securely
 - [Migration guide](migration-from-factory.md): clean installation, renamed
   interfaces, and rollback
 - [Architecture](../ARCHITECTURE.md): source of truth, dependency direction,

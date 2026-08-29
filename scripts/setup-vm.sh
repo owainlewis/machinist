@@ -40,6 +40,17 @@ done
 
 machinist init
 
+service_base_url=https://raw.githubusercontent.com/owainlewis/machinist/main/deploy/systemd
+curl -fsSL "$service_base_url/machinist-control-plane.service" \
+  -o /etc/systemd/system/machinist-control-plane.service
+curl -fsSL "$service_base_url/machinist-worker.service" \
+  -o /etc/systemd/system/machinist-worker.service
+chmod 0644 \
+  /etc/systemd/system/machinist-control-plane.service \
+  /etc/systemd/system/machinist-worker.service
+systemctl daemon-reload
+systemctl enable --now machinist-control-plane.service machinist-worker.service
+
 cat <<'EOF'
 
 VM bootstrap complete.
@@ -50,7 +61,7 @@ Next steps:
   3. Run `claude` once and sign in.
   4. Clone each repository agents may use and register its absolute path in
      ~/.machinist/worker.toml.
-  5. Start `machinist start` and `machinist worker start`.
+  5. Check `systemctl status machinist-control-plane machinist-worker`.
 
 Keep the control plane on 127.0.0.1. Reach it from your computer with:
   ssh -N -L 7331:127.0.0.1:7331 machinist

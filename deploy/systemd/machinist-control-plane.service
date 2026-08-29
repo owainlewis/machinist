@@ -1,0 +1,17 @@
+[Unit]
+Description=Machinist control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=HOME=/root
+WorkingDirectory=/root
+ExecStart=/usr/local/bin/machinist start
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
