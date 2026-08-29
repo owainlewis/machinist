@@ -27,6 +27,10 @@ func TestStructuredClaudeCommandAddsStreamJSONToPrintCommands(t *testing.T) {
 		{name: "mise wrapper", executor: "custom", command: []string{"mise", "exec", "--", "claude", "--print"}, want: []string{"mise", "exec", "--", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
 		{name: "nice wrapper", executor: "custom", command: []string{"nice", "claude", "--print"}, want: []string{"nice", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
 		{name: "max turns", executor: "claude", command: []string{"claude", "--print", "--max-turns", "3"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--max-turns", "3"}},
+		{name: "bare resume", executor: "claude", command: []string{"claude", "--resume", "--output-format=json", "--print"}, want: []string{"claude", "--resume", "--output-format=json", "--print"}},
+		{name: "named resume", executor: "claude", command: []string{"claude", "--resume", "session-name", "--print"}, want: []string{"claude", "--resume", "session-name", "--print", "--verbose", "--output-format", "stream-json"}},
+		{name: "variadic allowed tools", executor: "claude", command: []string{"claude", "--print", "--allowedTools", "Bash", "Edit"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--allowedTools", "Bash", "Edit"}},
+		{name: "variadic add dirs", executor: "claude", command: []string{"claude", "--add-dir", "../apps", "../lib", "--print"}, want: []string{"claude", "--add-dir", "../apps", "../lib", "--print", "--verbose", "--output-format", "stream-json"}},
 		{name: "agent", executor: "claude", command: []string{"claude", "--print", "--agent", "reviewer"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--agent", "reviewer"}},
 		{name: "strict MCP config", executor: "claude", command: []string{"claude", "--print", "--strict-mcp-config"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--strict-mcp-config"}},
 		{name: "prompt suggestions flag", executor: "claude", command: []string{"claude", "--print", "--prompt-suggestions"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--prompt-suggestions"}},
@@ -115,6 +119,7 @@ func TestClaudeCommandRecognitionRejectsAmbiguousArguments(t *testing.T) {
 		{name: "short version option is not verbose", executor: "claude", command: []string{"claude", "--print", "-v"}},
 		{name: "unknown option", executor: "claude", command: []string{"claude", "--future-option", "--print"}},
 		{name: "missing option value", executor: "claude", command: []string{"claude", "--print", "--model"}},
+		{name: "missing variadic option value", executor: "claude", command: []string{"claude", "--print", "--allowedTools"}},
 		{name: "prompt suggestions optional value", executor: "claude", command: []string{"claude", "--print", "--prompt-suggestions", "false"}},
 		{name: "invalid output format", executor: "claude", command: []string{"claude", "--print", "--output-format", "yaml"}},
 		{name: "misleading data", executor: "custom", command: []string{"echo", "claude", "--print"}},
@@ -238,7 +243,7 @@ func TestExecutePreservesClaudeFailureAndTimeoutWithUsage(t *testing.T) {
 		exit    int
 	}{
 		{name: "failed", script: `cat >/dev/null; printf '%s' '` + output + `'; exit 7`, timeout: 5 * time.Second, state: StateFailed, exit: 7},
-		{name: "timed out", script: `cat >/dev/null; printf '%s' '` + output + `'; sleep 60`, timeout: 100 * time.Millisecond, state: StateTimedOut, exit: 124},
+		{name: "timed out", script: `cat >/dev/null; printf '%s' '` + output + `'; sleep 60`, timeout: time.Second, state: StateTimedOut, exit: 124},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := Execute(t.Context(), Options{
@@ -248,11 +253,8 @@ func TestExecutePreservesClaudeFailureAndTimeoutWithUsage(t *testing.T) {
 			if !errors.As(err, &outcome) || outcome.State != test.state || outcome.ExitCode != test.exit {
 				t.Fatalf("error = %#v", err)
 			}
-			if test.state == StateFailed && (result.TokenUsage == nil || *result.TokenUsage != 10) {
+			if result.TokenUsage == nil || *result.TokenUsage != 10 {
 				t.Fatalf("token usage = %v, want 10", result.TokenUsage)
-			}
-			if test.state == StateTimedOut && result.TokenUsage != nil {
-				t.Fatalf("token usage = %d, want unavailable after timeout", *result.TokenUsage)
 			}
 		})
 	}

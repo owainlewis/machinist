@@ -130,6 +130,19 @@ func claudeCommandInfoAfter(command []string, programIndex int) (claudeCommand, 
 			info.outputFormat = strings.TrimPrefix(argument, "--output-format=")
 		} else if argument == "--verbose" {
 			info.hasVerbose = true
+		} else if claudeOptionalValueOption(argument) {
+			if index+1 < len(command) && !strings.HasPrefix(command[index+1], "-") {
+				index++
+			}
+		} else if claudeVariadicOption(argument) {
+			valueIndex := index + 1
+			for valueIndex < len(command) && !strings.HasPrefix(command[valueIndex], "-") {
+				valueIndex++
+			}
+			if valueIndex == index+1 {
+				return claudeCommand{}, false
+			}
+			index = valueIndex - 1
 		} else if takesNextValue {
 			if index+1 >= len(command) {
 				return claudeCommand{}, false
@@ -147,12 +160,15 @@ func claudeRootOption(argument string) (bool, bool) {
 	if argument == "--debug" || strings.HasPrefix(argument, "--debug=") {
 		return true, false
 	}
+	if claudeOptionalValueOption(argument) || claudeVariadicOption(argument) {
+		return true, false
+	}
 	valueOptions := []string{
-		"--add-dir", "--advisor", "--agent", "--agents", "--allowedTools", "--allowed-tools", "--append-subagent-system-prompt",
+		"--advisor", "--agent", "--agents", "--append-subagent-system-prompt",
 		"--append-system-prompt", "--append-system-prompt-file", "--betas", "--debug-file", "--disallowedTools",
 		"--dangerously-load-development-channels", "--disallowed-tools", "--effort", "--fallback-model", "--from-pr", "--input-format", "--json-schema", "--max-budget-usd", "--max-turns",
 		"--mcp-config", "--model", "--name", "-n", "--output-format", "--permission-mode", "--permission-prompt-tool",
-		"--plugin-dir", "--plugin-url", "--resume", "-r", "--session-id", "--settings", "--system-prompt",
+		"--plugin-dir", "--plugin-url", "--session-id", "--settings", "--system-prompt",
 		"--system-prompt-file", "--setting-sources", "--teammate-mode", "--tools", "--worktree", "-w",
 	}
 	for _, option := range valueOptions {
@@ -177,6 +193,17 @@ func claudeRootOption(argument string) (bool, bool) {
 		return true, false
 	}
 	return false, false
+}
+
+func claudeOptionalValueOption(argument string) bool {
+	return argument == "--resume" || argument == "-r"
+}
+
+func claudeVariadicOption(argument string) bool {
+	variadicOptions := []string{
+		"--add-dir", "--allowedTools", "--allowed-tools", "--betas", "--disallowedTools", "--disallowed-tools", "--mcp-config", "--tools",
+	}
+	return slices.Contains(variadicOptions, argument)
 }
 
 func claudeExecutorName(executor string) bool {

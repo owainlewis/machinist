@@ -193,10 +193,8 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	var streams sync.WaitGroup
 	streams.Add(2)
 	usageCollector := newCodexUsageCollector(options.Agent.Executor, executorCommand)
-	structuredClaudeCollectorActive := false
 	if usageCollector == nil {
 		usageCollector = newClaudeUsageCollector(options.Agent.Executor, executorCommand)
-		structuredClaudeCollectorActive = usageCollector != nil
 	}
 	stdoutDestination := options.Stdout
 	if usageCollector != nil {
@@ -222,10 +220,6 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	collectedTokenUsageIsAuthoritative := usageCollector != nil
 	if usageCollector != nil {
 		collectedTokenUsage = usageCollector.tokenUsage()
-	}
-	if state == StateTimedOut && structuredClaudeCollectorActive {
-		collectedTokenUsage = nil
-		collectedTokenUsageIsAuthoritative = true
 	}
 	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage, collectedTokenUsageIsAuthoritative); err != nil {
 		if outcome != nil {
