@@ -738,6 +738,61 @@ func TestValidateRejectsInvalidControlPlaneConfiguration(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidControlPlaneListenAddress(t *testing.T) {
+	for _, listen := range []string{"not an address", "0.0.0.0:7331"} {
+		t.Run(listen, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+				t.Fatalf("init exit code = %d", exitCode)
+			}
+			addCLIWorkerRepository(t, home)
+			configPath := filepath.Join(home, ".machinist", "config.toml")
+			body, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = bytes.Replace(body, []byte(`listen = "127.0.0.1:7331"`), []byte("listen = "+strconv.Quote(listen)), 1)
+			if err := os.WriteFile(configPath, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var stderr bytes.Buffer
+			exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+			if exitCode != 2 || !strings.Contains(stderr.String(), "listen address") {
+				t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+			}
+		})
+	}
+}
+
+func TestValidateRejectsMismatchedServerAndWorkerTokens(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+	addCLIWorkerRepository(t, home)
+	workerPath := filepath.Join(home, ".machinist", "worker.toml")
+	workerBody, err := os.ReadFile(workerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerBody = bytes.Replace(workerBody, []byte(`token_file = "~/.machinist/server/worker.token"`), []byte(`token_file = "worker.token"`), 1)
+	if err := os.WriteFile(workerPath, workerBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".machinist", "worker.token"), []byte("different-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	if exitCode != 2 || !strings.Contains(stderr.String(), "authentication tokens do not match") {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
 func TestValidateRejectsInvalidWorkerConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

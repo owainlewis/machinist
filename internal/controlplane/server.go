@@ -125,7 +125,7 @@ func NewServer(store *Store, definitionPath, workerToken string, maxConcurrentJo
 func (s *Server) Handler() http.Handler { return s.handler }
 
 func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.Addr)) error {
-	if err := validateLoopbackListen(listen); err != nil {
+	if err := ValidateLoopbackListen(listen); err != nil {
 		return err
 	}
 	listener, err := net.Listen("tcp", listen)
@@ -564,7 +564,9 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func validateLoopbackListen(listen string) error {
+// ValidateLoopbackListen verifies that a control-plane listen address has a
+// loopback host. It performs no network operations.
+func ValidateLoopbackListen(listen string) error {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
 		return fmt.Errorf("invalid listen address %q: %w", listen, err)

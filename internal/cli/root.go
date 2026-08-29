@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,7 +104,11 @@ func newValidateCommand(options *commandOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := machinistConfig.Server.WorkerToken(); err != nil {
+			if err := controlplane.ValidateLoopbackListen(machinistConfig.Server.Listen); err != nil {
+				return err
+			}
+			serverToken, err := machinistConfig.Server.WorkerToken()
+			if err != nil {
 				return err
 			}
 			if _, err := config.LoadShepherdSchedules(machinistConfig.Path()); err != nil {
@@ -118,6 +123,13 @@ func newValidateCommand(options *commandOptions) *cobra.Command {
 			}
 			if _, err := managedworker.New(workerConfig, io.Discard, io.Discard); err != nil {
 				return err
+			}
+			workerToken, err := workerConfig.WorkerToken()
+			if err != nil {
+				return err
+			}
+			if subtle.ConstantTimeCompare([]byte(serverToken), []byte(workerToken)) != 1 {
+				return errors.New("server and worker authentication tokens do not match")
 			}
 			_, err = fmt.Fprintln(options.stdout, "configuration is valid")
 			return err
