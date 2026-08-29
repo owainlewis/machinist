@@ -40,6 +40,15 @@ done
 
 machinist init
 
+worker_was_enabled=false
+worker_was_active=false
+if systemctl is-enabled --quiet machinist-worker.service 2>/dev/null; then
+  worker_was_enabled=true
+fi
+if systemctl is-active --quiet machinist-worker.service 2>/dev/null; then
+  worker_was_active=true
+fi
+
 service_base_url=https://raw.githubusercontent.com/owainlewis/machinist/main/deploy/systemd
 service_tmp_dir=$(mktemp -d)
 trap 'rm -rf "$service_tmp_dir"' EXIT
@@ -62,7 +71,16 @@ if machinist worker validate --help >/dev/null 2>&1; then
     systemctl disable --now machinist-worker.service
   fi
 else
-  echo "installed Machinist release does not support worker validation; leaving the worker service unchanged" >&2
+  if [[ $worker_was_active == true ]]; then
+    systemctl enable machinist-worker.service
+    systemctl restart machinist-worker.service
+    echo "installed Machinist release does not support worker validation; restored the previously active worker" >&2
+  else
+    systemctl disable --now machinist-worker.service
+    if [[ $worker_was_enabled == true ]]; then
+      echo "installed Machinist release does not support worker validation; disabled the previously inactive worker" >&2
+    fi
+  fi
 fi
 
 cat <<'EOF'
