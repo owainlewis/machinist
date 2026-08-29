@@ -50,3 +50,47 @@ func TestMultiReviewRequiresExactTrustedHeadField(t *testing.T) {
 		t.Fatalf("trusted prompt result = code %d, output %q", code, output)
 	}
 }
+
+func TestReviewLoopReviewsFinalRepair(t *testing.T) {
+	directory := t.TempDir()
+	scripts := filepath.Join(directory, "scripts")
+	if err := os.Mkdir(scripts, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(directory, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(truePath, filepath.Join(bin, "codex")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scripts, "read-review-feedback.sh"), []byte("#!/bin/sh\nprintf feedback\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	counter := filepath.Join(directory, "reviews")
+	waitScript := "#!/bin/sh\ncount=0\n[ ! -f \"$MACHINIST_REVIEW_COUNTER\" ] || count=$(cat \"$MACHINIST_REVIEW_COUNTER\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$MACHINIST_REVIEW_COUNTER\"\n[ \"$count\" -eq 4 ]\n"
+	if err := os.WriteFile(filepath.Join(scripts, "wait-for-review.sh"), []byte(waitScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	absoluteScript, err := filepath.Abs(filepath.Join("workflows", "review-loop", "review-loop.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("/bin/sh", absoluteScript)
+	command.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin")
+	command.Stdin = bytes.NewBufferString("implement request")
+	command.Dir = directory
+	command.Env = append(command.Env, "MACHINIST_REVIEW_COUNTER="+counter)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("review loop: %v: %s", err, output)
+	}
+	if got, err := os.ReadFile(counter); err != nil || string(got) != "4" {
+		t.Fatalf("review count = %q, %v", got, err)
+	}
+}
