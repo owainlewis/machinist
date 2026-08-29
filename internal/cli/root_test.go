@@ -829,6 +829,44 @@ func TestValidateRejectsInvalidControlPlaneListenAddress(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsWorkerEndpointThatCannotReachLocalControlPlane(t *testing.T) {
+	for name, endpoint := range map[string]string{
+		"different port": "http://127.0.0.1:7332",
+		"different host": "http://127.0.0.2:7331",
+		"HTTPS endpoint": "https://127.0.0.1:7331",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+				t.Fatalf("init exit code = %d", exitCode)
+			}
+			addCLIWorkerRepository(t, home)
+			workerPath := filepath.Join(home, ".machinist", "worker.toml")
+			body, err := os.ReadFile(workerPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = bytes.Replace(body, []byte(`url = "http://127.0.0.1:7331"`), []byte("url = "+strconv.Quote(endpoint)), 1)
+			if err := os.WriteFile(workerPath, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var stderr bytes.Buffer
+			exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+			if exitCode != 2 || !strings.Contains(stderr.String(), "configured local control plane") {
+				t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+			}
+		})
+	}
+}
+
+func TestValidateWorkerControlPlaneAcceptsEquivalentIPv6LoopbackSpelling(t *testing.T) {
+	if err := validateWorkerControlPlane("[::1]:7331", "http://[0:0:0:0:0:0:0:1]:7331"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateRejectsMismatchedServerAndWorkerTokens(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -129,6 +129,9 @@ func newValidateCommand(options *commandOptions) *cobra.Command {
 			if _, err := managedworker.New(workerConfig, io.Discard, io.Discard); err != nil {
 				return err
 			}
+			if err := validateWorkerControlPlane(machinistConfig.Server.Listen, workerConfig.ControlPlane.URL); err != nil {
+				return err
+			}
 			if err := validateConfiguredCommands(machinistConfig.Path(), workerConfig); err != nil {
 				return err
 			}
@@ -167,6 +170,40 @@ func validateConfiguredCommands(definitionPath string, worker config.Worker) err
 		}
 	}
 	return nil
+}
+
+// validateWorkerControlPlane verifies that the managed worker can reach the
+// plain-HTTP loopback control plane configured alongside it. It performs no
+// network operations.
+func validateWorkerControlPlane(listen, rawURL string) error {
+	listenHost, listenPort, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("invalid listen address %q: %w", listen, err)
+	}
+	endpoint, err := url.Parse(rawURL)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return fmt.Errorf("invalid control_plane.url %q", rawURL)
+	}
+	if endpoint.Scheme != "http" {
+		return fmt.Errorf("control_plane.url %q must use http for the configured local control plane", rawURL)
+	}
+	endpointPort := endpoint.Port()
+	if endpointPort == "" {
+		endpointPort = "80"
+	}
+	if endpointPort != listenPort || !sameLoopbackHost(listenHost, endpoint.Hostname()) {
+		return fmt.Errorf("control_plane.url %q must target the configured local control plane at %s", rawURL, net.JoinHostPort(listenHost, listenPort))
+	}
+	return nil
+}
+
+func sameLoopbackHost(listenHost, endpointHost string) bool {
+	if strings.EqualFold(listenHost, "localhost") || strings.EqualFold(endpointHost, "localhost") {
+		return strings.EqualFold(listenHost, endpointHost)
+	}
+	listenIP := net.ParseIP(listenHost)
+	endpointIP := net.ParseIP(endpointHost)
+	return listenIP != nil && endpointIP != nil && listenIP.Equal(endpointIP)
 }
 
 func newWorkerValidateCommand(options *commandOptions) *cobra.Command {
