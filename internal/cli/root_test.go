@@ -703,6 +703,23 @@ func TestValidateAcceptsCompleteConfiguration(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsExplicitControlPlaneConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+	addCLIWorkerRepository(t, home)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	configPath := filepath.Join(home, ".machinist", "config.toml")
+	exitCode := Execute(t.Context(), []string{"validate", "--config=" + configPath}, strings.NewReader(""), &stdout, &stderr, "test")
+	if exitCode != 0 || strings.TrimSpace(stdout.String()) != "configuration is valid" {
+		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
+	}
+}
+
 func TestValidateRejectsInvalidControlPlaneConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

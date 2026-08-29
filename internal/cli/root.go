@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -111,7 +112,7 @@ func newValidateCommand(options *commandOptions) *cobra.Command {
 			if _, err := config.LoadTriggers(machinistConfig.Path()); err != nil {
 				return err
 			}
-			workerConfig, err := config.LoadWorker(options.configPath)
+			workerConfig, err := config.LoadWorker(filepath.Join(filepath.Dir(machinistConfig.Path()), "worker.toml"))
 			if err != nil {
 				return err
 			}
