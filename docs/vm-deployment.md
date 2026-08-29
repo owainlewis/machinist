@@ -34,6 +34,7 @@ Install the latest stable release without the full VM bootstrap:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Install a specific release:

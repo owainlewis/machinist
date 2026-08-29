@@ -91,6 +91,7 @@ Or install the latest published binary:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 machinist init
 ```
 
