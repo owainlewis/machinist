@@ -88,9 +88,9 @@ func claudeProgramIndex(command []string) int {
 		if programIndex >= len(command) {
 			return -1
 		}
-		if command[programIndex] == "-n" {
+		if command[programIndex] == "-n" || command[programIndex] == "--adjustment" {
 			programIndex += 2
-		} else if strings.HasPrefix(command[programIndex], "-n") {
+		} else if strings.HasPrefix(command[programIndex], "-n") || strings.HasPrefix(command[programIndex], "--adjustment=") {
 			programIndex++
 		}
 		if programIndex >= len(command) {

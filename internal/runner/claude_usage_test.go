@@ -26,6 +26,8 @@ func TestStructuredClaudeCommandAddsStreamJSONToPrintCommands(t *testing.T) {
 		{name: "env wrapper", executor: "custom", command: []string{"env", "claude", "--print"}, want: []string{"env", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
 		{name: "mise wrapper", executor: "custom", command: []string{"mise", "exec", "--", "claude", "--print"}, want: []string{"mise", "exec", "--", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
 		{name: "nice wrapper", executor: "custom", command: []string{"nice", "claude", "--print"}, want: []string{"nice", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
+		{name: "nice long adjustment", executor: "custom", command: []string{"nice", "--adjustment=5", "claude", "--print"}, want: []string{"nice", "--adjustment=5", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
+		{name: "nice separate long adjustment", executor: "custom", command: []string{"nice", "--adjustment", "5", "claude", "--print"}, want: []string{"nice", "--adjustment", "5", "claude", "--print", "--verbose", "--output-format", "stream-json"}},
 		{name: "max turns", executor: "claude", command: []string{"claude", "--print", "--max-turns", "3"}, want: []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--max-turns", "3"}},
 		{name: "bare resume", executor: "claude", command: []string{"claude", "--resume", "--output-format=json", "--print"}, want: []string{"claude", "--resume", "--output-format=json", "--print"}},
 		{name: "named resume", executor: "claude", command: []string{"claude", "--resume", "session-name", "--print"}, want: []string{"claude", "--resume", "session-name", "--print", "--verbose", "--output-format", "stream-json"}},
@@ -98,6 +100,7 @@ func TestClaudeCommandRecognitionRejectsTrailingNiceWrappers(t *testing.T) {
 		{"env", "nice"},
 		{"mise", "exec", "--", "nice"},
 		{"direnv", "exec", ".", "nice"},
+		{"nice", "--adjustment"},
 	} {
 		if got := structuredClaudeCommand("claude", command); !slices.Equal(got, command) {
 			t.Fatalf("command = %q, want unchanged", got)
