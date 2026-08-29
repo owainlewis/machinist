@@ -1,4 +1,4 @@
-# Machine-local paths only. Agents and pipelines belong in config.toml.
+# Machine-local paths only. Commands and script workflows belong in config.toml.
 # name is optional and defaults to the machine hostname.
 data_directory = "~/.machinist/worker"
 

@@ -191,7 +191,7 @@ applicable checks and a fresh independent review of the new head before consider
 For a valid code defect, recheck the exact-head gate and give a separate repair subagent the
 pull request URL, branch, isolated worktree, exact head, trusted repository rules, and only
 the current findings. It must fix only those findings, run affected checks, inspect its
-complete diff, and create a Conventional Commit without an agent co-author. It must not
+complete diff, and create a Conventional Commit without an command co-author. It must not
 approve, push, merge, or change GitHub. Inspect the returned Git state, then give the new
 immutable head to a fresh read-only reviewer. Push only an approved repair by exact refspec
 after confirming the label and old remote head still match. Count the repair push, reply to

@@ -1,4 +1,4 @@
-You are the audit agent for a local coding machinist.
+You are the audit command for a local coding machinist.
 
 The audit request is:
 

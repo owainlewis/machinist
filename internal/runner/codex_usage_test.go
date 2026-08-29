@@ -180,7 +180,7 @@ func TestExecuteEnablesStructuredUsageForLegacyCodexCommand(t *testing.T) {
 	}
 	var stdout bytes.Buffer
 	result, err := Execute(t.Context(), Options{
-		Agent: config.ResolvedAgent{
+		Command: config.ResolvedCommand{
 			Name: "build", Executor: "codex", Command: []string{executable, "exec", "-"}, Prompt: "complete prompt\n", Timeout: 5 * time.Second, Hash: "legacy-codex-test-hash",
 		},
 		Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: &stdout, Stderr: io.Discard,
@@ -213,7 +213,7 @@ func TestExecuteCollectsCodexUsageWithoutChangingOutput(t *testing.T) {
 			agent := codexJSONAgentCommand(t, test.executor, test.executableName, test.wrapped, `cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s' '`+output+`'`, 5*time.Second)
 			var stdout bytes.Buffer
 			result, err := Execute(t.Context(), Options{
-				Agent:         agent,
+				Command:       agent,
 				Repository:    newGitRepository(t),
 				DataDirectory: t.TempDir(),
 				Stdout:        &stdout,
@@ -238,7 +238,7 @@ func TestExecuteCollectsCodexUsageWithoutChangingOutput(t *testing.T) {
 func TestExecuteIgnoresMalformedCodexUsageWithoutChangingFailure(t *testing.T) {
 	agent := codexJSONAgent(t, `cat >/dev/null; printf 999 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":"unknown","output_tokens":2}}'; exit 7`, 5*time.Second)
 	result, err := Execute(t.Context(), Options{
-		Agent:         agent,
+		Command:       agent,
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
@@ -253,11 +253,11 @@ func TestExecuteIgnoresMalformedCodexUsageWithoutChangingFailure(t *testing.T) {
 	}
 }
 
-func codexJSONAgent(t *testing.T, script string, timeout time.Duration) config.ResolvedAgent {
+func codexJSONAgent(t *testing.T, script string, timeout time.Duration) config.ResolvedCommand {
 	return codexJSONAgentCommand(t, "codex", "codex", false, script, timeout)
 }
 
-func codexJSONAgentCommand(t *testing.T, executor, executableName string, wrapped bool, script string, timeout time.Duration) config.ResolvedAgent {
+func codexJSONAgentCommand(t *testing.T, executor, executableName string, wrapped bool, script string, timeout time.Duration) config.ResolvedCommand {
 	t.Helper()
 	executable := filepath.Join(t.TempDir(), executableName)
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
@@ -267,7 +267,7 @@ func codexJSONAgentCommand(t *testing.T, executor, executableName string, wrappe
 	if wrapped {
 		command = append([]string{"/usr/bin/env"}, command...)
 	}
-	return config.ResolvedAgent{
+	return config.ResolvedCommand{
 		Name:     "build",
 		Executor: executor,
 		Command:  command,

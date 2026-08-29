@@ -29,7 +29,7 @@ Name a bounded area rather than asking for a vague review of everything:
 ```sh
 machinist run \
   --machinist-config="$MACHINIST_EXAMPLE_ROOT/config.toml" \
-  --agent=code-audit \
+  --command=code-audit \
   --repo="$MACHINIST_TARGET_REPO" \
   --prompt="Audit request validation and SQLite persistence for correctness bugs"
 ```

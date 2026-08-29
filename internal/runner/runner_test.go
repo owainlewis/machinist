@@ -49,7 +49,7 @@ func TestExecuteStreamsPromptAndPersistsOrderedResult(t *testing.T) {
 	var stderr bytes.Buffer
 
 	result, err := Execute(context.Background(), Options{
-		Agent:         helperAgent("echo", time.Second),
+		Command:       helperAgent("echo", time.Second),
 		Repository:    repository,
 		DataDirectory: dataDirectory,
 		Stdout:        &stdout,
@@ -89,7 +89,7 @@ func TestExecuteStreamsPromptAndPersistsOrderedResult(t *testing.T) {
 	if err := json.Unmarshal(resultBody, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted.ID != result.ID || persisted.State != StateSucceeded || persisted.AgentHash != "test-hash" {
+	if persisted.ID != result.ID || persisted.State != StateSucceeded || persisted.CommandHash != "test-hash" {
 		t.Fatalf("persisted result = %#v", persisted)
 	}
 	if result.DurationMillis < 0 || persisted.DurationMillis != result.DurationMillis || result.TokenUsage != nil || persisted.TokenUsage != nil {
@@ -129,7 +129,7 @@ func TestExecutePersistsOnlyExplicitValidTokenUsage(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := Execute(t.Context(), Options{
-				Agent:         helperAgent(test.mode, time.Second),
+				Command:       helperAgent(test.mode, time.Second),
 				Repository:    newGitRepository(t),
 				DataDirectory: t.TempDir(),
 				Stdout:        io.Discard,
@@ -163,7 +163,7 @@ func TestExecuteInjectsMachinistEnvironment(t *testing.T) {
 	repository := newGitRepository(t)
 	var stdout bytes.Buffer
 	result, err := Execute(t.Context(), Options{
-		Agent:         helperAgent("environment", time.Second),
+		Command:       helperAgent("environment", time.Second),
 		Repository:    repository,
 		DataDirectory: t.TempDir(),
 		Stdout:        &stdout,
@@ -184,7 +184,7 @@ func TestExecuteUsesManagedRunIDAndRejectsUnsafeIDs(t *testing.T) {
 	runID := "run_0123456789abcdef01234567"
 	result, err := Execute(t.Context(), Options{
 		RunID:         runID,
-		Agent:         helperAgent("echo", time.Second),
+		Command:       helperAgent("echo", time.Second),
 		Repository:    repository,
 		DataDirectory: dataDirectory,
 		Stdout:        io.Discard,
@@ -196,7 +196,7 @@ func TestExecuteUsesManagedRunIDAndRejectsUnsafeIDs(t *testing.T) {
 	attempt, err := Execute(t.Context(), Options{
 		RunID:         runID,
 		ArtifactKey:   "lease_abcdef0123456789",
-		Agent:         helperAgent("echo", time.Second),
+		Command:       helperAgent("echo", time.Second),
 		Repository:    repository,
 		DataDirectory: dataDirectory,
 		Stdout:        io.Discard,
@@ -205,10 +205,10 @@ func TestExecuteUsesManagedRunIDAndRejectsUnsafeIDs(t *testing.T) {
 	if err != nil || attempt.ID != runID || filepath.Base(filepath.Dir(attempt.EventsPath)) != "lease_abcdef0123456789" {
 		t.Fatalf("attempt result = %#v, %v", attempt, err)
 	}
-	if _, err := Execute(t.Context(), Options{RunID: "../escape", Agent: helperAgent("echo", time.Second), Repository: repository, DataDirectory: dataDirectory, Stdout: io.Discard, Stderr: io.Discard}); err == nil || !strings.Contains(err.Error(), "invalid run ID") {
+	if _, err := Execute(t.Context(), Options{RunID: "../escape", Command: helperAgent("echo", time.Second), Repository: repository, DataDirectory: dataDirectory, Stdout: io.Discard, Stderr: io.Discard}); err == nil || !strings.Contains(err.Error(), "invalid run ID") {
 		t.Fatalf("unsafe run ID error = %v", err)
 	}
-	if _, err := Execute(t.Context(), Options{RunID: runID, ArtifactKey: "../escape", Agent: helperAgent("echo", time.Second), Repository: repository, DataDirectory: dataDirectory, Stdout: io.Discard, Stderr: io.Discard}); err == nil || !strings.Contains(err.Error(), "invalid artifact key") {
+	if _, err := Execute(t.Context(), Options{RunID: runID, ArtifactKey: "../escape", Command: helperAgent("echo", time.Second), Repository: repository, DataDirectory: dataDirectory, Stdout: io.Discard, Stderr: io.Discard}); err == nil || !strings.Contains(err.Error(), "invalid artifact key") {
 		t.Fatalf("unsafe artifact key error = %v", err)
 	}
 }
@@ -222,7 +222,7 @@ func TestExecuteUsesRepositoryAsWorkingDirectory(t *testing.T) {
 	var stdout bytes.Buffer
 	agent := helperAgent("pwd", time.Second)
 	result, err := Execute(context.Background(), Options{
-		Agent:         agent,
+		Command:       agent,
 		Repository:    nested,
 		DataDirectory: t.TempDir(),
 		Stdout:        &stdout,
@@ -244,7 +244,7 @@ func TestExecuteIgnoresInheritedRepositoryGitEnvironment(t *testing.T) {
 
 	var stdout bytes.Buffer
 	result, err := Execute(context.Background(), Options{
-		Agent: config.ResolvedAgent{
+		Command: config.ResolvedCommand{
 			Name:       "plan",
 			Command:    []string{"/bin/sh", "-c", "cat >/dev/null; git rev-parse --show-toplevel"},
 			Prompt:     "complete prompt\n",
@@ -268,7 +268,7 @@ func TestExecuteIgnoresInheritedRepositoryGitEnvironment(t *testing.T) {
 func TestExecuteFinishesWhenDescendantKeepsOutputPipesOpen(t *testing.T) {
 	started := time.Now()
 	result, err := Execute(context.Background(), Options{
-		Agent:         helperAgent("background", 10*time.Second),
+		Command:       helperAgent("background", 10*time.Second),
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
@@ -285,7 +285,7 @@ func TestExecuteFinishesWhenDescendantKeepsOutputPipesOpen(t *testing.T) {
 func TestExecuteFinishesWhenSessionDetachedDescendantKeepsPipesOpen(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "detached.pid")
 	script := `cat >/dev/null; MACHINIST_TEST_ESCAPED=1 MACHINIST_TEST_MARKER="$2" "$1" -test.run=^TestEscapedDescendantHelper$ & while [ ! -f "$2" ]; do sleep 0.01; done; exit 0`
-	agent := config.ResolvedAgent{
+	agent := config.ResolvedCommand{
 		Name:       "plan",
 		Command:    []string{"/bin/sh", "-c", script, "machinist-helper", os.Args[0], marker},
 		Prompt:     "complete prompt\n",
@@ -295,7 +295,7 @@ func TestExecuteFinishesWhenSessionDetachedDescendantKeepsPipesOpen(t *testing.T
 	}
 	started := time.Now()
 	result, err := Execute(context.Background(), Options{
-		Agent:         agent,
+		Command:       agent,
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
@@ -312,7 +312,7 @@ func TestExecuteFinishesWhenSessionDetachedDescendantKeepsPipesOpen(t *testing.T
 func TestExecuteFinishesWhenSessionDetachedDescendantKeepsAllPipesOpen(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "detached.pid")
 	script := `MACHINIST_TEST_ESCAPED=1 MACHINIST_TEST_HOLD_STDIN=1 MACHINIST_TEST_MARKER="$2" "$1" -test.run=^TestEscapedDescendantHelper$ & while [ ! -f "$2" ]; do sleep 0.01; done; exit 0`
-	agent := config.ResolvedAgent{
+	agent := config.ResolvedCommand{
 		Name:       "plan",
 		Command:    []string{"/bin/sh", "-c", script, "machinist-helper", os.Args[0], marker},
 		Prompt:     strings.Repeat("prompt", 40<<10),
@@ -322,7 +322,7 @@ func TestExecuteFinishesWhenSessionDetachedDescendantKeepsAllPipesOpen(t *testin
 	}
 	started := time.Now()
 	result, err := Execute(context.Background(), Options{
-		Agent:         agent,
+		Command:       agent,
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
@@ -405,7 +405,7 @@ func TestWritePromptAcceptsSupervisorCloseAfterCompleteDelivery(t *testing.T) {
 
 func TestExecuteSucceedsWhenAgentReadsExactPromptLength(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
-		Agent:         helperAgent("exact-prompt", time.Second),
+		Command:       helperAgent("exact-prompt", time.Second),
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
@@ -431,7 +431,7 @@ func TestExecuteStreamsAndRecordsOutputWithoutChangingBytes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout bytes.Buffer
 			result, err := Execute(context.Background(), Options{
-				Agent:         helperAgent(test.mode, 10*time.Second),
+				Command:       helperAgent(test.mode, 10*time.Second),
 				Repository:    newGitRepository(t),
 				DataDirectory: t.TempDir(),
 				Stdout:        &stdout,
@@ -457,7 +457,7 @@ func TestExecuteStreamsOutputBeforeAgentExits(t *testing.T) {
 	dataDirectory := t.TempDir()
 	go func() {
 		_, err := Execute(context.Background(), Options{
-			Agent:         helperAgent("stream", 5*time.Second),
+			Command:       helperAgent("stream", 5*time.Second),
 			Repository:    repository,
 			DataDirectory: dataDirectory,
 			Stdout:        writer,
@@ -481,7 +481,7 @@ func TestExecuteStreamsOutputBeforeAgentExits(t *testing.T) {
 
 func TestExecuteTreatsOutputWriteFailureAsRuntimeFailure(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
-		Agent:         helperAgent("echo", time.Second),
+		Command:       helperAgent("echo", time.Second),
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        errorWriter{err: syscall.EPIPE},
@@ -496,7 +496,7 @@ func TestExecuteTreatsOutputWriteFailureAsRuntimeFailure(t *testing.T) {
 
 func TestExecuteReturnsAgentExitStatusAndPersistsFailure(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
-		Agent:         helperAgent("fail", time.Second),
+		Command:       helperAgent("fail", time.Second),
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
@@ -515,7 +515,7 @@ func TestExecuteReturnsAgentExitStatusAndPersistsFailure(t *testing.T) {
 func TestExecuteTimesOutAgent(t *testing.T) {
 	started := time.Now()
 	result, err := Execute(context.Background(), Options{
-		Agent:         helperAgent("sleep", 50*time.Millisecond),
+		Command:       helperAgent("sleep", 50*time.Millisecond),
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
@@ -535,7 +535,7 @@ func TestExecuteCancelsAgent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(50*time.Millisecond, cancel)
 	result, err := Execute(ctx, Options{
-		Agent:         helperAgent("sleep", time.Minute),
+		Command:       helperAgent("sleep", time.Minute),
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
@@ -553,7 +553,7 @@ func TestExecuteDoesNotStartAgentWhenAlreadyCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	result, err := Execute(ctx, Options{
-		Agent: config.ResolvedAgent{
+		Command: config.ResolvedCommand{
 			Name:       "plan",
 			Command:    []string{"/bin/sh", "-c", `touch "$1"`, "machinist-test", marker},
 			Prompt:     "complete prompt\n",
@@ -588,7 +588,7 @@ func TestExecuteCancellationInterruptsBlockedOutputPipe(t *testing.T) {
 
 func TestExecuteRecordsCommandStartFailure(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
-		Agent: config.ResolvedAgent{
+		Command: config.ResolvedCommand{
 			Name:       "missing",
 			Command:    []string{filepath.Join(t.TempDir(), "not-an-agent")},
 			Prompt:     "prompt",
@@ -626,7 +626,7 @@ func TestResolveRepositoryReturnsRootAndRejectsNonGitDirectory(t *testing.T) {
 	}
 }
 
-func helperAgent(mode string, timeout time.Duration) config.ResolvedAgent {
+func helperAgent(mode string, timeout time.Duration) config.ResolvedCommand {
 	script := ""
 	switch mode {
 	case "echo":
@@ -660,7 +660,7 @@ func helperAgent(mode string, timeout time.Duration) config.ResolvedAgent {
 	default:
 		panic("unknown helper mode")
 	}
-	return config.ResolvedAgent{
+	return config.ResolvedCommand{
 		Name:       "plan",
 		Command:    []string{"/bin/sh", "-c", script},
 		Prompt:     "complete prompt\n",
@@ -686,7 +686,7 @@ func assertBlockedOutputStops(t *testing.T, ctx context.Context, timeout time.Du
 	defer writer.Close()
 	started := time.Now()
 	result, err := Execute(ctx, Options{
-		Agent:         helperAgent("flood", timeout),
+		Command:       helperAgent("flood", timeout),
 		Repository:    newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        writer,

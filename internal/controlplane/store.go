@@ -40,8 +40,7 @@ type Job struct {
 	Prompt           string    `json:"prompt"`
 	Repository       string    `json:"repository"`
 	GitHubIssueTitle string    `json:"github_issue_title,omitempty"`
-	SelectionKind    string    `json:"selection_kind"`
-	SelectionName    string    `json:"selection_name"`
+	Command          string    `json:"command"`
 	ScheduleName     string    `json:"schedule_name,omitempty"`
 	TriggerID        string    `json:"trigger_id,omitempty"`
 	OccurrenceKey    string    `json:"occurrence_key,omitempty"`
@@ -54,8 +53,7 @@ type Job struct {
 
 type Run struct {
 	ID             string    `json:"id"`
-	Step           int       `json:"step"`
-	Agent          string    `json:"agent"`
+	Command        string    `json:"command"`
 	Executor       string    `json:"executor"`
 	Model          string    `json:"model,omitempty"`
 	State          string    `json:"state"`
@@ -105,9 +103,8 @@ type TriggerAdmission struct {
 	NextDueAt         time.Time
 	Prompt            string
 	Repository        string
-	SelectionKind     string
 	SelectionName     string
-	Agents            []config.ResolvedAgent
+	Command           config.ResolvedCommand
 	GitHubRepository  string
 	GitHubIssueNumber int
 	GitHubIssueTitle  string
@@ -171,335 +168,56 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) initialize(ctx context.Context) error {
+	const schemaVersion = 1
+	var version int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read database schema version: %w", err)
+	}
+	if version != schemaVersion {
+		if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys=OFF;
+DROP TABLE IF EXISTS github_trigger_requests; DROP TABLE IF EXISTS trigger_state; DROP TABLE IF EXISTS schedule_state;
+DROP TABLE IF EXISTS known_repositories; DROP TABLE IF EXISTS worker_repositories; DROP TABLE IF EXISTS workers;
+DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`); err != nil {
+			return fmt.Errorf("replace legacy database schema: %w", err)
+		}
+	}
 	const schema = `
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS jobs (
-  id TEXT PRIMARY KEY,
-  prompt TEXT NOT NULL,
-  repository TEXT NOT NULL,
-  selection_kind TEXT NOT NULL,
-  selection_name TEXT NOT NULL,
-  schedule_name TEXT NOT NULL DEFAULT '',
-  has_shepherd INTEGER NOT NULL DEFAULT 0,
-  trigger_identity TEXT NOT NULL DEFAULT '',
-  trigger_config_signature TEXT NOT NULL DEFAULT '',
-  trigger_generation_id TEXT NOT NULL DEFAULT '',
-  occurrence_key TEXT NOT NULL DEFAULT '',
-  trigger_subject TEXT NOT NULL DEFAULT '',
-  github_issue_title TEXT NOT NULL DEFAULT '',
-  fixed_trigger INTEGER NOT NULL DEFAULT 0,
-  state TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
+ id TEXT PRIMARY KEY, prompt TEXT NOT NULL, repository TEXT NOT NULL, command TEXT NOT NULL,
+ schedule_name TEXT NOT NULL DEFAULT '', has_shepherd INTEGER NOT NULL DEFAULT 0,
+ trigger_identity TEXT NOT NULL DEFAULT '', trigger_config_signature TEXT NOT NULL DEFAULT '',
+ trigger_generation_id TEXT NOT NULL DEFAULT '', occurrence_key TEXT NOT NULL DEFAULT '',
+ trigger_subject TEXT NOT NULL DEFAULT '', github_issue_title TEXT NOT NULL DEFAULT '',
+ fixed_trigger INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs (
-  id TEXT PRIMARY KEY,
-  job_id TEXT NOT NULL REFERENCES jobs(id),
-  step INTEGER NOT NULL,
-  agent TEXT NOT NULL,
-  agent_hash TEXT NOT NULL,
-  executor TEXT NOT NULL,
-  model TEXT NOT NULL DEFAULT '',
-  repository TEXT NOT NULL,
-  rendered_prompt TEXT NOT NULL,
-  timeout_ms INTEGER NOT NULL,
-  state TEXT NOT NULL,
-  worker_instance TEXT,
-  worker_name TEXT NOT NULL DEFAULT '',
-  lease_token TEXT,
-  lease_expires_at INTEGER,
-  exit_code INTEGER,
-  error TEXT,
-  result TEXT,
-  events TEXT,
-  started_at TEXT,
-  completed_at TEXT,
-  duration_millis INTEGER,
-  token_usage INTEGER,
-  UNIQUE(job_id, step)
-);
-CREATE INDEX IF NOT EXISTS runs_dispatch ON runs(state, job_id, step);
-CREATE TABLE IF NOT EXISTS workers (
-  instance_id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  last_seen_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS worker_repositories (
-  worker_instance TEXT NOT NULL REFERENCES workers(instance_id) ON DELETE CASCADE,
-  repository TEXT NOT NULL,
-  PRIMARY KEY(worker_instance, repository)
-);
-CREATE TABLE IF NOT EXISTS known_repositories (
-  repository TEXT PRIMARY KEY
-);
-CREATE TABLE IF NOT EXISTS schedule_state (
-  name TEXT PRIMARY KEY,
-  next_run_at TEXT NOT NULL,
-  repository TEXT NOT NULL DEFAULT '',
-  every_ms INTEGER NOT NULL DEFAULT 0,
-  execution_signature TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS trigger_state (
-  identity TEXT PRIMARY KEY,
-  family TEXT NOT NULL,
-  config_signature TEXT NOT NULL,
-  generation_id TEXT NOT NULL,
-  next_due_at TEXT,
-  pending_occurrence_at TEXT,
-  last_attempt_at TEXT,
-  last_success_at TEXT,
-  last_job_state TEXT NOT NULL DEFAULT '',
-  last_job_error TEXT NOT NULL DEFAULT '',
-  health TEXT NOT NULL DEFAULT 'healthy',
-  latest_error TEXT NOT NULL DEFAULT '',
-  candidate_count INTEGER NOT NULL DEFAULT 0,
-  admission_count INTEGER NOT NULL DEFAULT 0,
-  coalesced_count INTEGER NOT NULL DEFAULT 0,
-  updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS github_trigger_requests (
-  trigger_identity TEXT NOT NULL,
-  occurrence_key TEXT NOT NULL,
-  config_generation TEXT NOT NULL,
-  repository TEXT NOT NULL,
-  issue_number INTEGER NOT NULL,
-  subject TEXT NOT NULL,
-  actor TEXT NOT NULL,
-  request_label TEXT NOT NULL,
-  requested_at TEXT NOT NULL,
-  state TEXT NOT NULL CHECK(state IN ('pending','admitted','rejected')),
-  job_id TEXT,
-  needs_reconciliation INTEGER NOT NULL DEFAULT 1,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY(trigger_identity, occurrence_key)
-);`
+ id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id), command TEXT NOT NULL, command_hash TEXT NOT NULL,
+ executor TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', repository TEXT NOT NULL, rendered_prompt TEXT NOT NULL,
+ timeout_ms INTEGER NOT NULL, state TEXT NOT NULL, worker_instance TEXT, worker_name TEXT NOT NULL DEFAULT '',
+ lease_token TEXT, lease_expires_at INTEGER, exit_code INTEGER, error TEXT, result TEXT, events TEXT,
+ started_at TEXT, completed_at TEXT, duration_millis INTEGER, token_usage INTEGER);
+CREATE INDEX IF NOT EXISTS runs_dispatch ON runs(state, job_id);
+CREATE TABLE IF NOT EXISTS workers (instance_id TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS worker_repositories (worker_instance TEXT NOT NULL REFERENCES workers(instance_id) ON DELETE CASCADE, repository TEXT NOT NULL, PRIMARY KEY(worker_instance,repository));
+CREATE TABLE IF NOT EXISTS known_repositories (repository TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS schedule_state (name TEXT PRIMARY KEY,next_run_at TEXT NOT NULL,repository TEXT NOT NULL DEFAULT '',every_ms INTEGER NOT NULL DEFAULT 0,execution_signature TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS trigger_state (identity TEXT PRIMARY KEY,family TEXT NOT NULL,config_signature TEXT NOT NULL,generation_id TEXT NOT NULL,next_due_at TEXT,pending_occurrence_at TEXT,last_attempt_at TEXT,last_success_at TEXT,last_job_state TEXT NOT NULL DEFAULT '',last_job_error TEXT NOT NULL DEFAULT '',health TEXT NOT NULL DEFAULT 'healthy',latest_error TEXT NOT NULL DEFAULT '',candidate_count INTEGER NOT NULL DEFAULT 0,admission_count INTEGER NOT NULL DEFAULT 0,coalesced_count INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS github_trigger_requests (trigger_identity TEXT NOT NULL,occurrence_key TEXT NOT NULL,config_generation TEXT NOT NULL,repository TEXT NOT NULL,issue_number INTEGER NOT NULL,subject TEXT NOT NULL,actor TEXT NOT NULL,request_label TEXT NOT NULL,requested_at TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('pending','admitted','rejected')),job_id TEXT,needs_reconciliation INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL,PRIMARY KEY(trigger_identity,occurrence_key));
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_shepherd_repository ON jobs(repository) WHERE has_shepherd=1 AND state IN ('queued','running');
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identity,occurrence_key) WHERE trigger_identity<>'' AND occurrence_key<>'';
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running');
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
+CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
+PRAGMA user_version=1;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
-	if err := s.addColumnIfMissing(ctx, "runs", "lease_expires_at", "INTEGER"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "runs", "model", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "runs", "worker_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "runs", "duration_millis", "INTEGER"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "runs", "token_usage", "INTEGER"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "jobs", "schedule_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "jobs", "has_shepherd", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_identity", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_config_signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_generation_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "jobs", "occurrence_key", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "jobs", "trigger_subject", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "jobs", "github_issue_title", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "jobs", "fixed_trigger", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "schedule_state", "repository", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "schedule_state", "every_ms", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "schedule_state", "execution_signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "trigger_state", "pending_occurrence_at", "TEXT"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "trigger_state", "generation_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "trigger_state", "last_job_state", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "trigger_state", "last_job_error", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "github_trigger_requests", "request_label", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE runs SET worker_name=COALESCE((SELECT name FROM workers WHERE instance_id=runs.worker_instance),'') WHERE worker_name='' AND worker_instance IS NOT NULL`); err != nil {
-		return fmt.Errorf("migrate run worker names: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO known_repositories(repository)
-SELECT repository FROM worker_repositories
-UNION
-SELECT repository FROM jobs`); err != nil {
-		return fmt.Errorf("migrate known repositories: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE jobs SET has_shepherd=1 WHERE has_shepherd=0 AND EXISTS (SELECT 1 FROM runs WHERE runs.job_id=jobs.id AND runs.agent='shepherd')`); err != nil {
-		return fmt.Errorf("migrate Shepherd job membership: %w", err)
-	}
-	if err := s.reconcileActiveShepherdJobs(ctx); err != nil {
-		return err
-	}
-	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_shepherd_repository_v3 ON jobs(repository) WHERE has_shepherd=1 AND state IN ('queued','running')`); err != nil {
-		return fmt.Errorf("create scheduled job overlap guard: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identity,occurrence_key) WHERE trigger_identity<>'' AND occurrence_key<>''`); err != nil {
-		return fmt.Errorf("create trigger occurrence guard: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running')`); err != nil {
-		return fmt.Errorf("create fixed trigger overlap guard: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running')`); err != nil {
-		return fmt.Errorf("create trigger subject overlap guard: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,config_generation,needs_reconciliation,requested_at)`); err != nil {
-		return fmt.Errorf("create github trigger reconciliation index: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation_v2 ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at)`); err != nil {
-		return fmt.Errorf("create cross-generation github trigger reconciliation index: %w", err)
-	}
-	return s.migrateRunMetrics(ctx)
-}
-
-func (s *Store) reconcileActiveShepherdJobs(ctx context.Context) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("reconcile active Shepherd jobs: %w", err)
-	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT id,repository FROM jobs WHERE has_shepherd=1 AND state IN ('queued','running') ORDER BY repository,CASE state WHEN 'running' THEN 0 ELSE 1 END,created_at,rowid`)
-	if err != nil {
-		return fmt.Errorf("inspect active Shepherd jobs: %w", err)
-	}
-	seen := make(map[string]bool)
-	var duplicates []string
-	for rows.Next() {
-		var id, repository string
-		if err := rows.Scan(&id, &repository); err != nil {
-			rows.Close()
-			return fmt.Errorf("inspect active Shepherd jobs: %w", err)
-		}
-		if seen[repository] {
-			duplicates = append(duplicates, id)
-		} else {
-			seen[repository] = true
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("inspect active Shepherd jobs: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("inspect active Shepherd jobs: %w", err)
-	}
-	now := s.now().UTC().Format(time.RFC3339Nano)
-	for _, id := range duplicates {
-		if _, err := tx.ExecContext(ctx, `UPDATE runs SET state='failed',worker_instance=NULL,lease_token=NULL,lease_expires_at=NULL,error=CASE WHEN COALESCE(error,'')='' THEN 'superseded duplicate Shepherd job during migration' ELSE error END,completed_at=COALESCE(completed_at,?) WHERE job_id=? AND state IN ('pending','queued','running')`, now, id); err != nil {
-			return fmt.Errorf("terminalize duplicate Shepherd job %q runs: %w", id, err)
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',updated_at=? WHERE id=?`, now, id); err != nil {
-			return fmt.Errorf("terminalize duplicate Shepherd job %q: %w", id, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("reconcile active Shepherd jobs: %w", err)
-	}
 	return nil
 }
 
-func (s *Store) addColumnIfMissing(ctx context.Context, table, column, definition string) error {
-	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
-	if err != nil {
-		return fmt.Errorf("inspect %s schema: %w", table, err)
-	}
-	found := false
-	for rows.Next() {
-		var cid int
-		var name, columnType string
-		var notNull, primaryKey int
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			rows.Close()
-			return fmt.Errorf("inspect %s schema: %w", table, err)
-		}
-		if name == column {
-			found = true
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("inspect %s schema: %w", table, err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("inspect %s schema: %w", table, err)
-	}
-	if found {
-		return nil
-	}
-	if _, err := s.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+definition); err != nil {
-		return fmt.Errorf("migrate %s schema: %w", table, err)
-	}
-	return nil
-}
-
-func (s *Store) migrateRunMetrics(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(result,''),COALESCE(started_at,''),COALESCE(completed_at,'') FROM runs WHERE (duration_millis IS NULL AND completed_at IS NOT NULL) OR (token_usage IS NULL AND result LIKE '%"token_usage"%')`)
-	if err != nil {
-		return fmt.Errorf("read persisted run metrics: %w", err)
-	}
-	type persistedResult struct {
-		id        string
-		result    string
-		startedAt string
-		endedAt   string
-	}
-	var results []persistedResult
-	for rows.Next() {
-		var result persistedResult
-		if err := rows.Scan(&result.id, &result.result, &result.startedAt, &result.endedAt); err != nil {
-			rows.Close()
-			return fmt.Errorf("read persisted run metrics: %w", err)
-		}
-		results = append(results, result)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("read persisted run metrics: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read persisted run metrics: %w", err)
-	}
-	for _, result := range results {
-		duration, tokenUsage := resultMetrics([]byte(result.result))
-		if duration == nil {
-			duration = elapsedMillis(result.startedAt, result.endedAt)
-		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE runs SET duration_millis=COALESCE(duration_millis,?),token_usage=COALESCE(token_usage,?) WHERE id=?`, duration, tokenUsage, result.id); err != nil {
-			return fmt.Errorf("migrate persisted run metrics: %w", err)
-		}
-	}
-	return nil
-}
-
-func (s *Store) CreateJob(ctx context.Context, prompt, repository, kind, name string, agents []config.ResolvedAgent) (string, error) {
-	if len(agents) == 0 {
-		return "", errors.New("job must contain at least one agent")
+func (s *Store) CreateJob(ctx context.Context, prompt, repository, name string, command config.ResolvedCommand) (string, error) {
+	if command.Name == "" {
+		return "", errors.New("job must contain one command")
 	}
 	jobID, err := randomID("job", 12)
 	if err != nil {
@@ -511,25 +229,15 @@ func (s *Store) CreateJob(ctx context.Context, prompt, repository, kind, name st
 		return "", err
 	}
 	defer tx.Rollback()
-	hasShepherd := false
-	for _, agent := range agents {
-		hasShepherd = hasShepherd || agent.Name == "shepherd"
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,state,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',?,?)`, jobID, prompt, repository, kind, name, hasShepherd, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,command,has_shepherd,state,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?)`, jobID, prompt, repository, name, command.Name == "shepherd", now, now); err != nil {
 		return "", fmt.Errorf("insert job: %w", err)
 	}
-	for index, agent := range agents {
-		runID, err := randomID("run", 12)
-		if err != nil {
-			return "", err
-		}
-		state := "pending"
-		if index == 0 {
-			state = "queued"
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,step,agent,agent_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, runID, jobID, index, agent.Name, agent.Hash, agent.Executor, agent.Model, repository, agent.Prompt, agent.Timeout.Milliseconds(), state); err != nil {
-			return "", fmt.Errorf("insert run: %w", err)
-		}
+	runID, err := randomID("run", 12)
+	if err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,'queued')`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, repository, command.Prompt, command.Timeout.Milliseconds()); err != nil {
+		return "", fmt.Errorf("insert run: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("commit job: %w", err)
@@ -629,8 +337,8 @@ func (s *Store) CreateTriggeredJob(ctx context.Context, admission TriggerAdmissi
 	if admission.ConfigGeneration == "" {
 		return "", false, errors.New("trigger config generation is required")
 	}
-	if len(admission.Agents) == 0 {
-		return "", false, errors.New("triggered job must contain at least one agent")
+	if admission.Command.Name == "" {
+		return "", false, errors.New("triggered job must contain one command")
 	}
 	fixed := fixedTriggerFamily(admission.Family)
 	if admission.OccurrenceKey == "" && fixed && !admission.ScheduledAt.IsZero() {
@@ -744,11 +452,7 @@ WHERE github_trigger_requests.state='pending'`, admission.Identity, admission.Oc
 		return "", false, err
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
-	hasShepherd := false
-	for _, agent := range admission.Agents {
-		hasShepherd = hasShepherd || agent.Name == "shepherd"
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,selection_kind,selection_name,has_shepherd,trigger_identity,trigger_config_signature,trigger_generation_id,occurrence_key,trigger_subject,github_issue_title,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionKind, admission.SelectionName, hasShepherd, admission.Identity, admission.ConfigSignature, admission.ConfigGeneration, admission.OccurrenceKey, admission.Subject, admission.GitHubIssueTitle, fixed, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,command,has_shepherd,trigger_identity,trigger_config_signature,trigger_generation_id,occurrence_key,trigger_subject,github_issue_title,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionName, admission.Command.Name == "shepherd", admission.Identity, admission.ConfigSignature, admission.ConfigGeneration, admission.OccurrenceKey, admission.Subject, admission.GitHubIssueTitle, fixed, now, now); err != nil {
 		return "", false, fmt.Errorf("insert triggered job: %w", err)
 	}
 	if admission.Family == "github" {
@@ -756,18 +460,13 @@ WHERE github_trigger_requests.state='pending'`, admission.Identity, admission.Oc
 			return "", false, fmt.Errorf("admit github trigger request: %w", err)
 		}
 	}
-	for index, agent := range admission.Agents {
-		runID, err := randomID("run", 12)
-		if err != nil {
-			return "", false, err
-		}
-		state := "pending"
-		if index == 0 {
-			state = "queued"
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,step,agent,agent_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, runID, jobID, index, agent.Name, agent.Hash, agent.Executor, agent.Model, admission.Repository, agent.Prompt, agent.Timeout.Milliseconds(), state); err != nil {
-			return "", false, fmt.Errorf("insert triggered run: %w", err)
-		}
+	runID, err := randomID("run", 12)
+	if err != nil {
+		return "", false, err
+	}
+	command := admission.Command
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,'queued')`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, admission.Repository, command.Prompt, command.Timeout.Milliseconds()); err != nil {
+		return "", false, fmt.Errorf("insert triggered run: %w", err)
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=COALESCE(?,next_due_at),pending_occurrence_at=NULL,last_attempt_at=?,health='active',latest_error='',admission_count=admission_count+1,updated_at=? WHERE identity=?`, nullableTimeText(admission.NextDueAt), now, now, admission.Identity)
 	if err != nil {
@@ -1008,7 +707,7 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 		return "", false, err
 	}
 	now := nowTime.Format(time.RFC3339Nano)
-	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,prompt,repository,selection_kind,selection_name,schedule_name,has_shepherd,state,created_at,updated_at) VALUES(?,?,?,'agent','shepherd',?,1,'queued',?,?)`, jobID, schedule.Prompt, schedule.Repository, schedule.Name, now, now)
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,prompt,repository,command,schedule_name,has_shepherd,state,created_at,updated_at) VALUES(?,?,?,'shepherd',?,1,'queued',?,?)`, jobID, schedule.Prompt, schedule.Repository, schedule.Name, now, now)
 	if err != nil {
 		return "", false, fmt.Errorf("insert scheduled job: %w", err)
 	}
@@ -1019,8 +718,8 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 	if changed == 0 {
 		return "", false, tx.Commit()
 	}
-	agent := schedule.Agent
-	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,step,agent,agent_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, runID, jobID, 0, agent.Name, agent.Hash, agent.Executor, agent.Model, schedule.Repository, agent.Prompt, agent.Timeout.Milliseconds(), "queued"); err != nil {
+	command := schedule.Command
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?)`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, schedule.Repository, command.Prompt, command.Timeout.Milliseconds(), "queued"); err != nil {
 		return "", false, fmt.Errorf("insert scheduled run: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schedule_state(name,next_run_at,repository,every_ms,execution_signature) VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET next_run_at=excluded.next_run_at,repository=excluded.repository,every_ms=excluded.every_ms,execution_signature=excluded.execution_signature`, schedule.Name, nowTime.Add(schedule.Every).Format(time.RFC3339Nano), schedule.Repository, schedule.Every.Milliseconds(), signature); err != nil {
@@ -1034,10 +733,10 @@ func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.Resolved
 
 func shepherdScheduleSignature(schedule config.ResolvedShepherdSchedule) (string, error) {
 	body, err := json.Marshal(struct {
-		MaxActions int                  `json:"max_actions"`
-		Prompt     string               `json:"prompt"`
-		Agent      config.ResolvedAgent `json:"agent"`
-	}{schedule.MaxActions, schedule.Prompt, schedule.Agent})
+		MaxActions int                    `json:"max_actions"`
+		Prompt     string                 `json:"prompt"`
+		Command    config.ResolvedCommand `json:"command"`
+	}{schedule.MaxActions, schedule.Prompt, schedule.Command})
 	if err != nil {
 		return "", fmt.Errorf("encode shepherd schedule %q execution settings: %w", schedule.Name, err)
 	}
@@ -1049,8 +748,7 @@ func (s *Store) Poll(ctx context.Context, request protocol.PollRequest) (*protoc
 }
 
 // poll allows at most maxConcurrentJobs running jobs. Zero leaves concurrency
-// unlimited. Runs in an already-running job remain eligible so pipelines and
-// expired leases can make progress.
+// unlimited. Expired leases remain eligible so interrupted work can make progress.
 func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcurrentJobs int) (*protocol.RunSpec, error) {
 	if maxConcurrentJobs < 0 {
 		return nil, errors.New("max concurrent jobs cannot be negative")
@@ -1079,7 +777,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 			return nil, fmt.Errorf("store worker repository: %w", err)
 		}
 	}
-	active, err := scanRunSpec(tx.QueryRowContext(ctx, `SELECT id,job_id,agent,agent_hash,executor,model,repository,rendered_prompt,timeout_ms,lease_token FROM runs WHERE worker_instance=? AND state='running' LIMIT 1`, request.InstanceID))
+	active, err := scanRunSpec(tx.QueryRowContext(ctx, `SELECT id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,lease_token FROM runs WHERE worker_instance=? AND state='running' LIMIT 1`, request.InstanceID))
 	if err == nil {
 		if err := tx.Commit(); err != nil {
 			return nil, err
@@ -1100,7 +798,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 
 	executors := stringSet(request.Executors)
 	repositories := stringSet(request.Repositories)
-	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.job_id,r.agent,r.agent_hash,r.executor,r.model,r.repository,r.rendered_prompt,r.timeout_ms,j.state FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.state='queued' ORDER BY r.rowid`)
+	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.job_id,r.command,r.command_hash,r.executor,r.model,r.repository,r.rendered_prompt,r.timeout_ms,j.state FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.state='queued' ORDER BY r.rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -1108,7 +806,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	for rows.Next() {
 		var candidate protocol.RunSpec
 		var jobState string
-		if err := rows.Scan(&candidate.ID, &candidate.JobID, &candidate.Agent, &candidate.AgentHash, &candidate.Executor, &candidate.Model, &candidate.Repository, &candidate.RenderedPrompt, &candidate.TimeoutMillis, &jobState); err != nil {
+		if err := rows.Scan(&candidate.ID, &candidate.JobID, &candidate.Command, &candidate.CommandHash, &candidate.Executor, &candidate.Model, &candidate.Repository, &candidate.RenderedPrompt, &candidate.TimeoutMillis, &jobState); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1159,8 +857,7 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 	defer tx.Rollback()
 	var jobID, state, instanceID, leaseToken, startedAt, triggerIdentity, triggerGeneration string
 	var leaseExpiresAt sql.NullInt64
-	var step int
-	if err := tx.QueryRowContext(ctx, `SELECT r.job_id,r.step,r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,COALESCE(r.started_at,''),COALESCE(j.trigger_identity,''),COALESCE(j.trigger_generation_id,'') FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.id=?`, runID).Scan(&jobID, &step, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt, &triggerIdentity, &triggerGeneration); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT r.job_id,r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,COALESCE(r.started_at,''),COALESCE(j.trigger_identity,''),COALESCE(j.trigger_generation_id,'') FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.id=?`, runID).Scan(&jobID, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt, &triggerIdentity, &triggerGeneration); err != nil {
 		return err
 	}
 	if subtle.ConstantTimeCompare([]byte(instanceID), []byte(completion.InstanceID)) != 1 || subtle.ConstantTimeCompare([]byte(leaseToken), []byte(completion.LeaseToken)) != 1 {
@@ -1175,7 +872,7 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 	if !leaseExpiresAt.Valid || leaseExpiresAt.Int64 <= s.now().UTC().UnixNano() {
 		return ErrLeaseConflict
 	}
-	if !terminalRunState(completion.State) || completion.State == "skipped" {
+	if !terminalRunState(completion.State) {
 		return fmt.Errorf("invalid terminal run state %q", completion.State)
 	}
 	if err := validateOutcome(completion.State, completion.ExitCode); err != nil {
@@ -1191,28 +888,15 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 		return err
 	}
 	if completion.State == "succeeded" {
-		result, err := tx.ExecContext(ctx, `UPDATE runs SET state='queued' WHERE job_id=? AND step=? AND state='pending'`, jobID, step+1)
-		if err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='succeeded',updated_at=? WHERE id=?`, now, jobID); err != nil {
 			return err
 		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if changed == 0 {
-			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='succeeded',updated_at=? WHERE id=?`, now, jobID); err != nil {
-				return err
-			}
-			if triggerIdentity != "" {
-				if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_success_at=?,last_job_state='succeeded',last_job_error='',health='healthy',latest_error='',updated_at=? WHERE identity=? AND generation_id=?`, now, now, triggerIdentity, triggerGeneration); err != nil {
-					return fmt.Errorf("record trigger success: %w", err)
-				}
+		if triggerIdentity != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_success_at=?,last_job_state='succeeded',last_job_error='',health='healthy',latest_error='',updated_at=? WHERE identity=? AND generation_id=?`, now, now, triggerIdentity, triggerGeneration); err != nil {
+				return fmt.Errorf("record trigger success: %w", err)
 			}
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `UPDATE runs SET state='skipped' WHERE job_id=? AND state='pending'`, jobID); err != nil {
-			return err
-		}
 		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',updated_at=? WHERE id=?`, now, jobID); err != nil {
 			return err
 		}
@@ -1408,7 +1092,7 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 }
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,prompt,repository,github_issue_title,selection_kind,selection_name,schedule_name,trigger_identity,occurrence_key,trigger_subject,state,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,prompt,repository,github_issue_title,command,schedule_name,trigger_identity,occurrence_key,trigger_subject,state,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1416,7 +1100,7 @@ func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
 	for rows.Next() {
 		var job Job
 		var created, updated string
-		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.GitHubIssueTitle, &job.SelectionKind, &job.SelectionName, &job.ScheduleName, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated); err != nil {
+		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.GitHubIssueTitle, &job.Command, &job.ScheduleName, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated); err != nil {
 			return nil, err
 		}
 		job.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -1439,7 +1123,7 @@ func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
 }
 
 func (s *Store) listRuns(ctx context.Context, jobID string) ([]Run, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.step,r.agent,r.executor,r.model,r.state,COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage FROM runs r LEFT JOIN workers w ON w.instance_id=r.worker_instance WHERE r.job_id=? ORDER BY r.step`, jobID)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.command,r.executor,r.model,r.state,COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage FROM runs r LEFT JOIN workers w ON w.instance_id=r.worker_instance WHERE r.job_id=?`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -1448,7 +1132,7 @@ func (s *Store) listRuns(ctx context.Context, jobID string) ([]Run, error) {
 	for rows.Next() {
 		var run Run
 		var started, completed string
-		if err := rows.Scan(&run.ID, &run.Step, &run.Agent, &run.Executor, &run.Model, &run.State, &run.WorkerName, &run.ExitCode, &run.Error, &started, &completed, &run.DurationMillis, &run.TokenUsage); err != nil {
+		if err := rows.Scan(&run.ID, &run.Command, &run.Executor, &run.Model, &run.State, &run.WorkerName, &run.ExitCode, &run.Error, &started, &completed, &run.DurationMillis, &run.TokenUsage); err != nil {
 			return nil, err
 		}
 		run.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
@@ -1536,7 +1220,7 @@ func (s *Store) listWorkerRepositories(ctx context.Context, instanceID string) (
 
 func scanRunSpec(row *sql.Row) (protocol.RunSpec, error) {
 	var run protocol.RunSpec
-	err := row.Scan(&run.ID, &run.JobID, &run.Agent, &run.AgentHash, &run.Executor, &run.Model, &run.Repository, &run.RenderedPrompt, &run.TimeoutMillis, &run.LeaseToken)
+	err := row.Scan(&run.ID, &run.JobID, &run.Command, &run.CommandHash, &run.Executor, &run.Model, &run.Repository, &run.RenderedPrompt, &run.TimeoutMillis, &run.LeaseToken)
 	return run, err
 }
 
@@ -1593,7 +1277,7 @@ func boundedTriggerError(message string) string {
 }
 
 func terminalRunState(state string) bool {
-	return state == "succeeded" || state == "failed" || state == "timed_out" || state == "cancelled" || state == "skipped"
+	return state == "succeeded" || state == "failed" || state == "timed_out" || state == "cancelled"
 }
 
 func terminalJobState(state string) bool {

@@ -12,16 +12,13 @@ func TestLoadTriggersResolvesAllFamilies(t *testing.T) {
 	writeTestFile(t, filepath.Join(directory, "foreman.md"), "Foreman: {{machinist.prompt}}\n")
 	writeTestFile(t, filepath.Join(directory, "audit.md"), "Audit: {{machinist.prompt}}\n")
 	path := filepath.Join(directory, "config.toml")
-	writeTestFile(t, path, `[agents.foreman]
+	writeTestFile(t, path, `[commands.foreman]
 executor = "codex"
 prompt_file = "foreman.md"
 
-[agents.audit]
+[commands.audit]
 executor = "codex"
 prompt_file = "audit.md"
-
-[pipelines.review]
-agents = ["audit", "foreman"]
 
 [github.repositories]
 machinist = "owainlewis/machinist"
@@ -29,12 +26,12 @@ machinist = "owainlewis/machinist"
 [triggers.github.issue-intake]
 every = "5m"
 label = "machinist:requested"
-agent = "foreman"
+command = "foreman"
 
 [triggers.interval.repository-audit]
 every = "6h"
 repository = "machinist"
-pipeline = "review"
+command = "audit"
 model = "fast"
 prompt = "Audit this repository for provable bugs."
 
@@ -42,7 +39,7 @@ prompt = "Audit this repository for provable bugs."
 schedule = "0 2 * * *"
 timezone = "UTC"
 repository = "machinist"
-agent = "audit"
+command = "audit"
 prompt = "Audit this repository for provable bugs."
 `)
 
@@ -57,20 +54,18 @@ prompt = "Audit this repository for provable bugs."
 	if github.Identity != "github/issue-intake" || github.Every != 5*time.Minute || github.Label != "machinist:requested" || github.GitHubRepositories["machinist"] != "owainlewis/machinist" {
 		t.Fatalf("github trigger = %#v", github)
 	}
-	if !strings.Contains(github.Agents[0].Prompt, promptParameter) {
-		t.Fatalf("github agent was prematurely rendered: %#v", github.Agents[0])
+	if !strings.Contains(github.Command.Prompt, promptParameter) {
+		t.Fatalf("github command was prematurely rendered: %#v", github.Command)
 	}
 	interval := resolved[1]
-	if interval.Identity != "interval/repository-audit" || interval.Repository != "machinist" || interval.GitHubRepository != "owainlewis/machinist" || interval.SelectionKind != "pipeline" || len(interval.Agents) != 2 {
+	if interval.Identity != "interval/repository-audit" || interval.Repository != "machinist" || interval.GitHubRepository != "owainlewis/machinist" {
 		t.Fatalf("interval trigger = %#v", interval)
 	}
-	for _, agent := range interval.Agents {
-		if !strings.Contains(agent.Prompt, interval.Prompt) || agent.Model != "fast" {
-			t.Fatalf("interval agent = %#v", agent)
-		}
+	if !strings.Contains(interval.Command.Prompt, interval.Prompt) || interval.Command.Model != "fast" {
+		t.Fatalf("interval command = %#v", interval.Command)
 	}
 	cron := resolved[2]
-	if cron.Identity != "cron/nightly-audit" || cron.Schedule != "0 2 * * *" || cron.Timezone != "UTC" || !strings.Contains(cron.Agents[0].Prompt, cron.Prompt) {
+	if cron.Identity != "cron/nightly-audit" || cron.Schedule != "0 2 * * *" || cron.Timezone != "UTC" || !strings.Contains(cron.Command.Prompt, cron.Prompt) {
 		t.Fatalf("cron trigger = %#v", cron)
 	}
 	startup := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
@@ -118,20 +113,18 @@ func TestLoadTriggersRejectsUnknownTriggerField(t *testing.T) {
 }
 
 func TestLoadTriggersRejectsGitHubSelectionThatCannotRenderMaximumIssuePrompt(t *testing.T) {
-	for _, selection := range []string{"agent=\"static\"", "pipeline=\"mixed\""} {
+	for _, selection := range []string{"command=\"static\""} {
 		t.Run(strings.Split(selection, "=")[0], func(t *testing.T) {
 			directory := t.TempDir()
 			writeTestFile(t, filepath.Join(directory, "static.md"), strings.Repeat(promptParameter, 3_000))
 			writeTestFile(t, filepath.Join(directory, "dynamic.md"), "Complete {{machinist.prompt}}\n")
 			path := filepath.Join(directory, "config.toml")
-			writeTestFile(t, path, `[agents.static]
+			writeTestFile(t, path, `[commands.static]
 executor="codex"
 prompt_file="static.md"
-[agents.dynamic]
+[commands.dynamic]
 executor="codex"
 prompt_file="dynamic.md"
-[pipelines.mixed]
-agents=["dynamic","static"]
 [github.repositories]
 machinist="owainlewis/machinist"
 [triggers.github.intake]
@@ -139,7 +132,7 @@ every="5m"
 label="machinist:requested"
 `+selection+"\n")
 			_, err := LoadTriggers(path)
-			if err == nil || !strings.Contains(err.Error(), `trigger "github/intake": rendered agent prompt exceeds`) {
+			if err == nil || !strings.Contains(err.Error(), `trigger "github/intake": rendered command prompt exceeds`) {
 				t.Fatalf("error = %v", err)
 			}
 		})
@@ -158,20 +151,11 @@ label="requested"
 `,
 			want: `trigger "github/intake"`,
 		},
-		"conflicting selection": {
-			body: `[triggers.github.intake]
-every="5m"
-label="requested"
-agent="audit"
-pipeline="review"
-`,
-			want: "exactly one",
-		},
 		"unknown fixed repository": {
 			body: `[triggers.interval.audit]
 every="1h"
 repository="missing"
-agent="audit"
+command="audit"
 prompt="audit"
 `,
 			want: `trigger "interval/audit"`,
@@ -180,7 +164,7 @@ prompt="audit"
 			body: `[triggers.github.intake]
 every="59s"
 label="requested"
-agent="audit"
+command="audit"
 `,
 			want: "between 1m0s and 24h0m0s",
 		},
@@ -188,7 +172,7 @@ agent="audit"
 			body: `[triggers.github.intake]
 every="5m"
 label="requested,urgent"
-agent="audit"
+command="audit"
 `,
 			want: "without commas",
 		},
@@ -196,7 +180,7 @@ agent="audit"
 			body: `[triggers.interval.audit]
 every="721h"
 repository="machinist"
-agent="audit"
+command="audit"
 prompt="audit"
 `,
 			want: "720h0m0s",
@@ -205,7 +189,7 @@ prompt="audit"
 			body: `[triggers.interval.audit]
 every="1h"
 repository="machinist"
-agent="audit"
+command="audit"
 prompt="  "
 `,
 			want: "prompt is required",
@@ -215,7 +199,7 @@ prompt="  "
 schedule="0 0 0 * * *"
 timezone="UTC"
 repository="machinist"
-agent="audit"
+command="audit"
 prompt="audit"
 `,
 			want: "exactly five fields",
@@ -225,7 +209,7 @@ prompt="audit"
 schedule="0 0 31 2 *"
 timezone="UTC"
 repository="machinist"
-agent="audit"
+command="audit"
 prompt="audit"
 `,
 			want: `trigger "cron/audit" schedule: cron schedule has no possible occurrence`,
@@ -235,7 +219,7 @@ prompt="audit"
 schedule="0 0 * * *"
 timezone="Nowhere/Invalid"
 repository="machinist"
-agent="audit"
+command="audit"
 prompt="audit"
 `,
 			want: "timezone",
@@ -246,11 +230,9 @@ prompt="audit"
 			directory := t.TempDir()
 			writeTestFile(t, filepath.Join(directory, "audit.md"), "{{machinist.prompt}}\n")
 			path := filepath.Join(directory, "config.toml")
-			writeTestFile(t, path, `[agents.audit]
+			writeTestFile(t, path, `[commands.audit]
 executor="codex"
 prompt_file="audit.md"
-[pipelines.review]
-agents=["audit"]
 [github.repositories]
 machinist="owainlewis/machinist"
 `+test.body)
@@ -294,7 +276,7 @@ func TestLoadTriggersRejectsReservedQueuedLabelCaseInsensitively(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "foreman.md"), "{{machinist.prompt}}\n")
 	path := filepath.Join(directory, "config.toml")
-	writeTestFile(t, path, `[agents.foreman]
+	writeTestFile(t, path, `[commands.foreman]
 executor="codex"
 prompt_file="foreman.md"
 [github.repositories]
@@ -302,7 +284,7 @@ machinist="owainlewis/machinist"
 [triggers.github.intake]
 every="5m"
 label="Machinist:Queued"
-agent="foreman"
+command="foreman"
 `)
 
 	_, err := LoadTriggers(path)
@@ -311,37 +293,11 @@ agent="foreman"
 	}
 }
 
-func TestLoadTriggersRejectsShepherdDirectlyAndThroughPipeline(t *testing.T) {
-	for _, selection := range []string{"agent=\"shepherd\"", "pipeline=\"with-shepherd\""} {
-		t.Run(selection, func(t *testing.T) {
-			directory := t.TempDir()
-			writeTestFile(t, filepath.Join(directory, "shepherd.md"), "{{machinist.prompt}}\n")
-			path := filepath.Join(directory, "config.toml")
-			writeTestFile(t, path, `[agents.shepherd]
-executor="codex"
-prompt_file="shepherd.md"
-[pipelines.with-shepherd]
-agents=["shepherd"]
-[github.repositories]
-machinist="owainlewis/machinist"
-[triggers.interval.audit]
-every="1h"
-repository="machinist"
-prompt="audit"
-`+selection+"\n")
-			_, err := LoadTriggers(path)
-			if err == nil || !strings.Contains(err.Error(), "cannot select Shepherd") {
-				t.Fatalf("error = %v", err)
-			}
-		})
-	}
-}
-
 func TestTriggerSignatureChangesWithExecutionAndSchedule(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "audit.md"), "{{machinist.prompt}}\n")
 	path := filepath.Join(directory, "config.toml")
-	body := `[agents.audit]
+	body := `[commands.audit]
 executor="codex"
 prompt_file="audit.md"
 [github.repositories]
@@ -349,7 +305,7 @@ machinist="owainlewis/machinist"
 [triggers.interval.audit]
 every="1h"
 repository="machinist"
-agent="audit"
+command="audit"
 prompt="audit"
 `
 	writeTestFile(t, path, body)

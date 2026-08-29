@@ -1,7 +1,7 @@
 # Deploy Machinist on a VM
 
 The supported VM layout runs a published Machinist binary and keeps source
-checkouts only for repositories that coding agents work on. The VM does not need
+checkouts only for repositories that coding commands work on. The VM does not need
 Go, Node.js, or a clone of the Machinist repository at runtime.
 
 ## Bootstrap Ubuntu or Debian
@@ -62,9 +62,9 @@ curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/install.s
   MACHINIST_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
-## Clone agent repositories
+## Clone command repositories
 
-Clone every repository the worker may change. A clone is required for agent
+Clone every repository the worker may change. A clone is required for command
 work, but Machinist itself still runs from the release binary:
 
 ```sh
@@ -104,7 +104,7 @@ current unauthenticated UI behind a public reverse proxy.
 The bootstrap command above runs as root and configures root as the Machinist
 runtime account. Treat that VM as a dedicated, privileged coding worker. For a
 long-running deployment, run both processes under a service manager as the same
-account that owns the agent credentials, Machinist configuration, and repository
+account that owns the command credentials, Machinist configuration, and repository
 checkouts.
 
 To use a non-root runtime account instead, create that account first, run the

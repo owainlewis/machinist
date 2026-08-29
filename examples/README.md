@@ -2,9 +2,9 @@
 
 The files at this level are the small default installed by `machinist init`:
 
-- `config.toml` defines the shipped `foreman`, `audit`, and `shepherd` agents.
+- `config.toml` defines the shipped `foreman`, `audit`, and `shepherd` commands.
 - `worker.toml` shows local Codex and Claude Code executors.
-- `agents/` contains the editable default prompts.
+- `prompts/` contains the editable default prompts.
 
 `config.toml` includes a commented Shepherd schedule. Enable it only after its repository
 name exists in `worker.toml`. Shepherd ensures the repository defines the

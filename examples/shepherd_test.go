@@ -58,7 +58,7 @@ func TestShepherdPromptDefinesSerialRestartSafeQueue(t *testing.T) {
 }
 
 func TestForemanStillCannotMerge(t *testing.T) {
-	body, err := Files.ReadFile("agents/foreman.md")
+	body, err := Files.ReadFile("prompts/foreman.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestForemanStillCannotMerge(t *testing.T) {
 
 func shepherdPrompt(t *testing.T) string {
 	t.Helper()
-	body, err := Files.ReadFile("agents/shepherd.md")
+	body, err := Files.ReadFile("prompts/shepherd.md")
 	if err != nil {
 		t.Fatal(err)
 	}

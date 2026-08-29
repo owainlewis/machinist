@@ -27,7 +27,7 @@ Pass one open issue URL in the prompt:
 ```sh
 machinist run \
   --machinist-config="$MACHINIST_EXAMPLE_ROOT/config.toml" \
-  --agent=issue-to-pr \
+  --command=issue-to-pr \
   --repo="$MACHINIST_TARGET_REPO" \
   --prompt="Complete https://github.com/owner/repository/issues/123"
 ```

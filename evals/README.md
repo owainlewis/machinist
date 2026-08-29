@@ -15,7 +15,7 @@ authenticated, and the Machinist configuration must define the default `foreman`
 ```sh
 just build
 
-python3 -m evals.pipeline_labels \
+python3 -m evals.github_labels \
   --repository=your-org/machinist-evals \
   --repo-path=/absolute/path/to/machinist-evals \
   --machinist=./bin/machinist

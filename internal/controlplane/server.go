@@ -52,8 +52,7 @@ type Server struct {
 
 type statusResponse struct {
 	Snapshot
-	Agents       []string `json:"agents"`
-	Pipelines    []string `json:"pipelines"`
+	Commands     []string `json:"commands"`
 	Repositories []string `json:"repositories"`
 	CSRFToken    string   `json:"csrf_token"`
 }
@@ -61,12 +60,11 @@ type statusResponse struct {
 type submitRequest struct {
 	Prompt     string `json:"prompt"`
 	Repository string `json:"repository"`
-	Agent      string `json:"agent"`
-	Pipeline   string `json:"pipeline"`
+	Command    string `json:"command"`
 	Model      string `json:"model"`
 }
 
-type agentDefinitionResponse struct {
+type commandDefinitionResponse struct {
 	Name     string `json:"name"`
 	Executor string `json:"executor"`
 	Timeout  string `json:"timeout"`
@@ -74,19 +72,12 @@ type agentDefinitionResponse struct {
 	Prompt   string `json:"prompt"`
 }
 
-type pipelineDefinitionResponse struct {
-	Name   string   `json:"name"`
-	Agents []string `json:"agents"`
-}
-
 type definitionsResponse struct {
-	Agents    []agentDefinitionResponse    `json:"agents"`
-	Pipelines []pipelineDefinitionResponse `json:"pipelines"`
+	Commands []commandDefinitionResponse `json:"commands"`
 }
 
 type catalogResponse struct {
-	Agents       []string `json:"agents"`
-	Pipelines    []string `json:"pipelines"`
+	Commands     []string `json:"commands"`
 	Repositories []string `json:"repositories"`
 }
 
@@ -309,29 +300,16 @@ func (s *Server) definitions(response http.ResponseWriter, request *http.Request
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
-	agents := make([]agentDefinitionResponse, 0, len(definition.Agents))
-	for _, name := range mapKeys(definition.Agents) {
-		agent, err := config.LoadAgent(s.definitionPath, name)
+	commands := make([]commandDefinitionResponse, 0, len(definition.Commands))
+	for _, name := range mapKeys(definition.Commands) {
+		command, err := config.LoadCommand(s.definitionPath, name)
 		if err != nil {
 			writeError(response, http.StatusInternalServerError, err)
 			return
 		}
-		agents = append(agents, agentDefinitionResponse{Name: agent.Name, Executor: agent.Executor, Timeout: agent.Timeout.String(), Hash: agent.Hash, Prompt: agent.Prompt})
+		commands = append(commands, commandDefinitionResponse{Name: command.Name, Executor: command.Executor, Timeout: command.Timeout.String(), Hash: command.Hash, Prompt: command.Prompt})
 	}
-	pipelines := make([]pipelineDefinitionResponse, 0, len(definition.Pipelines))
-	for _, name := range mapKeys(definition.Pipelines) {
-		resolved, err := config.LoadPipeline(s.definitionPath, name)
-		if err != nil {
-			writeError(response, http.StatusInternalServerError, err)
-			return
-		}
-		agentNames := make([]string, 0, len(resolved))
-		for _, agent := range resolved {
-			agentNames = append(agentNames, agent.Name)
-		}
-		pipelines = append(pipelines, pipelineDefinitionResponse{Name: name, Agents: agentNames})
-	}
-	writeJSON(response, http.StatusOK, definitionsResponse{Agents: agents, Pipelines: pipelines})
+	writeJSON(response, http.StatusOK, definitionsResponse{Commands: commands})
 }
 
 func (s *Server) status(response http.ResponseWriter, request *http.Request) {
@@ -360,8 +338,7 @@ func (s *Server) status(response http.ResponseWriter, request *http.Request) {
 	}
 	writeJSON(response, http.StatusOK, statusResponse{
 		Snapshot:     snapshot,
-		Agents:       mapKeys(definition.Agents),
-		Pipelines:    mapKeys(definition.Pipelines),
+		Commands:     mapKeys(definition.Commands),
 		Repositories: repositories,
 		CSRFToken:    s.csrfToken,
 	})
@@ -380,8 +357,7 @@ func (s *Server) catalog(response http.ResponseWriter, request *http.Request) {
 	}
 	response.Header().Set("Cache-Control", "no-store")
 	writeJSON(response, http.StatusOK, catalogResponse{
-		Agents:       mapKeys(definition.Agents),
-		Pipelines:    mapKeys(definition.Pipelines),
+		Commands:     mapKeys(definition.Commands),
 		Repositories: repositories,
 	})
 }
@@ -413,42 +389,22 @@ func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusBadRequest, errors.New("model must be at most 128 characters on one line"))
 		return
 	}
-	if (input.Agent == "") == (input.Pipeline == "") {
-		writeError(response, http.StatusBadRequest, errors.New("exactly one agent or pipeline is required"))
+	if strings.TrimSpace(input.Command) == "" {
+		writeError(response, http.StatusBadRequest, errors.New("command is required"))
 		return
 	}
-	var err error
-	var (
-		agents []config.ResolvedAgent
-		kind   string
-		name   string
-	)
-	if input.Agent != "" {
-		kind, name = "agent", input.Agent
-		var agent config.ResolvedAgent
-		agent, err = config.LoadAgent(s.definitionPath, input.Agent)
-		agents = []config.ResolvedAgent{agent}
-	} else {
-		kind, name = "pipeline", input.Pipeline
-		agents, err = config.LoadPipeline(s.definitionPath, input.Pipeline)
-	}
+	command, err := config.LoadCommand(s.definitionPath, input.Command)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
 	}
-	if err := config.ValidateModelSelection(agents, input.Model); err != nil {
+	command, err = config.RenderPrompt(command, input.Prompt)
+	if err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
 	}
-	for index := range agents {
-		agents[index], err = config.RenderPrompt(agents[index], input.Prompt)
-		if err != nil {
-			writeError(response, http.StatusBadRequest, err)
-			return
-		}
-		agents[index].Model = input.Model
-	}
-	jobID, err := s.store.CreateJob(request.Context(), input.Prompt, input.Repository, kind, name, agents)
+	command.Model = input.Model
+	jobID, err := s.store.CreateJob(request.Context(), input.Prompt, input.Repository, input.Command, command)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return

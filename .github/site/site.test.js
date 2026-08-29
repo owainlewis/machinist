@@ -4,7 +4,7 @@ import test from 'node:test';
 import { fallbackCopy, selectCommand } from './site.js';
 
 test('fallbackCopy copies the full command passed to it', () => {
-  const expected = "./bin/machinist run --agent=foreman --repo=/path/to/repo --prompt='Complete issue #123'";
+  const expected = "./bin/machinist run --command=foreman --repo=/path/to/repo --prompt='Complete issue #123'";
   let input;
   let removed = false;
 
@@ -50,7 +50,7 @@ test('fallbackCopy removes its temporary input when copying throws', () => {
 
 test('selectCommand exposes and selects the full data-copy value', () => {
   const code = { textContent: 'machinist run ...' };
-  const button = { dataset: { copy: 'machinist run --agent=foreman --repo=/path/to/repo' }, querySelector: () => code };
+  const button = { dataset: { copy: 'machinist run --command=foreman --repo=/path/to/repo' }, querySelector: () => code };
   let selectedNode;
   const range = { selectNodeContents(node) { selectedNode = node; } };
   const fakeDocument = { createRange: () => range };
@@ -68,4 +68,5 @@ test('setup snippets include required directories and Codex permissions', async 
   const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./index.html', import.meta.url), 'utf8'));
   assert.match(source, /mkdir -p \.\/bin &amp;&amp; go build/);
   assert.match(source, /"--sandbox"[\s\S]+"danger-full-access"/);
+  assert.doesNotMatch(source, /pipeline|--agent/);
 });

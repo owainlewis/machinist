@@ -24,7 +24,7 @@ func TestServerProtectsSubmissionAndWorkerAPIs(t *testing.T) {
 	defer webServer.Close()
 
 	status := getStatus(t, webServer.URL)
-	if status.CSRFToken == "" || len(status.Agents) != 1 || status.Agents[0] != "plan" {
+	if status.CSRFToken == "" || len(status.Commands) != 1 || status.Commands[0] != "plan" {
 		t.Fatalf("status = %#v", status)
 	}
 	workerPoll := postJSON(t, webServer.URL+"/api/v1/workers/poll", map[string]any{"instance_id": "worker-a", "name": "test-worker", "executors": []string{"test"}, "repositories": []string{"machinist"}}, map[string]string{"Authorization": "Bearer secret"})
@@ -44,21 +44,21 @@ func TestServerProtectsSubmissionAndWorkerAPIs(t *testing.T) {
 	unauthorized.Body.Close()
 
 	foreignHeaders := map[string]string{"Origin": "https://evil.example", "X-Machinist-CSRF": status.CSRFToken}
-	foreign := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{"prompt": "Work locally", "repository": "machinist", "agent": "plan"}, foreignHeaders)
+	foreign := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{"prompt": "Work locally", "repository": "machinist", "command": "plan"}, foreignHeaders)
 	if foreign.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign submission status = %d", foreign.StatusCode)
 	}
 	foreign.Body.Close()
 
 	legacyHeaders := map[string]string{"Origin": webServer.URL, "X-Factory-CSRF": status.CSRFToken}
-	legacy := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{"prompt": "Work locally", "repository": "machinist", "agent": "plan"}, legacyHeaders)
+	legacy := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{"prompt": "Work locally", "repository": "machinist", "command": "plan"}, legacyHeaders)
 	if legacy.StatusCode != http.StatusForbidden {
 		t.Fatalf("legacy CSRF header status = %d", legacy.StatusCode)
 	}
 	legacy.Body.Close()
 
 	headers := map[string]string{"Origin": webServer.URL, "X-Machinist-CSRF": status.CSRFToken}
-	created := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{"prompt": "Work locally", "repository": "machinist", "agent": "plan", "model": "luna"}, headers)
+	created := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{"prompt": "Work locally", "repository": "machinist", "command": "plan", "model": "luna"}, headers)
 	if created.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d", created.StatusCode)
 	}
@@ -105,7 +105,7 @@ func TestServerMarksStaleWorkerDisconnected(t *testing.T) {
 func TestServerDeletesOnlyTerminalJobsWithSubmissionAuthorization(t *testing.T) {
 	server, webServer := newTestHTTPServer(t)
 	defer webServer.Close()
-	jobID, err := server.store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan")})
+	jobID, err := server.store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,9 +154,9 @@ func TestServerDeletesOnlyTerminalJobsWithSubmissionAuthorization(t *testing.T) 
 func TestServerAppliesConcurrentJobLimitToWorkerPolls(t *testing.T) {
 	server, webServer := newTestHTTPServerWithLimit(t, 1)
 	defer webServer.Close()
-	agent := config.ResolvedAgent{Name: "plan", Executor: "test", Prompt: "Plan request", Timeout: time.Minute}
+	agent := config.ResolvedCommand{Name: "plan", Executor: "test", Prompt: "Plan request", Timeout: time.Minute}
 	for _, prompt := range []string{"first", "second"} {
-		if _, err := server.store.CreateJob(t.Context(), prompt, "machinist", "agent", "plan", []config.ResolvedAgent{agent}); err != nil {
+		if _, err := server.store.CreateJob(t.Context(), prompt, "machinist", "plan", agent); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -196,7 +196,7 @@ func TestServerAcceptsBearerSubmissionAndRejectsInvalidToken(t *testing.T) {
 	workerPoll.Body.Close()
 
 	created := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{
-		"prompt": "queue from terminal", "repository": "machinist", "agent": "plan",
+		"prompt": "queue from terminal", "repository": "machinist", "command": "plan",
 	}, map[string]string{"Authorization": "Bearer secret"})
 	if created.StatusCode != http.StatusCreated {
 		t.Fatalf("bearer submission status = %d", created.StatusCode)
@@ -204,7 +204,7 @@ func TestServerAcceptsBearerSubmissionAndRejectsInvalidToken(t *testing.T) {
 	created.Body.Close()
 
 	invalid := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{
-		"prompt": "must not queue", "repository": "machinist", "agent": "plan",
+		"prompt": "must not queue", "repository": "machinist", "command": "plan",
 	}, map[string]string{"Authorization": "Bearer invalid"})
 	if invalid.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("invalid bearer status = %d", invalid.StatusCode)
@@ -224,7 +224,7 @@ func TestServerRejectsUnavailableRepositoryBeforePersistence(t *testing.T) {
 	status := getStatus(t, webServer.URL)
 	headers := map[string]string{"Origin": webServer.URL, "X-Machinist-CSRF": status.CSRFToken}
 	response := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{
-		"prompt": "unknown repository", "repository": "missing", "agent": "plan",
+		"prompt": "unknown repository", "repository": "missing", "command": "plan",
 	}, headers)
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown repository status = %d", response.StatusCode)
@@ -258,7 +258,7 @@ func TestServerQueuesKnownRepositoryWithoutLiveWorker(t *testing.T) {
 	}
 
 	response := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{
-		"prompt": "queue while worker is away", "repository": "machinist", "agent": "plan",
+		"prompt": "queue while worker is away", "repository": "machinist", "command": "plan",
 	}, auth)
 	if response.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(response.Body)
@@ -308,7 +308,7 @@ func TestServerQueuesKnownRepositoryWithUnrelatedLiveWorker(t *testing.T) {
 	currentPoll.Body.Close()
 
 	response := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{
-		"prompt": "queue while advertising workers are away", "repository": "removed", "agent": "plan",
+		"prompt": "queue while advertising workers are away", "repository": "removed", "command": "plan",
 	}, auth)
 	if response.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(response.Body)
@@ -400,7 +400,7 @@ func TestServerDoesNotAdmitShepherdScheduleWhenBindFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	definitionPath := filepath.Join(directory, "config.toml")
-	definition := `[agents.shepherd]
+	definition := `[commands.shepherd]
 executor = "test"
 prompt_file = "shepherd.md"
 timeout = "1m"
@@ -448,11 +448,8 @@ func TestServerExposesReadOnlyDefinitions(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&definitions); err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" || len(definitions.Agents) != 1 || definitions.Agents[0].Name != "plan" || definitions.Agents[0].Executor != "test" || definitions.Agents[0].Timeout != "1m0s" || !strings.Contains(definitions.Agents[0].Prompt, "{{machinist.prompt}}") {
+	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" || len(definitions.Commands) != 1 || definitions.Commands[0].Name != "plan" || definitions.Commands[0].Executor != "test" || definitions.Commands[0].Timeout != "1m0s" || !strings.Contains(definitions.Commands[0].Prompt, "{{machinist.prompt}}") {
 		t.Fatalf("definitions = %#v", definitions)
-	}
-	if len(definitions.Pipelines) != 1 || definitions.Pipelines[0].Name != "default" || len(definitions.Pipelines[0].Agents) != 1 || definitions.Pipelines[0].Agents[0] != "plan" {
-		t.Fatalf("pipelines = %#v", definitions.Pipelines)
 	}
 }
 
@@ -580,7 +577,7 @@ func TestHeartbeatEndpointAuthenticatesAndRejectsInvalidLeases(t *testing.T) {
 	}
 	unknown.Body.Close()
 
-	if _, err := server.store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan request")}); err != nil {
+	if _, err := server.store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request")); err != nil {
 		t.Fatal(err)
 	}
 	pollResponse := postJSON(t, webServer.URL+"/api/v1/workers/poll", pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), auth)
@@ -655,7 +652,7 @@ func TestServerEnqueuesConfiguredShepherdSchedule(t *testing.T) {
 		t.Fatal(err)
 	}
 	definitionPath := filepath.Join(directory, "config.toml")
-	definition := `[agents.shepherd]
+	definition := `[commands.shepherd]
 executor = "test"
 prompt_file = "shepherd.md"
 timeout = "1m"
@@ -686,7 +683,7 @@ max_actions = 2
 	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ScheduleName != "machinist" || snapshot.Jobs[0].Prompt == "" {
 		t.Fatalf("scheduled jobs = %#v", snapshot.Jobs)
 	}
-	if len(snapshot.Jobs[0].Runs) != 1 || !strings.Contains(snapshot.Jobs[0].Runs[0].Agent, "shepherd") {
+	if len(snapshot.Jobs[0].Runs) != 1 || !strings.Contains(snapshot.Jobs[0].Runs[0].Command, "shepherd") {
 		t.Fatalf("scheduled runs = %#v", snapshot.Jobs[0].Runs)
 	}
 }
@@ -699,7 +696,7 @@ func TestServerCancellationAlwaysStopsHTTPServer(t *testing.T) {
 			t.Fatal(err)
 		}
 		definitionPath := filepath.Join(directory, "config.toml")
-		if err := os.WriteFile(definitionPath, []byte("[agents.plan]\nexecutor = \"test\"\nprompt_file = \"plan.md\"\ntimeout = \"1m\"\n"), 0o600); err != nil {
+		if err := os.WriteFile(definitionPath, []byte("[commands.plan]\nexecutor = \"test\"\nprompt_file = \"plan.md\"\ntimeout = \"1m\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		store := openTestStore(t, filepath.Join(directory, "machinist.db"))
@@ -793,7 +790,7 @@ func TestScheduledAdmissionFailureDoesNotStopServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	definitionPath := filepath.Join(directory, "config.toml")
-	definition := `[agents.shepherd]
+	definition := `[commands.shepherd]
 executor = "test"
 prompt_file = "shepherd.md"
 timeout = "1m"
@@ -902,7 +899,7 @@ func newTestHTTPServerWithLimit(t *testing.T, maxConcurrentJobs int) (*Server, *
 		t.Fatal(err)
 	}
 	definitionPath := filepath.Join(directory, "config.toml")
-	if err := os.WriteFile(definitionPath, []byte("[agents.plan]\nexecutor = \"test\"\nprompt_file = \"plan.md\"\ntimeout = \"1m\"\n\n[pipelines.default]\nagents = [\"plan\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(definitionPath, []byte("[commands.plan]\nexecutor = \"test\"\nprompt_file = \"plan.md\"\ntimeout = \"1m\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store := openTestStore(t, filepath.Join(directory, "machinist.db"))

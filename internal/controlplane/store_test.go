@@ -3,7 +3,7 @@ package controlplane
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -17,126 +17,6 @@ import (
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
-func TestStoreLeasesPipelineInOrderAndPersistsState(t *testing.T) {
-	database := filepath.Join(t.TempDir(), "machinist.db")
-	store := openTestStore(t, database)
-	agents := []config.ResolvedAgent{
-		testAgent("plan", "Plan request"),
-		testAgent("build", "Build request"),
-		testAgent("verify", "Verify request"),
-	}
-	agents[0].Model = "luna"
-	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "pipeline", "code", agents)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	incompatible, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"other"}, []string{"machinist"}))
-	if err != nil || incompatible != nil {
-		t.Fatalf("incompatible poll = %#v, %v", incompatible, err)
-	}
-	wrongModel := pollRequest("worker-b", []string{"codex"}, []string{"machinist"})
-	wrongModel.Models = map[string][]string{"codex": {"terra"}}
-	incompatible, err = store.Poll(t.Context(), wrongModel)
-	if err != nil || incompatible != nil {
-		t.Fatalf("wrong-model poll = %#v, %v", incompatible, err)
-	}
-	compatible := pollRequest("worker-a", []string{"codex"}, []string{"machinist"})
-	compatible.Models = map[string][]string{"codex": {"luna"}}
-	first, err := store.Poll(t.Context(), compatible)
-	if err != nil || first == nil || first.Agent != "plan" || first.RenderedPrompt != "Plan request" || first.Model != "luna" {
-		t.Fatalf("first lease = %#v, %v", first, err)
-	}
-	repeated, err := store.Poll(t.Context(), compatible)
-	if err != nil || repeated == nil || repeated.ID != first.ID || repeated.LeaseToken != first.LeaseToken {
-		t.Fatalf("repeated lease = %#v, %v", repeated, err)
-	}
-	if err := store.Complete(t.Context(), first.ID, protocol.Completion{InstanceID: "worker-b", LeaseToken: first.LeaseToken, State: "succeeded"}); !errors.Is(err, ErrLeaseConflict) {
-		t.Fatalf("cross-worker completion error = %v", err)
-	}
-	completion := protocol.Completion{InstanceID: "worker-a", LeaseToken: first.LeaseToken, State: "succeeded", ExitCode: 0, Events: "event\n"}
-	if err := store.Complete(t.Context(), first.ID, completion); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Complete(t.Context(), first.ID, completion); err != nil {
-		t.Fatalf("idempotent completion: %v", err)
-	}
-	output, err := store.RunOutput(t.Context(), first.ID)
-	if err != nil || output.Events != "event\n" {
-		t.Fatalf("run output = %#v, %v", output, err)
-	}
-	second, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
-	if err != nil || second == nil || second.Agent != "build" {
-		t.Fatalf("second lease = %#v, %v", second, err)
-	}
-	if err := store.Complete(t.Context(), second.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: second.LeaseToken, State: "failed", ExitCode: 9, Error: "build failed"}); err != nil {
-		t.Fatal(err)
-	}
-
-	snapshot, err := store.Snapshot(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Jobs[0].Runs[0].Model != "luna" {
-		t.Fatalf("stored model = %q", snapshot.Jobs[0].Runs[0].Model)
-	}
-	assertFailedPipeline(t, snapshot, jobID)
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened := openTestStore(t, database)
-	snapshot, err = reopened.Snapshot(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertFailedPipeline(t, snapshot, jobID)
-}
-
-func TestStorePersistsRunMetricsWithAndWithoutTokenUsage(t *testing.T) {
-	database := filepath.Join(t.TempDir(), "machinist.db")
-	store := openTestStore(t, database)
-	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "pipeline", "metrics", []config.ResolvedAgent{
-		testAgent("reported", "Report usage"),
-		testAgent("missing", "Do not report usage"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	first, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Complete(t.Context(), first.ID, protocol.Completion{
-		InstanceID: "worker-a", LeaseToken: first.LeaseToken, State: "succeeded", ExitCode: 0,
-		Result: json.RawMessage(`{"duration_millis":1250,"token_usage":987}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	second, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Complete(t.Context(), second.ID, protocol.Completion{
-		InstanceID: "worker-a", LeaseToken: second.LeaseToken, State: "succeeded", ExitCode: 0,
-		Result: json.RawMessage(`{"duration_millis":2500}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	assertStoredMetrics(t, store, jobID)
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := OpenStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	assertStoredMetrics(t, reopened, jobID)
-}
-
 func TestStoreRejectsContradictoryOutcomes(t *testing.T) {
 	for _, test := range []struct {
 		state    string
@@ -149,7 +29,7 @@ func TestStoreRejectsContradictoryOutcomes(t *testing.T) {
 	} {
 		t.Run(test.state, func(t *testing.T) {
 			store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-			if _, err := store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan request")}); err != nil {
+			if _, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request")); err != nil {
 				t.Fatal(err)
 			}
 			run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
@@ -168,9 +48,38 @@ func TestStoreRejectsContradictoryOutcomes(t *testing.T) {
 	}
 }
 
+func TestOpenStoreReplacesLegacySchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "machinist.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE jobs(id TEXT PRIMARY KEY, selection_kind TEXT); INSERT INTO jobs VALUES('legacy','pipeline')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var count, version int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 || version != 1 {
+		t.Fatalf("migrated database count=%d version=%d", count, version)
+	}
+}
+
 func TestConcurrentPollsLeaseRunOnce(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-	if _, err := store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan request")}); err != nil {
+	if _, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -210,11 +119,11 @@ func TestConcurrentPollsLeaseRunOnce(t *testing.T) {
 
 func TestStoreConcurrentJobLimitLeavesAdditionalJobsQueued(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-	firstJob, err := store.CreateJob(t.Context(), "first", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "First request")})
+	firstJob, err := store.CreateJob(t.Context(), "first", "machinist", "plan", testAgent("plan", "First request"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondJob, err := store.CreateJob(t.Context(), "second", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Second request")})
+	secondJob, err := store.CreateJob(t.Context(), "second", "machinist", "plan", testAgent("plan", "Second request"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,53 +157,15 @@ func TestStoreConcurrentJobLimitLeavesAdditionalJobsQueued(t *testing.T) {
 	}
 }
 
-func TestStoreConcurrentJobLimitKeepsPipelineSlotBetweenSteps(t *testing.T) {
-	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-	pipelineJob, err := store.CreateJob(t.Context(), "pipeline", "machinist", "pipeline", "code", []config.ResolvedAgent{
-		testAgent("plan", "Plan request"),
-		testAgent("build", "Build request"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	queuedJob, err := store.CreateJob(t.Context(), "queued", "machinist", "agent", "review", []config.ResolvedAgent{testAgent("review", "Review request")})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	first, err := store.poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), 1)
-	if err != nil || first == nil || first.JobID != pipelineJob || first.Agent != "plan" {
-		t.Fatalf("first pipeline lease = %#v, %v", first, err)
-	}
-	if err := store.Complete(t.Context(), first.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: first.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
-		t.Fatal(err)
-	}
-	second, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1)
-	if err != nil || second == nil || second.JobID != pipelineJob || second.Agent != "build" {
-		t.Fatalf("second pipeline lease = %#v, %v", second, err)
-	}
-	blocked, err := store.poll(t.Context(), pollRequest("worker-c", []string{"codex"}, []string{"machinist"}), 1)
-	if err != nil || blocked != nil {
-		t.Fatalf("parallel poll = %#v, %v", blocked, err)
-	}
-	if err := store.Complete(t.Context(), second.ID, protocol.Completion{InstanceID: "worker-b", LeaseToken: second.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
-		t.Fatal(err)
-	}
-	queued, err := store.poll(t.Context(), pollRequest("worker-c", []string{"codex"}, []string{"machinist"}), 1)
-	if err != nil || queued == nil || queued.JobID != queuedJob {
-		t.Fatalf("queued job lease = %#v, %v", queued, err)
-	}
-}
-
 func TestStoreConcurrentJobLimitRedispatchesExpiredActiveJob(t *testing.T) {
 	clock := newTestClock(time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC))
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	store.now = clock.Now
-	activeJob, err := store.CreateJob(t.Context(), "active", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Active request")})
+	activeJob, err := store.CreateJob(t.Context(), "active", "machinist", "plan", testAgent("plan", "Active request"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateJob(t.Context(), "queued", "machinist", "agent", "review", []config.ResolvedAgent{testAgent("review", "Queued request")}); err != nil {
+	if _, err := store.CreateJob(t.Context(), "queued", "machinist", "review", testAgent("review", "Queued request")); err != nil {
 		t.Fatal(err)
 	}
 	initial, err := store.poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), 1)
@@ -312,7 +183,7 @@ func TestStoreConcurrentJobLimitRedispatchesExpiredActiveJob(t *testing.T) {
 func TestConcurrentPollsRespectGlobalJobLimit(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	for _, prompt := range []string{"first", "second"} {
-		if _, err := store.CreateJob(t.Context(), prompt, "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", prompt)}); err != nil {
+		if _, err := store.CreateJob(t.Context(), prompt, "machinist", "plan", testAgent("plan", prompt)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -355,10 +226,7 @@ func TestStoreRenewsAndRedispatchesExpiredLease(t *testing.T) {
 	clock := newTestClock(time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC))
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	store.now = clock.Now
-	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "pipeline", "code", []config.ResolvedAgent{
-		testAgent("plan", "Plan request"),
-		testAgent("build", "Build request"),
-	})
+	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,8 +291,8 @@ func TestStoreRenewsAndRedispatchesExpiredLease(t *testing.T) {
 		t.Fatalf("stale output = %#v, %v", output, err)
 	}
 	snapshot, err := store.Snapshot(t.Context())
-	if err != nil || snapshot.Jobs[0].Runs[1].State != "pending" {
-		t.Fatalf("pipeline advanced after stale completion: %#v, %v", snapshot, err)
+	if err != nil || snapshot.Jobs[0].State != "running" || len(snapshot.Jobs[0].Runs) != 1 {
+		t.Fatalf("stale completion changed job: %#v, %v", snapshot, err)
 	}
 }
 
@@ -432,7 +300,7 @@ func TestConcurrentPollsReclaimExpiredRunOnce(t *testing.T) {
 	clock := newTestClock(time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC))
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	store.now = clock.Now
-	if _, err := store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan request")}); err != nil {
+	if _, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request")); err != nil {
 		t.Fatal(err)
 	}
 	initial, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
@@ -478,65 +346,6 @@ func TestConcurrentPollsReclaimExpiredRunOnce(t *testing.T) {
 	}
 }
 
-func TestOpenStoreMigratesExistingDatabaseAndRecoversRunningLease(t *testing.T) {
-	database := filepath.Join(t.TempDir(), "machinist.db")
-	createPreviousDatabase(t, database)
-	store := openTestStore(t, database)
-	clock := newTestClock(time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC))
-	store.now = clock.Now
-
-	columns := map[string]int{}
-	rows, err := store.db.QueryContext(t.Context(), `PRAGMA table_info(runs)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var cid, notNull, primaryKey int
-		var name, columnType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			t.Fatal(err)
-		}
-		columns[name]++
-	}
-	if err := rows.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"lease_expires_at", "model", "worker_name", "duration_millis", "token_usage"} {
-		if columns[name] != 1 {
-			t.Fatalf("%s columns = %d", name, columns[name])
-		}
-	}
-	output, err := store.RunOutput(t.Context(), "run-completed")
-	if err != nil || output.Result != `{"answer":42,"duration_millis":60000,"token_usage":1234}` || output.Events != "completed event\n" {
-		t.Fatalf("preserved output = %#v, %v", output, err)
-	}
-	snapshot, err := store.Snapshot(t.Context())
-	if err != nil || len(snapshot.Jobs) != 2 || len(snapshot.Workers) != 1 {
-		t.Fatalf("preserved snapshot = %#v, %v", snapshot, err)
-	}
-	migrated := findRun(t, snapshot, "run-completed")
-	if migrated.DurationMillis == nil || *migrated.DurationMillis != 60000 || migrated.TokenUsage == nil || *migrated.TokenUsage != 1234 {
-		t.Fatalf("migrated metrics = %#v", migrated)
-	}
-	if migrated.Model != "" {
-		t.Fatalf("migrated model = %q", migrated.Model)
-	}
-	if migrated.WorkerName != "old worker" {
-		t.Fatalf("migrated worker name = %q", migrated.WorkerName)
-	}
-	repositories, err := store.KnownRepositories(t.Context())
-	if err != nil || len(repositories) != 1 || repositories[0] != "machinist" {
-		t.Fatalf("migrated known repositories = %#v, %v", repositories, err)
-	}
-
-	run, err := store.Poll(t.Context(), pollRequest("worker-new", []string{"codex"}, []string{"machinist"}))
-	if err != nil || run == nil || run.ID != "run-running" || run.LeaseToken == "old-token" {
-		t.Fatalf("recovered pre-migration lease = %#v, %v", run, err)
-	}
-	assertLeaseExpiry(t, store, run.ID, clock.Now().Add(leaseDuration))
-}
-
 func TestStorePersistsCurrentWorkerRepositories(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	if run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"other", "machinist", "machinist"})); err != nil || run != nil {
@@ -572,7 +381,7 @@ func TestStorePrunesSupersededWorkerAndPreservesRunWorkerName(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	clock := newTestClock(time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC))
 	store.now = clock.Now
-	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan")})
+	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +437,7 @@ func TestStoreReclaimsExpiredLeaseWithoutWorkerPoll(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	clock := newTestClock(time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC))
 	store.now = clock.Now
-	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan")})
+	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,7 +461,7 @@ func TestStoreReclaimsExpiredLeaseWithoutWorkerPoll(t *testing.T) {
 
 func TestStoreDeletesTerminalJobAndRejectsActiveJob(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-	jobID, err := store.CreateJob(t.Context(), "active", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan")})
+	jobID, err := store.CreateJob(t.Context(), "active", "machinist", "plan", testAgent("plan", "Plan"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -686,7 +495,7 @@ func TestStoreDeletingTriggeredJobPreservesPendingReconciliation(t *testing.T) {
 	admission := TriggerAdmission{
 		Identity: "github/intake", Family: "github", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "github/intake"),
 		OccurrenceKey: "github.com/event/1", Subject: "https://github.com/owainlewis/machinist/issues/396", ScheduledAt: time.Now().UTC(),
-		Prompt: "Complete issue", Repository: "machinist", SelectionKind: "agent", SelectionName: "foreman", Agents: []config.ResolvedAgent{testAgent("foreman", "Complete issue")},
+		Prompt: "Complete issue", Repository: "machinist", SelectionName: "foreman", Command: testAgent("foreman", "Complete issue"),
 		GitHubRepository: "owainlewis/machinist", GitHubIssueNumber: 396, RequestActor: "owner", RequestLabel: "machinist:requested",
 	}
 	jobID, created, err := store.CreateTriggeredJob(t.Context(), admission)
@@ -734,7 +543,7 @@ func TestAvailableRepositoriesExcludesStaleWorkerInstances(t *testing.T) {
 
 func TestAvailableRepositoriesIncludesWorkerWithRunningExecution(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-	if _, err := store.CreateJob(t.Context(), "request", "machinist", "agent", "plan", []config.ResolvedAgent{testAgent("plan", "Plan request")}); err != nil {
+	if _, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request")); err != nil {
 		t.Fatal(err)
 	}
 	run, err := store.Poll(t.Context(), pollRequest("worker-busy", []string{"codex"}, []string{"machinist"}))
@@ -759,7 +568,7 @@ func TestStoreSchedulesOneNonOverlappingShepherdRunPerRepository(t *testing.T) {
 	store.now = clock.Now
 	schedule := config.ResolvedShepherdSchedule{
 		Name: "api", Repository: "api", Every: 15 * time.Minute, MaxActions: 3,
-		Agent: testAgent("shepherd", "Inspect every pull request; at most 3 actions."),
+		Command: testAgent("shepherd", "Inspect every pull request; at most 3 actions."),
 	}
 
 	jobID, created, err := store.CreateScheduledJob(t.Context(), schedule)
@@ -769,12 +578,8 @@ func TestStoreSchedulesOneNonOverlappingShepherdRunPerRepository(t *testing.T) {
 	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || created {
 		t.Fatalf("duplicate schedule created = %t, %v", created, err)
 	}
-	if _, err := store.CreateJob(t.Context(), "manual", "api", "agent", "shepherd", []config.ResolvedAgent{schedule.Agent}); err == nil {
+	if _, err := store.CreateJob(t.Context(), "manual", "api", "shepherd", schedule.Command); err == nil {
 		t.Fatal("manual Shepherd overlapped the scheduled run")
-	}
-	pipeline := []config.ResolvedAgent{testAgent("plan", "Plan"), schedule.Agent}
-	if _, err := store.CreateJob(t.Context(), "pipeline", "api", "pipeline", "merge", pipeline); err == nil {
-		t.Fatal("pipeline containing Shepherd overlapped the scheduled run")
 	}
 	other := schedule
 	other.Name = "api-second"
@@ -783,7 +588,7 @@ func TestStoreSchedulesOneNonOverlappingShepherdRunPerRepository(t *testing.T) {
 	}
 
 	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"api"}))
-	if err != nil || run == nil || run.Agent != "shepherd" || run.RenderedPrompt != schedule.Agent.Prompt {
+	if err != nil || run == nil || run.Command != "shepherd" || run.RenderedPrompt != schedule.Command.Prompt {
 		t.Fatalf("scheduled lease = %#v, %v", run, err)
 	}
 	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
@@ -806,74 +611,6 @@ func TestStoreSchedulesOneNonOverlappingShepherdRunPerRepository(t *testing.T) {
 	}
 }
 
-func TestStoreScheduleDoesNotOverlapActivePipelineContainingShepherd(t *testing.T) {
-	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-	clock := newTestClock(time.Date(2026, 8, 27, 8, 0, 0, 0, time.UTC))
-	store.now = clock.Now
-	shepherd := testAgent("shepherd", "Inspect every pull request")
-	pipeline := []config.ResolvedAgent{testAgent("plan", "Plan"), shepherd}
-	if _, err := store.CreateJob(t.Context(), "pipeline", "api", "pipeline", "merge", pipeline); err != nil {
-		t.Fatal(err)
-	}
-	schedule := config.ResolvedShepherdSchedule{
-		Name: "api", Repository: "api", Every: 15 * time.Minute, MaxActions: 3, Agent: shepherd,
-	}
-	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || created {
-		t.Fatalf("schedule overlapped pipeline = %t, %v", created, err)
-	}
-	if _, err := store.CreateJob(t.Context(), "ordinary", "api", "pipeline", "checks", []config.ResolvedAgent{testAgent("review", "Review")}); err != nil {
-		t.Fatalf("ordinary pipeline was blocked: %v", err)
-	}
-}
-
-func TestStoreReconcilesDuplicateActiveShepherdJobsBeforeAddingOverlapGuard(t *testing.T) {
-	database := filepath.Join(t.TempDir(), "machinist.db")
-	store, err := OpenStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.ExecContext(t.Context(), `DROP INDEX jobs_active_shepherd_repository_v3`); err != nil {
-		t.Fatal(err)
-	}
-	shepherd := testAgent("shepherd", "Inspect every pull request")
-	keptJob, err := store.CreateJob(t.Context(), "first", "api", "agent", "shepherd", []config.ResolvedAgent{shepherd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"api"})); err != nil || run == nil {
-		t.Fatalf("lease first Shepherd = %#v, %v", run, err)
-	}
-	failedJob, err := store.CreateJob(t.Context(), "second", "api", "agent", "shepherd", []config.ResolvedAgent{shepherd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.ExecContext(t.Context(), `UPDATE jobs SET has_shepherd=0 WHERE id IN (?,?)`, keptJob, failedJob); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := OpenStore(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	var keptState, failedState, failedRunState, failedRunError string
-	if err := reopened.db.QueryRowContext(t.Context(), `SELECT state FROM jobs WHERE id=?`, keptJob).Scan(&keptState); err != nil {
-		t.Fatal(err)
-	}
-	if err := reopened.db.QueryRowContext(t.Context(), `SELECT jobs.state,runs.state,runs.error FROM jobs JOIN runs ON runs.job_id=jobs.id WHERE jobs.id=?`, failedJob).Scan(&failedState, &failedRunState, &failedRunError); err != nil {
-		t.Fatal(err)
-	}
-	if keptState != "running" || failedState != "failed" || failedRunState != "failed" || !strings.Contains(failedRunError, "superseded duplicate Shepherd job") {
-		t.Fatalf("reconciled states = kept %q, duplicate job %q, run %q, error %q", keptState, failedState, failedRunState, failedRunError)
-	}
-	if _, err := reopened.CreateJob(t.Context(), "third", "api", "agent", "shepherd", []config.ResolvedAgent{shepherd}); err == nil {
-		t.Fatal("recreated overlapping Shepherd job after migration")
-	}
-}
-
 func TestStoreReschedulesWhenScheduleConfigurationChanges(t *testing.T) {
 	database := filepath.Join(t.TempDir(), "machinist.db")
 	store, err := OpenStore(database)
@@ -885,7 +622,7 @@ func TestStoreReschedulesWhenScheduleConfigurationChanges(t *testing.T) {
 	store.now = clock.Now
 	schedule := config.ResolvedShepherdSchedule{
 		Name: "queue", Repository: "api", Every: time.Hour, MaxActions: 1,
-		Agent: testAgent("shepherd", "Inspect every pull request"),
+		Command: testAgent("shepherd", "Inspect every pull request"),
 	}
 	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || !created {
 		t.Fatalf("initial schedule created = %t, %v", created, err)
@@ -948,13 +685,13 @@ func TestStoreReschedulesWhenScheduleConfigurationChanges(t *testing.T) {
 
 	schedule.MaxActions = 4
 	schedule.Prompt = "Run Shepherd with max_actions=4"
-	schedule.Agent = testAgent("shepherd", "Updated policy; at most 4 actions")
-	schedule.Agent.Timeout = 2 * time.Minute
+	schedule.Command = testAgent("shepherd", "Updated policy; at most 4 actions")
+	schedule.Command.Timeout = 2 * time.Minute
 	if _, created, err := store.CreateScheduledJob(t.Context(), schedule); err != nil || !created {
 		t.Fatalf("execution settings change rescheduled = %t, %v", created, err)
 	}
 	run, err = store.Poll(t.Context(), pollRequest("worker-d", []string{"codex"}, []string{"web"}))
-	if err != nil || run == nil || run.RenderedPrompt != schedule.Agent.Prompt || run.TimeoutMillis != schedule.Agent.Timeout.Milliseconds() {
+	if err != nil || run == nil || run.RenderedPrompt != schedule.Command.Prompt || run.TimeoutMillis != schedule.Command.Timeout.Milliseconds() {
 		t.Fatalf("lease execution-settings schedule = %#v, %v", run, err)
 	}
 }
@@ -964,7 +701,7 @@ func TestStorePersistsShepherdScheduleAcrossRestart(t *testing.T) {
 	clock := newTestClock(time.Date(2026, 8, 27, 8, 0, 0, 0, time.UTC))
 	schedule := config.ResolvedShepherdSchedule{
 		Name: "api", Repository: "api", Every: time.Hour, MaxActions: 1,
-		Agent: testAgent("shepherd", "Inspect every pull request; at most 1 action."),
+		Command: testAgent("shepherd", "Inspect every pull request; at most 1 action."),
 	}
 	store, err := OpenStore(database)
 	if err != nil {
@@ -992,8 +729,8 @@ func TestStorePersistsShepherdScheduleAcrossRestart(t *testing.T) {
 func TestShepherdScheduleSignatureCoversExecutionSettings(t *testing.T) {
 	base := config.ResolvedShepherdSchedule{
 		Name: "api", Repository: "api", Every: time.Hour, MaxActions: 1,
-		Prompt: "Run with max_actions=1",
-		Agent:  testAgent("shepherd", "Inspect every pull request; at most 1 action."),
+		Prompt:  "Run with max_actions=1",
+		Command: testAgent("shepherd", "Inspect every pull request; at most 1 action."),
 	}
 	want, err := shepherdScheduleSignature(base)
 	if err != nil {
@@ -1002,10 +739,10 @@ func TestShepherdScheduleSignatureCoversExecutionSettings(t *testing.T) {
 	variants := map[string]func(*config.ResolvedShepherdSchedule){
 		"max actions":     func(schedule *config.ResolvedShepherdSchedule) { schedule.MaxActions = 2 },
 		"schedule prompt": func(schedule *config.ResolvedShepherdSchedule) { schedule.Prompt = "Run with max_actions=2" },
-		"agent prompt":    func(schedule *config.ResolvedShepherdSchedule) { schedule.Agent.Prompt = "Updated queue policy" },
-		"executor":        func(schedule *config.ResolvedShepherdSchedule) { schedule.Agent.Executor = "claude" },
-		"model":           func(schedule *config.ResolvedShepherdSchedule) { schedule.Agent.Model = "sol" },
-		"timeout":         func(schedule *config.ResolvedShepherdSchedule) { schedule.Agent.Timeout = 2 * time.Hour },
+		"agent prompt":    func(schedule *config.ResolvedShepherdSchedule) { schedule.Command.Prompt = "Updated queue policy" },
+		"executor":        func(schedule *config.ResolvedShepherdSchedule) { schedule.Command.Executor = "claude" },
+		"model":           func(schedule *config.ResolvedShepherdSchedule) { schedule.Command.Model = "sol" },
+		"timeout":         func(schedule *config.ResolvedShepherdSchedule) { schedule.Command.Timeout = 2 * time.Hour },
 	}
 	for name, change := range variants {
 		t.Run(name, func(t *testing.T) {
@@ -1090,7 +827,7 @@ func TestStoreAdmitsUniqueFixedOccurrencesAndCoalescesOverlap(t *testing.T) {
 	}
 	admission := TriggerAdmission{
 		Identity: "interval/audit", Family: "interval", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "interval/audit"), ScheduledAt: clock.Now().Add(time.Hour), NextDueAt: clock.Now().Add(2 * time.Hour),
-		Prompt: "Audit", Repository: "machinist", SelectionKind: "agent", SelectionName: "audit", Agents: []config.ResolvedAgent{testAgent("audit", "Audit")},
+		Prompt: "Audit", Repository: "machinist", SelectionName: "audit", Command: testAgent("audit", "Audit"),
 	}
 	jobID, created, err := store.CreateTriggeredJob(t.Context(), admission)
 	if err != nil || !created {
@@ -1156,7 +893,7 @@ func TestStorePreservesLatestFailedJobHealthAcrossSuccessfulPolls(t *testing.T) 
 	_, created, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{
 		Identity: "github/jobs", Family: "github", ConfigSignature: "jobs", ConfigGeneration: mustTriggerGeneration(t, store, "github/jobs"),
 		OccurrenceKey: "github.com:event:1", Subject: "https://github.com/o/r/issues/1", ScheduledAt: clock.Now(),
-		Prompt: "Complete issue", Repository: "machinist", SelectionKind: "agent", SelectionName: "foreman", Agents: []config.ResolvedAgent{testAgent("foreman", "Complete issue")},
+		Prompt: "Complete issue", Repository: "machinist", SelectionName: "foreman", Command: testAgent("foreman", "Complete issue"),
 		GitHubRepository: "o/r", GitHubIssueNumber: 1, RequestActor: "owner", RequestLabel: "machinist:requested",
 	})
 	if err != nil || !created {
@@ -1208,7 +945,7 @@ func TestStorePreservesTriggerHealthFromActualCompletionOrder(t *testing.T) {
 		_, created, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{
 			Identity: identity, Family: "github", ConfigSignature: "jobs", ConfigGeneration: generation,
 			OccurrenceKey: fmt.Sprintf("github.com:event:%d", issue), Subject: fmt.Sprintf("https://github.com/o/r/issues/%d", issue), ScheduledAt: clock.Now(),
-			Prompt: "Complete issue", Repository: "machinist", SelectionKind: "agent", SelectionName: "foreman", Agents: []config.ResolvedAgent{testAgent("foreman", "Complete issue")},
+			Prompt: "Complete issue", Repository: "machinist", SelectionName: "foreman", Command: testAgent("foreman", "Complete issue"),
 			GitHubRepository: "o/r", GitHubIssueNumber: issue, RequestActor: "owner", RequestLabel: "machinist:requested",
 		})
 		if err != nil || !created {
@@ -1257,8 +994,8 @@ func TestStoreIgnoresCompletionFromPreviousTriggerConfiguration(t *testing.T) {
 			_, created, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{
 				Identity: identity, Family: "interval", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, identity),
 				ScheduledAt: clock.Now(), NextDueAt: clock.Now().Add(time.Hour),
-				Prompt: "Audit", Repository: "machinist", SelectionKind: "agent", SelectionName: "audit",
-				Agents: []config.ResolvedAgent{testAgent("audit", "Audit")},
+				Prompt: "Audit", Repository: "machinist", SelectionName: "audit",
+				Command: testAgent("audit", "Audit"),
 			})
 			if err != nil || !created {
 				t.Fatalf("admit v1 trigger = %v, %v", created, err)
@@ -1356,11 +1093,11 @@ func TestStoreRetriesUncommittedAdmissionAndPreventsSubjectOverlap(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	admission := TriggerAdmission{Identity: "github/intake", Family: "github", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "github/intake"), OccurrenceKey: "github.com/event/1", Subject: "https://github.com/owainlewis/machinist/issues/396", Prompt: "Complete issue", Repository: "machinist", SelectionKind: "agent", SelectionName: "foreman", GitHubRepository: "owainlewis/machinist", GitHubIssueNumber: 396, RequestActor: "owner", RequestLabel: "machinist:requested", ScheduledAt: time.Now().UTC()}
+	admission := TriggerAdmission{Identity: "github/intake", Family: "github", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "github/intake"), OccurrenceKey: "github.com/event/1", Subject: "https://github.com/owainlewis/machinist/issues/396", Prompt: "Complete issue", Repository: "machinist", SelectionName: "foreman", GitHubRepository: "owainlewis/machinist", GitHubIssueNumber: 396, RequestActor: "owner", RequestLabel: "machinist:requested", ScheduledAt: time.Now().UTC()}
 	if _, _, err := store.CreateTriggeredJob(t.Context(), admission); err == nil {
 		t.Fatal("expected incomplete admission to fail")
 	}
-	admission.Agents = []config.ResolvedAgent{testAgent("foreman", "Complete issue")}
+	admission.Command = testAgent("foreman", "Complete issue")
 	firstID, created, err := store.CreateTriggeredJob(t.Context(), admission)
 	if err != nil || !created {
 		t.Fatalf("retried admission = %q, %v, %v", firstID, created, err)
@@ -1424,29 +1161,12 @@ func openTestStore(t *testing.T, path string) *Store {
 	return store
 }
 
-func testAgent(name, prompt string) config.ResolvedAgent {
-	return config.ResolvedAgent{Name: name, Executor: "codex", Prompt: prompt, Timeout: time.Minute, Hash: name + "-hash"}
+func testAgent(name, prompt string) config.ResolvedCommand {
+	return config.ResolvedCommand{Name: name, Executor: "codex", Prompt: prompt, Timeout: time.Minute, Hash: name + "-hash"}
 }
 
 func pollRequest(instance string, executors, repositories []string) protocol.PollRequest {
 	return protocol.PollRequest{InstanceID: instance, Name: "test", Executors: executors, Repositories: repositories}
-}
-
-func assertFailedPipeline(t *testing.T, snapshot Snapshot, jobID string) {
-	t.Helper()
-	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID || snapshot.Jobs[0].State != "failed" {
-		t.Fatalf("jobs = %#v", snapshot.Jobs)
-	}
-	runs := snapshot.Jobs[0].Runs
-	if len(runs) != 3 || runs[0].State != "succeeded" || runs[1].State != "failed" || runs[2].State != "skipped" {
-		t.Fatalf("runs = %#v", runs)
-	}
-	if runs[1].Error != "build failed" {
-		t.Fatalf("run payloads = %#v", runs)
-	}
-	if runs[0].DurationMillis == nil || runs[1].DurationMillis == nil || runs[0].TokenUsage != nil || runs[1].TokenUsage != nil {
-		t.Fatalf("completed run metrics = %#v", runs)
-	}
 }
 
 func assertStoredMetrics(t *testing.T, store *Store, jobID string) {
@@ -1528,41 +1248,5 @@ func assertReclaimedRun(t *testing.T, store *Store, runID, jobID string) {
 	}
 	if jobState != "running" {
 		t.Fatalf("job state = %q, want running", jobState)
-	}
-}
-
-func createPreviousDatabase(t *testing.T, path string) {
-	t.Helper()
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	const schema = `
-CREATE TABLE jobs (
-  id TEXT PRIMARY KEY, prompt TEXT NOT NULL, repository TEXT NOT NULL,
-  selection_kind TEXT NOT NULL, selection_name TEXT NOT NULL, state TEXT NOT NULL,
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE runs (
-  id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), step INTEGER NOT NULL,
-  agent TEXT NOT NULL, agent_hash TEXT NOT NULL, executor TEXT NOT NULL,
-  repository TEXT NOT NULL, rendered_prompt TEXT NOT NULL, timeout_ms INTEGER NOT NULL,
-  state TEXT NOT NULL, worker_instance TEXT, lease_token TEXT, exit_code INTEGER,
-  error TEXT, result TEXT, events TEXT, started_at TEXT, completed_at TEXT,
-  UNIQUE(job_id, step)
-);
-CREATE TABLE workers (
-  instance_id TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen_at TEXT NOT NULL
-);
-INSERT INTO jobs VALUES ('job-completed','done','machinist','agent','plan','succeeded','2026-08-24T12:00:00Z','2026-08-24T12:01:00Z');
-INSERT INTO jobs VALUES ('job-running','active','machinist','agent','plan','running','2026-08-24T13:00:00Z','2026-08-24T13:01:00Z');
-INSERT INTO workers VALUES ('worker-old','old worker','2026-08-24T13:01:00Z');
-INSERT INTO runs VALUES ('run-completed','job-completed',0,'plan','plan-hash','codex','machinist','Done',60000,'succeeded','worker-old','completed-token',0,'','{"answer":42,"duration_millis":60000,"token_usage":1234}','completed event
-','2026-08-24T12:00:00Z','2026-08-24T12:01:00Z');
-INSERT INTO runs VALUES ('run-running','job-running',0,'plan','plan-hash','codex','machinist','Active',60000,'running','worker-old','old-token',NULL,'',NULL,NULL,'2026-08-24T13:01:00Z',NULL);
-`
-	if _, err := db.ExecContext(t.Context(), schema); err != nil {
-		t.Fatal(err)
 	}
 }

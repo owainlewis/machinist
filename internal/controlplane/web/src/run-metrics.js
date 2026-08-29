@@ -101,21 +101,21 @@ export function runModelSummary(runs) {
 }
 
 export function taskDurationMillis(runs) {
-  const executedRuns = runs.filter((run) => run.state !== "skipped");
+  const executedRuns = runs;
   if (!executedRuns.length || !executedRuns.every((run) => validDuration(run.duration_millis))) return undefined;
   return executedRuns.reduce((total, run) => total + run.duration_millis, 0);
 }
 
 export function formatReportingCoverage(summary) {
-  if (!summary.completed) return "No completed steps";
-  return `${summary.reported} of ${summary.completed} step${summary.completed === 1 ? "" : "s"}`;
+  if (!summary.completed) return "No completed runs";
+  return `${summary.reported} of ${summary.completed} run${summary.completed === 1 ? "" : "s"}`;
 }
 
 export function formatTaskTokenUsage(summary) {
   if (summary.total === undefined) return "Not reported";
   const total = `${formatTokenUsage(summary.total)} tokens`;
   if (!summary.unavailable) return total;
-  return `${total} reported · ${summary.unavailable} step${summary.unavailable === 1 ? "" : "s"} unreported`;
+  return `${total} reported · ${summary.unavailable} run${summary.unavailable === 1 ? "" : "s"} unreported`;
 }
 
 export function runDetails(run) {

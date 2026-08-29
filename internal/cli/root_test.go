@@ -31,10 +31,10 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 	}
 	directory := filepath.Join(home, ".machinist")
 	wantFiles := []string{
-		"agents/audit.md",
-		"agents/foreman.md",
-		"agents/shepherd.md",
 		"config.toml",
+		"prompts/audit.md",
+		"prompts/foreman.md",
+		"prompts/shepherd.md",
 		"server/worker.token",
 		"worker.toml",
 	}
@@ -73,7 +73,7 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 			t.Fatalf("mode for %s = %o, want 600", path, info.Mode().Perm())
 		}
 	}
-	for _, path := range []string{directory, filepath.Join(directory, "agents"), filepath.Join(directory, "server")} {
+	for _, path := range []string{directory, filepath.Join(directory, "prompts"), filepath.Join(directory, "server")} {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -88,11 +88,11 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions.Agents) != 3 || len(definitions.Pipelines) != 0 {
-		t.Fatalf("installed definitions = agents %#v, pipelines %#v", definitions.Agents, definitions.Pipelines)
+	if len(definitions.Commands) != 3 {
+		t.Fatalf("installed definitions = commands %#v", definitions.Commands)
 	}
 	for _, name := range []string{"foreman", "audit", "shepherd"} {
-		if _, err := config.LoadAgent(definition, name); err != nil {
+		if _, err := config.LoadCommand(definition, name); err != nil {
 			t.Fatalf("load installed agent %s: %v", name, err)
 		}
 	}
@@ -103,7 +103,7 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 	if got := strings.Join(worker.Executors["codex"].Command, " "); !strings.Contains(got, "codex exec --json") {
 		t.Fatalf("installed Codex executor does not request structured output: %q", got)
 	}
-	if !strings.Contains(stdout.String(), "created agents/audit.md") || !strings.Contains(stdout.String(), "Add repositories to worker.toml") {
+	if !strings.Contains(stdout.String(), "created prompts/audit.md") || !strings.Contains(stdout.String(), "Add repositories to worker.toml") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -147,18 +147,18 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	for name, body := range map[string]string{
 		"config.toml":         "custom config\n",
 		"worker.toml":         "custom worker\n",
-		"agents/foreman.md":   "custom foreman\n",
-		"agents/plan.md":      "old plan\n",
-		"agents/build.md":     "old build\n",
-		"agents/verify.md":    "old verify\n",
-		"agents/custom.md":    "custom agent\n",
+		"prompts/foreman.md":  "custom foreman\n",
+		"prompts/plan.md":     "old plan\n",
+		"prompts/build.md":    "old build\n",
+		"prompts/verify.md":   "old verify\n",
+		"prompts/custom.md":   "custom agent\n",
 		"server/worker.token": "custom token\n",
 	} {
 		if err := os.WriteFile(filepath.Join(directory, filepath.FromSlash(name)), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	auditPath := filepath.Join(directory, "agents", "audit.md")
+	auditPath := filepath.Join(directory, "prompts", "audit.md")
 	if err := os.Remove(auditPath); err != nil {
 		t.Fatal(err)
 	}
@@ -182,14 +182,14 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantAudit, err := machinistexamples.Files.ReadFile("agents/audit.md")
+	wantAudit, err := machinistexamples.Files.ReadFile("prompts/audit.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(audit, wantAudit) {
 		t.Fatal("init failed to restore the missing audit default")
 	}
-	if !strings.Contains(stdout.String(), "kept agents/foreman.md") || !strings.Contains(stdout.String(), "created agents/audit.md") || !strings.Contains(stdout.String(), "kept server/worker.token") {
+	if !strings.Contains(stdout.String(), "kept prompts/foreman.md") || !strings.Contains(stdout.String(), "created prompts/audit.md") || !strings.Contains(stdout.String(), "kept server/worker.token") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -277,7 +277,7 @@ func TestInitRejectsExistingNonFile(t *testing.T) {
 }
 
 func TestInitRejectsSymlinkedSetupDirectories(t *testing.T) {
-	for _, name := range []string{".machinist", ".machinist/agents", ".machinist/server"} {
+	for _, name := range []string{".machinist", ".machinist/prompts", ".machinist/server"} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
@@ -318,7 +318,7 @@ func TestWorkerRunInjectsInputIntoNamedPrompt(t *testing.T) {
 
 	exitCode := Execute(t.Context(), []string{
 		"worker", "run",
-		"--agent=plan",
+		"--command=plan",
 		"--prompt=fix issue 123",
 		"--repo=" + repository,
 		"--config=" + workerConfig,
@@ -339,7 +339,7 @@ func TestRunExecutesOneAgent(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
 		"run",
-		"--agent=plan",
+		"--command=plan",
 		"--prompt=issue 42",
 		"--repo=" + newCLIRepository(t),
 		"--config=" + writeCLIConfig(t, "success"),
@@ -351,7 +351,7 @@ func TestRunExecutesOneAgent(t *testing.T) {
 
 func TestRunRejectsScheduleOnlyShepherd(t *testing.T) {
 	workerConfig := writeCLIConfig(t, "success")
-	for _, selection := range [][]string{{"--agent=shepherd"}, {"--pipeline=unsafe"}} {
+	for _, selection := range [][]string{{"--command=shepherd"}} {
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
 		args := append([]string{"run"}, selection...)
@@ -386,63 +386,13 @@ func TestRunAllowsDisposableShepherdWithoutSchedule(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
 		"run",
-		"--agent=shepherd",
+		"--command=shepherd",
 		"--prompt=exercise a disposable queue",
 		"--repo=" + newCLIRepository(t),
 		"--config=" + workerConfig,
 	}, strings.NewReader(""), &stdout, &stderr, "test")
 	if exitCode != 0 || !strings.Contains(stdout.String(), "configured shepherd prompt") {
 		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
-	}
-}
-
-func TestRunPipelineExecutesIndependentAgentsInOrder(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"run",
-		"--pipeline=code",
-		"--prompt=issue 42",
-		"--repo=" + newCLIRepository(t),
-		"--config=" + writeCLIConfig(t, "success"),
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-	want := "configured plan prompt\n\nPrompt:\nissue 42\n" +
-		"configured build prompt\n\nPrompt:\nissue 42\n" +
-		"configured verify prompt\n\nPrompt:\nissue 42\n"
-	if stdout.String() != want {
-		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
-	}
-	for _, message := range []string{"agent 1/3 plan", "agent 2/3 build", "agent 3/3 verify"} {
-		if !strings.Contains(stderr.String(), message) {
-			t.Fatalf("stderr does not contain %q: %q", message, stderr.String())
-		}
-	}
-	if strings.Count(stderr.String(), "succeeded; events:") != 3 {
-		t.Fatalf("pipeline did not persist three independent runs: %q", stderr.String())
-	}
-}
-
-func TestRunPipelineStopsAfterFailedAgent(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"run",
-		"--pipeline=code",
-		"--prompt=issue 42",
-		"--repo=" + newCLIRepository(t),
-		"--config=" + writeCLIConfig(t, "fail-build"),
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 9 {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "configured plan prompt") || strings.Contains(stdout.String(), "configured verify prompt") {
-		t.Fatalf("pipeline output = %q", stdout.String())
-	}
-	if strings.Contains(stderr.String(), "agent 3/3 verify") {
-		t.Fatalf("pipeline started verify after build failed: %q", stderr.String())
 	}
 }
 
@@ -453,7 +403,7 @@ func TestSubmitQueuesAgentWithConfiguredBearerToken(t *testing.T) {
 		switch request.URL.Path {
 		case "/api/v1/catalog":
 			writeTestJSON(response, map[string]any{
-				"agents": []string{"plan"}, "pipelines": []string{}, "repositories": []string{"machinist"},
+				"commands": []string{"plan"}, "repositories": []string{"machinist"},
 			})
 		case "/api/v1/jobs":
 			gotAuthorization = request.Header.Get("Authorization")
@@ -472,7 +422,7 @@ func TestSubmitQueuesAgentWithConfiguredBearerToken(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
 		"submit",
-		"--agent=plan",
+		"--command=plan",
 		"--model=luna",
 		"--prompt=fix issue 13",
 		"--repo=machinist",
@@ -484,44 +434,7 @@ func TestSubmitQueuesAgentWithConfiguredBearerToken(t *testing.T) {
 	if gotAuthorization != "Bearer secret" {
 		t.Fatalf("authorization = %q", gotAuthorization)
 	}
-	if gotRequest != (submitJobRequest{Prompt: "fix issue 13", Repository: "machinist", Agent: "plan", Model: "luna"}) {
-		t.Fatalf("submission = %#v", gotRequest)
-	}
-}
-
-func TestSubmitQueuesPipeline(t *testing.T) {
-	var gotRequest submitJobRequest
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/v1/catalog":
-			writeTestJSON(response, map[string]any{
-				"agents": []string{}, "pipelines": []string{"quality"}, "repositories": []string{"machinist"},
-			})
-		case "/api/v1/jobs":
-			if err := json.NewDecoder(request.Body).Decode(&gotRequest); err != nil {
-				http.Error(response, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeTestJSON(response, map[string]string{"id": "job_pipeline"})
-		default:
-			http.NotFound(response, request)
-		}
-	}))
-	defer server.Close()
-	workerConfig := writeSubmitWorkerConfig(t, server.URL, "secret")
-
-	var stdout, stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"submit",
-		"--pipeline=quality",
-		"--prompt=check the repository",
-		"--repo=machinist",
-		"--config=" + workerConfig,
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 || stdout.String() != "job_pipeline\n" {
-		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
-	}
-	if gotRequest != (submitJobRequest{Prompt: "check the repository", Repository: "machinist", Pipeline: "quality"}) {
+	if gotRequest != (submitJobRequest{Prompt: "fix issue 13", Repository: "machinist", Command: "plan", Model: "luna"}) {
 		t.Fatalf("submission = %#v", gotRequest)
 	}
 }
@@ -537,7 +450,7 @@ func TestSubmitUsesCatalogWhenStatusHistoryIsLarge(t *testing.T) {
 		case "/api/v1/catalog":
 			catalogRequested = true
 			writeTestJSON(response, map[string]any{
-				"agents": []string{"plan"}, "pipelines": []string{}, "repositories": []string{"machinist"},
+				"commands": []string{"plan"}, "repositories": []string{"machinist"},
 			})
 		case "/api/v1/jobs":
 			writeTestJSON(response, map[string]string{"id": "job_large_history"})
@@ -551,7 +464,7 @@ func TestSubmitUsesCatalogWhenStatusHistoryIsLarge(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
 		"submit",
-		"--agent=plan",
+		"--command=plan",
 		"--prompt=work despite history",
 		"--repo=machinist",
 		"--config=" + workerConfig,
@@ -566,7 +479,7 @@ func TestSubmitRejectsUnknownValuesBeforeCreatingJob(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/api/v1/catalog" {
 			writeTestJSON(response, map[string]any{
-				"agents": []string{"plan"}, "pipelines": []string{"quality"}, "repositories": []string{"machinist"},
+				"commands": []string{"plan"}, "repositories": []string{"machinist"},
 			})
 			return
 		}
@@ -583,9 +496,8 @@ func TestSubmitRejectsUnknownValuesBeforeCreatingJob(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "agent", args: []string{"--agent=missing", "--prompt=work", "--repo=machinist"}, want: `agent "missing" is not defined`},
-		{name: "pipeline", args: []string{"--pipeline=missing", "--prompt=work", "--repo=machinist"}, want: `pipeline "missing" is not defined`},
-		{name: "repository", args: []string{"--agent=plan", "--prompt=work", "--repo=missing"}, want: `repository "missing" is not defined in the control plane`},
+		{name: "command", args: []string{"--command=missing", "--prompt=work", "--repo=machinist"}, want: `command "missing" is not defined`},
+		{name: "repository", args: []string{"--command=plan", "--prompt=work", "--repo=missing"}, want: `repository "missing" is not defined in the control plane`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stderr bytes.Buffer
@@ -603,7 +515,6 @@ func TestSubmitRejectsUnknownValuesBeforeCreatingJob(t *testing.T) {
 func TestRunRequiresExactlyOneSelection(t *testing.T) {
 	for _, args := range [][]string{
 		{"run", "--prompt=issue 42"},
-		{"run", "--agent=plan", "--pipeline=code", "--prompt=issue 42"},
 	} {
 		var stderr bytes.Buffer
 		if exitCode := Execute(t.Context(), args, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 {
@@ -627,7 +538,7 @@ func TestWorkerRunSelectsDifferentAgentPrompts(t *testing.T) {
 			var stderr bytes.Buffer
 			exitCode := Execute(t.Context(), []string{
 				"worker", "run",
-				"--agent=" + test.agent,
+				"--command=" + test.agent,
 				"--prompt=check ticket",
 				"--repo=" + repository,
 				"--config=" + workerConfig,
@@ -641,7 +552,7 @@ func TestWorkerRunSelectsDifferentAgentPrompts(t *testing.T) {
 
 func TestWorkerRunRejectsPositionalPrompt(t *testing.T) {
 	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "run", "old task", "--agent=plan", "--prompt=new task"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	exitCode := Execute(t.Context(), []string{"worker", "run", "old task", "--command=plan", "--prompt=new task"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
 	if exitCode != 2 || !strings.Contains(stderr.String(), "unknown command") && !strings.Contains(stderr.String(), "accepts 0 arg") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
@@ -649,7 +560,7 @@ func TestWorkerRunRejectsPositionalPrompt(t *testing.T) {
 
 func TestWorkerRunRequiresPrompt(t *testing.T) {
 	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "run", "--agent=plan"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	exitCode := Execute(t.Context(), []string{"worker", "run", "--command=plan"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
 	if exitCode != 2 || !strings.Contains(stderr.String(), "required flag(s) \"prompt\"") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
@@ -657,7 +568,7 @@ func TestWorkerRunRequiresPrompt(t *testing.T) {
 
 func TestWorkerRunRejectsLegacyTaskFlag(t *testing.T) {
 	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "run", "--agent=plan", "--task=issue 42"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	exitCode := Execute(t.Context(), []string{"worker", "run", "--command=plan", "--task=issue 42"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
 	if exitCode != 2 || !strings.Contains(stderr.String(), "unknown flag: --task") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
@@ -665,7 +576,7 @@ func TestWorkerRunRejectsLegacyTaskFlag(t *testing.T) {
 
 func TestWorkerRunRejectsLegacyFactoryConfigFlag(t *testing.T) {
 	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "run", "--agent=plan", "--prompt=issue 42", "--factory-config=legacy.toml"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	exitCode := Execute(t.Context(), []string{"worker", "run", "--command=plan", "--prompt=issue 42", "--factory-config=legacy.toml"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
 	if exitCode != 2 || !strings.Contains(stderr.String(), "unknown flag: --factory-config") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
@@ -675,7 +586,7 @@ func TestWorkerRunRejectsEmptyPrompt(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
 		"worker", "run",
-		"--agent=plan",
+		"--command=plan",
 		"--prompt=   ",
 		"--repo=" + newCLIRepository(t),
 		"--config=" + writeCLIConfig(t, "success"),
@@ -692,7 +603,7 @@ func TestWorkerRunDoesNotEvaluatePromptAsTemplateOrShell(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
 		"worker", "run",
-		"--agent=plan",
+		"--command=plan",
 		"--prompt=" + prompt,
 		"--repo=" + newCLIRepository(t),
 		"--config=" + writeCLIConfig(t, "success"),
@@ -713,7 +624,7 @@ func TestWorkerRunReturnsAgentExitStatus(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
 		"worker", "run",
-		"--agent=plan",
+		"--command=plan",
 		"--prompt=fail this task",
 		"--repo=" + newCLIRepository(t),
 		"--config=" + writeCLIConfig(t, "fail"),
@@ -727,7 +638,7 @@ func TestWorkerRunSelectsConfiguredModelAlias(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
 		"worker", "run",
-		"--agent=plan",
+		"--command=plan",
 		"--model=luna",
 		"--prompt=test model selection",
 		"--repo=" + newCLIRepository(t),
@@ -738,24 +649,6 @@ func TestWorkerRunSelectsConfiguredModelAlias(t *testing.T) {
 	}
 	if stdout.String() != "gpt-test-luna\n" {
 		t.Fatalf("stdout = %q", stdout.String())
-	}
-}
-
-func TestPipelineModelSelectionRejectsMixedExecutorsBeforeRunning(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"run",
-		"--pipeline=code",
-		"--model=luna",
-		"--prompt=test model selection",
-		"--repo=" + newCLIRepository(t),
-		"--config=" + writeCLIConfig(t, "model"),
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 2 || !strings.Contains(stderr.String(), "same executor") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("pipeline started before validation: %q", stdout.String())
 	}
 }
 
@@ -776,7 +669,7 @@ func TestWorkerRunReturnsRuntimeFailureStatus(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
 		"worker", "run",
-		"--agent=plan",
+		"--command=plan",
 		"--prompt=exercise runtime failure",
 		"--repo=" + newCLIRepository(t),
 		"--config=" + workerConfig,
@@ -897,30 +790,26 @@ func writeCLIConfig(t *testing.T, mode string) string {
 	if mode == "fail-build" {
 		buildScript = "cat >/dev/null; exit 9"
 	}
-	definitionBody := "[agents.plan]\n" +
+	definitionBody := "[commands.plan]\n" +
 		"executor = \"default\"\n" +
 		"prompt_file = \"plan.md\"\n" +
 		"timeout = \"5s\"\n\n" +
-		"[agents.review]\n" +
+		"[commands.review]\n" +
 		"executor = \"default\"\n" +
 		"prompt_file = \"review.md\"\n" +
 		"timeout = \"5s\"\n\n" +
-		"[agents.build]\n" +
+		"[commands.build]\n" +
 		"executor = \"build\"\n" +
 		"prompt_file = \"build.md\"\n" +
 		"timeout = \"5s\"\n\n" +
-		"[agents.verify]\n" +
+		"[commands.verify]\n" +
 		"executor = \"default\"\n" +
 		"prompt_file = \"verify.md\"\n" +
 		"timeout = \"5s\"\n\n" +
-		"[agents.shepherd]\n" +
+		"[commands.shepherd]\n" +
 		"executor = \"default\"\n" +
 		"prompt_file = \"shepherd.md\"\n" +
 		"timeout = \"5s\"\n\n" +
-		"[pipelines.code]\n" +
-		"agents = [\"plan\", \"build\", \"verify\"]\n\n" +
-		"[pipelines.unsafe]\n" +
-		"agents = [\"plan\", \"shepherd\"]\n\n" +
 		"[shepherd.test]\n" +
 		"repository = \"test\"\n" +
 		"every = \"15m\"\n" +

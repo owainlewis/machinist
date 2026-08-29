@@ -1,12 +1,3 @@
-[agents.review-codex]
-executor = "codex"
-prompt_file = "agents/review-codex.md"
-timeout = "45m"
-
-[agents.review-claude]
-executor = "claude"
-prompt_file = "agents/review-claude.md"
-timeout = "45m"
-
-[pipelines.multi-review]
-agents = ["review-codex", "review-claude"]
+[commands.multi-review]
+executor = "multi-review-script"
+timeout = "90m"

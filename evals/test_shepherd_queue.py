@@ -2,7 +2,7 @@
 
 import unittest
 
-from evals.pipeline_labels import EvalFailure
+from evals.github_labels import EvalFailure
 from evals.shepherd_queue import (
     AUDIT_MARKER,
     LABEL,

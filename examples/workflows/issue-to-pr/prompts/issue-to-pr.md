@@ -48,7 +48,7 @@ Finish with one line:
    branch, create a `codex/` branch in an isolated worktree under
    `~/Code/.worktrees/<repo>/<task>`, make
    only the required change, add focused tests, run relevant checks, review its full diff,
-   and create Conventional Commits with no agent co-author. It must not push or open a
+   and create Conventional Commits with no command co-author. It must not push or open a
    pull request. It must return the worktree, branch, base SHA, head SHA, changed files,
    and check evidence. If it times out, crashes, reports a tooling or credential blocker,
    or returns without all of that evidence, set the state to `machinist:blocked`, comment

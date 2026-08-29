@@ -43,7 +43,7 @@ export function jobCounts(jobs) {
 }
 
 export function currentRun(job) {
-  return [...job.runs].reverse().find((run) => run.state !== "pending" && run.state !== "skipped") || job.runs[0];
+  return [...job.runs].reverse().find((run) => run.state !== "queued") || job.runs[0];
 }
 
 export function jobDisplayTitle(job) {
@@ -56,7 +56,7 @@ export function githubIssueReference(job) {
   return match ? `#${match[1]}` : "";
 }
 
-export function stepProgress(runs) {
-  const completeStates = new Set(["succeeded", "failed", "timed_out", "cancelled", "skipped"]);
+export function runProgress(runs) {
+  const completeStates = new Set(["succeeded", "failed", "timed_out", "cancelled"]);
   return { completed: runs.filter((run) => completeStates.has(run.state)).length, total: runs.length };
 }

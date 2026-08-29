@@ -107,13 +107,13 @@ path = "repository"
 	if token, err := worker.WorkerToken(); err != nil || token != "secret" {
 		t.Fatalf("token = %q, %v", token, err)
 	}
-	resolved, err := worker.ResolveAgent(ResolvedAgent{Executor: "test"})
+	resolved, err := worker.ResolveCommand(ResolvedCommand{Executor: "test"})
 	if err != nil || len(resolved.Command) != 2 || resolved.Command[1] != "run" {
 		t.Fatalf("agent = %#v, %v", resolved, err)
 	}
 }
 
-func TestLoadConfigCombinesServerAgentsAndPipelines(t *testing.T) {
+func TestLoadConfigCombinesServerAndCommands(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "token"), "secret")
 	path := filepath.Join(directory, "config.toml")
@@ -123,12 +123,10 @@ database = "state/machinist.db"
 worker_token_file = "token"
 max_concurrent_jobs = 2
 
-[agents.plan]
+[commands.plan]
 executor = "test"
 prompt_file = "plan.md"
 
-[pipelines.code]
-agents = ["plan"]
 `)
 	machinistConfig, err := LoadConfig(path)
 	if err != nil {
@@ -138,11 +136,36 @@ agents = ["plan"]
 	if server.Listen != "127.0.0.1:7331" || server.Database != filepath.Join(directory, "state", "machinist.db") || server.ConcurrentJobLimit() != 2 {
 		t.Fatalf("server = %#v", server)
 	}
-	if machinistConfig.Path() != path || len(machinistConfig.Agents) != 1 || len(machinistConfig.Pipelines) != 1 {
+	if machinistConfig.Path() != path || len(machinistConfig.Commands) != 1 {
 		t.Fatalf("Machinist config = %#v, path = %q", machinistConfig, machinistConfig.Path())
 	}
 	if token, err := server.WorkerToken(); err != nil || token != "secret" {
 		t.Fatalf("token = %q, %v", token, err)
+	}
+}
+
+func TestLoadConfigRejectsRemovedConfigurationWithMigrationGuidance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeTestFile(t, path, "[pipelines.quality]\nagents=[\"review\"]\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "replace each pipeline with a repository-owned orchestration script") {
+		t.Fatalf("pipeline migration error = %v", err)
+	}
+	writeTestFile(t, path, "[agents.review]\nexecutor=\"codex\"\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "agents were renamed to commands") {
+		t.Fatalf("agent migration error = %v", err)
+	}
+}
+
+func TestCommandWithoutPromptTemplatePassesInputThrough(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeTestFile(t, path, "[commands.script]\nexecutor=\"script\"\n")
+	command, err := LoadCommand(path, "script")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := RenderPrompt(command, "raw task")
+	if err != nil || rendered.Prompt != "raw task" {
+		t.Fatalf("rendered script command = %#v, %v", rendered, err)
 	}
 }
 
@@ -184,7 +207,7 @@ func TestLoadShepherdSchedulesResolvesAgentAndLimits(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "shepherd.md"), "Policy:\n{{machinist.prompt}}\n")
 	path := filepath.Join(directory, "config.toml")
-	writeTestFile(t, path, `[agents.shepherd]
+	writeTestFile(t, path, `[commands.shepherd]
 executor = "test"
 prompt_file = "shepherd.md"
 timeout = "2h"
@@ -206,8 +229,8 @@ max_actions = 4
 	if schedule.Name != "api" || schedule.Repository != "api" || schedule.Every != 15*time.Minute || schedule.MaxActions != 4 {
 		t.Fatalf("schedule = %#v", schedule)
 	}
-	if schedule.Agent.Name != "shepherd" || schedule.Agent.Timeout != 2*time.Hour || !strings.Contains(schedule.Agent.Prompt, "max_actions=4") || !strings.Contains(schedule.Agent.Prompt, "at most 4 mutating actions") {
-		t.Fatalf("scheduled agent = %#v", schedule.Agent)
+	if schedule.Command.Name != "shepherd" || schedule.Command.Timeout != 2*time.Hour || !strings.Contains(schedule.Command.Prompt, "max_actions=4") || !strings.Contains(schedule.Command.Prompt, "at most 4 mutating actions") {
+		t.Fatalf("scheduled agent = %#v", schedule.Command)
 	}
 }
 
@@ -218,18 +241,18 @@ func TestLoadShepherdSchedulesRejectsUnsafeConfiguration(t *testing.T) {
 	}{
 		"missing agent": {
 			body: "[shepherd.api]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=1\n",
-			want: "agents.shepherd",
+			want: "commands.shepherd",
 		},
 		"short interval": {
-			body: "[agents.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"30s\"\nmax_actions=1\n",
+			body: "[commands.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"30s\"\nmax_actions=1\n",
 			want: "at least 1m",
 		},
 		"zero actions": {
-			body: "[agents.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=0\n",
+			body: "[commands.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=0\n",
 			want: "must be positive",
 		},
 		"duplicate repository": {
-			body: "[agents.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.first]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=1\n[shepherd.second]\nrepository=\"api\"\nevery=\"30m\"\nmax_actions=2\n",
+			body: "[commands.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.first]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=1\n[shepherd.second]\nrepository=\"api\"\nevery=\"30m\"\nmax_actions=2\n",
 			want: "same repository",
 		},
 	} {
@@ -246,17 +269,17 @@ func TestLoadShepherdSchedulesRejectsUnsafeConfiguration(t *testing.T) {
 	}
 }
 
-func TestLoadAgentResolvesPromptAndHashesDefinition(t *testing.T) {
+func TestLoadCommandResolvesPromptAndHashesDefinition(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "plan.md"), "Inspect the repository for {{machinist.prompt}}.\n")
 	definition := filepath.Join(directory, "config.toml")
-	writeTestFile(t, definition, `[agents.plan]
+	writeTestFile(t, definition, `[commands.plan]
 executor = "test"
 prompt_file = "plan.md"
 timeout = "45s"
 `)
 
-	agent, err := LoadAgent(definition, "plan")
+	agent, err := LoadCommand(definition, "plan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +289,7 @@ timeout = "45s"
 	if agent.Timeout != 45*time.Second {
 		t.Fatalf("timeout = %s", agent.Timeout)
 	}
-	resolved, err := (Worker{Executors: map[string]Executor{"test": {Command: []string{"agent", "run"}}}}).ResolveAgent(agent)
+	resolved, err := (Worker{Executors: map[string]Executor{"test": {Command: []string{"agent", "run"}}}}).ResolveCommand(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,21 +301,21 @@ timeout = "45s"
 	}
 }
 
-func TestResolveAgentModelUsesAliasAndLeavesDefaultOptional(t *testing.T) {
+func TestResolveCommandModelUsesAliasAndLeavesDefaultOptional(t *testing.T) {
 	worker := Worker{Executors: map[string]Executor{"codex": {
 		Command: []string{"codex", "exec", "--model=" + modelParameter, "-"},
 		Models:  map[string]string{"luna": "gpt-5.6-luna"},
 	}}}
-	agent := ResolvedAgent{Executor: "codex"}
+	agent := ResolvedCommand{Executor: "codex"}
 
-	resolved, err := worker.ResolveAgentModel(agent, "luna")
+	resolved, err := worker.ResolveCommandModel(agent, "luna")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolved.Model != "gpt-5.6-luna" || strings.Join(resolved.Command, " ") != "codex exec --model=gpt-5.6-luna -" {
 		t.Fatalf("resolved = %#v", resolved)
 	}
-	defaulted, err := worker.ResolveAgent(agent)
+	defaulted, err := worker.ResolveCommand(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,13 +324,13 @@ func TestResolveAgentModelUsesAliasAndLeavesDefaultOptional(t *testing.T) {
 	}
 }
 
-func TestResolveAgentModelRejectsUnsupportedSelection(t *testing.T) {
+func TestResolveCommandModelRejectsUnsupportedSelection(t *testing.T) {
 	for name, executor := range map[string]Executor{
 		"missing placeholder": {Command: []string{"agent", "run"}},
 		"unknown alias":       {Command: []string{"agent", "--model=" + modelParameter}, Models: map[string]string{"fast": "fast-v1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := (Worker{Executors: map[string]Executor{"test": executor}}).ResolveAgentModel(ResolvedAgent{Executor: "test"}, "other")
+			_, err := (Worker{Executors: map[string]Executor{"test": executor}}).ResolveCommandModel(ResolvedCommand{Executor: "test"}, "other")
 			if err == nil {
 				t.Fatal("expected model selection error")
 			}
@@ -346,16 +369,6 @@ func TestWorkerModelCapabilitiesAndConfiguration(t *testing.T) {
 	}
 }
 
-func TestValidateModelSelectionRejectsMixedExecutorPipeline(t *testing.T) {
-	agents := []ResolvedAgent{{Name: "plan", Executor: "codex"}, {Name: "build", Executor: "claude"}}
-	if err := ValidateModelSelection(agents, "fast"); err == nil {
-		t.Fatal("expected mixed-executor model selection error")
-	}
-	if err := ValidateModelSelection(agents, ""); err != nil {
-		t.Fatalf("model-less pipeline: %v", err)
-	}
-}
-
 func TestLoadWorkerRejectsCompoundModelPlaceholderArgument(t *testing.T) {
 	_, err := applyWorkerDefaultsWithHostname(Worker{
 		Name:          "test",
@@ -379,7 +392,7 @@ func TestLoadWorkerRejectsLegacyFactoryModelParameter(t *testing.T) {
 }
 
 func TestRenderPromptReplacesEveryPromptParameterWithoutReevaluation(t *testing.T) {
-	agent := ResolvedAgent{Prompt: "Before {{machinist.prompt}} between {{machinist.prompt}} after"}
+	agent := ResolvedCommand{Prompt: "Before {{machinist.prompt}} between {{machinist.prompt}} after"}
 	prompt := "fix {{machinist.prompt}} and $(touch never)"
 	rendered, err := RenderPrompt(agent, prompt)
 	if err != nil {
@@ -392,7 +405,7 @@ func TestRenderPromptReplacesEveryPromptParameterWithoutReevaluation(t *testing.
 }
 
 func TestRenderPromptRejectsEmptyAndOversizedPrompts(t *testing.T) {
-	agent := ResolvedAgent{Prompt: promptParameter}
+	agent := ResolvedCommand{Prompt: promptParameter}
 	if _, err := RenderPrompt(agent, " \n\t"); err == nil || !strings.Contains(err.Error(), "prompt is required") {
 		t.Fatalf("expected empty-prompt error, got %v", err)
 	}
@@ -402,16 +415,16 @@ func TestRenderPromptRejectsEmptyAndOversizedPrompts(t *testing.T) {
 }
 
 func TestRenderPromptRejectsOversizedRenderedPromptBeforeReplacement(t *testing.T) {
-	agent := ResolvedAgent{
+	agent := ResolvedCommand{
 		Name:   "plan",
 		Prompt: strings.Repeat(promptParameter, maxPromptBytes/len(promptParameter)),
 	}
-	if _, err := RenderPrompt(agent, strings.Repeat("x", maxInputPromptBytes)); err == nil || !strings.Contains(err.Error(), "rendered agent prompt exceeds") {
+	if _, err := RenderPrompt(agent, strings.Repeat("x", maxInputPromptBytes)); err == nil || !strings.Contains(err.Error(), "rendered command prompt exceeds") {
 		t.Fatalf("expected rendered-size error, got %v", err)
 	}
 }
 
-func TestLoadAgentRequiresPromptParameterAndRejectsUnsupportedMachinistParameter(t *testing.T) {
+func TestLoadCommandRequiresPromptParameterAndRejectsUnsupportedMachinistParameter(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		prompt string
@@ -428,101 +441,52 @@ func TestLoadAgentRequiresPromptParameterAndRejectsUnsupportedMachinistParameter
 			directory := t.TempDir()
 			writeTestFile(t, filepath.Join(directory, "plan.md"), test.prompt)
 			definition := filepath.Join(directory, "config.toml")
-			writeTestFile(t, definition, "[agents.plan]\nexecutor = \"test\"\nprompt_file = \"plan.md\"\n")
-			if _, err := LoadAgent(definition, "plan"); err == nil || !strings.Contains(err.Error(), test.want) {
+			writeTestFile(t, definition, "[commands.plan]\nexecutor = \"test\"\nprompt_file = \"plan.md\"\n")
+			if _, err := LoadCommand(definition, "plan"); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("expected %q error, got %v", test.want, err)
 			}
 		})
 	}
 }
 
-func TestLoadAgentRejectsMissingAndInvalidDefinitions(t *testing.T) {
+func TestLoadCommandRejectsMissingAndInvalidDefinitions(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "plan.md"), "Plan.\n")
 	definition := filepath.Join(directory, "config.toml")
-	writeTestFile(t, definition, `[agents.plan]
+	writeTestFile(t, definition, `[commands.plan]
 prompt_file = "plan.md"
 `)
 
-	if _, err := LoadAgent(definition, "missing"); err == nil || !strings.Contains(err.Error(), "not defined") {
+	if _, err := LoadCommand(definition, "missing"); err == nil || !strings.Contains(err.Error(), "not defined") {
 		t.Fatalf("expected missing-agent error, got %v", err)
 	}
-	if _, err := LoadAgent(definition, "plan"); err == nil || !strings.Contains(err.Error(), "must define executor") {
+	if _, err := LoadCommand(definition, "plan"); err == nil || !strings.Contains(err.Error(), "must define executor") {
 		t.Fatalf("expected executor error, got %v", err)
 	}
 }
 
-func TestLoadPipelineResolvesAgentsInOrder(t *testing.T) {
-	directory := t.TempDir()
-	writeTestFile(t, filepath.Join(directory, "plan.md"), "Plan {{machinist.prompt}}.\n")
-	writeTestFile(t, filepath.Join(directory, "build.md"), "Build {{machinist.prompt}}.\n")
-	definition := filepath.Join(directory, "config.toml")
-	writeTestFile(t, definition, `[agents.plan]
-executor = "plan"
-prompt_file = "plan.md"
-
-[agents.build]
-executor = "build"
-prompt_file = "build.md"
-
-[pipelines.code]
-agents = ["plan", "build"]
-`)
-
-	agents, err := LoadPipeline(definition, "code")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(agents) != 2 || agents[0].Name != "plan" || agents[1].Name != "build" {
-		t.Fatalf("pipeline agents = %#v", agents)
-	}
-}
-
-func TestLoadPipelineRejectsMissingEmptyAndUndefinedAgents(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		body string
-		want string
-	}{
-		{name: "missing", body: "", want: `pipeline "code" is not defined`},
-		{name: "empty", body: "[pipelines.code]\nagents = []\n", want: "must define at least one agent"},
-		{name: "undefined agent", body: "[pipelines.code]\nagents = [\"missing\"]\n", want: `references undefined agent "missing"`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			definition := filepath.Join(t.TempDir(), "config.toml")
-			writeTestFile(t, definition, test.body)
-			if _, err := LoadPipeline(definition, "code"); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("expected %q error, got %v", test.want, err)
-			}
-		})
-	}
-}
-
-func TestExampleAgentDefinitionsLoad(t *testing.T) {
+func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	definition := filepath.Join("..", "..", "examples", "config.toml")
 	definitions, err := LoadDefinitions(definition)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions.Agents) != 3 {
-		t.Fatalf("example agents = %#v, want foreman, audit, and shepherd", definitions.Agents)
+	if len(definitions.Commands) != 3 {
+		t.Fatalf("example commands = %#v, want foreman, audit, and shepherd", definitions.Commands)
 	}
-	if _, ok := definitions.Agents["foreman"]; !ok {
+	if _, ok := definitions.Commands["foreman"]; !ok {
 		t.Fatal("example foreman agent is missing")
 	}
-	if _, ok := definitions.Agents["audit"]; !ok {
+	if _, ok := definitions.Commands["audit"]; !ok {
 		t.Fatal("example audit agent is missing")
 	}
-	if _, ok := definitions.Agents["shepherd"]; !ok {
+	if _, ok := definitions.Commands["shepherd"]; !ok {
 		t.Fatal("example shepherd agent is missing")
-	}
-	if len(definitions.Pipelines) != 0 {
-		t.Fatalf("example pipelines = %#v, want none", definitions.Pipelines)
 	}
 
 	for _, name := range []string{"foreman", "audit", "shepherd"} {
 		t.Run(name, func(t *testing.T) {
-			agent, err := LoadAgent(definition, name)
+			agent, err := LoadCommand(definition, name)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -534,10 +498,7 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 			}
 		})
 	}
-	if _, err := LoadPipeline(definition, "code"); err == nil || !strings.Contains(err.Error(), `pipeline "code" is not defined`) {
-		t.Fatalf("default code pipeline unexpectedly loads: %v", err)
-	}
-	foreman, err := LoadAgent(definition, "foreman")
+	foreman, err := LoadCommand(definition, "foreman")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +616,7 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 		t.Fatalf("foreman prompt has %d words, want no more than 2200", words)
 	}
 
-	audit, err := LoadAgent(definition, "audit")
+	audit, err := LoadCommand(definition, "audit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -682,20 +643,18 @@ func TestExampleAgentDefinitionsLoad(t *testing.T) {
 func TestWorkflowExampleDefinitionsLoad(t *testing.T) {
 	tests := []struct {
 		name     string
-		agents   []string
-		pipeline string
-		steps    []string
+		commands []string
 	}{
-		{name: "issue-to-pr", agents: []string{"issue-to-pr"}},
-		{name: "multi-review", agents: []string{"review-codex", "review-claude"}, pipeline: "multi-review", steps: []string{"review-codex", "review-claude"}},
-		{name: "code-audit", agents: []string{"code-audit"}},
+		{name: "issue-to-pr", commands: []string{"issue-to-pr"}},
+		{name: "multi-review", commands: []string{"multi-review"}},
+		{name: "code-audit", commands: []string{"code-audit"}},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			definition := filepath.Join("..", "..", "examples", "workflows", test.name, "config.toml")
-			for _, name := range test.agents {
-				agent, err := LoadAgent(definition, name)
+			for _, name := range test.commands {
+				agent, err := LoadCommand(definition, name)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -714,25 +673,13 @@ func TestWorkflowExampleDefinitionsLoad(t *testing.T) {
 						}
 					}
 				}
+				if test.name == "multi-review" {
+					continue
+				}
 				for _, section := range []string{"# Role", "# Input", "# Required result", "# Procedure", "# Boundaries"} {
 					if !strings.Contains(agent.Prompt, section) {
 						t.Fatalf("agent %q prompt does not contain %q", name, section)
 					}
-				}
-			}
-			if test.pipeline == "" {
-				return
-			}
-			agents, err := LoadPipeline(definition, test.pipeline)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(agents) != len(test.steps) {
-				t.Fatalf("pipeline has %d agents, want %d", len(agents), len(test.steps))
-			}
-			for index, agent := range agents {
-				if agent.Name != test.steps[index] {
-					t.Fatalf("pipeline agent %d = %q, want %q", index+1, agent.Name, test.steps[index])
 				}
 			}
 		})

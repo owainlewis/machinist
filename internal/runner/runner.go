@@ -39,7 +39,7 @@ const (
 type Options struct {
 	RunID         string
 	ArtifactKey   string
-	Agent         config.ResolvedAgent
+	Command       config.ResolvedCommand
 	Repository    string
 	DataDirectory string
 	Stdout        io.Writer
@@ -48,8 +48,8 @@ type Options struct {
 
 type Result struct {
 	ID             string    `json:"id"`
-	Agent          string    `json:"agent"`
-	AgentHash      string    `json:"agent_hash"`
+	Command        string    `json:"command"`
+	CommandHash    string    `json:"command_hash"`
 	Definition     string    `json:"definition"`
 	Repository     string    `json:"repository"`
 	State          State     `json:"state"`
@@ -128,17 +128,17 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 
 	startedAt := time.Now().UTC()
 	result = Result{
-		ID:         runID,
-		Agent:      options.Agent.Name,
-		AgentHash:  options.Agent.Hash,
-		Definition: options.Agent.Definition,
-		Repository: repository,
-		State:      StateFailed,
-		ExitCode:   1,
-		StartedAt:  startedAt,
-		EventsPath: eventsPath,
+		ID:          runID,
+		Command:     options.Command.Name,
+		CommandHash: options.Command.Hash,
+		Definition:  options.Command.Definition,
+		Repository:  repository,
+		State:       StateFailed,
+		ExitCode:    1,
+		StartedAt:   startedAt,
+		EventsPath:  eventsPath,
 	}
-	if err := log.append("run.started", "", fmt.Sprintf("agent=%s repository=%s", options.Agent.Name, repository)); err != nil {
+	if err := log.append("run.started", "", fmt.Sprintf("command=%s repository=%s", options.Command.Name, repository)); err != nil {
 		return result, &RuntimeError{Cause: err}
 	}
 	tokenUsagePath := filepath.Join(runDirectory, tokenUsageFileName)
@@ -146,7 +146,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		return completeFailure(&result, log, runDirectory, fmt.Errorf("reset executor token usage report: %w", err))
 	}
 
-	executorCommand := structuredCodexCommand(options.Agent.Executor, options.Agent.Command)
+	executorCommand := structuredCodexCommand(options.Command.Executor, options.Command.Command)
 	command := exec.Command(executorCommand[0], executorCommand[1:]...)
 	command.Dir = repository
 	command.Env = append(sanitizedEnvironment(os.Environ()), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
@@ -154,17 +154,17 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 
 	stdinReader, stdinWriter, err := os.Pipe()
 	if err != nil {
-		return completeFailure(&result, log, runDirectory, fmt.Errorf("create agent stdin: %w", err))
+		return completeFailure(&result, log, runDirectory, fmt.Errorf("create command stdin: %w", err))
 	}
 	stdoutReader, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		closeFiles(stdinReader, stdinWriter)
-		return completeFailure(&result, log, runDirectory, fmt.Errorf("create agent stdout: %w", err))
+		return completeFailure(&result, log, runDirectory, fmt.Errorf("create command stdout: %w", err))
 	}
 	stderrReader, stderrWriter, err := os.Pipe()
 	if err != nil {
 		closeFiles(stdinReader, stdinWriter, stdoutReader, stdoutWriter)
-		return completeFailure(&result, log, runDirectory, fmt.Errorf("create agent stderr: %w", err))
+		return completeFailure(&result, log, runDirectory, fmt.Errorf("create command stderr: %w", err))
 	}
 	command.Stdin = stdinReader
 	command.Stdout = stdoutWriter
@@ -176,7 +176,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 
 	if err := command.Start(); err != nil {
 		closeFiles(stdinReader, stdinWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter)
-		return completeFailure(&result, log, runDirectory, fmt.Errorf("start agent command %q: %w", executorCommand[0], err))
+		return completeFailure(&result, log, runDirectory, fmt.Errorf("start command %q: %w", executorCommand[0], err))
 	}
 	closeFiles(stdinReader, stdoutWriter, stderrWriter)
 	if err := log.append("process.started", "", fmt.Sprintf("pid=%d", command.Process.Pid)); err != nil {
@@ -188,11 +188,11 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	}
 
 	inputResult := make(chan error, 1)
-	go writePrompt(stdinWriter, options.Agent.Prompt, inputResult)
+	go writePrompt(stdinWriter, options.Command.Prompt, inputResult)
 	streamErrors := make(chan error, 2)
 	var streams sync.WaitGroup
 	streams.Add(2)
-	usageCollector := newCodexUsageCollector(options.Agent.Executor, executorCommand)
+	usageCollector := newCodexUsageCollector(options.Command.Executor, executorCommand)
 	stdoutDestination := options.Stdout
 	if usageCollector != nil {
 		stdoutDestination = io.MultiWriter(options.Stdout, usageCollector)
@@ -212,7 +212,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 
 	closeInput := func() { _ = stdinWriter.Close() }
 	closeStreams := func() { closeFiles(stdoutReader, stderrReader) }
-	state, exitCode, outcome := supervise(ctx, command.Process, options.Agent.Timeout, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr)
+	state, exitCode, outcome := supervise(ctx, command.Process, options.Command.Timeout, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr)
 	var collectedTokenUsage *int64
 	if usageCollector != nil {
 		collectedTokenUsage = usageCollector.tokenUsage()
@@ -267,7 +267,7 @@ func supervise(ctx context.Context, process *os.Process, timeout time.Duration, 
 			setOutputDeadline(drainDeadline, outputWriters...)
 			state, exitCode, outcome := processOutcome(waited)
 			if outcome == nil && killErr != nil {
-				state, exitCode, outcome = StateFailed, 1, fmt.Errorf("stop remaining agent processes: %w", killErr)
+				state, exitCode, outcome = StateFailed, 1, fmt.Errorf("stop remaining command processes: %w", killErr)
 			}
 			inputErr = awaitInput(inputResult, inputDone, inputErr)
 			waitForStreams(streamsDone, closeStreams, time.Until(drainDeadline))
@@ -318,7 +318,7 @@ func supervise(ctx context.Context, process *os.Process, timeout time.Duration, 
 			<-processResult
 			_ = awaitInput(inputResult, inputDone, inputErr)
 			<-streamsDone
-			return StateTimedOut, 124, fmt.Errorf("agent exceeded timeout %s", timeout)
+			return StateTimedOut, 124, fmt.Errorf("command exceeded timeout %s", timeout)
 		}
 	}
 }
@@ -439,13 +439,13 @@ func writePrompt(destination io.WriteCloser, prompt string, result chan<- error)
 
 func processOutcome(waited processWait) (State, int, error) {
 	if waited.err != nil {
-		return StateFailed, 1, fmt.Errorf("wait for agent: %w", waited.err)
+		return StateFailed, 1, fmt.Errorf("wait for command: %w", waited.err)
 	}
 	if waited.state.Success() {
 		return StateSucceeded, 0, nil
 	}
 	exitCode := processExitCode(waited.state)
-	return StateFailed, exitCode, fmt.Errorf("agent exited with status %d", exitCode)
+	return StateFailed, exitCode, fmt.Errorf("command exited with status %d", exitCode)
 }
 
 func completeFailure(result *Result, log *eventLog, runDirectory string, outcome error) (Result, error) {

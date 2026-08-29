@@ -163,7 +163,7 @@ Set `machinist:building` and print the phase start. For new work, give a fresh b
 refined issue and trusted rules. It starts from the latest remote default branch, creates
 one `codex/` branch and isolated `~/Code/.worktrees/<repo>/<task>` worktree, implements only
 the issue with focused tests, derives safe checks from repository entry points, inspects
-the final diff, and creates Conventional Commits without an agent co-author. It must not
+the final diff, and creates Conventional Commits without an command co-author. It must not
 push, open a pull request, merge, or change GitHub.
 
 For resumed work, provide the verified branch, worktree, base and head, prior checks, and
@@ -228,7 +228,7 @@ including feedback found on a resumed run:
 3. Set `machinist:building` and prompt a fresh repair subagent with only the refined task,
    verified branch and worktree, current head, exact failing evidence, and valid findings.
    It fixes only those findings, runs affected checks, inspects its diff, commits without an
-   agent co-author, avoids GitHub changes, and returns the Repair handoff. Persist the count
+   command co-author, avoids GitHub changes, and returns the Repair handoff. Persist the count
    immediately after a code-changing commit and before Local review. A tooling, credential,
    or infrastructure failure keeps the prior count.
 4. Run Local review on the new immutable head. Never push without fresh approval. If no

@@ -79,7 +79,7 @@ func (s *Server) processFixedTrigger(ctx context.Context, trigger config.Resolve
 		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, ConfigGeneration: generation,
 		OccurrenceKey: occurrence.UTC().Format(time.RFC3339Nano), ScheduledAt: occurrence, NextDueAt: nextDue,
 		Prompt: trigger.Prompt, Repository: trigger.Repository,
-		SelectionKind: trigger.SelectionKind, SelectionName: trigger.SelectionName, Agents: trigger.Agents,
+		SelectionName: trigger.SelectionName, Command: trigger.Command,
 	}
 	_, _, admissionErr := s.store.CreateTriggeredJob(ctx, admission)
 	if errors.Is(admissionErr, ErrTriggerPreviousGenerationActive) {
@@ -206,21 +206,17 @@ func (s *Server) processGitHubDetails(ctx context.Context, trigger config.Resolv
 		return nil
 	}
 	prompt := "Complete " + issueURL
-	agents := make([]config.ResolvedAgent, len(trigger.Agents))
-	for index, agent := range trigger.Agents {
-		rendered, renderErr := config.RenderPrompt(agent, prompt)
-		if renderErr != nil {
-			return renderErr
-		}
-		rendered.Model = trigger.Model
-		agents[index] = rendered
+	command, renderErr := config.RenderPrompt(trigger.Command, prompt)
+	if renderErr != nil {
+		return renderErr
 	}
+	command.Model = trigger.Model
 	occurrenceKey := details.RequestedEvent.OccurrenceKey
 	_, created, err := s.store.CreateTriggeredJob(ctx, TriggerAdmission{
 		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, ConfigGeneration: generation, OccurrenceKey: occurrenceKey,
 		Subject: issueURL, ScheduledAt: details.RequestedEvent.CreatedAt,
 		Prompt: prompt, Repository: logicalRepository,
-		SelectionKind: trigger.SelectionKind, SelectionName: trigger.SelectionName, Agents: agents,
+		SelectionName: trigger.SelectionName, Command: command,
 		GitHubRepository: details.Repository, GitHubIssueNumber: details.Number, GitHubIssueTitle: details.Title, RequestActor: details.RequestedEvent.Actor, RequestLabel: requestLabel,
 	})
 	if err != nil {

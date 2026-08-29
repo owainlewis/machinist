@@ -5,7 +5,7 @@ import { createStatusLoader } from "./status-loader.js";
 
 const measuredJob = { created_at: "2026-08-25T10:00:00Z", state: "succeeded", runs: [{
   id: "run_latest",
-  agent: "build",
+  command: "build",
   completed_at: "2026-08-25T12:00:00Z",
   duration_millis: 1250,
   token_usage: "4321",

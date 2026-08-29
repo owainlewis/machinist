@@ -17,9 +17,9 @@ import (
 var initialFiles = []string{
 	"config.toml",
 	"worker.toml",
-	"agents/foreman.md",
-	"agents/audit.md",
-	"agents/shepherd.md",
+	"prompts/foreman.md",
+	"prompts/audit.md",
+	"prompts/shepherd.md",
 }
 
 func newInitCommand(options *commandOptions) *cobra.Command {
@@ -39,7 +39,7 @@ func initializeMachinist(output io.Writer) error {
 		return fmt.Errorf("find user home directory: %w", err)
 	}
 	directory := filepath.Join(home, ".machinist")
-	for _, path := range []string{directory, filepath.Join(directory, "agents"), filepath.Join(directory, "server")} {
+	for _, path := range []string{directory, filepath.Join(directory, "prompts"), filepath.Join(directory, "server")} {
 		if err := ensureDirectory(path); err != nil {
 			return err
 		}

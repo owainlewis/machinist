@@ -412,7 +412,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         machinist_command.extend(
             (
                 "run",
-                "--agent=foreman",
+                "--command=foreman",
                 f"--prompt=Complete {issue_url}",
                 f"--repo={options.repo_path}",
             )
@@ -443,9 +443,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if failure is not None or cleanup_errors:
         details = [str(failure)] if failure is not None else []
         details.extend(cleanup_errors)
-        print(f"FAIL pipeline-labels: {'; '.join(details)}", file=sys.stderr)
+        print(f"FAIL github-labels: {'; '.join(details)}", file=sys.stderr)
         return 1
-    print(f"PASS pipeline-labels: observed {' -> '.join(EXPECTED_LABELS)}")
+    print(f"PASS github-labels: observed {' -> '.join(EXPECTED_LABELS)}")
     return 0
 
 

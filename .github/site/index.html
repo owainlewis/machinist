@@ -122,7 +122,7 @@
           <article>
             <span class="card-number">03 / LEARNING</span>
             <h3>Improve the process</h3>
-            <p>Prompts, agent definitions, model aliases, and pipelines live in files. Change them in Git and use focused evaluations to check the result.</p>
+            <p>Prompts, command definitions, and model aliases live in files. Change them in Git and use focused evaluations to check the result.</p>
           </article>
         </div>
       </section>
@@ -145,7 +145,7 @@
           <div class="flow-node flow-output"><span>HANDOFF</span><strong>Verified PR</strong><small>You decide to merge</small></div>
         </div>
         <div class="factory-values">
-          <article><span>DEFINED</span><h3>Configuration in files</h3><p>Prompts, agents, models, and pipelines use TOML and Markdown that you can review and version.</p></article>
+          <article><span>DEFINED</span><h3>Configuration in files</h3><p>Prompts, commands, and models use TOML and Markdown that you can review and version.</p></article>
           <article><span>INDEPENDENT</span><h3>Separate builder and reviewer</h3><p>The agent that writes the code does not review it. A fresh agent reviews the exact commit before handoff.</p></article>
           <article><span>PERSISTENT</span><h3>Verified repair loop</h3><p>Valid code defects return to a fresh repair and review cycle. External blockers still stop safely with clear evidence.</p></article>
         </div>
@@ -218,13 +218,13 @@ command = [<span class="code-string">"your-agent"</span>, <span class="code-stri
           </li>
           <li>
             <span class="step-number">02</span>
-            <div><h3>Initialize</h3><p>Create editable defaults for agents, executors, and your local worker.</p></div>
+            <div><h3>Initialize</h3><p>Create editable defaults for commands, executors, and your local worker.</p></div>
             <button class="copy-command" type="button" data-copy="./bin/machinist init" aria-label="Copy initialize command"><code>./bin/machinist init</code><span aria-live="polite">COPY</span></button>
           </li>
           <li>
             <span class="step-number">03</span>
             <div><h3>Run</h3><p>Send a narrow GitHub issue through the supervised production line.</p></div>
-            <button class="copy-command" type="button" data-copy="./bin/machinist run --agent=foreman --repo=/path/to/repo --prompt='Complete issue #123'" aria-label="Copy run command"><code>machinist run --agent=foreman ...</code><span aria-live="polite">COPY</span></button>
+            <button class="copy-command" type="button" data-copy="./bin/machinist run --command=foreman --repo=/path/to/repo --prompt='Complete issue #123'" aria-label="Copy run command"><code>machinist run --command=foreman ...</code><span aria-live="polite">COPY</span></button>
           </li>
         </ol>
       </section>

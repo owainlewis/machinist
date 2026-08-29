@@ -38,7 +38,7 @@ Use direct mode for immediate local work. Pass an absolute Git worktree path:
 
 ```sh
 machinist run \
-  --agent=foreman \
+  --command=foreman \
   --repo=/absolute/path/to/repository \
   --prompt="Complete https://github.com/owner/repository/issues/123"
 ```
@@ -48,7 +48,7 @@ repository name from `worker.toml`:
 
 ```sh
 machinist submit \
-  --agent=foreman \
+  --command=foreman \
   --repo=repository-name \
   --prompt="Complete https://github.com/owner/repository/issues/123"
 ```
@@ -66,7 +66,7 @@ trigger or its repository is not configured. `machinist:requested` and
 
 Keep exactly one lifecycle or exception label on the issue:
 
-| Label | Meaning | Agent action |
+| Label | Meaning | Command action |
 | --- | --- | --- |
 | `machinist:planning` | The issue is being refined into a clear task. | Wait for planning or answer a question if asked. |
 | `machinist:building` | A worker is implementing or repairing the change. | Do not start overlapping work. |

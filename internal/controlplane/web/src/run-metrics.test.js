@@ -11,9 +11,9 @@ test("tasksInWindow starts at local midnight and drives completed run detail", (
   const now = new Date(2026, 7, 25, 15);
   const jobs = [
     { id: "inside", created_at: localDate(2026, 8, 19), runs: [
-      { id: "run_reported", agent: "build", completed_at: localDate(2026, 8, 25, 12), duration_millis: 1250, token_usage: "4321" },
-      { id: "run_missing", agent: "review", completed_at: localDate(2026, 8, 18, 11), duration_millis: 500 },
-      { id: "run_unmeasured", agent: "plan", completed_at: localDate(2026, 8, 25, 10) },
+      { id: "run_reported", command: "build", completed_at: localDate(2026, 8, 25, 12), duration_millis: 1250, token_usage: "4321" },
+      { id: "run_missing", command: "review", completed_at: localDate(2026, 8, 18, 11), duration_millis: 500 },
+      { id: "run_unmeasured", command: "plan", completed_at: localDate(2026, 8, 25, 10) },
     ] },
     { id: "outside", created_at: localDate(2026, 8, 18, 23), runs: [{ id: "run_outside", completed_at: localDate(2026, 8, 25), duration_millis: 100 }] },
     { id: "future", created_at: localDate(2026, 8, 25, 16), runs: [{ id: "run_future", completed_at: localDate(2026, 8, 25), duration_millis: 100 }] },
@@ -38,26 +38,26 @@ test("tasksInWindow applies the 30-day boundary to task creation time", () => {
 test("taskAnalytics calculates task outcomes and averages complete terminal timings", () => {
   const created_at = localDate(2026, 8, 25, 9);
   const jobs = [
-    { id: "success", state: "succeeded", created_at, runs: [{ state: "succeeded", duration_millis: 1000 }, { state: "succeeded", duration_millis: 3000 }] },
-    { id: "failed", state: "failed", created_at, runs: [{ state: "failed", duration_millis: 2000 }, { state: "skipped" }] },
+	{ id: "success", state: "succeeded", created_at, runs: [{ state: "succeeded", duration_millis: 1000 }] },
+	{ id: "failed", state: "failed", created_at, runs: [{ state: "failed", duration_millis: 2000 }] },
     { id: "running", state: "running", created_at, runs: [{ state: "running", duration_millis: 500 }] },
-    { id: "queued", state: "queued", created_at, runs: [{ state: "pending" }] },
+	{ id: "queued", state: "queued", created_at, runs: [{ state: "queued" }] },
   ];
   const metrics = taskAnalytics(jobs, "7", new Date(2026, 7, 25, 15));
   assert.equal(metrics.totalTasks, 4);
   assert.equal(metrics.successRate, 0.5);
   assert.equal(metrics.failedTasks, 1);
   assert.equal(metrics.activeTasks, 2);
-  assert.equal(metrics.averageTaskDurationMillis, 3000);
+	assert.equal(metrics.averageTaskDurationMillis, 1500);
   assert.equal(metrics.contributingTasks, 2);
 });
 
-test("taskAnalytics excludes terminal tasks with any missing or invalid non-skipped duration", () => {
+test("taskAnalytics excludes terminal tasks with missing or invalid duration", () => {
   const created_at = localDate(2026, 8, 25, 9);
   const jobs = [
-    { state: "succeeded", created_at, runs: [{ state: "succeeded", duration_millis: 1000 }, { state: "succeeded" }] },
+	{ state: "succeeded", created_at, runs: [{ state: "succeeded" }] },
     { state: "failed", created_at, runs: [{ state: "failed", duration_millis: -1 }] },
-    { state: "succeeded", created_at, runs: [{ state: "skipped" }] },
+	{ state: "succeeded", created_at, runs: [{ state: "succeeded" }] },
   ];
   const metrics = taskAnalytics(jobs, "7", new Date(2026, 7, 25, 15));
   assert.equal(metrics.averageTaskDurationMillis, null);
@@ -65,10 +65,9 @@ test("taskAnalytics excludes terminal tasks with any missing or invalid non-skip
   assert.equal(metrics.successRate, 2 / 3);
 });
 
-test("taskDurationMillis excludes skipped pipeline steps", () => {
-  assert.equal(taskDurationMillis([{ state: "failed", duration_millis: 1250 }, { state: "skipped" }]), 1250);
-  assert.equal(taskDurationMillis([{ state: "failed" }, { state: "skipped" }]), undefined);
-  assert.equal(taskDurationMillis([{ state: "skipped" }]), undefined);
+test("taskDurationMillis reports the single run duration", () => {
+	assert.equal(taskDurationMillis([{ state: "failed", duration_millis: 1250 }]), 1250);
+	assert.equal(taskDurationMillis([{ state: "failed" }]), undefined);
 });
 
 test("taskAnalytics returns explicit zero counts and unavailable rates for no data", () => {
@@ -89,7 +88,7 @@ test("formatters distinguish explicitly reported zero from unavailable usage", (
   assert.equal(formatTokenUsage(undefined), "Unavailable");
 });
 
-test("tokenUsageSummary totals only reported completed steps and tracks coverage", () => {
+test("tokenUsageSummary totals only reported completed runs and tracks coverage", () => {
   const summary = tokenUsageSummary([
     { completed_at: "2026-08-25T12:00:00Z", token_usage: "9007199254740993" },
     { completed_at: "2026-08-25T12:01:00Z", token_usage: "17" },
@@ -98,26 +97,26 @@ test("tokenUsageSummary totals only reported completed steps and tracks coverage
     { completed_at: "0001-01-01T00:00:00Z" },
   ]);
   assert.deepEqual(summary, { total: "9007199254741010", reported: 2, completed: 4, unavailable: 2 });
-  assert.equal(formatReportingCoverage(summary), "2 of 4 steps");
+  assert.equal(formatReportingCoverage(summary), "2 of 4 runs");
 });
 
 test("tokenUsageSummary does not present missing usage as zero", () => {
   const missing = tokenUsageSummary([{ completed_at: "2026-08-25T12:00:00Z" }]);
   assert.deepEqual(missing, { total: undefined, reported: 0, completed: 1, unavailable: 1 });
   assert.equal(formatTokenUsage(missing.total), "Unavailable");
-  assert.equal(formatReportingCoverage(missing), "0 of 1 step");
+  assert.equal(formatReportingCoverage(missing), "0 of 1 run");
 
   const zero = tokenUsageSummary([{ completed_at: "2026-08-25T12:00:00Z", token_usage: "0" }]);
   assert.deepEqual(zero, { total: "0", reported: 1, completed: 1, unavailable: 0 });
   assert.equal(formatTokenUsage(zero.total), "0");
-  assert.equal(formatReportingCoverage(tokenUsageSummary([])), "No completed steps");
+  assert.equal(formatReportingCoverage(tokenUsageSummary([])), "No completed runs");
 });
 
 test("formatTaskTokenUsage marks partial totals as reported", () => {
   assert.equal(formatTaskTokenUsage({ total: undefined, unavailable: 2 }), "Not reported");
   assert.equal(formatTaskTokenUsage({ total: "4321", unavailable: 0 }), "4,321 tokens");
-  assert.equal(formatTaskTokenUsage({ total: "4321", unavailable: 1 }), "4,321 tokens reported · 1 step unreported");
-  assert.equal(formatTaskTokenUsage({ total: "4321", unavailable: 2 }), "4,321 tokens reported · 2 steps unreported");
+  assert.equal(formatTaskTokenUsage({ total: "4321", unavailable: 1 }), "4,321 tokens reported · 1 run unreported");
+  assert.equal(formatTaskTokenUsage({ total: "4321", unavailable: 2 }), "4,321 tokens reported · 2 runs unreported");
 });
 
 test("runModelSummary reports every distinct configured model and honest fallbacks", () => {
@@ -175,11 +174,11 @@ test("board cards are compact links while list rows retain model and usage", asy
   assert.match(runRow, /tokens/);
 });
 
-test("task detail provides deletion and complete step metadata", async () => {
+test("task detail provides deletion and complete run metadata", async () => {
   const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
   const taskDetail = source.match(/function TaskDetail[\s\S]+?function DetailMetric/)?.[0];
   assert.ok(taskDetail);
-  for (const label of ["Prompt", "Execution", "Repository", "Run with", "Requested model", "Duration", "Token usage", "Executor", "Worker", "Started", "Completed", "Exit code", "Error"]) {
+  for (const label of ["Prompt", "Execution", "Repository", "Command", "Requested model", "Duration", "Token usage", "Executor", "Worker", "Started", "Completed", "Exit code", "Error"]) {
     assert.match(taskDetail, new RegExp(label));
   }
   assert.match(source, /method: "DELETE"/);

@@ -17,8 +17,8 @@ type PollResponse struct {
 type RunSpec struct {
 	ID             string `json:"id"`
 	JobID          string `json:"job_id"`
-	Agent          string `json:"agent"`
-	AgentHash      string `json:"agent_hash"`
+	Command        string `json:"command"`
+	CommandHash    string `json:"command_hash"`
 	Executor       string `json:"executor"`
 	Model          string `json:"model,omitempty"`
 	Repository     string `json:"repository"`

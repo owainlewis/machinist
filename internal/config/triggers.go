@@ -45,9 +45,9 @@ func validateTriggerKeys(raw map[string]any) error {
 		return errors.New("triggers must be a table")
 	}
 	allowed := map[string]map[string]bool{
-		"github":   {"every": true, "label": true, "agent": true, "pipeline": true, "model": true},
-		"interval": {"every": true, "repository": true, "agent": true, "pipeline": true, "model": true, "prompt": true},
-		"cron":     {"schedule": true, "timezone": true, "repository": true, "agent": true, "pipeline": true, "model": true, "prompt": true},
+		"github":   {"every": true, "label": true, "command": true, "model": true},
+		"interval": {"every": true, "repository": true, "command": true, "model": true, "prompt": true},
+		"cron":     {"schedule": true, "timezone": true, "repository": true, "command": true, "model": true, "prompt": true},
 	}
 	for _, family := range sortedMapKeys(families) {
 		definitions, ok := families[family].(map[string]any)
@@ -112,19 +112,17 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 		if len(repositories) == 0 {
 			return nil, fmt.Errorf("trigger %q requires at least one github.repositories entry", identity)
 		}
-		kind, selection, agents, err := c.resolveTriggerSelection(identity, definition.TriggerSelection, "")
+		selection, command, err := c.resolveTriggerSelection(identity, definition.TriggerSelection, "")
 		if err != nil {
 			return nil, err
 		}
-		for _, agent := range agents {
-			if _, err := RenderPrompt(agent, maximumGitHubIssuePrompt()); err != nil {
-				return nil, fmt.Errorf("trigger %q: %w", identity, err)
-			}
+		if _, err := RenderPrompt(command, maximumGitHubIssuePrompt()); err != nil {
+			return nil, fmt.Errorf("trigger %q: %w", identity, err)
 		}
 		resolved := ResolvedTrigger{
 			Identity: identity, Family: "github", Name: name,
 			GitHubRepositories: cloneStrings(repositories), Every: every, Label: label,
-			SelectionKind: kind, SelectionName: selection, Model: strings.TrimSpace(definition.Model), Agents: agents,
+			SelectionName: selection, Model: strings.TrimSpace(definition.Model), Command: command,
 		}
 		resolved.Signature, err = triggerSignature(resolved)
 		if err != nil {
@@ -151,13 +149,13 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 		if err != nil {
 			return nil, err
 		}
-		kind, selection, agents, err := c.resolveTriggerSelection(identity, definition.TriggerSelection, prompt)
+		selection, command, err := c.resolveTriggerSelection(identity, definition.TriggerSelection, prompt)
 		if err != nil {
 			return nil, err
 		}
 		resolved := ResolvedTrigger{
 			Identity: identity, Family: "interval", Name: name, Repository: repository, GitHubRepository: slug,
-			Every: every, SelectionKind: kind, SelectionName: selection, Model: strings.TrimSpace(definition.Model), Prompt: prompt, Agents: agents,
+			Every: every, SelectionName: selection, Model: strings.TrimSpace(definition.Model), Prompt: prompt, Command: command,
 		}
 		resolved.Signature, err = triggerSignature(resolved)
 		if err != nil {
@@ -184,14 +182,14 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 		if err != nil {
 			return nil, fmt.Errorf("trigger %q schedule: %w", identity, err)
 		}
-		kind, selection, agents, err := c.resolveTriggerSelection(identity, definition.TriggerSelection, prompt)
+		selection, command, err := c.resolveTriggerSelection(identity, definition.TriggerSelection, prompt)
 		if err != nil {
 			return nil, err
 		}
 		resolved := ResolvedTrigger{
 			Identity: identity, Family: "cron", Name: name, Repository: repository, GitHubRepository: slug,
-			Schedule: parsed.Expression(), Timezone: parsed.Timezone(), SelectionKind: kind, SelectionName: selection,
-			Model: strings.TrimSpace(definition.Model), Prompt: prompt, Agents: agents, cron: parsed,
+			Schedule: parsed.Expression(), Timezone: parsed.Timezone(), SelectionName: selection,
+			Model: strings.TrimSpace(definition.Model), Prompt: prompt, Command: command, cron: parsed,
 		}
 		resolved.Signature, err = triggerSignature(resolved)
 		if err != nil {
@@ -281,79 +279,37 @@ func resolveTriggerRepository(identity, input string, repositories map[string]st
 	return repository, slug, nil
 }
 
-func (c Config) resolveTriggerSelection(identity string, selection TriggerSelection, prompt string) (string, string, []ResolvedAgent, error) {
-	agentName := strings.TrimSpace(selection.Agent)
-	pipelineName := strings.TrimSpace(selection.Pipeline)
-	if (agentName == "") == (pipelineName == "") {
-		return "", "", nil, fmt.Errorf("trigger %q must select exactly one agent or pipeline", identity)
+func (c Config) resolveTriggerSelection(identity string, selection TriggerSelection, prompt string) (string, ResolvedCommand, error) {
+	commandName := strings.TrimSpace(selection.Command)
+	if commandName == "" {
+		return "", ResolvedCommand{}, fmt.Errorf("trigger %q must select one command", identity)
 	}
-	if agentName != selection.Agent || pipelineName != selection.Pipeline {
-		return "", "", nil, fmt.Errorf("trigger %q selection names must not have surrounding whitespace", identity)
+	if commandName != selection.Command {
+		return "", ResolvedCommand{}, fmt.Errorf("trigger %q command must not have surrounding whitespace", identity)
 	}
 	model := strings.TrimSpace(selection.Model)
 	if model != selection.Model || len(model) > 128 || strings.ContainsAny(model, "\x00\r\n") {
-		return "", "", nil, fmt.Errorf("trigger %q model is invalid", identity)
+		return "", ResolvedCommand{}, fmt.Errorf("trigger %q model is invalid", identity)
 	}
-
-	kind, name := "agent", agentName
-	var agents []ResolvedAgent
-	if agentName != "" {
-		agent, ok := c.Agents[agentName]
-		if !ok {
-			return "", "", nil, fmt.Errorf("trigger %q references undefined agent %q", identity, agentName)
-		}
-		resolved, err := resolveAgent(c.path, agentName, agent)
-		if err != nil {
-			return "", "", nil, fmt.Errorf("trigger %q: %w", identity, err)
-		}
-		agents = []ResolvedAgent{resolved}
-	} else {
-		kind, name = "pipeline", pipelineName
-		pipeline, ok := c.Pipelines[pipelineName]
-		if !ok {
-			return "", "", nil, fmt.Errorf("trigger %q references undefined pipeline %q", identity, pipelineName)
-		}
-		if len(pipeline.Agents) == 0 {
-			return "", "", nil, fmt.Errorf("trigger %q pipeline %q must define at least one agent", identity, pipelineName)
-		}
-		for index, member := range pipeline.Agents {
-			if strings.TrimSpace(member) == "" {
-				return "", "", nil, fmt.Errorf("trigger %q pipeline %q agent %d is empty", identity, pipelineName, index+1)
-			}
-			agent, ok := c.Agents[member]
-			if !ok {
-				return "", "", nil, fmt.Errorf("trigger %q pipeline %q references undefined agent %q", identity, pipelineName, member)
-			}
-			resolved, err := resolveAgent(c.path, member, agent)
-			if err != nil {
-				return "", "", nil, fmt.Errorf("trigger %q: %w", identity, err)
-			}
-			agents = append(agents, resolved)
-		}
+	definition, ok := c.Commands[commandName]
+	if !ok {
+		return "", ResolvedCommand{}, fmt.Errorf("trigger %q references undefined command %q", identity, commandName)
 	}
-	for _, agent := range agents {
-		if agent.Name == "shepherd" {
-			return "", "", nil, fmt.Errorf("trigger %q cannot select Shepherd directly or through a pipeline", identity)
-		}
+	resolved, err := resolveCommand(c.path, commandName, definition)
+	if err != nil {
+		return "", ResolvedCommand{}, fmt.Errorf("trigger %q: %w", identity, err)
 	}
-	if err := ValidateModelSelection(agents, model); err != nil {
-		return "", "", nil, fmt.Errorf("trigger %q model: %w", identity, err)
+	if resolved.Name == "shepherd" {
+		return "", ResolvedCommand{}, fmt.Errorf("trigger %q cannot select Shepherd", identity)
 	}
 	if prompt != "" {
-		for index := range agents {
-			rendered, err := RenderPrompt(agents[index], prompt)
-			if err != nil {
-				return "", "", nil, fmt.Errorf("trigger %q: %w", identity, err)
-			}
-			rendered.Model = model
-			agents[index] = rendered
-		}
-	} else {
-		for index := range agents {
-			agents[index].Model = model
+		resolved, err = RenderPrompt(resolved, prompt)
+		if err != nil {
+			return "", ResolvedCommand{}, fmt.Errorf("trigger %q: %w", identity, err)
 		}
 	}
-	return kind, name, agents, nil
+	resolved.Model = model
+	return commandName, resolved, nil
 }
 
 // FirstDue returns the first scheduled occurrence after startup. GitHub intake
@@ -384,22 +340,18 @@ func triggerSignature(trigger ResolvedTrigger) (string, error) {
 	for _, name := range sortedMapKeys(trigger.GitHubRepositories) {
 		repositories = append(repositories, repositoryPair{name, trigger.GitHubRepositories[name]})
 	}
-	agentHashes := make([]string, len(trigger.Agents))
-	for index, agent := range trigger.Agents {
-		agentHashes[index] = agent.Name + ":" + agent.Hash
-	}
 	body, err := json.Marshal(struct {
 		Identity, Family, Repository, GitHubRepository, Schedule, Timezone, Label string
 		Every                                                                     int64
-		SelectionKind, SelectionName, Model, Prompt                               string
+		SelectionName, Model, Prompt                                              string
 		Repositories                                                              []repositoryPair
-		Agents                                                                    []string
+		CommandHash                                                               string
 	}{
 		Identity: trigger.Identity, Family: trigger.Family, Repository: trigger.Repository,
 		GitHubRepository: trigger.GitHubRepository, Schedule: trigger.Schedule, Timezone: trigger.Timezone,
-		Label: trigger.Label, Every: int64(trigger.Every), SelectionKind: trigger.SelectionKind,
+		Label: trigger.Label, Every: int64(trigger.Every),
 		SelectionName: trigger.SelectionName, Model: trigger.Model, Prompt: trigger.Prompt,
-		Repositories: repositories, Agents: agentHashes,
+		Repositories: repositories, CommandHash: trigger.Command.Name + ":" + trigger.Command.Hash,
 	})
 	if err != nil {
 		return "", err

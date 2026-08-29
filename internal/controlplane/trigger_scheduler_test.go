@@ -399,8 +399,8 @@ func TestManagedTriggerSchedulersIsolateBlockedGitHubPoll(t *testing.T) {
 	githubTrigger := githubTestTrigger()
 	intervalTrigger := config.ResolvedTrigger{
 		Identity: "interval/audit", Family: "interval", Every: time.Hour,
-		Repository: "machinist", Prompt: "Audit", SelectionKind: "agent", SelectionName: "audit", Signature: "interval-signature",
-		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute}},
+		Repository: "machinist", Prompt: "Audit", SelectionName: "audit", Signature: "interval-signature",
+		Command: config.ResolvedCommand{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute},
 	}
 	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{
 		{Identity: githubTrigger.Identity, Family: githubTrigger.Family, ConfigSignature: githubTrigger.Signature, NextDueAt: clock},
@@ -457,8 +457,8 @@ func TestManagedTriggerRejectsStaleConfigurationSnapshot(t *testing.T) {
 	store := openManagedTriggerTestStore(t, &clock)
 	trigger := config.ResolvedTrigger{
 		Identity: "interval/audit", Family: "interval", Every: time.Hour,
-		Repository: "machinist", Prompt: "Audit", SelectionKind: "agent", SelectionName: "audit", Signature: "v1",
-		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute}},
+		Repository: "machinist", Prompt: "Audit", SelectionName: "audit", Signature: "v1",
+		Command: config.ResolvedCommand{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute},
 	}
 	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: "v2", NextDueAt: clock}}); err != nil {
 		t.Fatal(err)
@@ -482,8 +482,8 @@ func TestManagedIntervalTriggerCoalescesBacklogAndActiveOccurrences(t *testing.T
 	store := openManagedTriggerTestStore(t, &clock)
 	trigger := config.ResolvedTrigger{
 		Identity: "interval/audit", Family: "interval", Every: time.Hour,
-		Repository: "machinist", Prompt: "Audit", SelectionKind: "agent", SelectionName: "audit", Signature: "interval-signature",
-		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute}},
+		Repository: "machinist", Prompt: "Audit", SelectionName: "audit", Signature: "interval-signature",
+		Command: config.ResolvedCommand{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute},
 	}
 	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, NextDueAt: startup.Add(time.Hour)}}); err != nil {
 		t.Fatal(err)
@@ -518,8 +518,8 @@ func TestManagedIntervalTriggerRetriesPendingOccurrenceAfterLaterDueTime(t *test
 	startup := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
 	trigger := config.ResolvedTrigger{
 		Identity: "interval/audit", Family: "interval", Every: time.Hour,
-		Repository: "machinist", Prompt: "Audit", SelectionKind: "agent", SelectionName: "audit", Signature: "interval-signature",
-		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute}},
+		Repository: "machinist", Prompt: "Audit", SelectionName: "audit", Signature: "interval-signature",
+		Command: config.ResolvedCommand{Name: "audit", Executor: "test", Hash: "hash", Prompt: "Audit", Timeout: time.Minute},
 	}
 	assertFixedTriggerRetriesPendingOccurrence(t, trigger, startup.Add(time.Hour), startup.Add(2*time.Hour+30*time.Minute), startup.Add(3*time.Hour))
 }
@@ -529,7 +529,7 @@ func TestManagedCronTriggerRetriesPendingOccurrenceAfterLaterDueTime(t *testing.
 	if err := os.WriteFile(filepath.Join(directory, "audit.md"), []byte("Audit: {{machinist.prompt}}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	configuration := `[agents.audit]
+	configuration := `[commands.audit]
 executor="test"
 prompt_file="audit.md"
 [github.repositories]
@@ -538,7 +538,7 @@ machinist="owainlewis/machinist"
 schedule="0 * * * *"
 timezone="UTC"
 repository="machinist"
-agent="audit"
+command="audit"
 prompt="Audit"
 `
 	path := filepath.Join(directory, "config.toml")
@@ -564,16 +564,16 @@ func TestManagedFixedTriggerWaitsForPreviousConfigurationJobAcrossABA(t *testing
 	_, created, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{
 		Identity: identity, Family: "interval", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, identity),
 		ScheduledAt: clock.Add(-time.Hour), NextDueAt: clock,
-		Prompt: "Old audit", Repository: "machinist", SelectionKind: "agent", SelectionName: "audit",
-		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "v1", Prompt: "Old audit", Timeout: time.Minute}},
+		Prompt: "Old audit", Repository: "machinist", SelectionName: "audit",
+		Command: config.ResolvedCommand{Name: "audit", Executor: "test", Hash: "v1", Prompt: "Old audit", Timeout: time.Minute},
 	})
 	if err != nil || !created {
 		t.Fatalf("admit v1 job = %v, %v", created, err)
 	}
 	trigger := config.ResolvedTrigger{
 		Identity: identity, Family: "interval", Every: time.Hour, Signature: "v1",
-		Repository: "machinist", Prompt: "New audit", SelectionKind: "agent", SelectionName: "audit",
-		Agents: []config.ResolvedAgent{{Name: "audit", Executor: "test", Hash: "v1-new", Prompt: "New audit", Timeout: time.Minute}},
+		Repository: "machinist", Prompt: "New audit", SelectionName: "audit",
+		Command: config.ResolvedCommand{Name: "audit", Executor: "test", Hash: "v1-new", Prompt: "New audit", Timeout: time.Minute},
 	}
 	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: identity, Family: "interval", ConfigSignature: "v2", NextDueAt: clock}}); err != nil {
 		t.Fatal(err)
@@ -632,7 +632,7 @@ func assertFixedTriggerRetriesPendingOccurrence(t *testing.T, trigger config.Res
 	}
 
 	invalid := trigger
-	invalid.Agents = nil
+	invalid.Command = config.ResolvedCommand{}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{invalid}, now: func() time.Time { return clock }}
 	if err := server.processManagedTriggers(t.Context()); err == nil {
 		t.Fatal("expected first admission to fail")
@@ -680,8 +680,8 @@ func githubTestTrigger() config.ResolvedTrigger {
 	return config.ResolvedTrigger{
 		Identity: "github/intake", Family: "github", Every: 5 * time.Minute, Label: "machinist:requested",
 		GitHubRepositories: map[string]string{"machinist": "owainlewis/machinist"},
-		SelectionKind:      "agent", SelectionName: "foreman", Signature: "github-signature",
-		Agents: []config.ResolvedAgent{{Name: "foreman", Executor: "test", Hash: "hash", Prompt: "Task: {{machinist.prompt}}", Timeout: time.Minute}},
+		SelectionName:      "foreman", Signature: "github-signature",
+		Command: config.ResolvedCommand{Name: "foreman", Executor: "test", Hash: "hash", Prompt: "Task: {{machinist.prompt}}", Timeout: time.Minute},
 	}
 }
 

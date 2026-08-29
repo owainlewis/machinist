@@ -26,12 +26,20 @@ func TestManagedWorkerExecutesControlPlaneRun(t *testing.T) {
 	if output, err := exec.Command("git", "init", "--quiet", repository).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, output)
 	}
+	scriptDirectory := filepath.Join(repository, "scripts")
+	if err := os.MkdirAll(scriptDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nset -eu\ninput=$(cat)\n[ \"$input\" = \"managed request\" ]\n[ \"$(pwd)\" = \"$MACHINIST_REPOSITORY\" ]\nprintf managed-output\nprintf managed-error >&2\nprintf 2468 > \"$MACHINIST_TOKEN_USAGE_PATH\"\n"
+	if err := os.WriteFile(filepath.Join(scriptDirectory, "workflow.sh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	definitionPath := filepath.Join(directory, "config.toml")
 	promptPath := filepath.Join(directory, "plan.md")
 	if err := os.WriteFile(promptPath, []byte("{{machinist.prompt}}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(definitionPath, []byte("[agents.plan]\nexecutor=\"test\"\nprompt_file=\"plan.md\"\ntimeout=\"5s\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(definitionPath, []byte("[commands.plan]\nexecutor=\"test\"\nprompt_file=\"plan.md\"\ntimeout=\"5s\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store, err := controlplane.OpenStore(filepath.Join(directory, "machinist.db"))
@@ -39,7 +47,7 @@ func TestManagedWorkerExecutesControlPlaneRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	agent, err := config.LoadAgent(definitionPath, "plan")
+	agent, err := config.LoadCommand(definitionPath, "plan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +55,7 @@ func TestManagedWorkerExecutesControlPlaneRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateJob(t.Context(), "managed request", "machinist", "agent", "plan", []config.ResolvedAgent{agent}); err != nil {
+	if _, err := store.CreateJob(t.Context(), "managed request", "machinist", "plan", agent); err != nil {
 		t.Fatal(err)
 	}
 	server, err := controlplane.NewServer(store, definitionPath, "secret", 0)
@@ -64,7 +72,7 @@ func TestManagedWorkerExecutesControlPlaneRun(t *testing.T) {
 		Name:          "local-test",
 		DataDirectory: filepath.Join(directory, "worker-data"),
 		ControlPlane:  config.ControlPlane{URL: httpServer.URL, TokenFile: tokenPath},
-		Executors:     map[string]config.Executor{"test": {Command: []string{"/bin/sh", "-c", `cat >/dev/null; printf managed-output; printf 2468 > "$MACHINIST_TOKEN_USAGE_PATH"`}}},
+		Executors:     map[string]config.Executor{"test": {Command: []string{"./scripts/workflow.sh"}}},
 		Repositories:  map[string]config.Repository{"machinist": {Path: repository}},
 	}, os.Stdout, os.Stderr)
 	if err != nil {
@@ -109,7 +117,7 @@ func TestScheduledShepherdExecutesInDisposableRepository(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "shepherd.md"), []byte("Trusted schedule:\n{{machinist.prompt}}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	definition := `[agents.shepherd]
+	definition := `[commands.shepherd]
 executor = "test"
 prompt_file = "shepherd.md"
 timeout = "5s"
@@ -165,7 +173,7 @@ max_actions = 2
 			t.Fatal(err)
 		}
 		if len(snapshot.Jobs) == 1 && snapshot.Jobs[0].State == "succeeded" {
-			if snapshot.Jobs[0].ScheduleName != "disposable" || snapshot.Jobs[0].Runs[0].Agent != "shepherd" {
+			if snapshot.Jobs[0].ScheduleName != "disposable" || snapshot.Jobs[0].Runs[0].Command != "shepherd" {
 				t.Fatalf("scheduled job = %#v", snapshot.Jobs[0])
 			}
 			break
@@ -381,8 +389,8 @@ func TestManagedWorkerSeparatesRedispatchedLeaseArtifacts(t *testing.T) {
 	for _, lease := range []string{"lease_first", "lease_second"} {
 		completion := worker.execute(t.Context(), protocol.RunSpec{
 			ID:             runID,
-			Agent:          "plan",
-			AgentHash:      "plan-hash",
+			Command:        "plan",
+			CommandHash:    "plan-hash",
 			Executor:       "test",
 			Repository:     "machinist",
 			RenderedPrompt: "managed prompt",

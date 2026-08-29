@@ -24,8 +24,7 @@ import (
 type commandOptions struct {
 	configPath          string
 	machinistConfigPath string
-	agentName           string
-	pipelineName        string
+	commandName         string
 	prompt              string
 	model               string
 	repository          string
@@ -64,19 +63,19 @@ func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 func newRootCommand(options *commandOptions) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "machinist",
-		Short:         "Run coding agents as supervised workloads",
+		Short:         "Run approved commands as supervised workloads",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
 	root.PersistentFlags().StringVar(&options.configPath, "config", "", "configuration file")
 	root.AddCommand(newInitCommand(options))
-	root.AddCommand(newRunCommand(options, true))
+	root.AddCommand(newRunCommand(options))
 	root.AddCommand(newSubmitCommand(options))
 	root.AddCommand(newStartCommand(options))
 	root.AddCommand(newUpdateCommand(options))
 
 	worker := &cobra.Command{Use: "worker", Short: "Run or connect a Machinist Worker"}
-	worker.AddCommand(newRunCommand(options, false))
+	worker.AddCommand(newRunCommand(options))
 	worker.AddCommand(newWorkerStartCommand(options))
 	root.AddCommand(worker)
 
@@ -118,16 +117,14 @@ func newUpdateCommand(options *commandOptions) *cobra.Command {
 }
 
 type submitCatalog struct {
-	Agents       []string `json:"agents"`
-	Pipelines    []string `json:"pipelines"`
+	Commands     []string `json:"commands"`
 	Repositories []string `json:"repositories"`
 }
 
 type submitJobRequest struct {
 	Prompt     string `json:"prompt"`
 	Repository string `json:"repository"`
-	Agent      string `json:"agent,omitempty"`
-	Pipeline   string `json:"pipeline,omitempty"`
+	Command    string `json:"command"`
 	Model      string `json:"model,omitempty"`
 }
 
@@ -148,28 +145,26 @@ func (err *submitHTTPError) Error() string {
 }
 
 func newSubmitCommand(options *commandOptions) *cobra.Command {
-	var agentName, pipelineName, prompt, model, repository string
+	var commandName, prompt, model, repository string
 	submit := &cobra.Command{
 		Use:   "submit",
 		Short: "Queue work for a managed Machinist Worker",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return submitSelection(command.Context(), options, agentName, pipelineName, prompt, model, repository)
+			return submitSelection(command.Context(), options, commandName, prompt, model, repository)
 		},
 	}
-	submit.Flags().StringVar(&agentName, "agent", "", "agent name from the control plane")
-	submit.Flags().StringVar(&pipelineName, "pipeline", "", "pipeline name from the control plane")
-	submit.Flags().StringVar(&prompt, "prompt", "", "work request supplied to the agent prompt (required)")
+	submit.Flags().StringVar(&commandName, "command", "", "command name from the control plane")
+	submit.Flags().StringVar(&prompt, "prompt", "", "work request supplied to the command on standard input (required)")
 	submit.Flags().StringVar(&model, "model", "", "executor model or configured alias for this task")
 	submit.Flags().StringVar(&repository, "repo", "", "configured repository name (required)")
-	submit.MarkFlagsMutuallyExclusive("agent", "pipeline")
-	submit.MarkFlagsOneRequired("agent", "pipeline")
+	_ = submit.MarkFlagRequired("command")
 	_ = submit.MarkFlagRequired("prompt")
 	_ = submit.MarkFlagRequired("repo")
 	return submit
 }
 
-func submitSelection(ctx context.Context, options *commandOptions, agentName, pipelineName, prompt, model, repository string) error {
+func submitSelection(ctx context.Context, options *commandOptions, commandName, prompt, model, repository string) error {
 	worker, err := config.LoadWorker(options.configPath)
 	if err != nil {
 		return err
@@ -190,18 +185,14 @@ func submitSelection(ctx context.Context, options *commandOptions, agentName, pi
 	if !contains(catalog.Repositories, repository) {
 		return fmt.Errorf("repository %q is not defined in the control plane; check the configured repository name and worker registration", repository)
 	}
-	if agentName != "" && !contains(catalog.Agents, agentName) {
-		return fmt.Errorf("agent %q is not defined in the control plane", agentName)
-	}
-	if pipelineName != "" && !contains(catalog.Pipelines, pipelineName) {
-		return fmt.Errorf("pipeline %q is not defined in the control plane", pipelineName)
+	if !contains(catalog.Commands, commandName) {
+		return fmt.Errorf("command %q is not defined in the control plane", commandName)
 	}
 
 	body, err := json.Marshal(submitJobRequest{
 		Prompt:     prompt,
 		Repository: repository,
-		Agent:      agentName,
-		Pipeline:   pipelineName,
+		Command:    commandName,
 		Model:      model,
 	})
 	if err != nil {
@@ -338,28 +329,18 @@ func newWorkerStartCommand(options *commandOptions) *cobra.Command {
 	}
 }
 
-func newRunCommand(options *commandOptions, allowPipeline bool) *cobra.Command {
-	short := "Run one configured agent in a Git repository"
-	if allowPipeline {
-		short = "Run a configured agent or pipeline in a Git repository"
-	}
+func newRunCommand(options *commandOptions) *cobra.Command {
 	run := &cobra.Command{
 		Use:   "run",
-		Short: short,
+		Short: "Run one configured command in a Git repository",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			return runSelection(command.Context(), options)
 		},
 	}
-	run.Flags().StringVar(&options.agentName, "agent", "", "agent name from the Machinist definition")
-	if allowPipeline {
-		run.Flags().StringVar(&options.pipelineName, "pipeline", "", "pipeline name from the Machinist definition")
-		run.MarkFlagsMutuallyExclusive("agent", "pipeline")
-		run.MarkFlagsOneRequired("agent", "pipeline")
-	} else {
-		_ = run.MarkFlagRequired("agent")
-	}
-	run.Flags().StringVar(&options.prompt, "prompt", "", "work request supplied to the agent prompt (required)")
+	run.Flags().StringVar(&options.commandName, "command", "", "command name from the Machinist definition")
+	_ = run.MarkFlagRequired("command")
+	run.Flags().StringVar(&options.prompt, "prompt", "", "work request supplied to the command on standard input (required)")
 	run.Flags().StringVar(&options.model, "model", "", "executor model or configured alias for this task")
 	run.Flags().StringVar(&options.repository, "repo", ".", "Git repository path")
 	run.Flags().StringVar(&options.machinistConfigPath, "machinist-config", "", "shared Machinist configuration file")
@@ -376,69 +357,41 @@ func runSelection(ctx context.Context, options *commandOptions) error {
 	if err != nil {
 		return err
 	}
-	if options.pipelineName == "" {
-		agent, err := config.LoadAgent(definitionPath, options.agentName)
+	command, err := config.LoadCommand(definitionPath, options.commandName)
+	if err != nil {
+		return err
+	}
+	if err := validateDirectCommand(definitionPath, command); err != nil {
+		return err
+	}
+	return runConfiguredCommand(ctx, options, worker, command)
+}
+
+func validateDirectCommand(definitionPath string, command config.ResolvedCommand) error {
+	if command.Name == "shepherd" {
+		schedules, err := config.LoadShepherdSchedules(definitionPath)
 		if err != nil {
 			return err
 		}
-		if err := validateDirectAgents(definitionPath, []config.ResolvedAgent{agent}); err != nil {
-			return err
-		}
-		return runAgent(ctx, options, worker, agent)
-	}
-	agents, err := config.LoadPipeline(definitionPath, options.pipelineName)
-	if err != nil {
-		return err
-	}
-	if err := validateDirectAgents(definitionPath, agents); err != nil {
-		return err
-	}
-	if err := config.ValidateModelSelection(agents, options.model); err != nil {
-		return err
-	}
-	if options.model != "" {
-		for _, agent := range agents {
-			if _, err := worker.ResolveAgentModel(agent, options.model); err != nil {
-				return err
-			}
-		}
-	}
-	for index, agent := range agents {
-		fmt.Fprintf(options.stderr, "machinist: pipeline %s: agent %d/%d %s\n", options.pipelineName, index+1, len(agents), agent.Name)
-		if err := runAgent(ctx, options, worker, agent); err != nil {
-			return err
+		if len(schedules) > 0 {
+			return errors.New("scheduled Shepherd cannot run directly; submit managed work so the control plane can enforce per-repository overlap protection")
 		}
 	}
 	return nil
 }
 
-func validateDirectAgents(definitionPath string, agents []config.ResolvedAgent) error {
-	for _, agent := range agents {
-		if agent.Name == "shepherd" {
-			schedules, err := config.LoadShepherdSchedules(definitionPath)
-			if err != nil {
-				return err
-			}
-			if len(schedules) > 0 {
-				return errors.New("scheduled Shepherd cannot run directly; submit managed work so the control plane can enforce per-repository overlap protection")
-			}
-		}
-	}
-	return nil
-}
-
-func runAgent(ctx context.Context, options *commandOptions, worker config.Worker, agent config.ResolvedAgent) error {
+func runConfiguredCommand(ctx context.Context, options *commandOptions, worker config.Worker, configured config.ResolvedCommand) error {
 	var err error
-	agent, err = config.RenderPrompt(agent, options.prompt)
+	configured, err = config.RenderPrompt(configured, options.prompt)
 	if err != nil {
 		return err
 	}
-	agent, err = worker.ResolveAgentModel(agent, options.model)
+	configured, err = worker.ResolveCommandModel(configured, options.model)
 	if err != nil {
 		return err
 	}
 	result, err := runner.Execute(ctx, runner.Options{
-		Agent:         agent,
+		Command:       configured,
 		Repository:    options.repository,
 		DataDirectory: worker.DataDirectory,
 		Stdout:        options.stdout,

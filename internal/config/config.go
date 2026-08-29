@@ -64,13 +64,12 @@ type Server struct {
 }
 
 type Config struct {
-	Server    Server                      `toml:"server"`
-	Agents    map[string]Agent            `toml:"agents"`
-	Pipelines map[string]Pipeline         `toml:"pipelines"`
-	Shepherd  map[string]ShepherdSchedule `toml:"shepherd"`
-	GitHub    GitHub                      `toml:"github"`
-	Triggers  TriggerDefinitions          `toml:"triggers"`
-	path      string
+	Server   Server                      `toml:"server"`
+	Commands map[string]Command          `toml:"commands"`
+	Shepherd map[string]ShepherdSchedule `toml:"shepherd"`
+	GitHub   GitHub                      `toml:"github"`
+	Triggers TriggerDefinitions          `toml:"triggers"`
+	path     string
 }
 
 type GitHub struct {
@@ -84,9 +83,8 @@ type TriggerDefinitions struct {
 }
 
 type TriggerSelection struct {
-	Agent    string `toml:"agent"`
-	Pipeline string `toml:"pipeline"`
-	Model    string `toml:"model"`
+	Command string `toml:"command"`
+	Model   string `toml:"model"`
 }
 
 type GitHubTrigger struct {
@@ -121,23 +119,18 @@ type ResolvedTrigger struct {
 	Schedule           string
 	Timezone           string
 	Label              string
-	SelectionKind      string
 	SelectionName      string
 	Model              string
 	Prompt             string
-	Agents             []ResolvedAgent
+	Command            ResolvedCommand
 	Signature          string
 	cron               *triggers.Cron
 }
 
-type Agent struct {
+type Command struct {
 	Executor   string `toml:"executor"`
 	PromptFile string `toml:"prompt_file"`
 	Timeout    string `toml:"timeout"`
-}
-
-type Pipeline struct {
-	Agents []string `toml:"agents"`
 }
 
 type ShepherdSchedule struct {
@@ -152,10 +145,10 @@ type ResolvedShepherdSchedule struct {
 	Every      time.Duration
 	MaxActions int
 	Prompt     string
-	Agent      ResolvedAgent
+	Command    ResolvedCommand
 }
 
-type ResolvedAgent struct {
+type ResolvedCommand struct {
 	Name       string
 	Executor   string
 	Command    []string
@@ -232,6 +225,12 @@ func loadConfigFile(path string) (Config, error) {
 	if err := toml.Unmarshal(body, &raw); err != nil {
 		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
 	}
+	if _, ok := raw["pipelines"]; ok {
+		return Config{}, fmt.Errorf("parse Machinist config %q: pipelines were removed; replace each pipeline with a repository-owned orchestration script configured under [commands]", absPath)
+	}
+	if _, ok := raw["agents"]; ok {
+		return Config{}, fmt.Errorf("parse Machinist config %q: agents were renamed to commands; move [agents.NAME] definitions to [commands.NAME] and use --command", absPath)
+	}
 	if err := validateTriggerKeys(raw); err != nil {
 		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
 	}
@@ -267,31 +266,31 @@ func (w Worker) ResolveMachinistConfig(override string) (string, error) {
 	return filepath.Clean(absPath), nil
 }
 
-func (w Worker) ResolveAgent(agent ResolvedAgent) (ResolvedAgent, error) {
-	return w.ResolveAgentModel(agent, "")
+func (w Worker) ResolveCommand(command ResolvedCommand) (ResolvedCommand, error) {
+	return w.ResolveCommandModel(command, "")
 }
 
-func (w Worker) ResolveAgentModel(agent ResolvedAgent, requestedModel string) (ResolvedAgent, error) {
-	executor, ok := w.Executors[agent.Executor]
+func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel string) (ResolvedCommand, error) {
+	executor, ok := w.Executors[command.Executor]
 	if !ok {
-		return ResolvedAgent{}, fmt.Errorf("executor %q is not configured on this worker", agent.Executor)
+		return ResolvedCommand{}, fmt.Errorf("executor %q is not configured on this worker", command.Executor)
 	}
-	if err := validateCommand(agent.Executor, executor.Command); err != nil {
-		return ResolvedAgent{}, err
+	if err := validateCommand(command.Executor, executor.Command); err != nil {
+		return ResolvedCommand{}, err
 	}
-	model, err := resolveModel(agent.Executor, executor, requestedModel)
+	model, err := resolveModel(command.Executor, executor, requestedModel)
 	if err != nil {
-		return ResolvedAgent{}, err
+		return ResolvedCommand{}, err
 	}
-	agent.Command = make([]string, 0, len(executor.Command))
+	command.Command = make([]string, 0, len(executor.Command))
 	for _, argument := range executor.Command {
 		if model == "" && strings.Contains(argument, modelParameter) {
 			continue
 		}
-		agent.Command = append(agent.Command, strings.ReplaceAll(argument, modelParameter, model))
+		command.Command = append(command.Command, strings.ReplaceAll(argument, modelParameter, model))
 	}
-	agent.Model = model
-	return agent, nil
+	command.Model = model
+	return command, nil
 }
 
 func resolveModel(name string, executor Executor, requested string) (string, error) {
@@ -364,52 +363,19 @@ func (s Server) ConcurrentJobLimit() int {
 	return *s.MaxConcurrentJobs
 }
 
-func LoadAgent(definitionPath, name string) (ResolvedAgent, error) {
+func LoadCommand(definitionPath, name string) (ResolvedCommand, error) {
 	if strings.TrimSpace(name) == "" {
-		return ResolvedAgent{}, errors.New("agent name is required")
+		return ResolvedCommand{}, errors.New("command name is required")
 	}
 	definition, err := loadConfigFile(definitionPath)
 	if err != nil {
-		return ResolvedAgent{}, err
+		return ResolvedCommand{}, err
 	}
-	agent, ok := definition.Agents[name]
+	command, ok := definition.Commands[name]
 	if !ok {
-		return ResolvedAgent{}, fmt.Errorf("agent %q is not defined in %s", name, definitionPath)
+		return ResolvedCommand{}, fmt.Errorf("command %q is not defined in %s", name, definitionPath)
 	}
-	return resolveAgent(definitionPath, name, agent)
-}
-
-func LoadPipeline(definitionPath, name string) ([]ResolvedAgent, error) {
-	if strings.TrimSpace(name) == "" {
-		return nil, errors.New("pipeline name is required")
-	}
-	definition, err := loadConfigFile(definitionPath)
-	if err != nil {
-		return nil, err
-	}
-	pipeline, ok := definition.Pipelines[name]
-	if !ok {
-		return nil, fmt.Errorf("pipeline %q is not defined in %s", name, definitionPath)
-	}
-	if len(pipeline.Agents) == 0 {
-		return nil, fmt.Errorf("pipeline %q must define at least one agent", name)
-	}
-	agents := make([]ResolvedAgent, 0, len(pipeline.Agents))
-	for index, agentName := range pipeline.Agents {
-		if strings.TrimSpace(agentName) == "" {
-			return nil, fmt.Errorf("pipeline %q agent %d is empty", name, index+1)
-		}
-		agent, ok := definition.Agents[agentName]
-		if !ok {
-			return nil, fmt.Errorf("pipeline %q references undefined agent %q", name, agentName)
-		}
-		resolved, err := resolveAgent(definitionPath, agentName, agent)
-		if err != nil {
-			return nil, err
-		}
-		agents = append(agents, resolved)
-	}
-	return agents, nil
+	return resolveCommand(definitionPath, name, command)
 }
 
 func LoadDefinitions(path string) (Config, error) { return loadConfigFile(path) }
@@ -422,11 +388,11 @@ func LoadShepherdSchedules(path string) ([]ResolvedShepherdSchedule, error) {
 	if len(definition.Shepherd) == 0 {
 		return nil, nil
 	}
-	agent, ok := definition.Agents["shepherd"]
+	command, ok := definition.Commands["shepherd"]
 	if !ok {
-		return nil, errors.New("shepherd schedules require an agents.shepherd definition")
+		return nil, errors.New("shepherd schedules require a commands.shepherd definition")
 	}
-	resolvedAgent, err := resolveAgent(definition.path, "shepherd", agent)
+	resolvedCommand, err := resolveCommand(definition.path, "shepherd", command)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +419,7 @@ func LoadShepherdSchedules(path string) ([]ResolvedShepherdSchedule, error) {
 			return nil, fmt.Errorf("shepherd schedule %q max_actions must be positive", name)
 		}
 		prompt := fmt.Sprintf("Run the scheduled Shepherd queue for repository %q with max_actions=%d. Perform at most %d mutating actions in this run.", repository, schedule.MaxActions, schedule.MaxActions)
-		rendered, err := RenderPrompt(resolvedAgent, prompt)
+		rendered, err := RenderPrompt(resolvedCommand, prompt)
 		if err != nil {
 			return nil, fmt.Errorf("render shepherd schedule %q: %w", name, err)
 		}
@@ -463,96 +429,86 @@ func LoadShepherdSchedules(path string) ([]ResolvedShepherdSchedule, error) {
 			Every:      every,
 			MaxActions: schedule.MaxActions,
 			Prompt:     prompt,
-			Agent:      rendered,
+			Command:    rendered,
 		})
 	}
 	return result, nil
 }
 
-func resolveAgent(definitionPath, name string, agent Agent) (ResolvedAgent, error) {
-	if strings.TrimSpace(agent.Executor) == "" {
-		return ResolvedAgent{}, fmt.Errorf("agent %q must define executor", name)
+func resolveCommand(definitionPath, name string, command Command) (ResolvedCommand, error) {
+	if strings.TrimSpace(command.Executor) == "" {
+		return ResolvedCommand{}, fmt.Errorf("command %q must define executor", name)
 	}
-	if strings.TrimSpace(agent.PromptFile) == "" {
-		return ResolvedAgent{}, fmt.Errorf("agent %q must define prompt_file", name)
-	}
-	promptPath, err := expandHome(agent.PromptFile)
-	if err != nil {
-		return ResolvedAgent{}, fmt.Errorf("resolve agent %q prompt: %w", name, err)
-	}
-	if !filepath.IsAbs(promptPath) {
-		promptPath = filepath.Join(filepath.Dir(definitionPath), promptPath)
-	}
-	prompt, err := readBoundedFile(filepath.Clean(promptPath), maxPromptBytes)
-	if err != nil {
-		return ResolvedAgent{}, fmt.Errorf("read agent %q prompt %q: %w", name, promptPath, err)
-	}
-	if strings.TrimSpace(string(prompt)) == "" {
-		return ResolvedAgent{}, fmt.Errorf("agent %q prompt is empty", name)
-	}
-	if err := validatePromptParameters(name, string(prompt)); err != nil {
-		return ResolvedAgent{}, err
+	prompt := promptParameter
+	if strings.TrimSpace(command.PromptFile) != "" {
+		promptPath, err := expandHome(command.PromptFile)
+		if err != nil {
+			return ResolvedCommand{}, fmt.Errorf("resolve command %q prompt: %w", name, err)
+		}
+		if !filepath.IsAbs(promptPath) {
+			promptPath = filepath.Join(filepath.Dir(definitionPath), promptPath)
+		}
+		body, err := readBoundedFile(filepath.Clean(promptPath), maxPromptBytes)
+		if err != nil {
+			return ResolvedCommand{}, fmt.Errorf("read command %q prompt %q: %w", name, promptPath, err)
+		}
+		prompt = string(body)
+		if strings.TrimSpace(prompt) == "" {
+			return ResolvedCommand{}, fmt.Errorf("command %q prompt is empty", name)
+		}
+		if err := validatePromptParameters(name, prompt); err != nil {
+			return ResolvedCommand{}, err
+		}
 	}
 	timeout := defaultTimeout
-	if agent.Timeout != "" {
-		timeout, err = time.ParseDuration(agent.Timeout)
+	if command.Timeout != "" {
+		var err error
+		timeout, err = time.ParseDuration(command.Timeout)
 		if err != nil {
-			return ResolvedAgent{}, fmt.Errorf("agent %q timeout: %w", name, err)
+			return ResolvedCommand{}, fmt.Errorf("command %q timeout: %w", name, err)
 		}
 		if timeout <= 0 {
-			return ResolvedAgent{}, fmt.Errorf("agent %q timeout must be positive", name)
+			return ResolvedCommand{}, fmt.Errorf("command %q timeout must be positive", name)
 		}
 	}
 
-	resolved := ResolvedAgent{
+	resolved := ResolvedCommand{
 		Name:       name,
-		Executor:   agent.Executor,
-		Prompt:     string(prompt),
+		Executor:   command.Executor,
+		Prompt:     prompt,
 		Timeout:    timeout,
 		Definition: definitionPath,
 	}
-	resolved.Hash, err = agentHash(resolved)
+	var err error
+	resolved.Hash, err = commandHash(resolved)
 	if err != nil {
-		return ResolvedAgent{}, err
+		return ResolvedCommand{}, err
 	}
 	return resolved, nil
 }
 
-func RenderPrompt(agent ResolvedAgent, prompt string) (ResolvedAgent, error) {
+func RenderPrompt(command ResolvedCommand, prompt string) (ResolvedCommand, error) {
 	if strings.TrimSpace(prompt) == "" {
-		return ResolvedAgent{}, errors.New("prompt is required")
+		return ResolvedCommand{}, errors.New("prompt is required")
 	}
 	if len(prompt) > maxInputPromptBytes {
-		return ResolvedAgent{}, fmt.Errorf("prompt exceeds %d bytes", maxInputPromptBytes)
+		return ResolvedCommand{}, fmt.Errorf("prompt exceeds %d bytes", maxInputPromptBytes)
 	}
-	parameterCount := strings.Count(agent.Prompt, promptParameter)
+	parameterCount := strings.Count(command.Prompt, promptParameter)
 	if parameterCount == 0 {
-		return ResolvedAgent{}, fmt.Errorf("agent %q prompt must include %s", agent.Name, promptParameter)
+		return ResolvedCommand{}, fmt.Errorf("command %q prompt must include %s", command.Name, promptParameter)
 	}
-	literalBytes := len(agent.Prompt) - parameterCount*len(promptParameter)
+	literalBytes := len(command.Prompt) - parameterCount*len(promptParameter)
 	if literalBytes > maxRenderedPromptBytes || len(prompt) > (maxRenderedPromptBytes-literalBytes)/parameterCount {
-		return ResolvedAgent{}, fmt.Errorf("rendered agent prompt exceeds %d bytes", maxRenderedPromptBytes)
+		return ResolvedCommand{}, fmt.Errorf("rendered command prompt exceeds %d bytes", maxRenderedPromptBytes)
 	}
-	agent.Prompt = strings.ReplaceAll(agent.Prompt, promptParameter, prompt)
-	return agent, nil
+	command.Prompt = strings.ReplaceAll(command.Prompt, promptParameter, prompt)
+	return command, nil
 }
 
-func ValidateModelSelection(agents []ResolvedAgent, model string) error {
-	if strings.TrimSpace(model) == "" || len(agents) < 2 {
-		return nil
-	}
-	executor := agents[0].Executor
-	for _, agent := range agents[1:] {
-		if agent.Executor != executor {
-			return errors.New("model selection requires every pipeline agent to use the same executor")
-		}
-	}
-	return nil
-}
-
-func validatePromptParameters(agentName, prompt string) error {
+func validatePromptParameters(commandName, prompt string) error {
 	if strings.Contains(prompt, legacyFactoryPrefix) {
-		return fmt.Errorf("agent %q prompt uses the unsupported legacy Factory parameter namespace", agentName)
+		return fmt.Errorf("command %q prompt uses the unsupported legacy Factory parameter namespace", commandName)
 	}
 	hasPrompt := false
 	remaining := prompt
@@ -564,17 +520,17 @@ func validatePromptParameters(agentName, prompt string) error {
 		remaining = remaining[start:]
 		end := strings.Index(remaining, "}}")
 		if end < 0 {
-			return fmt.Errorf("agent %q prompt contains a malformed Machinist parameter", agentName)
+			return fmt.Errorf("command %q prompt contains a malformed Machinist parameter", commandName)
 		}
 		parameter := remaining[:end+2]
 		if parameter != promptParameter {
-			return fmt.Errorf("agent %q prompt uses unsupported Machinist parameter %q", agentName, parameter)
+			return fmt.Errorf("command %q prompt uses unsupported Machinist parameter %q", commandName, parameter)
 		}
 		hasPrompt = true
 		remaining = remaining[end+2:]
 	}
 	if !hasPrompt {
-		return fmt.Errorf("agent %q prompt must include %s", agentName, promptParameter)
+		return fmt.Errorf("command %q prompt must include %s", commandName, promptParameter)
 	}
 	return nil
 }
@@ -781,15 +737,15 @@ func readBoundedFile(path string, limit int64) ([]byte, error) {
 	return body, nil
 }
 
-func agentHash(agent ResolvedAgent) (string, error) {
+func commandHash(command ResolvedCommand) (string, error) {
 	payload, err := json.Marshal(struct {
 		Name     string        `json:"name"`
 		Executor string        `json:"executor"`
 		Prompt   string        `json:"prompt"`
 		Timeout  time.Duration `json:"timeout"`
-	}{agent.Name, agent.Executor, agent.Prompt, agent.Timeout})
+	}{command.Name, command.Executor, command.Prompt, command.Timeout})
 	if err != nil {
-		return "", fmt.Errorf("encode agent definition: %w", err)
+		return "", fmt.Errorf("encode command definition: %w", err)
 	}
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil

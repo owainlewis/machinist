@@ -4,19 +4,19 @@ database = "~/.machinist/server/machinist.db"
 worker_token_file = "~/.machinist/server/worker.token"
 # max_concurrent_jobs = 1
 
-[agents.foreman]
+[commands.foreman]
 executor = "codex"
-prompt_file = "agents/foreman.md"
+prompt_file = "prompts/foreman.md"
 timeout = "120m"
 
-[agents.audit]
+[commands.audit]
 executor = "codex"
-prompt_file = "agents/audit.md"
+prompt_file = "prompts/audit.md"
 timeout = "60m"
 
-[agents.shepherd]
+[commands.shepherd]
 executor = "codex"
-prompt_file = "agents/shepherd.md"
+prompt_file = "prompts/shepherd.md"
 timeout = "120m"
 
 # Opt in one configured repository by adding a schedule like this:

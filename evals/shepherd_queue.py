@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Sequence
 
-from evals.pipeline_labels import EvalFailure, checked, command, gh_json, validate
+from evals.github_labels import EvalFailure, checked, command, gh_json, validate
 
 
 LABEL = "machinist:auto-merge"
@@ -636,7 +636,7 @@ def run_shepherd(executable: str, options: argparse.Namespace, max_actions: int)
     arguments.extend(
         (
             "run",
-            "--agent=shepherd",
+            "--command=shepherd",
             f'--prompt=Run the scheduled Shepherd queue for repository "{options.repository}" '
             f"with max_actions={max_actions}. Perform at most {max_actions} mutating actions in this run.",
             f"--repo={options.repo_path}",

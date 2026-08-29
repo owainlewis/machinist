@@ -1,11 +1,11 @@
-"""Pure helper tests for the opt-in pipeline-label eval."""
+"""Pure helper tests for the opt-in GitHub-label eval."""
 
 import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from evals.pipeline_labels import (
+from evals.github_labels import (
     EvalFailure,
     assert_label_lifecycle,
     assert_run_result,
@@ -252,8 +252,8 @@ branch refs/heads/codex/eval-marker
 
 
 class CleanupTests(unittest.TestCase):
-    @patch("evals.pipeline_labels.remove_owned_branch")
-    @patch("evals.pipeline_labels.command")
+    @patch("evals.github_labels.remove_owned_branch")
+    @patch("evals.github_labels.command")
     def test_cleans_owned_branch_without_pull_request(
         self, mocked_command, mocked_remove
     ) -> None:
@@ -274,7 +274,7 @@ class CleanupTests(unittest.TestCase):
             "codex/machinist-eval-run-12",
         )
 
-    @patch("evals.pipeline_labels.command")
+    @patch("evals.github_labels.command")
     def test_refuses_preexisting_local_branch(self, mocked_command) -> None:
         mocked_command.return_value = subprocess.CompletedProcess([], 0, "", "")
 
@@ -283,7 +283,7 @@ class CleanupTests(unittest.TestCase):
                 Path("/code/machinist-evals"), "codex/machinist-eval-run-12"
             )
 
-    @patch("evals.pipeline_labels.command")
+    @patch("evals.github_labels.command")
     def test_accepts_absent_local_and_remote_branch(self, mocked_command) -> None:
         mocked_command.side_effect = (
             subprocess.CompletedProcess([], 1, "", ""),

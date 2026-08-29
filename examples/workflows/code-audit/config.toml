@@ -1,4 +1,4 @@
-[agents.code-audit]
+[commands.code-audit]
 executor = "codex"
-prompt_file = "agents/code-audit.md"
+prompt_file = "prompts/code-audit.md"
 timeout = "60m"
