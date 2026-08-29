@@ -225,7 +225,7 @@ function TaskDetail({ job, loaded, error, deleting, onDelete }) {
     <header className="space-y-4">
       <Button asChild variant="ghost" size="sm" className="-ml-3"><a href="#/runs"><ArrowLeft className="size-4" />Back to runs</a></Button>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h1 className="truncate text-xl font-semibold" title={jobDisplayTitle(job)}>{jobDisplayTitle(job)}</h1><State value={job.state} /></div><p className="mt-1 break-all font-mono text-xs text-muted-foreground">{githubIssueReference(job) || shortId(job.id)}{githubIssueReference(job) ? ` · ${shortId(job.id)}` : ""}</p></div>
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h1 className="truncate text-xl font-semibold" title={jobDisplayTitle(job)}>{jobDisplayTitle(job)}</h1><State value={job.state} /></div><p className="mt-1 break-all font-mono text-xs text-muted-foreground">{githubIssueReference(job) || shortId(job.id)}{githubIssueReference(job) ? ` · ${shortId(job.id)}` : ""}</p><p className="mt-1 break-all font-mono text-xs text-muted-foreground">{job.id}</p></div>
         <Button variant="outline" className="self-start border-danger/35 text-danger hover:bg-danger/10" disabled={!terminal || deleting} onClick={() => onDelete(job)} title={terminal ? "Delete this task and its stored run data" : "Active tasks cannot be deleted"}><Trash2 className="size-4" />{deleting ? "Deleting…" : "Delete task"}</Button>
       </div>
       {error && <div role="alert" className="rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>}
@@ -301,7 +301,7 @@ function RunCard({ job }) {
   const title = jobDisplayTitle(job);
   const reference = githubIssueReference(job);
   return <Card className={cn("min-w-0 overflow-hidden", attention && "border-danger/40 bg-danger/5")}>
-    <a href={`#/runs/${encodeURIComponent(job.id)}`} className="block min-w-0 p-3 transition hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50" aria-label={`Open task ${title}`}>
+    <a href={`#/runs/${encodeURIComponent(job.id)}`} className="block min-w-0 p-3 transition hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50" aria-label={`Open task ${title}, ${reference || shortId(job.id)}`}>
       <div className="flex min-w-0 items-start justify-between gap-2"><p className="line-clamp-2 text-sm font-medium leading-5" title={title}>{title}</p><State value={job.state} /></div>
       <p className="mt-1 truncate font-mono text-xs text-muted-foreground" title={job.id}>{reference ? `${reference} · ` : ""}{shortId(job.id)}</p>
       <div className="mt-2 flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span className="truncate font-mono">{job.repository}</span><span>·</span><SelectionIcon kind={job.selection_kind} /><span className="truncate">{job.selection_name}</span></div>
@@ -317,7 +317,7 @@ function RunRow({ job }) {
   const title = jobDisplayTitle(job);
   const reference = githubIssueReference(job);
   return <article className="border-b border-border last:border-b-0">
-    <a href={`#/runs/${encodeURIComponent(job.id)}`} className="grid w-full gap-3 px-4 py-3.5 text-left transition hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 xl:grid-cols-[6.5rem_minmax(9rem,1.1fr)_minmax(8rem,0.9fr)_minmax(8rem,1fr)_minmax(8rem,1fr)_7rem_9rem] xl:items-center xl:gap-4" aria-label={`Open task ${title}`}>
+    <a href={`#/runs/${encodeURIComponent(job.id)}`} className="grid w-full gap-3 px-4 py-3.5 text-left transition hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 xl:grid-cols-[6.5rem_minmax(9rem,1.1fr)_minmax(8rem,0.9fr)_minmax(8rem,1fr)_minmax(8rem,1fr)_7rem_9rem] xl:items-center xl:gap-4" aria-label={`Open task ${title}, ${reference || shortId(job.id)}`}>
       <div className="flex items-center justify-between xl:block"><State value={job.state} /><span className="text-xs text-muted-foreground xl:hidden">{relativeTime(job.created_at)}</span></div>
       <div className="min-w-0"><p className="truncate text-sm font-medium" title={title}>{title}</p><p className="mt-1 truncate font-mono text-xs text-muted-foreground">{reference ? `${reference} · ` : ""}{shortId(job.id)}</p><p className="mt-1 break-all text-xs text-muted-foreground xl:truncate">{job.repository}</p></div>
       <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><SelectionIcon kind={job.selection_kind} /><span className="min-w-0 flex-1 truncate text-foreground">{job.selection_name}</span><span className="shrink-0 capitalize">{job.selection_kind}</span></div>
