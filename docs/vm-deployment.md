@@ -46,10 +46,11 @@ curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/scripts/s
 
 The script installs Git, GitHub CLI, Codex, Claude Code, and the latest stable
 Machinist release. It initializes `~/.machinist` without overwriting existing
-configuration, then installs and starts systemd services for the control plane
-and worker. Re-running the bootstrap updates the installed files and restarts
-both services. Review remote scripts before executing them when the repository
-or network is outside your trust boundary.
+configuration, then installs and enables systemd services for the control plane
+and worker. It starts the control plane immediately and starts the worker when a
+repository is already configured. Re-running the bootstrap updates the installed
+files and restarts the applicable services. Review remote scripts before
+executing them when the repository or network is outside your trust boundary.
 
 Verify the tools:
 
@@ -190,6 +191,12 @@ path = "~/Code/github/owainlewis/machinist"
 Add one entry for every repository and use a distinct logical name inside the
 brackets.
 
+Start the enabled worker now that it has a repository:
+
+```sh
+systemctl start machinist-worker.service
+```
+
 ## 8. Run Machinist as a service
 
 The bootstrap installs and enables these services:
@@ -199,7 +206,9 @@ systemctl status machinist-control-plane.service
 systemctl status machinist-worker.service
 ```
 
-They start automatically after a reboot. The control plane remains bound to
+The control plane starts during bootstrap. The worker is enabled for future
+boots, but a fresh bootstrap leaves it stopped until you register a repository
+and start it in the previous step. The control plane remains bound to
 `127.0.0.1:7331`, and the worker connects to it locally.
 
 Follow their logs:

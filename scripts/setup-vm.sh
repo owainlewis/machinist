@@ -54,7 +54,11 @@ install -m 0644 "$service_tmp_dir/machinist-worker.service" \
 systemctl daemon-reload
 systemctl enable machinist-control-plane.service machinist-worker.service
 systemctl restart machinist-control-plane.service
-systemctl restart machinist-worker.service
+if grep -Eq '^[[:space:]]*\[repositories\.[^]]+\]' /root/.machinist/worker.toml; then
+  systemctl restart machinist-worker.service
+else
+  systemctl stop machinist-worker.service
+fi
 
 cat <<'EOF'
 
@@ -66,7 +70,8 @@ Next steps:
   3. Run `claude` once and sign in.
   4. Clone each repository agents may use and register its absolute path in
      ~/.machinist/worker.toml.
-  5. Check `systemctl status machinist-control-plane machinist-worker`.
+  5. Run `systemctl start machinist-worker` after registering a repository.
+  6. Check `systemctl status machinist-control-plane machinist-worker`.
 
 Keep the control plane on 127.0.0.1. Reach it from your computer with:
   ssh -N -L 7331:127.0.0.1:7331 machinist
