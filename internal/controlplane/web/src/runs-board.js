@@ -46,6 +46,16 @@ export function currentRun(job) {
   return [...job.runs].reverse().find((run) => run.state !== "pending" && run.state !== "skipped") || job.runs[0];
 }
 
+export function jobDisplayTitle(job) {
+  const title = typeof job.github_issue_title === "string" ? job.github_issue_title.trim() : "";
+  return title || job.prompt || job.id;
+}
+
+export function githubIssueReference(job) {
+  const match = typeof job.trigger_subject === "string" ? job.trigger_subject.match(/\/issues\/(\d+)\/?$/) : null;
+  return match ? `#${match[1]}` : "";
+}
+
 export function stepProgress(runs) {
   const completeStates = new Set(["succeeded", "failed", "timed_out", "cancelled", "skipped"]);
   return { completed: runs.filter((run) => completeStates.has(run.state)).length, total: runs.length };

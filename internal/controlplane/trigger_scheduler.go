@@ -221,7 +221,7 @@ func (s *Server) processGitHubDetails(ctx context.Context, trigger config.Resolv
 		Subject: issueURL, ScheduledAt: details.RequestedEvent.CreatedAt,
 		Prompt: prompt, Repository: logicalRepository,
 		SelectionKind: trigger.SelectionKind, SelectionName: trigger.SelectionName, Agents: agents,
-		GitHubRepository: details.Repository, GitHubIssueNumber: details.Number, RequestActor: details.RequestedEvent.Actor, RequestLabel: requestLabel,
+		GitHubRepository: details.Repository, GitHubIssueNumber: details.Number, GitHubIssueTitle: details.Title, RequestActor: details.RequestedEvent.Actor, RequestLabel: requestLabel,
 	})
 	if err != nil {
 		return err

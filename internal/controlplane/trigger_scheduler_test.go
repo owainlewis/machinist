@@ -132,7 +132,7 @@ func TestManagedGitHubTriggerCommitsBeforeLabelsAndRepairsWithoutDuplicate(t *te
 	event := &GitHubLabelEvent{ID: "123", Actor: "owner", CreatedAt: clock, OccurrenceKey: "github.com:123"}
 	client := &fakeGitHubTriggerClient{
 		candidates: []GitHubCandidate{{Repository: "owainlewis/machinist", Number: 396, URL: "https://github.com/owainlewis/machinist/issues/396", State: "open", CreatedAt: clock}},
-		details:    GitHubIssueDetails{GitHubCandidate: GitHubCandidate{Repository: "owainlewis/machinist", Number: 396, URL: "https://github.com/owainlewis/machinist/issues/396", State: "open", CreatedAt: clock}, Labels: []string{"machinist:requested"}, RequestedEvent: event},
+		details:    GitHubIssueDetails{GitHubCandidate: GitHubCandidate{Repository: "owainlewis/machinist", Number: 396, Title: "Make cards readable", URL: "https://github.com/owainlewis/machinist/issues/396", State: "open", CreatedAt: clock}, Labels: []string{"machinist:requested"}, RequestedEvent: event},
 		permission: "write", replaceErr: errors.New("label update failed"),
 	}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
@@ -144,7 +144,7 @@ func TestManagedGitHubTriggerCommitsBeforeLabelsAndRepairsWithoutDuplicate(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].OccurrenceKey != "github.com:123" || snapshot.Triggers[0].Health != "failed" {
+	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].OccurrenceKey != "github.com:123" || snapshot.Jobs[0].GitHubIssueTitle != "Make cards readable" || snapshot.Triggers[0].Health != "failed" {
 		t.Fatalf("snapshot after partial label update = %#v", snapshot)
 	}
 

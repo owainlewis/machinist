@@ -105,7 +105,7 @@ func TestGitHubCLISearchDeduplicatesCandidatesAcrossBatches(t *testing.T) {
 
 func TestGitHubCLIIssueDetailsReadsLatestLabelEventActor(t *testing.T) {
 	cli, runner := newScriptedGitHubCLI(
-		scriptedGitHubResult{stdout: `{"number":7,"html_url":"https://github.com/o/r/issues/7","state":"open","created_at":"2026-01-01T00:00:00Z","labels":[{"name":"machinist:requested"},{"name":"bug"}]}`},
+		scriptedGitHubResult{stdout: `{"number":7,"title":"Make cards readable","html_url":"https://github.com/o/r/issues/7","state":"open","created_at":"2026-01-01T00:00:00Z","labels":[{"name":"machinist:requested"},{"name":"bug"}]}`},
 		scriptedGitHubResult{stdout: `[[
   {"id":41,"event":"labeled","created_at":"2026-01-02T00:00:00Z","actor":{"login":"first"},"label":{"name":"machinist:requested"}},
   {"id":42,"event":"unlabeled","created_at":"2026-01-03T00:00:00Z","actor":{"login":"first"},"label":{"name":"machinist:requested"}}
@@ -120,6 +120,9 @@ func TestGitHubCLIIssueDetailsReadsLatestLabelEventActor(t *testing.T) {
 	}
 	if details.RequestedEvent == nil {
 		t.Fatal("missing requested event")
+	}
+	if details.Title != "Make cards readable" {
+		t.Fatalf("issue title = %q", details.Title)
 	}
 	if details.RequestedEvent.ID != "9007199254740993" || details.RequestedEvent.Actor != "maintainer" || details.RequestedEvent.OccurrenceKey != "github.com:9007199254740993" {
 		t.Fatalf("unexpected event: %+v", details.RequestedEvent)

@@ -20,7 +20,7 @@ repositories, and order of work.
 [![MIT licensed](https://img.shields.io/badge/license-MIT-7c3aed)](LICENSE)
 
 [Getting started](docs/getting-started.md) · [How it works](docs/how-it-works.md) ·
-[Architecture](ARCHITECTURE.md)
+[Architecture](ARCHITECTURE.md) · [VM deployment](docs/vm-deployment.md)
 
 </div>
 
@@ -83,7 +83,16 @@ Build Machinist and create the default config:
 ```sh
 mkdir -p ./bin
 go build -o ./bin/machinist ./cmd/machinist
-./bin/machinist init
+export PATH="$PWD/bin:$PATH"
+machinist init
+```
+
+Or install the latest published binary:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+machinist init
 ```
 
 `machinist init` writes editable agent and worker settings to `~/.machinist`.
@@ -92,7 +101,7 @@ It does not overwrite existing files.
 Run the foreman against a small, well-defined issue:
 
 ```sh
-./bin/machinist run \
+machinist run \
   --agent=foreman \
   --repo=/absolute/path/to/your-repository \
   --prompt="Complete https://github.com/your-org/your-repo/issues/123"
@@ -164,18 +173,18 @@ path = "/absolute/path/to/my-project"
 Start the server and worker in separate terminals:
 
 ```sh
-./bin/machinist start
+machinist start
 ```
 
 ```sh
-./bin/machinist worker start
+machinist worker start
 ```
 
 Open [http://127.0.0.1:7331](http://127.0.0.1:7331) to submit work, or use the
 CLI:
 
 ```sh
-./bin/machinist submit \
+machinist submit \
   --agent=foreman \
   --prompt="Complete https://github.com/your-org/your-repo/issues/123" \
   --repo=my-project
@@ -187,7 +196,7 @@ The read-only `audit` agent looks for bugs and opens an issue only when it can
 show evidence:
 
 ```sh
-./bin/machinist run \
+machinist run \
   --agent=audit \
   --repo=/absolute/path/to/your-repository \
   --prompt="Audit the request handling and persistence code"
@@ -213,6 +222,7 @@ lifecycle labels, resume work, and hand a verified pull request to a person.
 - [Local control plane](docs/control-plane.md)
 - [Architecture](ARCHITECTURE.md)
 - [Development](docs/development.md)
+- [VM deployment](docs/vm-deployment.md)
 - [Migration from Factory](docs/migration-from-factory.md)
 
 ## Project status
