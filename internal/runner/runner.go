@@ -146,7 +146,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		return completeFailure(&result, log, runDirectory, fmt.Errorf("reset executor token usage report: %w", err))
 	}
 
-	executorCommand := structuredCodexCommand(options.Agent.Executor, options.Agent.Command)
+	executorCommand := structuredAgentCommand(options.Agent.Executor, options.Agent.Command)
 	command := exec.Command(executorCommand[0], executorCommand[1:]...)
 	command.Dir = repository
 	command.Env = append(sanitizedEnvironment(os.Environ()), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
@@ -193,6 +193,9 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	var streams sync.WaitGroup
 	streams.Add(2)
 	usageCollector := newCodexUsageCollector(options.Agent.Executor, executorCommand)
+	if usageCollector == nil {
+		usageCollector = newClaudeUsageCollector(options.Agent.Executor, executorCommand)
+	}
 	stdoutDestination := options.Stdout
 	if usageCollector != nil {
 		stdoutDestination = io.MultiWriter(options.Stdout, usageCollector)
@@ -214,10 +217,11 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	closeStreams := func() { closeFiles(stdoutReader, stderrReader) }
 	state, exitCode, outcome := supervise(ctx, command.Process, options.Agent.Timeout, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr)
 	var collectedTokenUsage *int64
+	collectedTokenUsageIsAuthoritative := usageCollector != nil
 	if usageCollector != nil {
 		collectedTokenUsage = usageCollector.tokenUsage()
 	}
-	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage, usageCollector != nil); err != nil {
+	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage, collectedTokenUsageIsAuthoritative); err != nil {
 		if outcome != nil {
 			return result, &OutcomeError{State: state, ExitCode: exitCode, Cause: errors.Join(outcome, err)}
 		}

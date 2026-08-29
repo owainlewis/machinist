@@ -102,9 +102,10 @@ overwritten by a redispatched one:
 `events.jsonl` stores ordered, byte-faithful stdout and stderr chunks encoded as
 base64. `result.json` stores the terminal state, exit code, duration, and exact
 token usage. The shipped Codex executor reports structured usage in its JSONL
-stream. Other executors can use `MACHINIST_TOKEN_USAGE_PATH`. Machinist records
-input plus output tokens, does not add cached input again, and does not estimate
-missing token usage.
+stream, and the shipped Claude Code executor reports the terminal `result` from
+its `stream-json` output. Claude totals input, cache creation input, cache read
+input, and output tokens once each. Other executors can use
+`MACHINIST_TOKEN_USAGE_PATH`. Machinist does not estimate missing token usage.
 
 Recording stops after 64 MiB of process output or when the encoded event file
 reaches 32 MiB. Machinist adds a truncation event, but the live agent process keeps
