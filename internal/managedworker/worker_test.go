@@ -220,6 +220,54 @@ func TestManagedWorkerRequiresHTTPSForRemoteControlPlane(t *testing.T) {
 	}
 }
 
+func TestManagedWorkerRejectsControlPlaneURLComponents(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, endpoint := range map[string]string{
+		"path":     "http://127.0.0.1:7331/control-plane",
+		"query":    "http://127.0.0.1:7331?debug=true",
+		"fragment": "http://127.0.0.1:7331#fragment",
+		"userinfo": "http://user@127.0.0.1:7331",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := New(config.Worker{
+				Name:         "worker",
+				ControlPlane: config.ControlPlane{URL: endpoint, TokenFile: tokenPath},
+				Executors:    map[string]config.Executor{"test": {Command: []string{"agent"}}},
+				Repositories: map[string]config.Repository{"machinist": {Path: "."}},
+			}, io.Discard, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), "must not include a path, query, fragment, or userinfo") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestManagedWorkerAcceptsRootControlPlaneURL(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, endpoint := range map[string]string{
+		"without slash": "http://127.0.0.1:7331",
+		"with slash":    "http://127.0.0.1:7331/",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := New(config.Worker{
+				Name:         "worker",
+				ControlPlane: config.ControlPlane{URL: endpoint, TokenFile: tokenPath},
+				Executors:    map[string]config.Executor{"test": {Command: []string{"agent"}}},
+				Repositories: map[string]config.Repository{"machinist": {Path: "."}},
+			}, io.Discard, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestCompletionDoesNotRetryPermanentClientError(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {

@@ -58,6 +58,9 @@ func New(workerConfig config.Worker, stdout, stderr io.Writer) (*Worker, error) 
 	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
 		return nil, errors.New("control_plane.url must use http or https")
 	}
+	if (endpoint.Path != "" && endpoint.Path != "/") || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.User != nil || endpoint.Fragment != "" || strings.Contains(workerConfig.ControlPlane.URL, "#") {
+		return nil, errors.New("control_plane.url must not include a path, query, fragment, or userinfo")
+	}
 	if endpoint.Scheme == "http" && !loopbackHost(endpoint.Hostname()) {
 		return nil, errors.New("control_plane.url must use https for a non-loopback host")
 	}
