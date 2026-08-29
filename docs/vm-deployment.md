@@ -73,7 +73,7 @@ Register each checkout in `~/.machinist/worker.toml`:
 
 ```toml
 [repositories.machinist]
-path = "/root/Code/github/owainlewis/machinist"
+path = "~/Code/github/owainlewis/machinist"
 ```
 
 ## Run and connect
