@@ -55,9 +55,9 @@ fi
 # Codex and Claude Code use per-user credentials, so install their standalone
 # distributions as the account that will run Machinist.
 runuser -u "$runtime_user" -- env HOME="$runtime_home" \
-  bash -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh'
+  bash -c 'cd "$HOME"; curl -fsSL https://chatgpt.com/codex/install.sh | sh'
 runuser -u "$runtime_user" -- env HOME="$runtime_home" \
-  bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+  bash -c 'cd "$HOME"; curl -fsSL https://claude.ai/install.sh | bash'
 curl -fsSL "https://raw.githubusercontent.com/owainlewis/machinist/$machinist_version/install.sh" | \
   env MACHINIST_VERSION="$machinist_version" sh
 
@@ -72,7 +72,8 @@ for agent_command in codex claude; do
   ln -sfn "$agent_path" "/usr/local/bin/$agent_command"
 done
 
-runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist init
+runuser -u "$runtime_user" -- env HOME="$runtime_home" \
+  bash -c 'cd "$HOME"; exec machinist init'
 
 worker_was_enabled=false
 worker_was_active=false
@@ -97,8 +98,10 @@ install -m 0644 "$service_tmp_dir/machinist-worker.service" \
 systemctl daemon-reload
 systemctl enable machinist-control-plane.service
 systemctl restart machinist-control-plane.service
-if runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist worker validate --help >/dev/null 2>&1; then
-  if runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist worker validate >/dev/null 2>&1; then
+if runuser -u "$runtime_user" -- env HOME="$runtime_home" \
+  bash -c 'cd "$HOME"; exec machinist worker validate --help' >/dev/null 2>&1; then
+  if runuser -u "$runtime_user" -- env HOME="$runtime_home" \
+    bash -c 'cd "$HOME"; exec machinist worker validate' >/dev/null 2>&1; then
     systemctl enable machinist-worker.service
     systemctl restart machinist-worker.service
   else
