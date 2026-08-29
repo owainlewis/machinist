@@ -192,7 +192,7 @@ path = "~/Code/github/owainlewis/machinist"
 Add one entry for every repository and use a distinct logical name inside the
 brackets.
 
-Start the enabled worker now that it has a repository:
+Enable and start the worker now that it has a repository:
 
 ```sh
 systemctl enable --now machinist-worker.service
@@ -200,7 +200,8 @@ systemctl enable --now machinist-worker.service
 
 ## 8. Run Machinist as a service
 
-The bootstrap installs and enables these services:
+The bootstrap installs both services and enables the control plane. It enables
+the worker after a repository is configured:
 
 ```sh
 systemctl status machinist-control-plane.service
