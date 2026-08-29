@@ -47,8 +47,9 @@ curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/scripts/s
 The script installs Git, GitHub CLI, Codex, Claude Code, and the latest stable
 Machinist release. It initializes `~/.machinist` without overwriting existing
 configuration, then installs and starts systemd services for the control plane
-and worker. Review remote scripts before executing them when the repository or
-network is outside your trust boundary.
+and worker. Re-running the bootstrap updates the installed files and restarts
+both services. Review remote scripts before executing them when the repository
+or network is outside your trust boundary.
 
 Verify the tools:
 

@@ -41,15 +41,20 @@ done
 machinist init
 
 service_base_url=https://raw.githubusercontent.com/owainlewis/machinist/main/deploy/systemd
+service_tmp_dir=$(mktemp -d)
+trap 'rm -rf "$service_tmp_dir"' EXIT
 curl -fsSL "$service_base_url/machinist-control-plane.service" \
-  -o /etc/systemd/system/machinist-control-plane.service
+  -o "$service_tmp_dir/machinist-control-plane.service"
 curl -fsSL "$service_base_url/machinist-worker.service" \
-  -o /etc/systemd/system/machinist-worker.service
-chmod 0644 \
-  /etc/systemd/system/machinist-control-plane.service \
+  -o "$service_tmp_dir/machinist-worker.service"
+install -m 0644 "$service_tmp_dir/machinist-control-plane.service" \
+  /etc/systemd/system/machinist-control-plane.service
+install -m 0644 "$service_tmp_dir/machinist-worker.service" \
   /etc/systemd/system/machinist-worker.service
 systemctl daemon-reload
-systemctl enable --now machinist-control-plane.service machinist-worker.service
+systemctl enable machinist-control-plane.service machinist-worker.service
+systemctl restart machinist-control-plane.service
+systemctl restart machinist-worker.service
 
 cat <<'EOF'
 
