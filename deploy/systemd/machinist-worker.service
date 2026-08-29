@@ -3,6 +3,8 @@ Description=Machinist managed worker
 After=network-online.target machinist-control-plane.service
 Wants=network-online.target
 Requires=machinist-control-plane.service
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
