@@ -52,12 +52,13 @@ install -m 0644 "$service_tmp_dir/machinist-control-plane.service" \
 install -m 0644 "$service_tmp_dir/machinist-worker.service" \
   /etc/systemd/system/machinist-worker.service
 systemctl daemon-reload
-systemctl enable machinist-control-plane.service machinist-worker.service
+systemctl enable machinist-control-plane.service
 systemctl restart machinist-control-plane.service
 if grep -Eq '^[[:space:]]*\[repositories\.[^]]+\]' /root/.machinist/worker.toml; then
+  systemctl enable machinist-worker.service
   systemctl restart machinist-worker.service
 else
-  systemctl stop machinist-worker.service
+  systemctl disable --now machinist-worker.service
 fi
 
 cat <<'EOF'
@@ -70,7 +71,7 @@ Next steps:
   3. Run `claude` once and sign in.
   4. Clone each repository agents may use and register its absolute path in
      ~/.machinist/worker.toml.
-  5. Run `systemctl start machinist-worker` after registering a repository.
+  5. Run `systemctl enable --now machinist-worker` after registering a repository.
   6. Check `systemctl status machinist-control-plane machinist-worker`.
 
 Keep the control plane on 127.0.0.1. Reach it from your computer with:
