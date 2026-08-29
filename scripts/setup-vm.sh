@@ -72,7 +72,11 @@ if machinist worker validate --help >/dev/null 2>&1; then
   fi
 else
   if [[ $worker_was_active == true ]]; then
-    systemctl enable machinist-worker.service
+    if [[ $worker_was_enabled == true ]]; then
+      systemctl enable machinist-worker.service
+    else
+      systemctl disable machinist-worker.service
+    fi
     systemctl restart machinist-worker.service
     echo "installed Machinist release does not support worker validation; restored the previously active worker" >&2
   else
