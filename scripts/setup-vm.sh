@@ -54,11 +54,15 @@ install -m 0644 "$service_tmp_dir/machinist-worker.service" \
 systemctl daemon-reload
 systemctl enable machinist-control-plane.service
 systemctl restart machinist-control-plane.service
-if machinist worker validate >/dev/null 2>&1; then
-  systemctl enable machinist-worker.service
-  systemctl restart machinist-worker.service
+if machinist worker validate --help >/dev/null 2>&1; then
+  if machinist worker validate >/dev/null 2>&1; then
+    systemctl enable machinist-worker.service
+    systemctl restart machinist-worker.service
+  else
+    systemctl disable --now machinist-worker.service
+  fi
 else
-  systemctl disable --now machinist-worker.service
+  echo "installed Machinist release does not support worker validation; leaving the worker service unchanged" >&2
 fi
 
 cat <<'EOF'
