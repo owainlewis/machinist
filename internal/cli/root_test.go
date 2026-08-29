@@ -783,6 +783,111 @@ func TestValidateRejectsInvalidUnusedCommand(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsTriggerModelUnsupportedByWorkerExecutor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+	addCLIWorkerRepository(t, home)
+	configPath := filepath.Join(home, ".machinist", "config.toml")
+	file, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`
+[github.repositories]
+example = "owner/example"
+
+[triggers.interval.unsupported-model]
+every = "1h"
+repository = "example"
+command = "audit"
+model = "missing"
+prompt = "Audit the repository."
+`); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	if exitCode != 2 || !strings.Contains(stderr.String(), `trigger "interval/unsupported-model"`) || !strings.Contains(stderr.String(), `model "missing" is not configured for executor "codex"`) {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestValidateRejectsManagedWorkloadRepositoryMissingFromWorker(t *testing.T) {
+	for name, definition := range map[string]string{
+		"shepherd schedule": `
+[shepherd.unconfigured]
+repository = "unconfigured"
+every = "1h"
+max_actions = 1
+`,
+		"interval trigger": `
+[github.repositories]
+unconfigured = "owner/repository"
+
+[triggers.interval.unconfigured]
+every = "1h"
+repository = "unconfigured"
+command = "audit"
+prompt = "Audit the repository."
+`,
+		"cron trigger": `
+[github.repositories]
+unconfigured = "owner/repository"
+
+[triggers.cron.unconfigured]
+schedule = "0 * * * *"
+timezone = "UTC"
+repository = "unconfigured"
+command = "audit"
+prompt = "Audit the repository."
+`,
+		"github trigger": `
+[github.repositories]
+unconfigured = "owner/repository"
+
+[triggers.github.unconfigured]
+every = "1h"
+label = "machinist:requested"
+command = "audit"
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+				t.Fatalf("init exit code = %d", exitCode)
+			}
+			addCLIWorkerRepository(t, home)
+			configPath := filepath.Join(home, ".machinist", "config.toml")
+			file, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.WriteString(definition); err != nil {
+				_ = file.Close()
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			var stderr bytes.Buffer
+			exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+			if exitCode != 2 || !strings.Contains(stderr.String(), `repository "unconfigured" is not configured on this worker`) {
+				t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+			}
+		})
+	}
+}
+
 func TestValidateRejectsInvalidControlPlaneConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

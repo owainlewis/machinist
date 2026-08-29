@@ -113,10 +113,12 @@ func newValidateCommand(options *commandOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := config.LoadShepherdSchedules(machinistConfig.Path()); err != nil {
+			schedules, err := config.LoadShepherdSchedules(machinistConfig.Path())
+			if err != nil {
 				return err
 			}
-			if _, err := config.LoadTriggers(machinistConfig.Path()); err != nil {
+			triggers, err := config.LoadTriggers(machinistConfig.Path())
+			if err != nil {
 				return err
 			}
 			if workerConfigPath == "" {
@@ -133,6 +135,9 @@ func newValidateCommand(options *commandOptions) *cobra.Command {
 				return err
 			}
 			if err := validateConfiguredCommands(machinistConfig.Path(), workerConfig); err != nil {
+				return err
+			}
+			if err := validateManagedWorkloads(schedules, triggers, workerConfig); err != nil {
 				return err
 			}
 			workerToken, err := workerConfig.WorkerToken()
@@ -170,6 +175,40 @@ func validateConfiguredCommands(definitionPath string, worker config.Worker) err
 		}
 	}
 	return nil
+}
+
+func validateManagedWorkloads(schedules []config.ResolvedShepherdSchedule, triggers []config.ResolvedTrigger, worker config.Worker) error {
+	for _, schedule := range schedules {
+		if _, ok := worker.Repositories[schedule.Repository]; !ok {
+			return fmt.Errorf("shepherd schedule %q repository %q is not configured on this worker", schedule.Name, schedule.Repository)
+		}
+	}
+	for _, trigger := range triggers {
+		if _, err := worker.ResolveCommandModel(trigger.Command, trigger.Model); err != nil {
+			return fmt.Errorf("trigger %q: %w", trigger.Identity, err)
+		}
+		if trigger.Family == "github" {
+			for _, repository := range sortedKeys(trigger.GitHubRepositories) {
+				if _, ok := worker.Repositories[repository]; !ok {
+					return fmt.Errorf("trigger %q repository %q is not configured on this worker", trigger.Identity, repository)
+				}
+			}
+			continue
+		}
+		if _, ok := worker.Repositories[trigger.Repository]; !ok {
+			return fmt.Errorf("trigger %q repository %q is not configured on this worker", trigger.Identity, trigger.Repository)
+		}
+	}
+	return nil
+}
+
+func sortedKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // validateWorkerControlPlane verifies that the managed worker can reach the
