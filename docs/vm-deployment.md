@@ -98,7 +98,14 @@ ssh -N -L 7331:127.0.0.1:7331 machinist
 Then open <http://127.0.0.1:7331>. Do not expose port 7331 directly or place the
 current unauthenticated UI behind a public reverse proxy.
 
-For a long-running deployment, run the control plane and worker under a service
-manager after authentication and repository configuration are complete. Both
-processes must run as the same non-root account that owns the agent credentials,
-Machinist configuration, and repository checkouts.
+The bootstrap command above runs as root and configures root as the Machinist
+runtime account. Treat that VM as a dedicated, privileged coding worker. For a
+long-running deployment, run both processes under a service manager as the same
+account that owns the agent credentials, Machinist configuration, and repository
+checkouts.
+
+To use a non-root runtime account instead, create that account first, run the
+Codex, Claude Code, and Machinist installers plus `machinist init` while logged in
+as that account, and keep its repositories and credentials under its home
+directory. Do not mix configuration or credentials between root and a service
+account.
