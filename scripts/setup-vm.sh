@@ -27,6 +27,17 @@ curl -fsSL https://chatgpt.com/codex/install.sh | sh
 curl -fsSL https://claude.ai/install.sh | bash
 curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/install.sh | sh
 
+# Standalone agent installers use ~/.local/bin. Login shells commonly add that
+# directory to PATH, but services and other non-interactive processes do not.
+for agent_command in codex claude; do
+  agent_path="$HOME/.local/bin/$agent_command"
+  if [[ ! -x "$agent_path" ]]; then
+    echo "$agent_command installer did not create $agent_path" >&2
+    exit 1
+  fi
+  ln -sfn "$agent_path" "/usr/local/bin/$agent_command"
+done
+
 machinist init
 
 cat <<'EOF'

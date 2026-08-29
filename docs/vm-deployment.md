@@ -15,8 +15,10 @@ curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/scripts/s
 
 The script installs Git, GitHub CLI, Codex, Claude Code, and the latest published
 Machinist release. It then creates the default configuration under
-`~/.machinist`. Review remote scripts before piping them into a shell when the
-repository or network is outside your trust boundary.
+`~/.machinist`. Codex and Claude Code remain installed under `~/.local/bin`; the
+root bootstrap links their launchers into `/usr/local/bin` so non-interactive
+workers and services can find them. Review remote scripts before piping them
+into a shell when the repository or network is outside your trust boundary.
 
 Authenticate each tool interactively on the VM:
 
