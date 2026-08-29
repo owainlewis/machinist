@@ -4,8 +4,9 @@ This guide sets up a dedicated Ubuntu or Debian VM that runs Machinist with
 Codex and Claude Code. Machinist runs from a published binary. Git checkouts are
 needed only for repositories that coding agents may inspect or change.
 
-The examples use a local SSH alias named `machinist` and configure root as the
-runtime account. Treat this as a dedicated, privileged coding worker.
+The examples use a local SSH alias named `machinist`. Root performs bootstrap
+and service administration, while coding agents run as a dedicated unprivileged
+`machinist` account.
 
 ## Understand the four logins
 
@@ -41,17 +42,27 @@ file on another VM.
 While connected to the VM, run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/main/scripts/setup-vm.sh | bash
+curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/v0.2.0/scripts/setup-vm.sh | \
+  MACHINIST_VERSION=v0.2.0 bash
 ```
 
-The script installs Git, GitHub CLI, Codex, Claude Code, and the latest stable
+The script installs Git, GitHub CLI, Codex, Claude Code, and the pinned
 Machinist release. It initializes `~/.machinist` without overwriting existing
 configuration, then installs systemd services for the control plane and worker.
 It enables and starts the control plane immediately. It enables the worker only
-when a repository is already configured. Re-running the bootstrap updates the
-installed files and restarts the applicable services. Review remote scripts
-before executing them when the repository or network is outside your trust
-boundary.
+when a repository is already configured. Re-running the bootstrap reinstalls
+that pinned release and restarts the applicable services. Change both version
+values together when installing another release. Machinist's installer verifies
+the release archive against its published SHA-256 checksum. Review remote
+scripts before executing them when the repository or network is outside your
+trust boundary.
+
+Switch to the runtime account before authenticating tools, creating its GitHub
+key, cloning repositories, or editing Machinist configuration:
+
+```sh
+su - machinist
+```
 
 Verify the tools:
 
@@ -196,6 +207,7 @@ Enable and start the worker now that it has a repository:
 
 ```sh
 machinist worker validate
+exit
 systemctl enable --now machinist-worker.service
 ```
 
@@ -224,6 +236,7 @@ journalctl -u machinist-worker.service -f
 After changing `~/.machinist/config.toml` or `worker.toml`, restart both:
 
 ```sh
+machinist worker validate
 systemctl restart machinist-control-plane.service machinist-worker.service
 ```
 
@@ -248,10 +261,10 @@ current unauthenticated UI behind a public reverse proxy.
 Verify the configuration and credentials before assigning a real issue:
 
 ```sh
-machinist version
-machinist update
-machinist worker validate
 systemctl is-active machinist-control-plane.service machinist-worker.service
+su - machinist
+machinist version
+machinist worker validate
 gh auth status
 ssh -T git@github.com
 command -v codex
@@ -357,10 +370,9 @@ ss -ltnp | grep 7331
 
 The listener should be `127.0.0.1:7331`, not `0.0.0.0:7331`.
 
-## Non-root alternative
+## Runtime security boundary
 
-Create the runtime account first. Run the Codex, Claude Code, and Machinist
-installers, SSH-key setup, GitHub CLI authentication, and `machinist init` while
-logged in as that account. Keep its repositories and credentials under its home
-directory. Run the control plane and worker as that same account. Do not mix
-configuration or credentials between accounts.
+The bootstrap creates the unprivileged `machinist` account and the supplied
+services run as that account. Its repositories, configuration, SSH keys, and
+Codex, Claude, and GitHub credentials must remain under `/home/machinist`.
+Do not give this account passwordless sudo or access to unrelated host data.

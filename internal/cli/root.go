@@ -105,8 +105,8 @@ func newWorkerValidateCommand(options *commandOptions) *cobra.Command {
 			if _, err := managedworker.New(workerConfig, io.Discard, io.Discard); err != nil {
 				return err
 			}
-			fmt.Fprintln(options.stdout, "worker configuration is valid")
-			return nil
+			_, err = fmt.Fprintln(options.stdout, "worker configuration is valid")
+			return err
 		},
 	}
 }

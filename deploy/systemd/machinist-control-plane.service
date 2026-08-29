@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
-Environment=HOME=/root
-WorkingDirectory=/root
+User=machinist
+Group=machinist
+Environment=HOME=/home/machinist
+WorkingDirectory=/home/machinist
 ExecStart=/usr/local/bin/machinist start
 Restart=on-failure
 RestartSec=5s

@@ -820,7 +820,9 @@ func TestWorkerValidateAcceptsCompleteConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := file.WriteString("\n[repositories.example]\npath = \"" + filepath.ToSlash(t.TempDir()) + "\"\n"); err != nil {
-		file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			t.Errorf("close worker configuration after write failure: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
