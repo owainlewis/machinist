@@ -70,13 +70,18 @@ The v0.2.0 bootstrap deliberately stops if it detects services or configuration
 from the earlier root-based setup. It does not copy root-owned agent credentials
 into the unprivileged account.
 
-Back up the old configuration and remove the old units before bootstrapping:
+Move the old configuration and units into a recoverable backup before
+bootstrapping:
 
 ```sh
 systemctl disable --now machinist-worker.service machinist-control-plane.service
-mv /root/.machinist /root/.machinist.v0.1-backup
-rm -f /etc/systemd/system/machinist-worker.service \
-  /etc/systemd/system/machinist-control-plane.service
+mkdir -p /root/machinist-v0.1-backup
+mv /root/.machinist /root/machinist-v0.1-backup/config
+for unit in machinist-worker.service machinist-control-plane.service; do
+  if [ -f "/etc/systemd/system/$unit" ]; then
+    mv "/etc/systemd/system/$unit" /root/machinist-v0.1-backup/
+  fi
+done
 systemctl daemon-reload
 ```
 
@@ -84,6 +89,11 @@ Then run the pinned bootstrap command above. Recreate the configuration under
 `/home/machinist/.machinist`, reauthenticate GitHub, Codex, and Claude as the
 `machinist` user, and clone repositories under `/home/machinist`. Keep the
 backup until the new worker passes the smoke test.
+
+To roll back before then, stop the new services, move the saved configuration
+back to `/root/.machinist`, restore both saved unit files under
+`/etc/systemd/system`, run `systemctl daemon-reload`, and enable and start the
+old services again.
 
 Verify the tools:
 
@@ -254,7 +264,8 @@ journalctl -u machinist-control-plane.service -f
 journalctl -u machinist-worker.service -f
 ```
 
-After changing `~/.machinist/config.toml` or `worker.toml`, restart both:
+After changing `/home/machinist/.machinist/config.toml` or
+`/home/machinist/.machinist/worker.toml`, restart both:
 
 ```sh
 su - machinist
