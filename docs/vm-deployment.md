@@ -237,7 +237,7 @@ brackets.
 Enable and start the worker now that it has a repository:
 
 ```sh
-machinist worker validate
+machinist validate
 exit
 systemctl enable --now machinist-worker.service
 ```
@@ -269,7 +269,7 @@ After changing `/home/machinist/.machinist/config.toml` or
 
 ```sh
 su - machinist
-machinist worker validate
+machinist validate
 exit
 systemctl restart machinist-control-plane.service machinist-worker.service
 ```
@@ -298,7 +298,7 @@ Verify the configuration and credentials before assigning a real issue:
 systemctl is-active machinist-control-plane.service machinist-worker.service
 su - machinist
 machinist version
-machinist worker validate
+machinist validate
 gh auth status
 ssh -T git@github.com
 command -v codex

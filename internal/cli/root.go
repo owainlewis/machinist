@@ -73,6 +73,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newSubmitCommand(options))
 	root.AddCommand(newStartCommand(options))
 	root.AddCommand(newUpdateCommand(options))
+	root.AddCommand(newValidateCommand(options))
 
 	worker := &cobra.Command{Use: "worker", Short: "Run or connect a Machinist Worker"}
 	worker.AddCommand(newRunCommand(options))
@@ -89,6 +90,38 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 		},
 	})
 	return root
+}
+
+func newValidateCommand(options *commandOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate",
+		Short: "Validate the complete local Machinist configuration",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			machinistConfig, err := config.LoadConfig(options.configPath)
+			if err != nil {
+				return err
+			}
+			if _, err := machinistConfig.Server.WorkerToken(); err != nil {
+				return err
+			}
+			if _, err := config.LoadShepherdSchedules(machinistConfig.Path()); err != nil {
+				return err
+			}
+			if _, err := config.LoadTriggers(machinistConfig.Path()); err != nil {
+				return err
+			}
+			workerConfig, err := config.LoadWorker(options.configPath)
+			if err != nil {
+				return err
+			}
+			if _, err := managedworker.New(workerConfig, io.Discard, io.Discard); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(options.stdout, "configuration is valid")
+			return err
+		},
+	}
 }
 
 func newWorkerValidateCommand(options *commandOptions) *cobra.Command {

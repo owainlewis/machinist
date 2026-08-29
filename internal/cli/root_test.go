@@ -687,6 +687,54 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsCompleteConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+	addCLIWorkerRepository(t, home)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &stdout, &stderr, "test")
+	if exitCode != 0 || strings.TrimSpace(stdout.String()) != "configuration is valid" {
+		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
+	}
+}
+
+func TestValidateRejectsInvalidControlPlaneConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+	configPath := filepath.Join(home, ".machinist", "config.toml")
+	if err := os.WriteFile(configPath, []byte("[server]\nworker_token_file = \"server/worker.token\"\nmax_concurrent_jobs = 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	if exitCode != 2 || !strings.Contains(stderr.String(), "max_concurrent_jobs must be positive") {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestValidateRejectsInvalidWorkerConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	if exitCode != 2 || !strings.Contains(stderr.String(), "requires at least one executor and repository") {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
 func TestWorkerValidateRequiresRepository(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -707,6 +755,18 @@ func TestWorkerValidateAcceptsCompleteConfiguration(t *testing.T) {
 	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
 		t.Fatalf("init exit code = %d", exitCode)
 	}
+	addCLIWorkerRepository(t, home)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"worker", "validate"}, strings.NewReader(""), &stdout, &stderr, "test")
+	if exitCode != 0 || strings.TrimSpace(stdout.String()) != "worker configuration is valid" {
+		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
+	}
+}
+
+func addCLIWorkerRepository(t *testing.T, home string) {
+	t.Helper()
 	workerPath := filepath.Join(home, ".machinist", "worker.toml")
 	file, err := os.OpenFile(workerPath, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
@@ -720,13 +780,6 @@ func TestWorkerValidateAcceptsCompleteConfiguration(t *testing.T) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "validate"}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 || strings.TrimSpace(stdout.String()) != "worker configuration is valid" {
-		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
 	}
 }
 
