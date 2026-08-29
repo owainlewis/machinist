@@ -28,7 +28,7 @@ On your computer, add this entry to `~/.ssh/config`:
 
 ```sshconfig
 Host machinist
-  HostName 89.167.49.125
+  HostName <VM_IP_OR_HOSTNAME>
   User root
   IdentityFile ~/.ssh/id_ed25519
   IdentitiesOnly yes
