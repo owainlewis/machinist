@@ -21,5 +21,5 @@ timeline names an actor whose write access Machinist can verify independently.
 The normal `GITHUB_TOKEN` labels as `github-actions[bot]`, which is not a
 repository collaborator and will not pass that check.
 
-See [Managed triggers](../../docs/managed-triggers.md) for the control-plane
-configuration and intake lifecycle.
+See [Configuration](../../docs/configuration.md) for the command and managed-trigger
+configuration model.
