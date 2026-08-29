@@ -687,6 +687,49 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestWorkerValidateRequiresRepository(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"worker", "validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	if exitCode != 2 || !strings.Contains(stderr.String(), "requires at least one executor and repository") {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestWorkerValidateAcceptsCompleteConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+	workerPath := filepath.Join(home, ".machinist", "worker.toml")
+	file, err := os.OpenFile(workerPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("\n[repositories.example]\npath = \"" + filepath.ToSlash(t.TempDir()) + "\"\n"); err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Errorf("close worker configuration after write failure: %v", closeErr)
+		}
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"worker", "validate"}, strings.NewReader(""), &stdout, &stderr, "test")
+	if exitCode != 0 || strings.TrimSpace(stdout.String()) != "worker configuration is valid" {
+		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
+	}
+}
+
 func TestStartReportsListeningAfterBindAndStopsOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	stderr := &cancelWriter{cancel: cancel}

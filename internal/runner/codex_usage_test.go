@@ -89,6 +89,23 @@ func TestCodexUsageCollectorIgnoresUnrelatedMalformedOutput(t *testing.T) {
 	}
 }
 
+func TestStructuredUsageCollectorIgnoresNestedMalformedTerminalEvents(t *testing.T) {
+	for _, resultType := range []string{"result", "turn.completed"} {
+		t.Run(resultType, func(t *testing.T) {
+			collector := newStructuredUsageCollector(resultType, resultType == "result")
+			valid := `{"type":"` + resultType + `","usage":{"input_tokens":4,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5}}`
+			if resultType == "turn.completed" {
+				valid = `{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5}}`
+			}
+			_, _ = collector.Write([]byte(valid + "\n"))
+			_, _ = collector.Write([]byte(`{"item":{"type":"` + resultType + `","usage":`))
+			if got := collector.tokenUsage(); got == nil || *got != 9 {
+				t.Fatalf("token usage = %v, want 9", got)
+			}
+		})
+	}
+}
+
 func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) {
 	for _, test := range []struct {
 		name     string

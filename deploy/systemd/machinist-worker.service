@@ -1,0 +1,20 @@
+[Unit]
+Description=Machinist managed worker
+After=network-online.target machinist-control-plane.service
+Wants=network-online.target
+Requires=machinist-control-plane.service
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=machinist
+Group=machinist
+Environment=HOME=/home/machinist
+WorkingDirectory=/home/machinist
+ExecStart=/usr/local/bin/machinist worker start
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
