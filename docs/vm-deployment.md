@@ -64,6 +64,27 @@ key, cloning repositories, or editing Machinist configuration:
 su - machinist
 ```
 
+### Migrating a root-based v0.1.x installation
+
+The v0.2.0 bootstrap deliberately stops if it detects services or configuration
+from the earlier root-based setup. It does not copy root-owned agent credentials
+into the unprivileged account.
+
+Back up the old configuration and remove the old units before bootstrapping:
+
+```sh
+systemctl disable --now machinist-worker.service machinist-control-plane.service
+mv /root/.machinist /root/.machinist.v0.1-backup
+rm -f /etc/systemd/system/machinist-worker.service \
+  /etc/systemd/system/machinist-control-plane.service
+systemctl daemon-reload
+```
+
+Then run the pinned bootstrap command above. Recreate the configuration under
+`/home/machinist/.machinist`, reauthenticate GitHub, Codex, and Claude as the
+`machinist` user, and clone repositories under `/home/machinist`. Keep the
+backup until the new worker passes the smoke test.
+
 Verify the tools:
 
 ```sh
@@ -236,7 +257,9 @@ journalctl -u machinist-worker.service -f
 After changing `~/.machinist/config.toml` or `worker.toml`, restart both:
 
 ```sh
+su - machinist
 machinist worker validate
+exit
 systemctl restart machinist-control-plane.service machinist-worker.service
 ```
 
@@ -278,6 +301,7 @@ machinist run \
   --agent=audit \
   --repo=~/Code/github/owainlewis/machinist \
   --prompt="Inspect one narrow package and report only proven bugs"
+exit
 ```
 
 The audit agent is read-only by instruction, but the coding CLI still has the

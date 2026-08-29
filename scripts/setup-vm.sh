@@ -13,6 +13,21 @@ if [[ ! $machinist_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]];
   exit 2
 fi
 
+legacy_root_install=false
+if [[ -d /root/.machinist ]]; then
+  legacy_root_install=true
+fi
+for legacy_unit in machinist-control-plane.service machinist-worker.service; do
+  if [[ -f /etc/systemd/system/$legacy_unit ]] && grep -q '^User=root$' "/etc/systemd/system/$legacy_unit"; then
+    legacy_root_install=true
+  fi
+done
+if [[ $legacy_root_install == true ]]; then
+  echo "legacy root-based Machinist installation detected" >&2
+  echo "follow the v0.1.x migration steps in docs/vm-deployment.md before running this bootstrap" >&2
+  exit 3
+fi
+
 if [[ ! -r /etc/os-release ]]; then
   echo "unsupported Linux distribution: /etc/os-release is missing" >&2
   exit 1
