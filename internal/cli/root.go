@@ -248,12 +248,15 @@ func validateWorkerControlPlane(listen, rawURL string) error {
 }
 
 func sameLoopbackHost(listenHost, endpointHost string) bool {
-	if strings.EqualFold(listenHost, "localhost") || strings.EqualFold(endpointHost, "localhost") {
-		return strings.EqualFold(listenHost, endpointHost)
-	}
 	listenIP := net.ParseIP(listenHost)
 	endpointIP := net.ParseIP(endpointHost)
-	return listenIP != nil && endpointIP != nil && listenIP.Equal(endpointIP)
+	if strings.EqualFold(listenHost, "localhost") {
+		return strings.EqualFold(endpointHost, "localhost") || endpointIP != nil && endpointIP.IsLoopback()
+	}
+	if strings.EqualFold(endpointHost, "localhost") {
+		return listenIP != nil && listenIP.IsLoopback()
+	}
+	return listenIP != nil && listenIP.IsLoopback() && endpointIP != nil && endpointIP.IsLoopback() && listenIP.Equal(endpointIP)
 }
 
 func newWorkerValidateCommand(options *commandOptions) *cobra.Command {

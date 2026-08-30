@@ -1031,6 +1031,24 @@ func TestValidateWorkerControlPlaneAcceptsEquivalentIPv6LoopbackSpelling(t *test
 	}
 }
 
+func TestValidateWorkerControlPlaneAcceptsEquivalentLocalEndpointSpellings(t *testing.T) {
+	for _, test := range []struct {
+		listen string
+		url    string
+	}{
+		{listen: "localhost:7331", url: "http://127.0.0.1:7331"},
+		{listen: "127.0.0.1:7331", url: "http://localhost:7331"},
+		{listen: "localhost:7331", url: "http://[::1]:7331"},
+		{listen: "[::1]:7331", url: "http://localhost:7331"},
+	} {
+		t.Run(test.listen+"/"+test.url, func(t *testing.T) {
+			if err := validateWorkerControlPlane(test.listen, test.url); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsMismatchedServerAndWorkerTokens(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
