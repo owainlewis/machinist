@@ -612,8 +612,8 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	if reopen, recover := strings.Index(foreman.Prompt, "closed-unmerged candidates present"), strings.Index(foreman.Prompt, "For any existing or reopened"); reopen < 0 || recover < 0 || reopen > recover {
 		t.Fatalf("foreman prompt must reopen a unique safe pull request before worktree recovery: reopen=%d recover=%d", reopen, recover)
 	}
-	if words := len(strings.Fields(foreman.Prompt)); words > 2200 {
-		t.Fatalf("foreman prompt has %d words, want no more than 2200", words)
+	if words := len(strings.Fields(foreman.Prompt)); words > 2350 {
+		t.Fatalf("foreman prompt has %d words, want no more than 2350", words)
 	}
 
 	audit, err := LoadCommand(definition, "audit")

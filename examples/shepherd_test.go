@@ -68,6 +68,33 @@ func TestForemanStillCannotMerge(t *testing.T) {
 	}
 }
 
+func TestForemanPreflightsCodingWorkers(t *testing.T) {
+	body, err := Files.ReadFile("prompts/foreman.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(body)
+	for name, required := range map[string][]string{
+		"before delegation":   {"Before delegating planning, build, or repair work", "before delegation"},
+		"worktree access":     {"read and write access", "repository worktree root"},
+		"commit identity":     {"Git commit author name and email"},
+		"toolchains":          {"repository-declared language toolchains", "declared versions"},
+		"verification tools":  {"documented verification commands", "working C compiler", "go test -race"},
+		"no machine mutation": {"Do not", "install tools, configure Git", "mutate the worker machine"},
+		"reuse evidence":      {"same worker", "repository state", "worktree root", "checked-out commit"},
+		"missing requirement": {"machinist:blocked", "prerequisite is missing", "required check it prevents", "stop before delegation"},
+		"healthy preflight":   {"healthy", "existing workflow unchanged"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, text := range required {
+				if !strings.Contains(prompt, text) {
+					t.Fatalf("Foreman prompt is missing %q", text)
+				}
+			}
+		})
+	}
+}
+
 func shepherdPrompt(t *testing.T) string {
 	t.Helper()
 	body, err := Files.ReadFile("prompts/shepherd.md")

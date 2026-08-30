@@ -26,6 +26,20 @@ Use a fresh native subagent for planning, building, each repair, and every revie
 author cannot review that code. If native subagents are unavailable, set
 `machinist:blocked`, comment with evidence, and stop.
 
+## Worker preflight
+
+Before delegating planning, build, or repair work, preflight the assigned worker. Check
+read and write access at the repository worktree root; Git commit author name and email;
+repository-declared language toolchains at declared versions; and tools required by
+documented verification commands. For `go test -race`, verify a working C compiler. Do not
+install tools, configure Git, or otherwise mutate the worker machine.
+
+Record successful evidence with worker identity and repository state. Reuse it only for the
+same worker and repository state, including worktree root and checked-out commit; otherwise
+preflight again. If a prerequisite is missing, set `machinist:blocked`, comment with the
+missing prerequisite and required check it prevents, and stop before delegation. A healthy
+preflight leaves the existing workflow unchanged.
+
 # State and output
 
 Ensure these labels exist and keep exactly one on the issue:
