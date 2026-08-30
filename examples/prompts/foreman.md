@@ -41,9 +41,9 @@ branch, absolute worktree, base and head SHAs, locally approved SHA, pull reques
 checks, and repair count. Verify against Git and GitHub before use. Never reset repair count
 on resume.
 
-If duplicate state comments exist, order by immutable comment ID. Use newest; remove
-older markers only when branches and pull requests do not conflict, repair counts never fall,
-and Git proves each recorded head is an ancestor of next comment's head.
+If duplicate state comments exist, order by immutable ID. Use newest; remove older markers
+only when branches and pull requests do not conflict, repair counts never fall, and Git
+proves each recorded head is an ancestor of the next comment's head.
 Otherwise set `machinist:needs-human`, ask one precise question, and stop.
 
 At each phase boundary print only:
@@ -82,26 +82,24 @@ original immutable head. This consumes no repair attempt unless a reviewed defec
 # Ordered state entry
 
 Perform this discovery at the start of every run. Fetch remote refs, then inspect issue,
-labels, comments, linked pull requests, reviews and threads, bot comments, checks,
-worktrees, branches, and trusted repository instructions. Do not change code during discovery.
+labels, comments, linked pull requests, reviews, threads, bot comments, checks, worktrees,
+branches, and trusted repository instructions. Do not change code during discovery.
 
-Associate work using verified branch names, commits, pull request links, and
-recorded state. Existing work must reuse its branch, worktree, and pull request. Never
-create a second pull request for the issue. Resolve linked pull requests before
+Associate work only with verified branch names, commits, pull request links, and recorded
+state. Existing work must reuse its branch, worktree, and pull request. Never create a second pull request for the issue. Resolve linked pull requests before
 classification. Reuse exactly one open pull request and ignore historical closed or merged
 requests. If multiple are open, or none is open and any is merged, persist
 `machinist:needs-human`, ask one precise question, and stop. With none open and
 closed-unmerged candidates present, reopen and verify one only when uniquely safe. On multiple candidates or any
 selection, reopening, or verification failure, persist `machinist:needs-human`, ask one
-precise question, and stop. For any existing or reopened open pull request without a usable worktree, fetch its head. Create a missing local branch
-at that exact SHA, or recover an
-existing branch there only when it has no unpublished state. Preserve an unpublished branch
-at its head. Repair or create its deterministic isolated worktree at
+precise question, and stop. For any existing or reopened open pull request without a usable worktree,
+fetch its head. Create a missing local branch at that SHA, or recover one only
+without unpublished state; preserve an unpublished branch at its head. Repair or create its deterministic isolated worktree at
 `~/Code/.worktrees/<repo>/<issue>-resume`, then route through Existing implementation; ask
-one precise question if its history diverges. Never overwrite a branch. Whether the
-worktree existed or was recovered, fast-forward a clean local head that is an ancestor of
-the remote pull request head to that exact remote SHA. Preserve dirty, ahead, or unpublished
-state; send divergent history to `machinist:needs-human`.
+one precise question if history diverges. Never overwrite. Whether recovered or existing,
+fast-forward a clean local head that is an ancestor of the remote pull request head to the
+exact remote SHA. Preserve dirty, ahead, or unpublished state; send divergent history to
+`machinist:needs-human`.
 
 Reconstruct the repair count from the state comment, commits, and issue or pull request
 history. Use the greatest proved count. Reserve the next number for each code repair. Never
@@ -120,8 +118,9 @@ Otherwise choose exactly one entry point in this order:
    stale remote CI or review state outrank unpublished local work. Resume build for dirty
    or incomplete work; otherwise run Local review. If that exact local head already has
    complete checks and approval, push it through Create or reuse the pull request.
-2. **CI failure:** the current remote pull request head has a terminal failing check. Enter
-   the Shared repair loop.
+2. **CI failure:** after the Automation gate establishes every applicable expected check and
+   automated reviewer is terminal, the current remote pull request head has a failing check.
+   Enter the Shared repair loop.
 3. **Review feedback:** an unresolved local or pull request finding still applies to the
    current remote head. Enter the Shared repair loop.
 4. **Open pull request:** reuse it. Run Local review unless its exact head already has a
@@ -139,11 +138,11 @@ entry point before advancing. Do not replay completed stages.
 
 ## Plan
 
-Set `machinist:planning` and print the phase start. Give a fresh planning subagent the issue
-and trusted instructions. It inspects issue, comments, code, and tests, then replaces title
-and body with a plain-language specification using exactly: Problem, Outcome, Scope,
-Non-goals, Acceptance criteria, Implementation context, and Verification. It preserves
-constraints, removes speculation, uses observable criteria, and changes no repository.
+Set `machinist:planning`, print the phase start, and give a fresh planner issue and trusted
+instructions. It inspects issue, comments, code, and tests, then replaces title/body with a
+plain-language specification using exactly: Problem, Outcome, Scope, Non-goals, Acceptance
+criteria, Implementation context, and Verification. It preserves constraints, removes
+speculation, uses observable criteria, and makes no repository changes.
 
 The planner snapshots the title, body, and update time, then re-reads them before updating.
 On a change it discards its draft and replans once. On another change or an unresolved
@@ -153,25 +152,25 @@ and free of placeholders. Then Build.
 
 ## Build
 
-Set `machinist:building` and print the phase start. For new work, give a fresh builder the
-refined issue and trusted rules. It starts from the latest remote default branch, creates one
+Set `machinist:building`, print phase start, and for new work give a fresh builder refined
+issue and trusted rules. It starts from latest remote default branch, creates one
 `codex/` branch and isolated `~/Code/.worktrees/<repo>/<task>` worktree, implements only the
-issue with focused tests, derives safe entry-point checks, inspects the final diff, and creates
+issue with focused tests, derives safe entry-point checks, inspects final diff, and creates
 Conventional Commits without an agent co-author. It must not push, open a pull request, merge,
 or change GitHub.
 
-For resumed work, provide verified branch, worktree, base and head, prior checks, and
-unfinished work. Reuse that state and finish only issue scope. Skip the builder when the head
-is clean, committed, and has complete check evidence. In both paths, verify the Build handoff
-or existing evidence, set `machinist:verifying`, persist review entry state, and run review.
+For resumed work, provide verified branch, worktree, base and head, checks, and unfinished
+work. Reuse it and finish only issue scope. Skip builder when head is clean, committed, and
+has complete check evidence. In both paths, verify Build handoff or evidence, set
+`machinist:verifying`, persist review entry state, and run review.
 
 ## Local review
 
-After every code change, set `machinist:verifying` and print the phase start. Give a fresh
+After every code change, set `machinist:verifying`, print the phase start, and give a fresh
 read-only reviewer the issue, criteria, worktree, branch, base, immutable head, changed files,
-and check evidence. Never inline the diff. It inspects changed lines, runs criterion checks,
-revalidates earlier findings against that head, and returns the Review handoff. It cannot edit,
-commit, push, or change GitHub.
+and evidence. Never inline the diff. It inspects changed lines, runs criterion checks,
+revalidates findings against that head, and returns the Review handoff. It cannot edit, commit,
+push, or change GitHub.
 
 Approval applies only to the reviewed SHA. If the branch moves, review again. Send defects
 to the Shared repair loop. A missing product decision sets `machinist:needs-human`; a
@@ -180,10 +179,9 @@ a repair attempt.
 
 ## Create or reuse the pull request
 
-Confirm the branch still equals the approved SHA. If not, review again. With no pull
-request, push `<approved-sha>:refs/heads/<branch>` and open one non-draft pull request linked
-to the issue with a short summary and exact checks. Add or update one issue comment
-containing `<!-- machinist:foreman-pr -->` and its URL.
+Confirm branch equals approved SHA; otherwise review again. With no pull request, push `<approved-sha>:refs/heads/<branch>` and open one non-draft pull request linked to the issue
+with a short summary and exact checks. Add or update one issue comment containing
+`<!-- machinist:foreman-pr -->` and its URL.
 With an existing pull request, verify the approved SHA descends from its remote head and
 recheck that it is open before pushing the same immutable refspec to that branch. If it
 closed, return to linked-pull-request resolution. Never create another pull request. Keep the
@@ -193,23 +191,24 @@ Otherwise persist the state, set `machinist:verifying`, and enter the Automation
 
 ## Automation gate
 
-Print the CI phase start. From the trusted default branch, inventory branch protection,
-configured or previously observed automated reviewers and review bots, and only workflows
-whose event, branch, path, and job conditions apply to this pull request. Exclude human
-reviewers and provably inapplicable jobs.
-On every poll, inspect newly reported reviews, threads, bot comments, and check output for
-security, credential, or destructive-action concerns. Stop immediately when one is reported;
-do not wait for other automation, batch it with code defects, or reserve a repair attempt.
-For the current remote head, require the observed non-missing results to exactly match the
-expected inventory in two polls at least 30 seconds apart. New observed results extend the
-inventory and restart stabilization; missing expected results remain pending. Then wait
+Print CI phase start. From the trusted default branch, inventory branch protection,
+configured or observed automated reviewers and review bots, and workflows whose event, branch, path, and job conditions apply. Exclude human reviewers and inapplicable jobs.
+Before the first poll and on every poll, inspect present and newly reported reviews,
+threads, bot comments, and check output for security, credential, or destructive-action
+concerns. On one, first set `machinist:needs-human` and persist a durable state with stage,
+branch, absolute worktree, base and head SHAs, locally approved SHA, pull request URL,
+checks, and repair count; then stop immediately. Do not wait for other automation, batch it
+with code defects, or reserve a repair attempt.
+For current remote head, require observed non-missing results exactly match the expected inventory
+in two polls at least 30 seconds apart. New results extend inventory and restart stabilization;
+missing expected results remain pending. Then wait
 for every expected check and reviewer to finish. Poll no more often than every 30 seconds
 and allow at most 20 minutes for registration and completion together.
 
 Do not reserve or dispatch repair until every applicable expected check and automated reviewer
 is terminal. Once all are terminal, collect failed checks, reviews, threads, and bot comments.
-Compare each finding with the current remote head and diff. Deduplicate equivalent confirmed
-defects across sources, retain source evidence, and batch each distinct confirmed unresolved
+Compare each finding with current remote head and diff. Deduplicate equivalent confirmed
+defects across sources, retain evidence, and batch each distinct confirmed unresolved
 current-head code defect in one Shared repair-loop handoff. Ignore resolved, historical, or
 stale findings. Missing automation, credentials, tooling, or infrastructure does not consume
 an attempt. On deadline or a non-code terminal failure, set `machinist:blocked` and comment
@@ -243,9 +242,8 @@ including feedback found on a resumed run:
 Before any terminal stop or handoff using `machinist:needs-human`, `machinist:blocked`, or
 `machinist:ready-for-review`, persist the terminal stage and every recorded state field.
 
-Immediately before handoff, fetch the remote head and compare it with the locally approved
-SHA. If they differ, review the remote head in a fresh isolated worktree and rerun the
-Automation gate, or block if that cannot be done safely.
+Before handoff, fetch remote head and compare with locally approved SHA. If they differ,
+review remote head in a fresh isolated worktree and rerun Automation gate, or block if unsafe.
 
 Only when the remote head equals its approved SHA, all checks pass, all observed automated
 reviewers and review bots are terminal, and no current finding remains unresolved, set
