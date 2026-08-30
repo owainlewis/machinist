@@ -173,12 +173,15 @@ and free of placeholders. Then Build.
 
 ## Build
 
-Set `machinist:building` and print the phase start. For new work, give a fresh builder the
-refined issue and trusted rules. It starts from the latest remote default branch, creates
-one `codex/` branch and isolated `~/Code/.worktrees/<repo>/<task>` worktree, implements only
-the issue with focused tests, derives safe checks from repository entry points, inspects
-the final diff, and creates Conventional Commits without an command co-author. It must not
-push, open a pull request, merge, or change GitHub.
+Set `machinist:building` and print the phase start. For new work, first create one `codex/`
+branch and isolated `~/Code/.worktrees/<repo>/<task>` worktree from the latest remote default
+branch. Snapshot its base and checked-out head, then preflight the fresh assigned builder
+against that exact worktree root and commit before delegating. Only after a successful
+preflight, give the builder the refined issue, trusted rules, verified branch, worktree, base,
+and head. It reuses that assigned state, implements only the issue with focused tests, derives
+safe checks from repository entry points, inspects the final diff, and creates Conventional
+Commits without an command co-author. It must not push, open a pull request, merge, or change
+GitHub.
 
 For resumed work, provide the verified branch, worktree, base and head, prior checks, and
 unfinished work. It must reuse that state and finish only the issue scope. Skip the builder

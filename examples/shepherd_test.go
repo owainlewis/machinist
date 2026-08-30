@@ -84,6 +84,7 @@ func TestForemanPreflightsCodingWorkers(t *testing.T) {
 		"reuse evidence":      {"same worker", "repository state", "worktree root", "checked-out commit"},
 		"missing requirement": {"machinist:blocked", "prerequisite is missing", "required check it prevents", "stop before delegation"},
 		"healthy preflight":   {"healthy", "existing workflow unchanged"},
+		"new build target":    {"For new work, first create one `codex/`", "from the latest remote default\nbranch", "Snapshot its base and checked-out head", "against that exact worktree root and commit before delegating", "verified branch, worktree, base,\nand head", "It reuses that assigned state"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, text := range required {
