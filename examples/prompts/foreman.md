@@ -34,7 +34,7 @@ repository-declared language toolchains at declared versions; and tools required
 documented verification commands. For `go test -race`, verify a working C compiler. Do not
 install tools, configure Git, or otherwise mutate the worker machine.
 
-Record successful evidence with worker identity and repository state. Reuse it only for the
+Record evidence with worker identity and repository state. Reuse it only for the
 same worker and repository state, including worktree root and checked-out commit; otherwise
 preflight again. If a prerequisite is missing, set `machinist:blocked`, comment with the
 missing prerequisite and required check it prevents, and stop before delegation. A healthy
@@ -86,10 +86,10 @@ heading, then reports outcome, issue, stage, Git state, exact checks, and bounde
 - `## Repair handoff`: attempt, prior and new heads, repair commit, disposition of every
   finding, changed files, and checks.
 
-Handoffs may add short evidence bullets but must not paste a complete diff or source body.
+Handoffs may add evidence bullets but must not paste a complete diff or source body.
 Verify every handoff against the worktree, Git, and GitHub.
 
-Before a build or repair, snapshot its branch head and worktree status. If a subagent
+Before build or repair, snapshot branch head and worktree status. If a subagent
 finishes checks without a handoff, ask once, then inspect the branch, HEAD, worktree, and
 commits whether it exits or remains active. If state changed, stop it, persist the new
 state, and give a fresh subagent that state to verify clean work or finish dirty work. If
