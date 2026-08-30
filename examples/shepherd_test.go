@@ -78,7 +78,7 @@ func TestForemanPromptBatchesTerminalAutomatedFindings(t *testing.T) {
 		"terminal collection": {"Do not reserve or dispatch repair until every applicable expected check and automated reviewer", "Once all are terminal, collect failed checks, reviews, threads, and bot comments."},
 		"deduplication":       {"Deduplicate equivalent confirmed", "defects across sources", "one disposition per equivalent group."},
 		"batching":            {"current-head code defect in one Shared repair-loop handoff.", "complete batched findings."},
-		"immediate safety":    {"destructive-action concerns stop immediately;", "do not wait or batch them."},
+		"immediate safety":    {"On every poll, inspect newly reported reviews, threads, bot comments, and check output", "security, credential, or destructive-action concerns", "Stop immediately when one is reported;", "do not wait for other automation, batch it with code defects, or reserve a repair attempt."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, text := range required {
@@ -90,6 +90,9 @@ func TestForemanPromptBatchesTerminalAutomatedFindings(t *testing.T) {
 	}
 	if terminal, repair := strings.Index(prompt, "Once all are terminal"), strings.Index(prompt, "Reserve the next positive repair count"); terminal < 0 || repair < 0 || terminal > repair {
 		t.Fatalf("Foreman prompt must collect terminal automated findings before reserving a repair: terminal=%d repair=%d", terminal, repair)
+	}
+	if safety, pending := strings.Index(prompt, "On every poll, inspect newly reported"), strings.Index(prompt, "Then wait\nfor every expected check and reviewer to finish"); safety < 0 || pending < 0 || safety > pending {
+		t.Fatalf("Foreman prompt must inspect safety concerns while automation is pending: safety=%d pending=%d", safety, pending)
 	}
 }
 

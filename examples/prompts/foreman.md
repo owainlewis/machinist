@@ -198,6 +198,9 @@ Print the CI phase start. From the trusted default branch, inventory branch prot
 configured or previously observed automated reviewers and review bots, and only workflows
 whose event, branch, path, and job conditions apply to this pull request. Exclude human
 reviewers and provably inapplicable jobs.
+On every poll, inspect newly reported reviews, threads, bot comments, and check output for
+security, credential, or destructive-action concerns. Stop immediately when one is reported;
+do not wait for other automation, batch it with code defects, or reserve a repair attempt.
 For the current remote head, require the observed non-missing results to exactly match the
 expected inventory in two polls at least 30 seconds apart. New observed results extend the
 inventory and restart stabilization; missing expected results remain pending. Then wait
@@ -208,11 +211,10 @@ Do not reserve or dispatch repair until every applicable expected check and auto
 is terminal. Once all are terminal, collect failed checks, reviews, threads, and bot comments.
 Compare each finding with the current remote head and diff. Deduplicate equivalent confirmed
 defects across sources, retain source evidence, and batch each distinct confirmed unresolved
-current-head code defect in one Shared repair-loop handoff. Security, credential, and
-destructive-action concerns stop immediately; do not wait or batch them. Ignore resolved,
-historical, or stale findings. Missing automation, credentials, tooling, or infrastructure
-does not consume an attempt. On deadline or a non-code terminal failure, set `machinist:blocked`
-and comment with exact evidence.
+current-head code defect in one Shared repair-loop handoff. Ignore resolved, historical, or
+stale findings. Missing automation, credentials, tooling, or infrastructure does not consume
+an attempt. On deadline or a non-code terminal failure, set `machinist:blocked` and comment
+with exact evidence.
 
 # Shared repair loop
 
