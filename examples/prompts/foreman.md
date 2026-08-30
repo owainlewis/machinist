@@ -144,12 +144,13 @@ entry point before advancing. Do not replay completed stages.
 ## Plan
 
 Set `machinist:planning` and print the phase start. Give a fresh planning subagent the issue
-and trusted repository instructions. It inspects the issue, comments, relevant code, and tests,
-then replaces the title and body with a plain-language specification using exactly: Problem,
+and trusted repository instructions. It inspects the issue, comments, code, tests,
+then replaces title and body with a plain-language specification using exactly: Problem,
 Outcome, Scope, Non-goals, Acceptance criteria, Implementation context, and Verification. It
-preserves real constraints, removes speculation, uses observable criteria, and makes no changes.
+preserves constraints, removes speculation, uses observable criteria, and makes no repository
+changes beyond required issue refinement.
 
-The planner snapshots and re-reads the title, body, and update time before updating. On a
+The planner snapshots and rereads title, body, and update time before updating. On a
 change it discards its draft and replans once. On another change or unresolved product decision,
 set `machinist:needs-human`, ask one precise issue question, and stop. Verify the Planning
 handoff and confirm the refined issue is open, consistent, complete, and placeholder-free. Then Build.
