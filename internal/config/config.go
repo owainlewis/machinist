@@ -679,7 +679,19 @@ func readToken(path string) (string, error) {
 	if token == "" {
 		return "", fmt.Errorf("token file %q is empty", path)
 	}
+	if !validHTTPHeaderValue(token) {
+		return "", fmt.Errorf("token file %q contains an invalid HTTP header value", path)
+	}
 	return token, nil
+}
+
+func validHTTPHeaderValue(value string) bool {
+	for _, character := range value {
+		if character != '\t' && (character < ' ' || character == 0x7f) {
+			return false
+		}
+	}
+	return true
 }
 
 func sortedMapKeys[T any](values map[string]T) []string {

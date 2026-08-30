@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -567,9 +568,13 @@ func containsString(values []string, want string) bool {
 // ValidateLoopbackListen verifies that a control-plane listen address has a
 // loopback host. It performs no network operations.
 func ValidateLoopbackListen(listen string) error {
-	host, _, err := net.SplitHostPort(listen)
+	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
 		return fmt.Errorf("invalid listen address %q: %w", listen, err)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 0 || portNumber > 65535 {
+		return fmt.Errorf("invalid listen address %q: port must be between 0 and 65535", listen)
 	}
 	if host == "localhost" {
 		return nil

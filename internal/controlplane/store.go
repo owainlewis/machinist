@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -163,6 +164,40 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+// ValidateStore verifies that an existing database can be read by this version
+// of Machinist without changing it. A missing database is valid because startup
+// creates and initializes it.
+func ValidateStore(path string) error {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect database: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("database %q is not a regular file", path)
+	}
+
+	databaseURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro"}).String()
+	db, err := sql.Open("sqlite", databaseURL)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	const schemaVersion = 1
+	var version int
+	if err := db.QueryRowContext(context.Background(), `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read database schema version: %w", err)
+	}
+	if version > schemaVersion {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersion)
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }

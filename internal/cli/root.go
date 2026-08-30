@@ -106,6 +106,9 @@ func newValidateCommand(options *commandOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := controlplane.ValidateStore(machinistConfig.Server.Database); err != nil {
+				return err
+			}
 			if err := controlplane.ValidateLoopbackListen(machinistConfig.Server.Listen); err != nil {
 				return err
 			}

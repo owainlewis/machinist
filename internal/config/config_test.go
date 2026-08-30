@@ -113,6 +113,23 @@ path = "repository"
 	}
 }
 
+func TestReadTokenRejectsInvalidHTTPHeaderValues(t *testing.T) {
+	for name, token := range map[string]string{
+		"null":    "secret\x00value",
+		"newline": "secret\nvalue",
+		"control": "secret\x01value",
+		"delete":  "secret\x7fvalue",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "token")
+			writeTestFile(t, path, token)
+			if _, err := readToken(path); err == nil || !strings.Contains(err.Error(), "invalid HTTP header value") {
+				t.Fatalf("readToken() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigCombinesServerAndCommands(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "token"), "secret")

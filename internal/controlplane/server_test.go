@@ -338,10 +338,12 @@ func TestServerServesEmbeddedReactAppAndRejectsRemoteListen(t *testing.T) {
 	if response.StatusCode != http.StatusOK || !strings.Contains(body.String(), `<div id="root"></div>`) {
 		t.Fatalf("status = %d body = %q", response.StatusCode, body.String())
 	}
-	if err := ValidateLoopbackListen("0.0.0.0:7331"); err == nil {
-		t.Fatal("expected non-loopback listen rejection")
+	for _, listen := range []string{"0.0.0.0:7331", "127.0.0.1:not-a-port", "127.0.0.1:65536", "127.0.0.1:-1"} {
+		if err := ValidateLoopbackListen(listen); err == nil {
+			t.Errorf("ValidateLoopbackListen(%q) succeeded", listen)
+		}
 	}
-	if err := ValidateLoopbackListen("127.0.0.1:7331"); err != nil {
+	if err := ValidateLoopbackListen("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
 }

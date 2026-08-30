@@ -701,6 +701,31 @@ func TestValidateAcceptsCompleteConfiguration(t *testing.T) {
 	if exitCode != 0 || strings.TrimSpace(stdout.String()) != "configuration is valid" {
 		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
 	}
+	if _, err := os.Stat(filepath.Join(home, ".machinist", "server", "machinist.db")); !os.IsNotExist(err) {
+		t.Fatalf("validate created database: %v", err)
+	}
+}
+
+func TestValidateRejectsUnreadableControlPlaneDatabase(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+	addCLIWorkerRepository(t, home)
+	database := filepath.Join(home, ".machinist", "server", "machinist.db")
+	if err := os.MkdirAll(filepath.Dir(database), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(database, []byte("not a sqlite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	if exitCode != 2 || !strings.Contains(stderr.String(), "read database schema version") {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
 }
 
 func TestValidateAcceptsExplicitControlPlaneConfiguration(t *testing.T) {
