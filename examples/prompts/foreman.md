@@ -74,13 +74,13 @@ Verify every handoff against the worktree, Git, and GitHub.
 
 ## Scope decisions
 
-Before escalating a scope expansion, including a review suggestion, compare it with the
+Before escalating a scope expansion or review suggestion, compare it with the
 refined issue's Scope, Non-goals, and Acceptance criteria. If Non-goals excludes it, or it is
 outside Scope without a required acceptance criterion, record an evidence-based out-of-scope disposition
-identifying the suggestion and issue evidence. Do not implement it; continue the run without setting `machinist:needs-human`.
+identifying suggestion and issue evidence. Do not implement it; continue without setting `machinist:needs-human`.
 
-Set `machinist:needs-human` only if comparison leaves a genuinely undecided material product choice.
-Ask one precise question identifying the choice and missing issue
+For a proposed scope expansion, set `machinist:needs-human` only if comparison leaves an undecided material product choice.
+Ask one precise question naming the choice and missing issue
 decision, then stop. Do not escalate a request that the refined issue already decides.
 
 Before a build or repair, snapshot its branch head and worktree status. If a subagent finishes

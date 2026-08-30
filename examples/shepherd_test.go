@@ -75,12 +75,12 @@ func TestForemanUsesRefinedIssueScopeBeforeEscalating(t *testing.T) {
 	}
 	prompt := string(body)
 	for name, required := range map[string]string{
-		"out-of-scope continuation": "Before escalating a scope expansion, including a review suggestion, compare it with the\n" +
+		"out-of-scope continuation": "Before escalating a scope expansion or review suggestion, compare it with the\n" +
 			"refined issue's Scope, Non-goals, and Acceptance criteria. If Non-goals excludes it, or it is\n" +
 			"outside Scope without a required acceptance criterion, record an evidence-based out-of-scope disposition\n" +
-			"identifying the suggestion and issue evidence. Do not implement it; continue the run without setting `machinist:needs-human`.",
-		"genuine ambiguity escalation": "Set `machinist:needs-human` only if comparison leaves a genuinely undecided material product choice.\n" +
-			"Ask one precise question identifying the choice and missing issue\n" +
+			"identifying suggestion and issue evidence. Do not implement it; continue without setting `machinist:needs-human`.",
+		"genuine ambiguity escalation": "For a proposed scope expansion, set `machinist:needs-human` only if comparison leaves an undecided material product choice.\n" +
+			"Ask one precise question naming the choice and missing issue\n" +
 			"decision, then stop. Do not escalate a request that the refined issue already decides.",
 	} {
 		t.Run(name, func(t *testing.T) {
