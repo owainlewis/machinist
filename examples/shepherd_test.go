@@ -74,27 +74,18 @@ func TestForemanUsesRefinedIssueScopeBeforeEscalating(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := string(body)
-	for name, required := range map[string][]string{
-		"out-of-scope continuation": {
-			"including a review suggestion",
-			"refined issue's Scope, Non-goals, and Acceptance criteria",
-			"evidence-based out-of-scope disposition",
-			"continue the run without setting `machinist:needs-human`",
-		},
-		"genuine ambiguity escalation": {
-			"genuinely undecided material",
-			"product choice",
-			"Ask one precise question",
-			"missing issue",
-			"decision, then stop",
-			"Do not escalate a request that the refined issue already decides",
-		},
+	for name, required := range map[string]string{
+		"out-of-scope continuation": "Before escalating a scope expansion, including a review suggestion, compare it with the\n" +
+			"refined issue's Scope, Non-goals, and Acceptance criteria. If Non-goals excludes it, or it is\n" +
+			"outside Scope without a required acceptance criterion, record an evidence-based out-of-scope disposition\n" +
+			"identifying the suggestion and issue evidence. Do not implement it; continue the run without setting `machinist:needs-human`.",
+		"genuine ambiguity escalation": "Set `machinist:needs-human` only if comparison leaves a genuinely undecided material product choice.\n" +
+			"Ask one precise question identifying the choice and missing issue\n" +
+			"decision, then stop. Do not escalate a request that the refined issue already decides.",
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, text := range required {
-				if !strings.Contains(prompt, text) {
-					t.Fatalf("Foreman prompt is missing %q", text)
-				}
+			if !strings.Contains(prompt, required) {
+				t.Fatalf("Foreman prompt is missing the required %s contract", name)
 			}
 		})
 	}
