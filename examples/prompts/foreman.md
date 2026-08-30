@@ -70,7 +70,7 @@ heading, then reports outcome, issue, stage, Git state, exact checks, and bounde
 - `## Review handoff`: verdict, immutable reviewed head and base, criterion-by-criterion
   evidence, checks, and prioritized current-head findings with file and line.
 - `## Repair handoff`: attempt, prior and new heads, repair commit, disposition of every
-  finding, changed files, and checks.
+  finding, changed files, focused checks, and why each covers the repair.
 
 Handoffs may add short evidence bullets but must not paste a complete diff or source body.
 Verify every handoff against the worktree, Git, and GitHub.
@@ -227,10 +227,12 @@ including feedback found on a resumed run:
 2. Reserve the next positive repair count without a maximum.
 3. Set `machinist:building` and prompt a fresh repair subagent with only the refined task,
    verified branch and worktree, current head, exact failing evidence, and valid findings.
-   It fixes only those findings, runs affected checks, inspects its diff, commits without an
-   command co-author, avoids GitHub changes, and returns the Repair handoff. Persist the count
-   immediately after a code-changing commit and before Local review. A tooling, credential,
-   or infrastructure failure keeps the prior count.
+   It fixes only those findings, runs focused checks that cover the repaired behavior, and
+   explains that coverage in the Repair handoff. Require broader relevant checks when the
+   repair affects shared concurrency, persistence, security, or build behavior. It inspects
+   its diff, commits without a command co-author, and avoids GitHub changes. Persist the count
+   immediately after a code-changing commit and before Local review. A tooling,
+   credential, or infrastructure failure keeps the prior count.
 4. Run Local review on the new immutable head. Never push without fresh approval. If no
    pull request exists, continue to Create or reuse the pull request. Otherwise push the
    approved SHA to its existing branch, then persist its head, approval, checks, pull
@@ -250,5 +252,6 @@ Automation gate, or block if that cannot be done safely.
 
 Only when the remote head equals its approved SHA, all checks pass, all observed automated
 reviewers and review bots are terminal, and no current finding remains unresolved, set
-`machinist:ready-for-review`. Comment with the pull request, checks, verdict, and repair
-count. Never merge. Keep the open-pull-request worktree.
+`machinist:ready-for-review`. Before final local approval and this label, require evidence
+that the final approved SHA passed the complete issue and repository verification suite.
+Comment with the pull request, checks, verdict, and repair count. Never merge. Keep the open-pull-request worktree.

@@ -575,6 +575,12 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 		"Never merge",
 		"Keep the open-pull-request worktree",
 		"Before any terminal stop or handoff",
+		"focused checks, and why each covers the repair",
+		"focused checks that cover the repaired behavior",
+		"explains that coverage in the Repair handoff",
+		"shared concurrency, persistence, security, or build behavior",
+		"Before final local approval and this label",
+		"complete issue and repository verification suite",
 	} {
 		if !strings.Contains(foreman.Prompt, rule) {
 			t.Fatalf("foreman prompt does not contain %q", rule)
@@ -612,8 +618,8 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	if reopen, recover := strings.Index(foreman.Prompt, "closed-unmerged candidates present"), strings.Index(foreman.Prompt, "For any existing or reopened"); reopen < 0 || recover < 0 || reopen > recover {
 		t.Fatalf("foreman prompt must reopen a unique safe pull request before worktree recovery: reopen=%d recover=%d", reopen, recover)
 	}
-	if words := len(strings.Fields(foreman.Prompt)); words > 2200 {
-		t.Fatalf("foreman prompt has %d words, want no more than 2200", words)
+	if words := len(strings.Fields(foreman.Prompt)); words > 2300 {
+		t.Fatalf("foreman prompt has %d words, want no more than 2300", words)
 	}
 
 	audit, err := LoadCommand(definition, "audit")
