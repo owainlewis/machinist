@@ -36,14 +36,14 @@ Ensure these labels exist; keep exactly one on the issue:
 - `machinist:needs-human`
 - `machinist:blocked`
 
-Keep exactly one issue comment marked `<!-- machinist:foreman-state -->`. Record the stage,
+Keep exactly one issue comment marked `<!-- machinist:foreman-state -->`. Record stage,
 branch, absolute worktree, base and head SHAs, locally approved SHA, pull request URL,
-checks, and repair count. Verify this state against Git and GitHub before
-using it. Never reset the repair count on resume.
+checks, and repair count. Verify against Git and GitHub before use. Never reset repair count
+on resume.
 
-If duplicate state comments exist, order them by immutable comment ID. Use the newest and
-remove older markers only when branches and pull requests do not conflict, repair counts
-never fall, and Git proves each recorded head is an ancestor of the next comment's head.
+If duplicate state comments exist, order by immutable comment ID. Use newest; remove
+older markers only when branches and pull requests do not conflict, repair counts never fall,
+and Git proves each recorded head is an ancestor of next comment's head.
 Otherwise set `machinist:needs-human`, ask one precise question, and stop.
 
 At each phase boundary print only:
@@ -51,14 +51,14 @@ At each phase boundary print only:
 `FOREMAN phase=<planning|building|reviewing|repairing|ci> attempt=<number> outcome=<started|passed|failed|needs-human>`
 
 Attempt `0` is initial. Positive numbers are repairs and increase without a cap across local
-review, CI, pull request feedback, and resumes. Finish with issue and pull request URLs,
+review, CI, pull-request feedback, and resumes. Finish with issue and PR URLs,
 label, checks, verdict, and repair count. Do not print a complete diff, issue body, review,
-bot comment, or generated asset. Use summaries, paths, URLs, and SHAs.
+bot comment, or generated asset. Use summaries, paths, URLs, SHAs.
 
 # Handoffs
 
-Every subagent prompt must require a concise Markdown handoff. It starts with its heading,
-then reports outcome, issue, stage, Git state, exact checks, and bounded evidence:
+Every subagent prompt must require a concise Markdown handoff with its heading, outcome,
+issue, stage, Git state, exact checks, and bounded evidence:
 
 - `## Planning handoff`: updated title and required sections, observed issue update time,
   and any unresolved decision.
@@ -69,14 +69,14 @@ then reports outcome, issue, stage, Git state, exact checks, and bounded evidenc
 - `## Repair handoff`: attempt, prior and new heads, repair commit, disposition of every
   finding, changed files, and checks.
 
-Handoffs may add bullets, not a complete diff or source body. Verify every handoff
-against worktree, Git, and GitHub.
+Handoffs may add bullets, not a complete diff or source body. Verify each against worktree,
+Git, and GitHub.
 
-Before a build or repair, snapshot branch head and worktree status. If a subagent finishes
+Before builds or repairs, snapshot branch head and worktree status. If a subagent finishes
 checks without a handoff, ask once, then inspect the branch, HEAD, worktree, and commits
 whether it exits or remains active. If state changed, stop it, persist state, and give a
-fresh subagent that state to verify clean or finish dirty work. If unchanged, replace it on
-the original immutable head. This consumes no repair attempt unless a reviewed defect caused
+fresh subagent the state to verify clean or finish dirty. If unchanged, replace it on
+original immutable head. This consumes no repair attempt unless a reviewed defect caused
    code to change. Block if the replacement does not return a valid handoff, whether it exits or remains active.
 
 # Ordered state entry
@@ -85,7 +85,7 @@ Perform this discovery at the start of every run. Fetch remote refs, then inspec
 labels, comments, linked pull requests, reviews and threads, bot comments, checks,
 worktrees, branches, and trusted repository instructions. Do not change code during discovery.
 
-Associate existing work using verified branch names, commits, pull request links, and
+Associate work using verified branch names, commits, pull request links, and
 recorded state. Existing work must reuse its branch, worktree, and pull request. Never
 create a second pull request for the issue. Resolve linked pull requests before
 classification. Reuse exactly one open pull request and ignore historical closed or merged
@@ -161,18 +161,17 @@ Conventional Commits without an agent co-author. It must not push, open a pull r
 or change GitHub.
 
 For resumed work, provide verified branch, worktree, base and head, prior checks, and
-unfinished work. It reuses that state and finishes only issue scope. Skip the builder when
-the existing head is clean, committed, and has complete check evidence. In both paths, verify
-the Build handoff or existing evidence, set `machinist:verifying`, persist review entry state,
-and run Local review.
+unfinished work. Reuse that state and finish only issue scope. Skip the builder when the head
+is clean, committed, and has complete check evidence. In both paths, verify the Build handoff
+or existing evidence, set `machinist:verifying`, persist review entry state, and run review.
 
 ## Local review
 
 After every code change, set `machinist:verifying` and print the phase start. Give a fresh
-read-only reviewer issue, criteria, worktree, branch, base, immutable head, changed files,
-and check evidence. Never inline the diff. It inspects every changed line, runs checks needed
-to prove each criterion, revalidates earlier findings against that head, and returns the
-Review handoff. It cannot edit, commit, push, or change GitHub.
+read-only reviewer the issue, criteria, worktree, branch, base, immutable head, changed files,
+and check evidence. Never inline the diff. It inspects changed lines, runs criterion checks,
+revalidates earlier findings against that head, and returns the Review handoff. It cannot edit,
+commit, push, or change GitHub.
 
 Approval applies only to the reviewed SHA. If the branch moves, review again. Send defects
 to the Shared repair loop. A missing product decision sets `machinist:needs-human`; a
