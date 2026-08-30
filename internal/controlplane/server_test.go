@@ -151,6 +151,66 @@ func TestServerDeletesOnlyTerminalJobsWithSubmissionAuthorization(t *testing.T) 
 	}
 }
 
+func TestServerDeletesOnlyDisconnectedIdleWorkers(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+	if response := postJSON(t, webServer.URL+"/api/v1/workers/poll", pollRequest("worker-old", []string{"test"}, []string{"machinist"}), map[string]string{"Authorization": "Bearer secret"}); response.StatusCode != http.StatusOK {
+		response.Body.Close()
+		t.Fatalf("worker poll status = %d", response.StatusCode)
+	} else {
+		response.Body.Close()
+	}
+	if _, err := server.store.db.ExecContext(t.Context(), `UPDATE workers SET last_seen_at=? WHERE instance_id='worker-old'`, server.store.now().Add(-workerAvailabilityWindow-time.Second).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	status := getStatus(t, webServer.URL)
+	headers := map[string]string{"Origin": webServer.URL, "X-Machinist-CSRF": status.CSRFToken}
+	deleted := deleteRequest(t, webServer.URL+"/api/v1/workers/worker-old", headers)
+	if deleted.StatusCode != http.StatusNoContent {
+		deleted.Body.Close()
+		t.Fatalf("idle worker delete status = %d", deleted.StatusCode)
+	}
+	deleted.Body.Close()
+	missing := deleteRequest(t, webServer.URL+"/api/v1/workers/worker-old", headers)
+	if missing.StatusCode != http.StatusNotFound {
+		missing.Body.Close()
+		t.Fatalf("missing worker delete status = %d", missing.StatusCode)
+	}
+	missing.Body.Close()
+	if response := postJSON(t, webServer.URL+"/api/v1/workers/poll", pollRequest("worker-connected", []string{"test"}, []string{"machinist"}), map[string]string{"Authorization": "Bearer secret"}); response.StatusCode != http.StatusOK {
+		response.Body.Close()
+		t.Fatalf("connected worker poll status = %d", response.StatusCode)
+	} else {
+		response.Body.Close()
+	}
+	connected := deleteRequest(t, webServer.URL+"/api/v1/workers/worker-connected", headers)
+	if connected.StatusCode != http.StatusConflict {
+		connected.Body.Close()
+		t.Fatalf("connected worker delete status = %d", connected.StatusCode)
+	}
+	connected.Body.Close()
+	jobID, err := server.store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := server.store.Poll(t.Context(), pollRequest("worker-active", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("active worker poll = %#v, %v", run, err)
+	}
+	if _, err := server.store.db.ExecContext(t.Context(), `UPDATE workers SET last_seen_at=? WHERE instance_id='worker-active'`, server.store.now().Add(-workerAvailabilityWindow-time.Second).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	active := deleteRequest(t, webServer.URL+"/api/v1/workers/worker-active", headers)
+	if active.StatusCode != http.StatusConflict {
+		active.Body.Close()
+		t.Fatalf("active worker delete status = %d", active.StatusCode)
+	}
+	active.Body.Close()
+	if jobs := getStatus(t, webServer.URL).Jobs; len(jobs) != 1 || jobs[0].ID != jobID || jobs[0].Runs[0].State != "running" {
+		t.Fatalf("jobs after active worker rejection = %#v", jobs)
+	}
+}
+
 func TestServerAppliesConcurrentJobLimitToWorkerPolls(t *testing.T) {
 	server, webServer := newTestHTTPServerWithLimit(t, 1)
 	defer webServer.Close()

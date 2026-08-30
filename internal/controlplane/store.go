@@ -22,6 +22,8 @@ var (
 	ErrLeaseConflict                   = errors.New("run lease does not match")
 	ErrRunState                        = errors.New("run is not active")
 	ErrJobActive                       = errors.New("active job cannot be deleted")
+	ErrWorkerConnected                 = errors.New("connected worker cannot be deleted")
+	ErrWorkerActive                    = errors.New("worker with a running run cannot be deleted")
 	ErrTriggerMissing                  = errors.New("trigger state does not exist")
 	ErrTriggerStale                    = errors.New("trigger state configuration changed")
 	ErrTriggerPreviousGenerationActive = errors.New("previous trigger configuration still has active work")
@@ -977,6 +979,38 @@ func (s *Store) DeleteJob(ctx context.Context, jobID string) error {
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE id=?`, jobID); err != nil {
 		return fmt.Errorf("delete job: %w", err)
+	}
+	return tx.Commit()
+}
+
+// DeleteWorker removes a disconnected worker registration and its repository
+// advertisements. Runs deliberately retain their recorded worker attribution.
+func (s *Store) DeleteWorker(ctx context.Context, instanceID string, connectedAfter time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var lastSeen string
+	if err := tx.QueryRowContext(ctx, `SELECT last_seen_at FROM workers WHERE instance_id=?`, instanceID).Scan(&lastSeen); err != nil {
+		return err
+	}
+	seenAt, err := time.Parse(time.RFC3339Nano, lastSeen)
+	if err != nil {
+		return fmt.Errorf("parse worker last seen time: %w", err)
+	}
+	if !seenAt.Before(connectedAfter) {
+		return ErrWorkerConnected
+	}
+	var running bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runs WHERE worker_instance=? AND state='running')`, instanceID).Scan(&running); err != nil {
+		return fmt.Errorf("check worker runs: %w", err)
+	}
+	if running {
+		return ErrWorkerActive
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM workers WHERE instance_id=?`, instanceID); err != nil {
+		return fmt.Errorf("delete worker: %w", err)
 	}
 	return tx.Commit()
 }

@@ -516,6 +516,74 @@ func TestStoreDeletesTerminalJobAndRejectsActiveJob(t *testing.T) {
 	}
 }
 
+func TestStoreDeletesDisconnectedWorkerAndPreservesHistory(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	clock := newTestClock(time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC))
+	store.now = clock.Now
+	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-old", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-old", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(workerAvailabilityWindow + time.Second)
+	if err := store.DeleteWorker(t.Context(), "worker-old", clock.Now().Add(-workerAvailabilityWindow)); err != nil {
+		t.Fatal(err)
+	}
+	var workerRepositories int
+	if err := store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM worker_repositories WHERE worker_instance='worker-old'`).Scan(&workerRepositories); err != nil || workerRepositories != 0 {
+		t.Fatalf("worker repositories = %d, %v", workerRepositories, err)
+	}
+	var knownRepositories int
+	if err := store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM known_repositories WHERE repository='machinist'`).Scan(&knownRepositories); err != nil || knownRepositories != 1 {
+		t.Fatalf("known repositories = %d, %v", knownRepositories, err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID || snapshot.Jobs[0].Runs[0].WorkerName != "test" {
+		t.Fatalf("snapshot = %#v, %v", snapshot, err)
+	}
+	if _, err := store.Poll(t.Context(), pollRequest("worker-old", []string{"codex"}, []string{"machinist"})); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = store.Snapshot(t.Context())
+	if err != nil || len(snapshot.Workers) != 1 || snapshot.Workers[0].InstanceID != "worker-old" || len(snapshot.Workers[0].Repositories) != 1 {
+		t.Fatalf("re-registered worker = %#v, %v", snapshot.Workers, err)
+	}
+}
+
+func TestStoreRejectsConnectedOrActiveWorkerDeletion(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	clock := newTestClock(time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC))
+	store.now = clock.Now
+	if _, err := store.Poll(t.Context(), pollRequest("worker-connected", []string{"codex"}, []string{"machinist"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteWorker(t.Context(), "worker-connected", clock.Now().Add(-workerAvailabilityWindow)); !errors.Is(err, ErrWorkerConnected) {
+		t.Fatalf("connected deletion error = %v", err)
+	}
+	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-active", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	clock.Advance(workerAvailabilityWindow + time.Second)
+	if err := store.DeleteWorker(t.Context(), "worker-active", clock.Now().Add(-workerAvailabilityWindow)); !errors.Is(err, ErrWorkerActive) {
+		t.Fatalf("active deletion error = %v", err)
+	}
+	var jobs int
+	if err := store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM jobs WHERE id=?`, jobID).Scan(&jobs); err != nil || jobs != 1 {
+		t.Fatalf("jobs = %d, %v", jobs, err)
+	}
+}
+
 func TestStoreDeletingTriggeredJobPreservesPendingReconciliation(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: "github/intake", Family: "github", ConfigSignature: "v1"}}); err != nil {

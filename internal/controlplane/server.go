@@ -286,6 +286,7 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/definitions", s.definitions)
 	mux.HandleFunc("POST /api/v1/jobs", s.authorizeSubmission(s.submit))
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
+	mux.HandleFunc("DELETE /api/v1/workers/{instance_id}", s.authorizeSubmission(s.deleteWorker))
 	mux.HandleFunc("POST /api/v1/workers/poll", s.authorizeWorker(s.poll))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.authorizeWorker(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.authorizeWorker(s.complete))
@@ -420,6 +421,23 @@ func (s *Server) deleteJob(response http.ResponseWriter, request *http.Request) 
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(response, http.StatusNotFound, errors.New("job not found"))
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteWorker(response http.ResponseWriter, request *http.Request) {
+	err := s.store.DeleteWorker(request.Context(), request.PathValue("instance_id"), s.store.now().UTC().Add(-workerAvailabilityWindow))
+	if errors.Is(err, ErrWorkerConnected) || errors.Is(err, ErrWorkerActive) {
+		writeError(response, http.StatusConflict, err)
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(response, http.StatusNotFound, errors.New("worker not found"))
 		return
 	}
 	if err != nil {

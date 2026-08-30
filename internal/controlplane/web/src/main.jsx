@@ -26,7 +26,9 @@ function App() {
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [taskActionError, setTaskActionError] = useState("");
+	const [workerActionError, setWorkerActionError] = useState("");
   const [deletingJob, setDeletingJob] = useState("");
+	const [deletingWorker, setDeletingWorker] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -142,6 +144,27 @@ function App() {
     }
   }
 
+	async function deleteWorker(worker) {
+		if (!window.confirm(`Remove disconnected worker ${worker.name} (${worker.instance_id})?`)) return;
+		setDeletingWorker(worker.instance_id);
+		setWorkerActionError("");
+		try {
+			const response = await fetch(`/api/v1/workers/${encodeURIComponent(worker.instance_id)}`, {
+				method: "DELETE",
+				headers: { "X-Machinist-CSRF": status.csrf_token },
+			});
+			if (!response.ok) {
+				const body = await response.json().catch(() => ({}));
+				throw new Error(body.error || `Delete failed (${response.status})`);
+			}
+			await statusLoader.current.refresh();
+		} catch (requestError) {
+			setWorkerActionError(requestError.message);
+		} finally {
+			setDeletingWorker("");
+		}
+	}
+
   return (
     <div className="min-h-screen bg-background text-foreground md:flex">
       <aside className="sticky top-0 z-20 flex shrink-0 items-center border-b border-border bg-sidebar px-3 py-2 md:h-screen md:w-52 md:flex-col md:items-stretch md:border-b-0 md:border-r md:px-3 md:py-4">
@@ -165,7 +188,7 @@ function App() {
       </aside>
 
       <main className="min-w-0 flex-1">
-        {view === "task" ? <TaskDetail job={selectedJob} loaded={statusLoaded} error={statusError || taskActionError} deleting={deletingJob === route.jobID} onDelete={deleteJob} /> : view === "analytics" ? <Analytics jobs={status.jobs} loaded={statusLoaded} error={statusError} /> : view === "workers" ? <WorkersPage workers={status.workers} loaded={statusLoaded} error={statusError} /> : view === "triggers" ? <TriggersPage triggers={status.triggers || []} loaded={statusLoaded} error={statusError} /> : view === "commands" ? <CommandsPage /> : <div className="mx-auto max-w-[1500px] space-y-6 p-4 sm:p-6 lg:p-8">
+		{view === "task" ? <TaskDetail job={selectedJob} loaded={statusLoaded} error={statusError || taskActionError} deleting={deletingJob === route.jobID} onDelete={deleteJob} /> : view === "analytics" ? <Analytics jobs={status.jobs} loaded={statusLoaded} error={statusError} /> : view === "workers" ? <WorkersPage workers={status.workers} loaded={statusLoaded} error={statusError || workerActionError} deleting={deletingWorker} onDelete={deleteWorker} /> : view === "triggers" ? <TriggersPage triggers={status.triggers || []} loaded={statusLoaded} error={statusError} /> : view === "commands" ? <CommandsPage /> : <div className="mx-auto max-w-[1500px] space-y-6 p-4 sm:p-6 lg:p-8">
           <header className="flex items-start justify-between gap-6">
             <h1 className="text-xl font-semibold tracking-tight">Runs</h1>
             <div className="flex items-center gap-2">
