@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -221,6 +222,13 @@ func validateWorkerControlPlane(listen, rawURL string) error {
 	listenHost, listenPort, err := net.SplitHostPort(listen)
 	if err != nil {
 		return fmt.Errorf("invalid listen address %q: %w", listen, err)
+	}
+	listenPortNumber, err := strconv.Atoi(listenPort)
+	if err != nil {
+		return fmt.Errorf("invalid listen address %q: %w", listen, err)
+	}
+	if listenPortNumber == 0 {
+		return fmt.Errorf("managed worker control plane cannot use ephemeral listen port 0")
 	}
 	endpoint, err := url.Parse(rawURL)
 	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
