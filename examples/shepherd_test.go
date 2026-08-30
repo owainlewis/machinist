@@ -68,6 +68,31 @@ func TestForemanStillCannotMerge(t *testing.T) {
 	}
 }
 
+func TestForemanPromptBatchesTerminalAutomatedFindings(t *testing.T) {
+	body, err := Files.ReadFile("prompts/foreman.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(body)
+	for name, required := range map[string][]string{
+		"terminal collection": {"Do not reserve or dispatch repair until every applicable expected check and automated reviewer", "Once all are terminal, collect failed checks, reviews, threads, and bot comments."},
+		"deduplication":       {"Deduplicate equivalent confirmed", "defects across sources", "one disposition per equivalent group."},
+		"batching":            {"current-head code defect in one Shared repair-loop handoff.", "complete batched findings."},
+		"immediate safety":    {"destructive-action concerns stop immediately;", "do not wait or batch them."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, text := range required {
+				if !strings.Contains(prompt, text) {
+					t.Fatalf("Foreman prompt is missing %q", text)
+				}
+			}
+		})
+	}
+	if terminal, repair := strings.Index(prompt, "Once all are terminal"), strings.Index(prompt, "Reserve the next positive repair count"); terminal < 0 || repair < 0 || terminal > repair {
+		t.Fatalf("Foreman prompt must collect terminal automated findings before reserving a repair: terminal=%d repair=%d", terminal, repair)
+	}
+}
+
 func shepherdPrompt(t *testing.T) string {
 	t.Helper()
 	body, err := Files.ReadFile("prompts/shepherd.md")
