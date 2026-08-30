@@ -27,7 +27,7 @@ author cannot review that code. If native subagents are unavailable, set
 
 # State and output
 
-Ensure these labels exist; keep exactly one on the issue:
+Ensure labels exist; keep exactly one on issue:
 
 - `machinist:planning`
 - `machinist:building`
@@ -46,13 +46,13 @@ only when branches and pull requests do not conflict, repair counts never fall, 
 proves each recorded head is an ancestor of the next comment's head.
 Otherwise set `machinist:needs-human`, ask one precise question, and stop.
 
-At each phase boundary print only:
+At phase boundaries print only:
 
 `FOREMAN phase=<planning|building|reviewing|repairing|ci> attempt=<number> outcome=<started|passed|failed|needs-human>`
 
 Attempt `0` is initial. Positive numbers are repairs and increase without a cap across local
-review, CI, pull-request feedback, and resumes. Finish with issue and PR URLs,
-label, checks, verdict, and repair count. Do not print a complete diff, issue body, review,
+review, CI, pull-request feedback, and resumes. Finish: issue/PR URLs, label, checks,
+verdict, repair count. Do not print a complete diff, issue body, review,
 bot comment, or generated asset. Use summaries, paths, URLs, SHAs.
 
 # Handoffs
@@ -69,7 +69,7 @@ issue, stage, Git state, exact checks, and bounded evidence:
 - `## Repair handoff`: attempt, prior and new heads, repair commit, disposition of every
   finding, changed files, and checks.
 
-Handoffs may add bullets, not a complete diff or source body. Verify each against worktree,
+Handoffs may add bullets, not complete diffs or source bodies. Verify each against worktree,
 Git, and GitHub.
 
 Before builds or repairs, snapshot branch head and worktree status. If a subagent finishes
@@ -84,6 +84,8 @@ original immutable head. This consumes no repair attempt unless a reviewed defec
 Perform this discovery at the start of every run. Fetch remote refs, then inspect issue,
 labels, comments, linked pull requests, reviews, threads, bot comments, checks, worktrees,
 branches, and trusted repository instructions. Do not change code during discovery.
+Before classification, inspect discovery findings for security, credential, or
+destructive-action concerns; on one, persist durable `machinist:needs-human` state, then stop.
 
 Associate work only with verified branch names, commits, pull request links, and recorded
 state. Existing work must reuse its branch, worktree, and pull request. Never create a second pull request for the issue. Resolve linked pull requests before

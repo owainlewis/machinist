@@ -96,6 +96,24 @@ func TestForemanPromptBatchesTerminalAutomatedFindings(t *testing.T) {
 	}
 }
 
+func TestForemanPromptStopsForSafetyConcernsBeforeClassification(t *testing.T) {
+	body, err := Files.ReadFile("prompts/foreman.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(body)
+	for _, text := range []string{
+		"Before classification, inspect discovery findings for security, credential, or\ndestructive-action concerns; on one, persist durable `machinist:needs-human` state, then stop.",
+	} {
+		if !strings.Contains(prompt, text) {
+			t.Fatalf("Foreman prompt is missing %q", text)
+		}
+	}
+	if safety, classify := strings.Index(prompt, "Before classification, inspect discovery findings"), strings.Index(prompt, "Otherwise choose exactly one entry point"); safety < 0 || classify < 0 || safety > classify {
+		t.Fatalf("Foreman prompt must stop for discovered safety concerns before classification: safety=%d classification=%d", safety, classify)
+	}
+}
+
 func shepherdPrompt(t *testing.T) string {
 	t.Helper()
 	body, err := Files.ReadFile("prompts/shepherd.md")
