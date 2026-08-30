@@ -68,6 +68,38 @@ func TestForemanStillCannotMerge(t *testing.T) {
 	}
 }
 
+func TestForemanUsesRefinedIssueScopeBeforeEscalating(t *testing.T) {
+	body, err := Files.ReadFile("prompts/foreman.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(body)
+	for name, required := range map[string][]string{
+		"out-of-scope continuation": {
+			"including a review suggestion",
+			"refined issue's Scope, Non-goals, and Acceptance criteria",
+			"evidence-based out-of-scope disposition",
+			"continue the run without setting `machinist:needs-human`",
+		},
+		"genuine ambiguity escalation": {
+			"genuinely undecided material",
+			"product choice",
+			"Ask one precise question",
+			"missing issue",
+			"decision, then stop",
+			"Do not escalate a request that the refined issue already decides",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, text := range required {
+				if !strings.Contains(prompt, text) {
+					t.Fatalf("Foreman prompt is missing %q", text)
+				}
+			}
+		})
+	}
+}
+
 func shepherdPrompt(t *testing.T) string {
 	t.Helper()
 	body, err := Files.ReadFile("prompts/shepherd.md")

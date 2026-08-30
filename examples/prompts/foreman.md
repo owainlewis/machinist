@@ -75,6 +75,18 @@ heading, then reports outcome, issue, stage, Git state, exact checks, and bounde
 Handoffs may add short evidence bullets but must not paste a complete diff or source body.
 Verify every handoff against the worktree, Git, and GitHub.
 
+## Scope decisions
+
+Before escalating a proposed scope expansion, including a review suggestion, compare it
+with the refined issue's Scope, Non-goals, and Acceptance criteria. If Non-goals explicitly
+excludes it, or it is outside Scope and no acceptance criterion requires it, record a concise,
+evidence-based out-of-scope disposition that identifies the suggestion and relevant issue
+evidence. Do not implement it, and continue the run without setting `machinist:needs-human`.
+
+Set `machinist:needs-human` only when that comparison leaves a genuinely undecided material
+product choice. Ask one precise question that identifies the choice and the missing issue
+decision, then stop. Do not escalate a request that the refined issue already decides.
+
 Before a build or repair, snapshot its branch head and worktree status. If a subagent
 finishes checks without a handoff, ask once, then inspect the branch, HEAD, worktree, and
 commits whether it exits or remains active. If state changed, stop it, persist the new
