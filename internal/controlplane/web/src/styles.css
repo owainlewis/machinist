@@ -74,11 +74,10 @@ button:disabled { cursor: not-allowed; }
 .app-sidebar { box-shadow: inset -1px 0 color-mix(in srgb, var(--foreground) 4%, transparent); }
 .workshop { background: var(--background); }
 .brand-wordmark { font-family: "Newsreader Variable", Georgia, serif; font-size: 1.25rem; font-weight: 540; letter-spacing: -.035em; }
-.machinist-mark { width: 2.6rem; height: 1.7rem; overflow: visible; color: var(--foreground); }
-.machinist-mark path { fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
-.machinist-mark .machinist-mark-joint { stroke: var(--surface); stroke-width: 3.5; }
-.machinist-mark .machinist-mark-rule { stroke: currentColor; stroke-width: 1.25; }
-.machinist-mark circle { fill: var(--primary); }
+.machinist-mark { width: 2.6rem; height: auto; overflow: visible; color: var(--foreground); }
+.machinist-mark path { fill: none; stroke-width: 5; stroke-linecap: square; stroke-linejoin: round; }
+.machinist-mark .machinist-mark-piece-a { stroke: currentColor; }
+.machinist-mark .machinist-mark-piece-b { stroke: var(--primary); }
 .page-heading { border-bottom: 1px solid var(--border); padding-bottom: 1.35rem; }
 main h1 { font-family: "Newsreader Variable", Georgia, serif; font-size: clamp(1.8rem, 3vw, 2.45rem); font-weight: 520; letter-spacing: -.035em; }
 main h2 { letter-spacing: -.012em; }

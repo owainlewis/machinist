@@ -71,15 +71,23 @@ test('setup snippets include required directories and Codex permissions', async 
   assert.doesNotMatch(source, /pipeline|--agent/);
 });
 
-test('public identity uses the fitted SVG mark and current positioning', async () => {
+test('public identity uses the two-piece interlocking mark and current positioning', async () => {
   const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./index.html', import.meta.url), 'utf8'));
   const styles = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./styles.css', import.meta.url), 'utf8'));
+  const mark = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./machinist-mark.svg', import.meta.url), 'utf8'));
+  const socialCard = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./social-card.svg', import.meta.url), 'utf8'));
 
   assert.match(source, /machinist-mark\.svg/);
   assert.match(source, /A better way to put coding agents to work\./);
   assert.doesNotMatch(source, /machinist-mark\.png|fonts\.googleapis\.com/);
   assert.match(styles, /--mark: #66a9c2/);
   assert.doesNotMatch(styles, /#f08b24|#f2ede3|DM Mono|Inter Tight/);
+  assert.equal((mark.match(/<path/g) || []).length, 2);
+  assert.doesNotMatch(mark, /<circle|<linearGradient/);
+  assert.match(socialCard, /width="1200" height="630"/);
+  assert.match(socialCard, /#1d6683/);
+  assert.match(socialCard, /M32 28h4V18/);
+  assert.doesNotMatch(socialCard, /M32 28v12/);
 });
 
 test('repository quick start links to existing guides and stays directly runnable', async () => {

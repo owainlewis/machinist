@@ -335,12 +335,9 @@ function EmptyRuns({ filtered, openComposer }) {
 }
 
 function MachinistMark() {
-  return <svg className="machinist-mark" viewBox="0 0 44 28" aria-hidden="true">
-    <path d="M3 22V10C3 6.5 5 4 8 4s5 2.5 5 6v12" />
-    <path d="M13 10c0-3.5 2.2-6 5.2-6s4.8 2.5 4.8 6v12h4" />
-    <path className="machinist-mark-joint" d="M10.5 17.5 15.5 12.5" />
-    <circle cx="42" cy="21" r="2" />
-    <path className="machinist-mark-rule" d="M27 22h13" />
+  return <svg className="machinist-mark" viewBox="0 0 64 48" aria-hidden="true">
+    <path className="machinist-mark-piece-a" d="M8 40V18C8 11 12 7 18 7s10 4 10 11v10h4" />
+    <path className="machinist-mark-piece-b" d="M32 28h4V18c0-7 4-11 10-11s10 4 10 11v22" />
   </svg>;
 }
 

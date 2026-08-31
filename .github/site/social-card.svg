@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">machinist</title>
+  <desc id="description">Supervised coding agents. On your machine.</desc>
+  <rect width="1200" height="630" fill="#f3f4f1"/>
+  <path d="M0 1h1200M0 629h1200" stroke="#c5cecd"/>
+  <g transform="translate(88 78) scale(4.5)" fill="none">
+    <path d="M8 40V18C8 11 12 7 18 7s10 4 10 11v10h4" stroke="#1a1d1e" stroke-width="5" stroke-linecap="square" stroke-linejoin="round"/>
+    <path d="M32 28h4V18c0-7 4-11 10-11s10 4 10 11v22" stroke="#1d6683" stroke-width="5" stroke-linecap="square" stroke-linejoin="round"/>
+  </g>
+  <text x="88" y="420" fill="#1a1d1e" font-family="Georgia, 'Times New Roman', serif" font-size="112" letter-spacing="-5">machinist</text>
+  <text x="94" y="493" fill="#4f595b" font-family="Arial, Helvetica, sans-serif" font-size="33" letter-spacing="-0.5">Supervised coding agents. On your machine.</text>
+  <path d="M94 547h1012" stroke="#c5cecd"/>
+  <path d="M94 547h168" stroke="#1d6683" stroke-width="3"/>
+</svg>
