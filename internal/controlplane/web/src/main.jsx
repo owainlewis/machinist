@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, ArrowLeft, BarChart3, Bot, GitBranch, LayoutDashboard, Moon, Play, Plus, Server, Sun, Table2, TimerReset, Trash2, Workflow, X } from "lucide-react";
+import { Activity, ArrowLeft, BarChart3, Bot, GitBranch, LayoutDashboard, Moon, Play, Plus, Server, Sun, Table2, TimerReset, Trash2, X } from "lucide-react";
 import { Analytics } from "@/analytics";
 import { CommandsPage, WorkersPage } from "@/catalog";
 import { Badge } from "@/components/ui/badge";
@@ -143,13 +143,13 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground md:flex">
-      <aside className="sticky top-0 z-20 flex shrink-0 items-center border-b border-border bg-sidebar px-3 py-2 md:h-screen md:w-52 md:flex-col md:items-stretch md:border-b-0 md:border-r md:px-3 md:py-4">
-        <div className="flex h-10 items-center gap-2.5 px-2 text-sm font-semibold tracking-tight">
-          <span className="grid size-7 place-items-center rounded-md border border-border bg-surface text-primary shadow-xs"><Workflow className="size-[18px]" /></span>
-          <span>Machinist</span>
+    <div className="app-shell min-h-screen bg-background text-foreground md:flex">
+      <aside className="app-sidebar sticky top-0 z-20 flex shrink-0 items-center border-b border-border bg-sidebar px-3 py-2 md:h-screen md:w-56 md:flex-col md:items-stretch md:border-b-0 md:border-r md:px-4 md:py-5">
+        <div className="brand-lockup flex h-10 items-center gap-3 px-1">
+          <MachinistMark />
+          <span className="brand-wordmark">machinist</span>
         </div>
-        <nav className="ml-4 flex flex-1 gap-1 overflow-x-auto md:ml-0 md:mt-6 md:block md:overflow-visible" aria-label="Primary">
+        <nav className="ml-4 flex flex-1 gap-1 overflow-x-auto md:ml-0 md:mt-9 md:block md:overflow-visible" aria-label="Primary">
           <a href="#/runs" aria-current={view === "runs" || view === "task" ? "page" : undefined} className={cn("nav-item", (view === "runs" || view === "task") && "nav-item-active")}><Activity className="size-4" /><span>Runs</span><span className="ml-auto text-xs text-muted-foreground">{counts.all}</span></a>
           <a href="#/analytics" aria-current={view === "analytics" ? "page" : undefined} className={cn("nav-item", view === "analytics" && "nav-item-active")}><BarChart3 className="size-4" /><span>Analytics</span></a>
           <a href="#/workers" aria-current={view === "workers" ? "page" : undefined} className={cn("nav-item", view === "workers" && "nav-item-active")}><Server className="size-4" /><span>Workers</span></a>
@@ -164,10 +164,10 @@ function App() {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1">
+      <main className="workshop min-w-0 flex-1">
         {view === "task" ? <TaskDetail job={selectedJob} loaded={statusLoaded} error={statusError || taskActionError} deleting={deletingJob === route.jobID} onDelete={deleteJob} /> : view === "analytics" ? <Analytics jobs={status.jobs} loaded={statusLoaded} error={statusError} /> : view === "workers" ? <WorkersPage workers={status.workers} loaded={statusLoaded} error={statusError} /> : view === "triggers" ? <TriggersPage triggers={status.triggers || []} loaded={statusLoaded} error={statusError} /> : view === "commands" ? <CommandsPage /> : <div className="mx-auto max-w-[1500px] space-y-6 p-4 sm:p-6 lg:p-8">
-          <header className="flex items-start justify-between gap-6">
-            <h1 className="text-xl font-semibold tracking-tight">Runs</h1>
+          <header className="page-heading flex items-start justify-between gap-6">
+            <div><p className="eyebrow">Control plane / 01</p><h1 className="mt-2 text-xl font-semibold tracking-tight">Runs</h1><p className="mt-2 max-w-xl text-sm text-muted-foreground">Work in motion, from first cut to finished run.</p></div>
             <div className="flex items-center gap-2">
               <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setDark((value) => !value)} aria-label="Toggle theme">{dark ? <Moon className="size-4" /> : <Sun className="size-4" />}</Button>
               <Button className="text-xs!" onClick={() => setComposerOpen(true)}><Plus className="size-4" />New run</Button>
@@ -275,7 +275,7 @@ function RunComposer({ choices, repositories, selection, setSelection, repositor
 function RunBoard({ jobs }) {
   const groupedJobs = groupJobsByBoardColumn(jobs);
   return <div className="grid min-w-0 gap-4 lg:grid-cols-3">
-    {boardColumns.map((column) => <section key={column.id} className="min-w-0 rounded-lg border border-border bg-muted/20" aria-labelledby={`board-${column.id}`}>
+    {boardColumns.map((column) => <section key={column.id} className="run-column min-w-0 border border-border bg-muted/20" aria-labelledby={`board-${column.id}`}>
       <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
         <div className="min-w-0"><h2 id={`board-${column.id}`} className="text-sm font-semibold">{column.title}</h2><p className="break-words text-xs text-muted-foreground">{column.description}</p></div>
         <Badge className="shrink-0 border-border bg-surface text-muted-foreground" aria-label={`${groupedJobs[column.id].length} visible ${column.title.toLowerCase()} runs`}>{groupedJobs[column.id].length}</Badge>
@@ -328,6 +328,13 @@ function State({ value }) {
 
 function EmptyRuns({ filtered, openComposer }) {
   return <div className="grid place-items-center px-6 py-16 text-center"><span className="grid size-10 place-items-center rounded-full bg-muted text-muted-foreground"><GitBranch className="size-5" /></span><h3 className="mt-3 text-sm font-semibold">{filtered ? "No matching runs" : "No runs yet"}</h3><p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">{filtered ? "Try a different state filter." : "Submit a prompt to a configured command. It will appear here as soon as the control plane admits it."}</p>{!filtered && <Button variant="outline" size="sm" className="mt-4" onClick={openComposer}><Plus className="size-3.5" />New run</Button>}</div>;
+}
+
+function MachinistMark() {
+  return <svg className="machinist-mark" viewBox="0 0 44 28" aria-hidden="true">
+    <path d="M2 21h5c4 0 4-14 9-14s3 14 8 14 4-14 9-14 3 14 8 14h1" />
+    <circle cx="42" cy="21" r="2" />
+  </svg>;
 }
 
 function firstSelection(status) { return status.commands?.[0] || ""; }

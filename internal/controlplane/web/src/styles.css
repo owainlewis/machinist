@@ -3,7 +3,7 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
-  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: "Avenir Next", Avenir, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --text-xs: 0.75rem;
   --text-xs--line-height: 1rem;
   --text-sm: 0.875rem;
@@ -30,52 +30,74 @@
 
 :root {
   color-scheme: light;
-  --background: #fafafa;
-  --foreground: #17181a;
-  --surface: #ffffff;
-  --sidebar: #f4f4f5;
-  --muted: #f0f0f2;
-  --muted-foreground: #6f7178;
-  --border: #e1e1e4;
-  --primary: #477f69;
-  --primary-foreground: #ffffff;
-  --success: #267d5c;
-  --warning: #a36d20;
-  --danger: #b34d47;
-  --ring: #477f69;
+  --background: #f2eee5;
+  --foreground: #1d1c19;
+  --surface: #f8f5ed;
+  --sidebar: #e9e3d8;
+  --muted: #e8e2d7;
+  --muted-foreground: #716c62;
+  --border: #cbc3b5;
+  --primary: #c54a2e;
+  --accent-text: #a63b25;
+  --primary-foreground: #fffaf0;
+  --success: #376b55;
+  --warning: #9a651e;
+  --danger: #a13d31;
+  --ring: #c54a2e;
 }
 
 .dark {
   color-scheme: dark;
-  --background: #0e0f11;
-  --foreground: #f0f1f2;
-  --surface: #15171a;
-  --sidebar: #111316;
-  --muted: #1d2024;
-  --muted-foreground: #9398a1;
-  --border: #282c31;
-  --primary: #79c2a3;
-  --primary-foreground: #0c1712;
-  --success: #69c59d;
-  --warning: #d7a65f;
-  --danger: #df8279;
-  --ring: #79c2a3;
+  --background: #171714;
+  --foreground: #eee9df;
+  --surface: #1e1e1a;
+  --sidebar: #121310;
+  --muted: #282721;
+  --muted-foreground: #a29c90;
+  --border: #3a3831;
+  --primary: #df6546;
+  --accent-text: #df6546;
+  --primary-foreground: #17120f;
+  --success: #78a98d;
+  --warning: #d1a05b;
+  --danger: #e47b6a;
+  --ring: #df6546;
 }
 
 * { border-color: var(--border); }
 html { background: var(--background); }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--background); color: var(--foreground); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+body::before { position: fixed; z-index: 50; inset: 0; pointer-events: none; content: ""; opacity: .045; background-image: repeating-linear-gradient(17deg, transparent 0 3px, currentColor 3px 3.5px, transparent 3.5px 9px), repeating-linear-gradient(103deg, transparent 0 7px, currentColor 7px 7.5px, transparent 7.5px 13px); background-size: 17px 19px, 23px 29px; }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 ::selection { background: color-mix(in srgb, var(--primary) 25%, transparent); }
 
-.nav-item { display: flex; height: 2.25rem; flex-shrink: 0; align-items: center; gap: 0.625rem; border-radius: 0.375rem; padding: 0 0.625rem; color: var(--muted-foreground); font-size: 0.875rem; line-height: 1.25rem; transition: color .15s ease, background .15s ease; }
-.nav-item:hover { background: var(--muted); color: var(--foreground); }
-.nav-item-active { background: var(--surface); color: var(--foreground); box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
-.field-label { display: block; margin-bottom: 0.375rem; color: var(--muted-foreground); font-size: 0.75rem; line-height: 1rem; font-weight: 500; }
-.field-control { min-height: 2.5rem; width: 100%; border: 1px solid var(--border); border-radius: 0.375rem; outline: none; background: var(--background); padding: 0.625rem 0.75rem; color: var(--foreground); font-size: 0.875rem; line-height: 1.25rem; box-shadow: 0 1px 2px rgb(0 0 0 / .04); transition: border-color .15s ease, box-shadow .15s ease; }
+.app-sidebar { box-shadow: inset -1px 0 color-mix(in srgb, var(--foreground) 4%, transparent); }
+.workshop { background-image: linear-gradient(90deg, color-mix(in srgb, var(--border) 28%, transparent) 1px, transparent 1px); background-size: 4rem 100%; }
+.brand-wordmark { font-family: "Iowan Old Style", Baskerville, Georgia, serif; font-size: 1.2rem; letter-spacing: -.035em; }
+.machinist-mark { width: 2.6rem; height: 1.7rem; overflow: visible; color: var(--foreground); }
+.machinist-mark path { fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+.machinist-mark circle { fill: var(--primary); }
+.page-heading { border-bottom: 1px solid var(--border); padding-bottom: 1.35rem; }
+.eyebrow { color: var(--accent-text); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .66rem; letter-spacing: .16em; text-transform: uppercase; }
+main h1 { font-family: "Iowan Old Style", Baskerville, Georgia, serif; font-size: clamp(1.7rem, 3vw, 2.35rem); font-weight: 500; letter-spacing: -.035em; }
+main h2 { letter-spacing: -.012em; }
+.nav-item { position: relative; display: flex; height: 2.4rem; flex-shrink: 0; align-items: center; gap: 0.625rem; border-radius: 0; padding: 0 0.625rem; color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1.25rem; transition: color .15s ease, background .15s ease; }
+.nav-item:hover { background: color-mix(in srgb, var(--muted) 65%, transparent); color: var(--foreground); }
+.nav-item-active { background: transparent; color: var(--foreground); box-shadow: none; }
+.nav-item-active::before { position: absolute; left: -.25rem; width: 2px; height: 1.15rem; background: var(--primary); content: ""; }
+.crafted-card { box-shadow: 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent), 0 10px 30px color-mix(in srgb, var(--foreground) 3%, transparent); }
+.run-column { border-radius: 2px; }
+.field-label { display: block; margin-bottom: 0.375rem; color: var(--muted-foreground); font-size: 0.6875rem; line-height: 1rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.field-control { min-height: 2.5rem; width: 100%; border: 1px solid var(--border); border-radius: 2px; outline: none; background: var(--background); padding: 0.625rem 0.75rem; color: var(--foreground); font-size: 0.875rem; line-height: 1.25rem; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 3%, transparent); transition: border-color .15s ease, box-shadow .15s ease; }
 .field-control::placeholder { color: var(--muted-foreground); opacity: .7; }
 .field-control:focus { border-color: color-mix(in srgb, var(--primary) 60%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent); }
+
+@media (max-width: 767px) {
+  .brand-wordmark { display: none; }
+  .workshop { background-size: 3rem 100%; }
+  .app-sidebar { box-shadow: inset 0 -1px color-mix(in srgb, var(--foreground) 4%, transparent); }
+}
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
