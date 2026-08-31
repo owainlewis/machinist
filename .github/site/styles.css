@@ -13,6 +13,7 @@
   --mark: #66a9c2;
   --mark-bright: #8bc1d4;
   --green: #78ad91;
+
   font-family: "Manrope Variable", ui-sans-serif, system-ui, sans-serif;
 }
 
@@ -70,7 +71,7 @@ h1 { margin: 0; max-width: 860px; font-family: "Newsreader Variable", Georgia, s
 .panel-topline, .panel-footer { display: flex; justify-content: space-between; font: 500 .64rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
 .panel-topline { padding: 15px 17px; border-bottom: 1px solid var(--line); color: var(--paper-muted); }
 .status { color: var(--green); }
-.status i { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(131, 199, 149, .12); }
+.status i { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: currentcolor; box-shadow: 0 0 0 4px rgba(131, 199, 149, .12); }
 .work-order { margin: 24px; padding: 21px; border: 1px solid var(--line); background: var(--ink); }
 .work-order-head { display: flex; justify-content: space-between; margin-bottom: 25px; font: 500 .63rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .work-id { color: var(--mark); }

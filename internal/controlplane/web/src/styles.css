@@ -99,7 +99,7 @@ main h2 { letter-spacing: -.012em; }
 
 @media (max-width: 767px) {
   .brand-wordmark { display: none; }
-  body { padding-bottom: 4.15rem; }
+  body { padding-bottom: calc(4.15rem + env(safe-area-inset-bottom)); }
   .app-sidebar { box-shadow: inset 0 -1px color-mix(in srgb, var(--foreground) 4%, transparent); }
   .app-sidebar nav { position: fixed; z-index: 40; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; margin: 0; overflow: visible; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--sidebar) 94%, transparent); padding: .4rem .3rem max(.4rem, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
   .app-sidebar nav .nav-item { height: 3.1rem; flex-direction: column; justify-content: center; gap: .2rem; padding: 0 .1rem; font-size: .625rem; }
