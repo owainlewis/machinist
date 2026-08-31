@@ -78,9 +78,14 @@ test('public identity uses the two-piece interlocking mark and current positioni
   const socialCard = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./social-card.svg', import.meta.url), 'utf8'));
 
   assert.match(source, /machinist-mark\.svg/);
+  assert.match(source, /technical-drawings\.webp/);
+  assert.match(source, /width="1693" height="929"/);
   assert.match(source, /A better way to put coding agents to work\./);
   assert.doesNotMatch(source, /machinist-mark\.png|fonts\.googleapis\.com/);
-  assert.match(styles, /--mark: #66a9c2/);
+  assert.match(styles, /--mark: #1d6683/);
+  assert.match(styles, /\.drawing-machine/);
+  assert.match(styles, /\.drawing-system/);
+  assert.match(styles, /\.drawing-assembly/);
   assert.doesNotMatch(styles, /#f08b24|#f2ede3|DM Mono|Inter Tight/);
   assert.equal((mark.match(/<path/g) || []).length, 2);
   assert.doesNotMatch(mark, /<circle|<linearGradient/);
