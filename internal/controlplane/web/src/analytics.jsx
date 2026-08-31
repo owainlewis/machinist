@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
+import { PageHeading, QuietState } from "@/components/ui/page-heading";
 import { analyticsState } from "@/analytics-state";
 import { formatDurationMillis, formatReportingCoverage, formatSuccessRate, formatTokenUsage, tokenUsageSummary } from "@/run-metrics";
 
@@ -10,12 +11,11 @@ export function Analytics({ jobs, loaded, error }) {
   const usage = useMemo(() => tokenUsageSummary(runs), [runs]);
 
   return <div className="mx-auto max-w-[1500px] space-y-6 p-4 sm:p-6 lg:p-8">
-    <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-      <div><h1 className="text-xl font-semibold tracking-tight">Task analytics</h1><p className="mt-1 text-sm text-muted-foreground">Task outcomes with measured run duration and executor-reported token usage.</p></div>
+    <PageHeading title="Task analytics" description="Task outcomes with measured run duration and executor-reported token usage.">
       <label className="w-full sm:w-40"><span className="field-label">Time window</span><select className="field-control" value={days} onChange={(event) => setDays(event.target.value)}><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select></label>
-    </header>
+    </PageHeading>
 
-    {view.kind === "error" ? <div role="alert" className="rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">{view.message}</div> : view.kind === "loading" ? <Card className="grid place-items-center p-12 text-sm text-muted-foreground" role="status">Loading analytics…</Card> : <>
+    {view.kind === "error" ? <div role="alert" className="rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">{view.message}</div> : view.kind === "loading" ? <Card><QuietState title="Measuring the work" description="Loading task outcomes and reported usage." role="status" /></Card> : <>
       <section className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]" aria-label="Task metrics">
         <Card className="flex min-h-48 flex-col justify-between border-primary/25 bg-primary/5 p-5 sm:p-6">
           <div><p className="text-sm font-medium text-muted-foreground">Average task time</p><p className="mt-3 break-words text-4xl font-semibold tracking-tight tabular-nums sm:text-5xl">{formatDurationMillis(view.metrics.averageTaskDurationMillis)}</p></div>

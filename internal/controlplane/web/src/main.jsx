@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import "@fontsource-variable/manrope";
+import "@fontsource-variable/newsreader";
 import { Activity, ArrowLeft, BarChart3, Bot, GitBranch, LayoutDashboard, Moon, Play, Plus, Server, Sun, Table2, TimerReset, Trash2, X } from "lucide-react";
 import { Analytics } from "@/analytics";
 import { CommandsPage, WorkersPage } from "@/catalog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { PageHeading } from "@/components/ui/page-heading";
 import { cn } from "@/lib/utils";
 import { formatDurationMillis, formatTaskTokenUsage, formatTokenUsage, runModelSummary, taskDurationMillis, tokenUsageSummary } from "@/run-metrics";
 import { routeFromHash } from "@/routes";
@@ -162,17 +165,18 @@ function App() {
             {dark ? <Moon className="size-4" /> : <Sun className="size-4" />}<span>{dark ? "Dark" : "Light"} theme</span>
           </button>
         </div>
+        <button onClick={() => setDark((value) => !value)} className="mobile-theme ml-auto grid size-9 place-items-center text-muted-foreground md:hidden" aria-label={`Switch to ${dark ? "light" : "dark"} theme`}>
+          {dark ? <Moon className="size-4" /> : <Sun className="size-4" />}
+        </button>
       </aside>
 
       <main className="workshop min-w-0 flex-1">
         {view === "task" ? <TaskDetail job={selectedJob} loaded={statusLoaded} error={statusError || taskActionError} deleting={deletingJob === route.jobID} onDelete={deleteJob} /> : view === "analytics" ? <Analytics jobs={status.jobs} loaded={statusLoaded} error={statusError} /> : view === "workers" ? <WorkersPage workers={status.workers} loaded={statusLoaded} error={statusError} /> : view === "triggers" ? <TriggersPage triggers={status.triggers || []} loaded={statusLoaded} error={statusError} /> : view === "commands" ? <CommandsPage /> : <div className="mx-auto max-w-[1500px] space-y-6 p-4 sm:p-6 lg:p-8">
-          <header className="page-heading flex items-start justify-between gap-6">
-            <div><p className="eyebrow">Control plane / 01</p><h1 className="mt-2 text-xl font-semibold tracking-tight">Runs</h1><p className="mt-2 max-w-xl text-sm text-muted-foreground">Work in motion, from first cut to finished run.</p></div>
+          <PageHeading title="Runs" description="Work in motion, from first cut to finished run.">
             <div className="flex items-center gap-2">
-              <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setDark((value) => !value)} aria-label="Toggle theme">{dark ? <Moon className="size-4" /> : <Sun className="size-4" />}</Button>
               <Button className="text-xs!" onClick={() => setComposerOpen(true)}><Plus className="size-4" />New run</Button>
             </div>
-          </header>
+          </PageHeading>
 
           {composerOpen && <RunComposer choices={choices} repositories={repositories} selection={selection} setSelection={setSelection} repository={repository} setRepository={setRepository} prompt={prompt} setPrompt={setPrompt} model={model} setModel={setModel} submitting={submitting} submit={submit} close={() => setComposerOpen(false)} />}
           {(statusError || submitError) && <div role="alert" className="rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">{submitError || statusError}</div>}
@@ -332,8 +336,11 @@ function EmptyRuns({ filtered, openComposer }) {
 
 function MachinistMark() {
   return <svg className="machinist-mark" viewBox="0 0 44 28" aria-hidden="true">
-    <path d="M2 21h5c4 0 4-14 9-14s3 14 8 14 4-14 9-14 3 14 8 14h1" />
+    <path d="M3 22V10C3 6.5 5 4 8 4s5 2.5 5 6v12" />
+    <path d="M13 10c0-3.5 2.2-6 5.2-6s4.8 2.5 4.8 6v12h4" />
+    <path className="machinist-mark-joint" d="M10.5 17.5 15.5 12.5" />
     <circle cx="42" cy="21" r="2" />
+    <path className="machinist-mark-rule" d="M27 22h13" />
   </svg>;
 }
 
