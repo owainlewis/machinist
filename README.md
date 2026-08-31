@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <strong>Put coding agents to work through a process you control.</strong><br>
-  Run approved commands in Git repositories, review the result, wait for checks, and hand the pull request back to a human.
+  <strong>The open source AI software factory for agentic coders.</strong><br>
+ Machinist is an open source software factory for repeatable and scalable AI coding workflows. 
 </p>
 
 <p align="center">
@@ -20,7 +20,9 @@
 
 <p align="center"><sub>Machine section · supervised agent system · exploded assembly</sub></p>
 
-Machinist is an open-source control plane for supervised coding agents. It runs on your machine, keeps repository access and credentials local, and records the work from request to handoff. Commands can invoke Codex, Claude Code, another agent CLI, a test runner, a shell script, or repository-owned orchestration.
+Machinist is an open-source software factory implementation. It runs on your machine, keeps repository access and credentials local, and records the work from request to handoff. Commands can invoke Codex, Claude Code, another agent CLI, a test runner, a shell script, or repository-owned orchestration.
+
+Please note: this is early access software and subject to change. 
 
 ## Why Machinist
 
