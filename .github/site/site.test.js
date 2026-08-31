@@ -70,3 +70,23 @@ test('setup snippets include required directories and Codex permissions', async 
   assert.match(source, /"--sandbox"[\s\S]+"danger-full-access"/);
   assert.doesNotMatch(source, /pipeline|--agent/);
 });
+
+test('public identity uses the fitted SVG mark and current positioning', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./index.html', import.meta.url), 'utf8'));
+  const styles = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./styles.css', import.meta.url), 'utf8'));
+
+  assert.match(source, /machinist-mark\.svg/);
+  assert.match(source, /A better way to put coding agents to work\./);
+  assert.doesNotMatch(source, /machinist-mark\.png|fonts\.googleapis\.com/);
+  assert.match(styles, /--mark: #66a9c2/);
+  assert.doesNotMatch(styles, /#f08b24|#f2ede3|DM Mono|Inter Tight/);
+});
+
+test('repository quick start links to existing guides and stays directly runnable', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('../../README.md', import.meta.url), 'utf8'));
+
+  for (const guide of ['docs/README.md', 'docs/configuration.md', 'docs/development.md', 'docs/vm-deployment.md']) {
+    assert.match(source, new RegExp(guide.replace('.', '\\.')));
+  }
+  assert.doesNotMatch(source, /machinist submit|docs\/getting-started|docs\/how-it-works|docs\/control-plane|docs\/secure-self-hosting/);
+});
