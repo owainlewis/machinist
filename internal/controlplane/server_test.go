@@ -645,6 +645,73 @@ func TestHeartbeatEndpointAuthenticatesAndRejectsInvalidLeases(t *testing.T) {
 	nonRunning.Body.Close()
 }
 
+func TestCompletionEndpointClassifiesClientAndPersistenceErrors(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+	auth := map[string]string{"Authorization": "Bearer secret"}
+
+	missing := postJSON(t, webServer.URL+"/api/v1/runs/missing/complete", protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: "lease", State: "succeeded", ExitCode: 0,
+	}, auth)
+	if missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing run status = %d", missing.StatusCode)
+	}
+	missing.Body.Close()
+
+	if _, err := server.store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request")); err != nil {
+		t.Fatal(err)
+	}
+	run, err := server.store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	endpoint := webServer.URL + "/api/v1/runs/" + run.ID + "/complete"
+
+	for name, test := range map[string]struct {
+		completion protocol.Completion
+		want       int
+	}{
+		"invalid lease": {
+			completion: protocol.Completion{InstanceID: "worker-a", LeaseToken: "stale", State: "succeeded", ExitCode: 0},
+			want:       http.StatusConflict,
+		},
+		"invalid terminal state": {
+			completion: protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "running", ExitCode: 0},
+			want:       http.StatusBadRequest,
+		},
+		"invalid outcome": {
+			completion: protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 1},
+			want:       http.StatusBadRequest,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := postJSON(t, endpoint, test.completion, auth)
+			defer response.Body.Close()
+			if response.StatusCode != test.want {
+				t.Fatalf("status = %d, want %d", response.StatusCode, test.want)
+			}
+		})
+	}
+
+	if _, err := server.store.db.ExecContext(t.Context(), `
+		CREATE TRIGGER fail_completion
+		BEFORE UPDATE OF state ON runs
+		WHEN NEW.state = 'succeeded'
+		BEGIN
+			SELECT RAISE(FAIL, 'temporary completion write failure');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+	persistenceFailure := postJSON(t, endpoint, protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0,
+	}, auth)
+	defer persistenceFailure.Body.Close()
+	if persistenceFailure.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("persistence failure status = %d, want %d", persistenceFailure.StatusCode, http.StatusInternalServerError)
+	}
+}
+
 func TestServerEnqueuesConfiguredShepherdSchedule(t *testing.T) {
 	directory := t.TempDir()
 	promptPath := filepath.Join(directory, "shepherd.md")

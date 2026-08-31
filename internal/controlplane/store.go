@@ -21,6 +21,7 @@ import (
 var (
 	ErrLeaseConflict                   = errors.New("run lease does not match")
 	ErrRunState                        = errors.New("run is not active")
+	ErrInvalidCompletion               = errors.New("invalid run completion")
 	ErrJobActive                       = errors.New("active job cannot be deleted")
 	ErrTriggerMissing                  = errors.New("trigger state does not exist")
 	ErrTriggerStale                    = errors.New("trigger state configuration changed")
@@ -876,10 +877,10 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 		return ErrLeaseConflict
 	}
 	if !terminalRunState(completion.State) {
-		return fmt.Errorf("invalid terminal run state %q", completion.State)
+		return fmt.Errorf("%w: invalid terminal run state %q", ErrInvalidCompletion, completion.State)
 	}
 	if err := validateOutcome(completion.State, completion.ExitCode); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrInvalidCompletion, err)
 	}
 	durationMillis, tokenUsage := resultMetrics(completion.Result)
 	completedAt := s.now().UTC()

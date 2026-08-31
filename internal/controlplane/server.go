@@ -472,8 +472,12 @@ func (s *Server) complete(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusNotFound, errors.New("run not found"))
 		return
 	}
-	if err != nil {
+	if errors.Is(err, ErrInvalidCompletion) {
 		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
 	response.WriteHeader(http.StatusNoContent)
