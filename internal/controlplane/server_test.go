@@ -710,6 +710,13 @@ func TestCompletionEndpointClassifiesClientAndPersistenceErrors(t *testing.T) {
 	if persistenceFailure.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("persistence failure status = %d, want %d", persistenceFailure.StatusCode, http.StatusInternalServerError)
 	}
+	persistenceBody, err := io.ReadAll(persistenceFailure.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persistenceBody, []byte("temporary completion write failure")) {
+		t.Fatalf("persistence response exposes storage error: %s", persistenceBody)
+	}
 }
 
 func TestServerEnqueuesConfiguredShepherdSchedule(t *testing.T) {

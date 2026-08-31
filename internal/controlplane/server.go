@@ -477,7 +477,8 @@ func (s *Server) complete(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(response, http.StatusInternalServerError, err)
+		log.Printf("complete run %q: %v", request.PathValue("id"), err)
+		writeError(response, http.StatusInternalServerError, errors.New("complete run"))
 		return
 	}
 	response.WriteHeader(http.StatusNoContent)
