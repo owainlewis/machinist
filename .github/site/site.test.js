@@ -98,6 +98,7 @@ test('public identity uses the two-piece interlocking mark and current positioni
 test('repository quick start links to existing guides and stays directly runnable', async () => {
   const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('../../README.md', import.meta.url), 'utf8'));
 
+  assert.match(source, /\.github\/site\/technical-drawings\.webp/);
   for (const guide of ['docs/README.md', 'docs/configuration.md', 'docs/development.md', 'docs/vm-deployment.md']) {
     assert.match(source, new RegExp(guide.replace('.', '\\.')));
   }

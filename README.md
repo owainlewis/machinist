@@ -14,6 +14,12 @@
   <a href="examples/workflows/README.md">Workflow examples</a>
 </p>
 
+<p align="center">
+  <img src=".github/site/technical-drawings.webp" width="100%" alt="Technical drawings of a milling machine, supervised coding-agent system, and precision linear assembly">
+</p>
+
+<p align="center"><sub>Machine section · supervised agent system · exploded assembly</sub></p>
+
 Machinist is an open-source control plane for supervised coding agents. It runs on your machine, keeps repository access and credentials local, and records the work from request to handoff. Commands can invoke Codex, Claude Code, another agent CLI, a test runner, a shell script, or repository-owned orchestration.
 
 ## Why Machinist
