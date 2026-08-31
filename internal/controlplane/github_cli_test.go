@@ -150,6 +150,53 @@ func TestGitHubCLIIssueDetailsMatchesRequestedLabelCaseInsensitively(t *testing.
 	}
 }
 
+func TestParseLatestGitHubLabelEventOrdersTiedDecimalIDsNumerically(t *testing.T) {
+	output := []byte(`[[
+  {"id":9,"event":"labeled","created_at":"2026-01-02T00:00:00Z","actor":{"login":"older"},"label":{"name":"machinist:requested"}},
+  {"id":10,"event":"labeled","created_at":"2026-01-02T00:00:00Z","actor":{"login":"newer"},"label":{"name":"machinist:requested"}}
+]]`)
+
+	event, err := parseLatestGitHubLabelEvent(output, "machinist:requested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event == nil || event.ID != "10" || event.Actor != "newer" || event.OccurrenceKey != "github.com:10" {
+		t.Fatalf("latest event = %#v, want ID 10 from newer actor", event)
+	}
+}
+
+func TestParseLatestGitHubLabelEventOrdersLargeTiedDecimalIDsLosslessly(t *testing.T) {
+	output := []byte(`[[
+  {"id":9999999999999999999,"event":"labeled","created_at":"2026-01-02T00:00:00Z","actor":{"login":"older"},"label":{"name":"machinist:requested"}},
+  {"id":10000000000000000000,"event":"labeled","created_at":"2026-01-02T00:00:00Z","actor":{"login":"newer"},"label":{"name":"machinist:requested"}}
+]]`)
+
+	event, err := parseLatestGitHubLabelEvent(output, "machinist:requested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event == nil || event.ID != "10000000000000000000" || event.Actor != "newer" || event.OccurrenceKey != "github.com:10000000000000000000" {
+		t.Fatalf("latest event = %#v, want lossless newer large ID", event)
+	}
+}
+
+func TestGitHubEventIDValidationAndNonDecimalOrderingRemainUnchanged(t *testing.T) {
+	for _, raw := range []string{"null", `""`, "-1", "1.5", "18446744073709551616"} {
+		if _, err := parseGitHubEventID([]byte(raw)); err == nil {
+			t.Errorf("parseGitHubEventID(%s) accepted invalid numeric ID", raw)
+		}
+	}
+
+	for _, raw := range []string{`"event-9"`, `"event-10"`} {
+		if _, err := parseGitHubEventID([]byte(raw)); err != nil {
+			t.Errorf("parseGitHubEventID(%s) rejected string ID: %v", raw, err)
+		}
+	}
+	if compareGitHubEventIDs("event-9", "event-10") <= 0 {
+		t.Fatal("non-decimal IDs no longer use lexical ordering")
+	}
+}
+
 func TestGitHubCLIIssueDetailsIdentifiesPullRequestAndMissingEvent(t *testing.T) {
 	cli, _ := newScriptedGitHubCLI(
 		scriptedGitHubResult{stdout: `{"number":7,"html_url":"https://github.com/o/r/pull/7","state":"closed","created_at":"2026-01-01T00:00:00Z","pull_request":{"url":"x"},"labels":[]}`},
