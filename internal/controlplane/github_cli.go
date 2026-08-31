@@ -568,12 +568,36 @@ func parseLatestGitHubLabelEvent(output []byte, requestedLabel string) (*GitHubL
 				actor = strings.TrimSpace(event.Actor.Login)
 			}
 			candidate := &GitHubLabelEvent{ID: id, Actor: actor, CreatedAt: createdAt, OccurrenceKey: "github.com:" + id}
-			if latest == nil || candidate.CreatedAt.After(latest.CreatedAt) || (candidate.CreatedAt.Equal(latest.CreatedAt) && candidate.ID > latest.ID) {
+			if latest == nil || candidate.CreatedAt.After(latest.CreatedAt) || (candidate.CreatedAt.Equal(latest.CreatedAt) && compareGitHubEventIDs(candidate.ID, latest.ID) > 0) {
 				latest = candidate
 			}
 		}
 	}
 	return latest, nil
+}
+
+func compareGitHubEventIDs(left, right string) int {
+	if isCanonicalDecimal(left) && isCanonicalDecimal(right) {
+		if len(left) < len(right) {
+			return -1
+		}
+		if len(left) > len(right) {
+			return 1
+		}
+	}
+	return strings.Compare(left, right)
+}
+
+func isCanonicalDecimal(value string) bool {
+	if value == "" || (len(value) > 1 && value[0] == '0') {
+		return false
+	}
+	for i := range value {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseGitHubEventID(raw json.RawMessage) (string, error) {
