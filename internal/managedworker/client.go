@@ -31,10 +31,14 @@ type ResponseError struct {
 }
 
 func (err *ResponseError) Error() string {
-	if err.Body == "" {
-		return fmt.Sprintf("control plane returned %s", http.StatusText(err.Status))
+	message := fmt.Sprintf("control plane returned HTTP %d", err.Status)
+	if text := http.StatusText(err.Status); text != "" {
+		message += " " + text
 	}
-	return fmt.Sprintf("control plane returned %s: %s", http.StatusText(err.Status), err.Body)
+	if err.Body != "" {
+		message += ": " + err.Body
+	}
+	return message
 }
 
 // Retryable reports whether the request may succeed later. Client errors other
