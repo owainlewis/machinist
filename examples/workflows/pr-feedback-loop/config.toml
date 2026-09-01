@@ -1,0 +1,3 @@
+[commands.pr-feedback-loop]
+executor = "pr-feedback-loop-script"
+timeout = "4h"
