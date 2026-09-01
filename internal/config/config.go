@@ -9,7 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,6 +49,10 @@ type ControlPlane struct {
 type Executor struct {
 	Command []string          `toml:"command"`
 	Models  map[string]string `toml:"models"`
+}
+
+func (e Executor) supportsModel() bool {
+	return slices.ContainsFunc(e.Command, func(argument string) bool { return strings.Contains(argument, modelParameter) })
 }
 
 type Repository struct {
@@ -162,7 +166,7 @@ type ResolvedCommand struct {
 func LoadWorker(path string) (Worker, error) {
 	worker := Worker{}
 	if path == "" {
-		defaultPath, err := defaultWorkerConfigPath()
+		defaultPath, err := defaultConfigPath("worker.toml")
 		if err != nil {
 			return Worker{}, err
 		}
@@ -194,7 +198,7 @@ func LoadWorker(path string) (Worker, error) {
 
 func LoadConfig(path string) (Config, error) {
 	if path == "" {
-		defaultPath, err := defaultMachinistConfigPath()
+		defaultPath, err := defaultConfigPath("config.toml")
 		if err != nil {
 			return Config{}, err
 		}
@@ -245,29 +249,14 @@ func loadConfigFile(path string) (Config, error) {
 
 func (c Config) Path() string { return c.path }
 
-func (w Worker) ResolveMachinistConfig(override string) (string, error) {
-	path := override
-	base := ""
-	if path == "" {
-		path = "config.toml"
-		base = w.configDir
-	}
-	path, err := expandHome(path)
-	if err != nil {
-		return "", err
-	}
-	if !filepath.IsAbs(path) && base != "" {
-		path = filepath.Join(base, path)
-	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve Machinist config: %w", err)
-	}
-	return filepath.Clean(absPath), nil
-}
+// CommandNames lists the defined command names in sorted order.
+func (c Config) CommandNames() []string { return sortedMapKeys(c.Commands) }
 
-func (w Worker) ResolveCommand(command ResolvedCommand) (ResolvedCommand, error) {
-	return w.ResolveCommandModel(command, "")
+func (w Worker) ResolveMachinistConfig(override string) (string, error) {
+	if override != "" {
+		return resolveConfigPath(override, "")
+	}
+	return resolveConfigPath("config.toml", w.configDir)
 }
 
 func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel string) (ResolvedCommand, error) {
@@ -295,14 +284,10 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 
 func resolveModel(name string, executor Executor, requested string) (string, error) {
 	model := strings.TrimSpace(requested)
-	hasParameter := false
-	for _, argument := range executor.Command {
-		hasParameter = hasParameter || strings.Contains(argument, modelParameter)
-	}
 	if model == "" {
 		return "", nil
 	}
-	if !hasParameter {
+	if !executor.supportsModel() {
 		return "", fmt.Errorf("executor %q does not support model selection; add %s to its command", name, modelParameter)
 	}
 	if resolved, ok := executor.Models[model]; ok {
@@ -340,11 +325,8 @@ func (w Worker) ExecutorNames() []string { return sortedMapKeys(w.Executors) }
 func (w Worker) ModelCapabilities() map[string][]string {
 	capabilities := make(map[string][]string)
 	for name, executor := range w.Executors {
-		for _, argument := range executor.Command {
-			if strings.Contains(argument, modelParameter) {
-				capabilities[name] = sortedMapKeys(executor.Models)
-				break
-			}
+		if executor.supportsModel() {
+			capabilities[name] = sortedMapKeys(executor.Models)
 		}
 	}
 	return capabilities
@@ -371,11 +353,16 @@ func LoadCommand(definitionPath, name string) (ResolvedCommand, error) {
 	if err != nil {
 		return ResolvedCommand{}, err
 	}
-	command, ok := definition.Commands[name]
+	return definition.ResolveCommand(name)
+}
+
+// ResolveCommand resolves one named command from an already loaded definition.
+func (c Config) ResolveCommand(name string) (ResolvedCommand, error) {
+	command, ok := c.Commands[name]
 	if !ok {
-		return ResolvedCommand{}, fmt.Errorf("command %q is not defined in %s", name, definitionPath)
+		return ResolvedCommand{}, fmt.Errorf("command %q is not defined in %s", name, c.path)
 	}
-	return resolveCommand(definitionPath, name, command)
+	return resolveCommand(c.path, name, command)
 }
 
 func LoadDefinitions(path string) (Config, error) { return loadConfigFile(path) }
@@ -590,14 +577,8 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 				return Worker{}, fmt.Errorf("executor %q model aliases and values must be non-empty", name)
 			}
 		}
-		if len(executor.Models) > 0 {
-			hasParameter := false
-			for _, argument := range executor.Command {
-				hasParameter = hasParameter || strings.Contains(argument, modelParameter)
-			}
-			if !hasParameter {
-				return Worker{}, fmt.Errorf("executor %q defines models but its command does not contain %s", name, modelParameter)
-			}
+		if len(executor.Models) > 0 && !executor.supportsModel() {
+			return Worker{}, fmt.Errorf("executor %q defines models but its command does not contain %s", name, modelParameter)
 		}
 	}
 	return worker, nil
@@ -687,24 +668,16 @@ func sortedMapKeys[T any](values map[string]T) []string {
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 
-func defaultWorkerConfigPath() (string, error) {
+func defaultConfigPath(name string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("find user home directory: %w", err)
 	}
-	return filepath.Join(home, ".machinist", "worker.toml"), nil
-}
-
-func defaultMachinistConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("find user home directory: %w", err)
-	}
-	return filepath.Join(home, ".machinist", "config.toml"), nil
+	return filepath.Join(home, ".machinist", name), nil
 }
 
 func expandHome(path string) (string, error) {

@@ -14,7 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -196,61 +196,48 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 
 func (s *Server) runScheduler(ctx context.Context) error {
 	var schedulers sync.WaitGroup
-	start := func(work func(context.Context) error) {
+	loop := func(delayFirst bool, work func(context.Context) error) {
 		schedulers.Add(1)
 		go func() {
 			defer schedulers.Done()
+			if delayFirst && !sleep(ctx, s.schedulerEvery) {
+				return
+			}
 			for {
 				s.reportSchedulerError(work(ctx))
-				timer := time.NewTimer(s.schedulerEvery)
-				select {
-				case <-ctx.Done():
-					if !timer.Stop() {
-						select {
-						case <-timer.C:
-						default:
-						}
-					}
+				if !sleep(ctx, s.schedulerEvery) {
 					return
-				case <-timer.C:
 				}
 			}
 		}()
 	}
 	if len(s.schedules) > 0 {
-		start(s.enqueueScheduledRuns)
+		loop(false, s.enqueueScheduledRuns)
 	}
 	for _, trigger := range s.triggers {
-		trigger := trigger
-		start(func(ctx context.Context) error {
+		loop(false, func(ctx context.Context) error {
 			if err := s.processManagedTrigger(ctx, trigger); err != nil {
 				return fmt.Errorf("trigger %q: %w", trigger.Identity, err)
 			}
 			return nil
 		})
 	}
-	schedulers.Add(1)
-	go func() {
-		defer schedulers.Done()
-		for {
-			timer := time.NewTimer(s.schedulerEvery)
-			select {
-			case <-ctx.Done():
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				return
-			case <-timer.C:
-				s.reportSchedulerError(s.maintainState(ctx))
-			}
-		}
-	}()
+	loop(true, s.maintainState)
 	<-ctx.Done()
 	schedulers.Wait()
 	return nil
+}
+
+// sleep waits for the duration and reports false when ctx ends first.
+func sleep(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (s *Server) maintainState(ctx context.Context) error {
@@ -301,8 +288,8 @@ func (s *Server) definitions(response http.ResponseWriter, request *http.Request
 		return
 	}
 	commands := make([]commandDefinitionResponse, 0, len(definition.Commands))
-	for _, name := range mapKeys(definition.Commands) {
-		command, err := config.LoadCommand(s.definitionPath, name)
+	for _, name := range definition.CommandNames() {
+		command, err := definition.ResolveCommand(name)
 		if err != nil {
 			writeError(response, http.StatusInternalServerError, err)
 			return
@@ -338,7 +325,7 @@ func (s *Server) status(response http.ResponseWriter, request *http.Request) {
 	}
 	writeJSON(response, http.StatusOK, statusResponse{
 		Snapshot:     snapshot,
-		Commands:     mapKeys(definition.Commands),
+		Commands:     definition.CommandNames(),
 		Repositories: repositories,
 		CSRFToken:    s.csrfToken,
 	})
@@ -357,7 +344,7 @@ func (s *Server) catalog(response http.ResponseWriter, request *http.Request) {
 	}
 	response.Header().Set("Cache-Control", "no-store")
 	writeJSON(response, http.StatusOK, catalogResponse{
-		Commands:     mapKeys(definition.Commands),
+		Commands:     definition.CommandNames(),
 		Repositories: repositories,
 	})
 }
@@ -380,7 +367,7 @@ func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusInternalServerError, repositoryErr)
 		return
 	}
-	if !containsString(repositories, input.Repository) {
+	if !slices.Contains(repositories, input.Repository) {
 		writeError(response, http.StatusBadRequest, fmt.Errorf("repository %q is not defined in the control plane", input.Repository))
 		return
 	}
@@ -560,15 +547,6 @@ func (s *Server) validBrowserRequest(request *http.Request) bool {
 	return hostname == "localhost" || net.ParseIP(hostname) != nil && net.ParseIP(hostname).IsLoopback()
 }
 
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
 func validateLoopbackListen(listen string) error {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -634,13 +612,4 @@ func securityHeaders(next http.Handler) http.Handler {
 		response.Header().Set("X-Content-Type-Options", "nosniff")
 		next.ServeHTTP(response, request)
 	})
-}
-
-func mapKeys[T any](values map[string]T) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }

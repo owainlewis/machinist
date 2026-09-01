@@ -1,16 +1,12 @@
 package managedworker
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,9 +20,8 @@ import (
 
 type Worker struct {
 	config         config.Worker
-	token          string
 	instanceID     string
-	client         *http.Client
+	client         *Client
 	stdout         io.Writer
 	stderr         io.Writer
 	heartbeatTicks <-chan time.Time
@@ -35,15 +30,6 @@ type Worker struct {
 
 const heartbeatInterval = 10 * time.Second
 
-type responseError struct {
-	status int
-	body   string
-}
-
-func (err *responseError) Error() string {
-	return fmt.Sprintf("control plane returned %s: %s", http.StatusText(err.status), err.body)
-}
-
 func New(workerConfig config.Worker, stdout, stderr io.Writer) (*Worker, error) {
 	if strings.TrimSpace(workerConfig.Name) == "" {
 		return nil, errors.New("worker name is required")
@@ -51,17 +37,7 @@ func New(workerConfig config.Worker, stdout, stderr io.Writer) (*Worker, error) 
 	if len(workerConfig.Executors) == 0 || len(workerConfig.Repositories) == 0 {
 		return nil, errors.New("managed worker requires at least one executor and repository")
 	}
-	endpoint, err := url.Parse(workerConfig.ControlPlane.URL)
-	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
-		return nil, fmt.Errorf("invalid control_plane.url %q", workerConfig.ControlPlane.URL)
-	}
-	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
-		return nil, errors.New("control_plane.url must use http or https")
-	}
-	if endpoint.Scheme == "http" && !loopbackHost(endpoint.Hostname()) {
-		return nil, errors.New("control_plane.url must use https for a non-loopback host")
-	}
-	token, err := workerConfig.WorkerToken()
+	client, err := NewClient(workerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -71,9 +47,8 @@ func New(workerConfig config.Worker, stdout, stderr io.Writer) (*Worker, error) 
 	}
 	return &Worker{
 		config:     workerConfig,
-		token:      token,
 		instanceID: instanceID,
-		client:     &http.Client{Timeout: 15 * time.Second},
+		client:     client,
 		stdout:     stdout,
 		stderr:     stderr,
 	}, nil
@@ -106,28 +81,39 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) executeWithHeartbeats(ctx context.Context, spec protocol.RunSpec) protocol.Completion {
-	ticks := w.heartbeatTicks
-	var ticker *time.Ticker
-	if ticks == nil {
-		ticker = time.NewTicker(heartbeatInterval)
-		ticks = ticker.C
-		defer ticker.Stop()
-	}
 	execute := w.executeRun
 	if execute == nil {
 		execute = w.execute
 	}
-	done := make(chan protocol.Completion, 1)
-	go func() {
-		done <- execute(ctx, spec)
-	}()
+	return withHeartbeats(ctx, w, spec, "", func() protocol.Completion { return execute(ctx, spec) })
+}
+
+func (w *Worker) deliverWithHeartbeats(ctx context.Context, spec protocol.RunSpec, completion protocol.Completion) error {
+	if err := w.heartbeat(ctx, spec); err != nil {
+		fmt.Fprintf(w.stderr, "machinist: heartbeat run %s before completion: %v\n", spec.ID, err)
+	}
+	return withHeartbeats(ctx, w, spec, " during completion", func() error { return w.deliver(ctx, spec.ID, completion) })
+}
+
+// withHeartbeats runs work in the background and keeps the run lease alive
+// until it returns. Cancellation does not abandon the work; the work observes
+// ctx itself and its result is always returned.
+func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec, phase string, work func() T) T {
+	ticks := w.heartbeatTicks
+	if ticks == nil {
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
+	done := make(chan T, 1)
+	go func() { done <- work() }()
 	for {
 		select {
-		case completion := <-done:
-			return completion
+		case result := <-done:
+			return result
 		case <-ticks:
 			if err := w.heartbeat(ctx, spec); err != nil {
-				fmt.Fprintf(w.stderr, "machinist: heartbeat run %s: %v\n", spec.ID, err)
+				fmt.Fprintf(w.stderr, "machinist: heartbeat run %s%s: %v\n", spec.ID, phase, err)
 			}
 		case <-ctx.Done():
 			return <-done
@@ -144,7 +130,7 @@ func (w *Worker) poll(ctx context.Context) (*protocol.RunSpec, error) {
 		Models:       w.config.ModelCapabilities(),
 	}
 	var response protocol.PollResponse
-	if err := w.post(ctx, "/api/v1/workers/poll", request, &response); err != nil {
+	if err := w.client.Post(ctx, "/api/v1/workers/poll", request, &response); err != nil {
 		return nil, err
 	}
 	return response.Run, nil
@@ -192,94 +178,30 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 	return completion
 }
 
-func (w *Worker) deliverWithHeartbeats(ctx context.Context, spec protocol.RunSpec, completion protocol.Completion) error {
-	if err := w.heartbeat(ctx, spec); err != nil {
-		fmt.Fprintf(w.stderr, "machinist: heartbeat run %s before completion: %v\n", spec.ID, err)
-	}
-	ticks := w.heartbeatTicks
-	var ticker *time.Ticker
-	if ticks == nil {
-		ticker = time.NewTicker(heartbeatInterval)
-		ticks = ticker.C
-		defer ticker.Stop()
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- w.deliver(ctx, spec.ID, completion)
-	}()
-	for {
-		select {
-		case err := <-done:
-			return err
-		case <-ticks:
-			if err := w.heartbeat(ctx, spec); err != nil {
-				fmt.Fprintf(w.stderr, "machinist: heartbeat run %s during completion: %v\n", spec.ID, err)
-			}
-		case <-ctx.Done():
-			return <-done
-		}
-	}
-}
-
 func (w *Worker) deliver(ctx context.Context, runID string, completion protocol.Completion) error {
 	backoff := 250 * time.Millisecond
 	for {
-		err := w.post(ctx, "/api/v1/runs/"+url.PathEscape(runID)+"/complete", completion, nil)
+		err := w.client.Post(ctx, "/api/v1/runs/"+url.PathEscape(runID)+"/complete", completion, nil)
 		if err == nil {
 			return nil
 		}
-		var responseErr *responseError
-		if errors.As(err, &responseErr) && responseErr.status >= 400 && responseErr.status < 500 && responseErr.status != http.StatusRequestTimeout && responseErr.status != http.StatusTooManyRequests {
+		var responseErr *ResponseError
+		if errors.As(err, &responseErr) && !responseErr.Retryable() {
 			return err
 		}
 		fmt.Fprintf(w.stderr, "machinist: report run %s: %v\n", runID, err)
 		if !wait(ctx, backoff) {
 			return ctx.Err()
 		}
-		if backoff < 5*time.Second {
-			backoff *= 2
-			if backoff > 5*time.Second {
-				backoff = 5 * time.Second
-			}
-		}
+		backoff = min(backoff*2, 5*time.Second)
 	}
 }
 
 func (w *Worker) heartbeat(ctx context.Context, spec protocol.RunSpec) error {
-	return w.post(ctx, "/api/v1/runs/"+url.PathEscape(spec.ID)+"/heartbeat", protocol.Heartbeat{
+	return w.client.Post(ctx, "/api/v1/runs/"+url.PathEscape(spec.ID)+"/heartbeat", protocol.Heartbeat{
 		InstanceID: w.instanceID,
 		LeaseToken: spec.LeaseToken,
 	}, nil)
-}
-
-func (w *Worker) post(ctx context.Context, path string, input, output any) error {
-	body, err := json.Marshal(input)
-	if err != nil {
-		return err
-	}
-	endpoint := strings.TrimRight(w.config.ControlPlane.URL, "/") + path
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Authorization", "Bearer "+w.token)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := w.client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
-		return &responseError{status: response.StatusCode, body: strings.TrimSpace(string(message))}
-	}
-	if output == nil || response.StatusCode == http.StatusNoContent {
-		return nil
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(output); err != nil {
-		return fmt.Errorf("decode control plane response: %w", err)
-	}
-	return nil
 }
 
 func wait(ctx context.Context, duration time.Duration) bool {
@@ -291,14 +213,6 @@ func wait(ctx context.Context, duration time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
-}
-
-func loopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func randomID(prefix string, byteCount int) (string, error) {

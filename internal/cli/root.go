@@ -1,17 +1,13 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/url"
+	"slices"
 	"strings"
-	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/controlplane"
@@ -152,18 +148,6 @@ type submitJobResponse struct {
 	ID string `json:"id"`
 }
 
-type submitHTTPError struct {
-	status int
-	body   string
-}
-
-func (err *submitHTTPError) Error() string {
-	if err.body == "" {
-		return fmt.Sprintf("control plane returned %s", http.StatusText(err.status))
-	}
-	return fmt.Sprintf("control plane returned %s: %s", http.StatusText(err.status), err.body)
-}
-
 func newSubmitCommand(options *commandOptions) *cobra.Command {
 	var commandName, prompt, model, repository string
 	submit := &cobra.Command{
@@ -189,108 +173,30 @@ func submitSelection(ctx context.Context, options *commandOptions, commandName, 
 	if err != nil {
 		return err
 	}
-	token, err := worker.WorkerToken()
+	client, err := managedworker.NewClient(worker)
 	if err != nil {
 		return err
 	}
-	endpoint, err := controlPlaneEndpoint(worker.ControlPlane.URL)
-	if err != nil {
-		return err
+	var catalog submitCatalog
+	if err := client.Get(ctx, "/api/v1/catalog", &catalog); err != nil {
+		return fmt.Errorf("read control plane catalog: %w", err)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	catalog, err := getSubmitCatalog(ctx, client, endpoint, token)
-	if err != nil {
-		return err
-	}
-	if !contains(catalog.Repositories, repository) {
+	if !slices.Contains(catalog.Repositories, repository) {
 		return fmt.Errorf("repository %q is not defined in the control plane; check the configured repository name and worker registration", repository)
 	}
-	if !contains(catalog.Commands, commandName) {
+	if !slices.Contains(catalog.Commands, commandName) {
 		return fmt.Errorf("command %q is not defined in the control plane", commandName)
 	}
-
-	body, err := json.Marshal(submitJobRequest{
-		Prompt:     prompt,
-		Repository: repository,
-		Command:    commandName,
-		Model:      model,
-	})
-	if err != nil {
-		return fmt.Errorf("encode submission: %w", err)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/api/v1/jobs", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("create submission request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := client.Do(request)
-	if err != nil {
-		return fmt.Errorf("submit job: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
-		return &submitHTTPError{status: response.StatusCode, body: strings.TrimSpace(string(message))}
-	}
 	var result submitJobResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
-		return fmt.Errorf("decode submission response: %w", err)
+	request := submitJobRequest{Prompt: prompt, Repository: repository, Command: commandName, Model: model}
+	if err := client.Post(ctx, "/api/v1/jobs", request, &result); err != nil {
+		return fmt.Errorf("submit job: %w", err)
 	}
 	if strings.TrimSpace(result.ID) == "" {
 		return errors.New("control plane submission response did not include a job ID")
 	}
 	fmt.Fprintln(options.stdout, result.ID)
 	return nil
-}
-
-func getSubmitCatalog(ctx context.Context, client *http.Client, endpoint, token string) (submitCatalog, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/v1/catalog", nil)
-	if err != nil {
-		return submitCatalog{}, fmt.Errorf("create control plane catalog request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	response, err := client.Do(request)
-	if err != nil {
-		return submitCatalog{}, fmt.Errorf("read control plane catalog: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
-		return submitCatalog{}, &submitHTTPError{status: response.StatusCode, body: strings.TrimSpace(string(message))}
-	}
-	var catalog submitCatalog
-	if err := json.NewDecoder(response.Body).Decode(&catalog); err != nil {
-		return submitCatalog{}, fmt.Errorf("decode control plane catalog: %w", err)
-	}
-	return catalog, nil
-}
-
-func controlPlaneEndpoint(raw string) (string, error) {
-	endpoint, err := url.Parse(raw)
-	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
-		return "", fmt.Errorf("invalid control_plane.url %q", raw)
-	}
-	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
-		return "", errors.New("control_plane.url must use http or https")
-	}
-	if endpoint.Scheme == "http" && !loopbackHost(endpoint.Hostname()) {
-		return "", errors.New("control_plane.url must use https for a non-loopback host")
-	}
-	return strings.TrimRight(raw, "/"), nil
-}
-
-func loopbackHost(host string) bool {
-	return strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func newStartCommand(options *commandOptions) *cobra.Command {

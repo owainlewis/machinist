@@ -15,7 +15,7 @@ import (
 )
 
 func TestCodexUsageCollectorReadsFinalStructuredUsage(t *testing.T) {
-	collector := newCodexUsageCollector("codex", []string{"codex", "exec", "--json", "-"})
+	collector := newUsageCollector("codex", []string{"codex", "exec", "--json", "-"})
 	chunks := []string{
 		`{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":8,"output_tokens":2}}` + "\n" + `{"type":"item.completed",`,
 		`"item":{"type":"agent_message","text":"done"}}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":40,`,
@@ -43,7 +43,7 @@ func TestCodexUsageCollectorLeavesInvalidUsageUnavailable(t *testing.T) {
 		{name: "overflow", line: `{"type":"turn.completed","usage":{"input_tokens":` + "9223372036854775807" + `,"output_tokens":1}}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			collector := newCodexUsageCollector("codex", []string{"codex", "exec", "--json"})
+			collector := newUsageCollector("codex", []string{"codex", "exec", "--json"})
 			_, _ = collector.Write([]byte(test.line + "\n"))
 			if got := collector.tokenUsage(); got != nil {
 				t.Fatalf("token usage = %d, want unavailable", *got)
@@ -53,7 +53,7 @@ func TestCodexUsageCollectorLeavesInvalidUsageUnavailable(t *testing.T) {
 }
 
 func TestCodexUsageCollectorUsesTheLastCompletedTurn(t *testing.T) {
-	collector := newCodexUsageCollector("codex", []string{"codex", "exec", "--json"})
+	collector := newUsageCollector("codex", []string{"codex", "exec", "--json"})
 	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5}}` + "\n"))
 	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":"invalid","output_tokens":5}}` + "\n"))
 	if got := collector.tokenUsage(); got != nil {
@@ -62,7 +62,7 @@ func TestCodexUsageCollectorUsesTheLastCompletedTurn(t *testing.T) {
 }
 
 func TestCodexUsageCollectorInvalidatesUsageForTruncatedFinalCompletedTurn(t *testing.T) {
-	collector := newCodexUsageCollector("codex", []string{"codex", "exec", "--json"})
+	collector := newUsageCollector("codex", []string{"codex", "exec", "--json"})
 	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5}}` + "\n"))
 	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":8`))
 	if got := collector.tokenUsage(); got != nil {
@@ -71,9 +71,9 @@ func TestCodexUsageCollectorInvalidatesUsageForTruncatedFinalCompletedTurn(t *te
 }
 
 func TestCodexUsageCollectorInvalidatesUsageForOversizedFinalCompletedTurn(t *testing.T) {
-	collector := newCodexUsageCollector("codex", []string{"codex", "exec", "--json"})
+	collector := newUsageCollector("codex", []string{"codex", "exec", "--json"})
 	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5}}` + "\n"))
-	oversized := `{"type":"turn.completed","usage":{"input_tokens":8,"output_tokens":` + strings.Repeat("1", maxCodexEventBytes) + `}}` + "\n"
+	oversized := `{"type":"turn.completed","usage":{"input_tokens":8,"output_tokens":` + strings.Repeat("1", maxStructuredEventBytes) + `}}` + "\n"
 	_, _ = collector.Write([]byte(oversized))
 	if got := collector.tokenUsage(); got != nil {
 		t.Fatalf("token usage = %d, want unavailable for oversized final event", *got)
@@ -81,7 +81,7 @@ func TestCodexUsageCollectorInvalidatesUsageForOversizedFinalCompletedTurn(t *te
 }
 
 func TestCodexUsageCollectorIgnoresUnrelatedMalformedOutput(t *testing.T) {
-	collector := newCodexUsageCollector("codex", []string{"codex", "exec", "--json"})
+	collector := newUsageCollector("codex", []string{"codex", "exec", "--json"})
 	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5}}` + "\n"))
 	_, _ = collector.Write([]byte(`{"type":"item.completed","item":`))
 	if got := collector.tokenUsage(); got == nil || *got != 9 {
@@ -92,7 +92,7 @@ func TestCodexUsageCollectorIgnoresUnrelatedMalformedOutput(t *testing.T) {
 func TestStructuredUsageCollectorIgnoresNestedMalformedTerminalEvents(t *testing.T) {
 	for _, resultType := range []string{"result", "turn.completed"} {
 		t.Run(resultType, func(t *testing.T) {
-			collector := newStructuredUsageCollector(resultType, resultType == "result")
+			collector := &structuredUsageCollector{resultType: resultType, cache: resultType == "result"}
 			valid := `{"type":"` + resultType + `","usage":{"input_tokens":4,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5}}`
 			if resultType == "turn.completed" {
 				valid = `{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5}}`
@@ -118,7 +118,7 @@ func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) 
 		{name: "wrapped renamed executable", executor: "codex-local", command: []string{"/usr/bin/env", "agent", "exec", "--json"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if collector := newCodexUsageCollector(test.executor, test.command); collector == nil {
+			if collector := newUsageCollector(test.executor, test.command); collector == nil {
 				t.Fatalf("collector disabled for executor %q command %q", test.executor, test.command)
 			}
 		})
@@ -132,7 +132,7 @@ func TestCodexUsageCollectorIsEnabledOnlyForStructuredCodexOutput(t *testing.T) 
 		{executor: "codex", command: []string{"agent", "serve", "--json"}},
 		{executor: "custom", command: []string{"agent", "exec", "--json"}},
 	} {
-		if collector := newCodexUsageCollector(test.executor, test.command); collector != nil {
+		if collector := newUsageCollector(test.executor, test.command); collector != nil {
 			t.Fatalf("collector enabled for executor %q command %q", test.executor, test.command)
 		}
 	}

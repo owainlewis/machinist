@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 	"time"
@@ -121,14 +122,12 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 		}
 		resolved := ResolvedTrigger{
 			Identity: identity, Family: "github", Name: name,
-			GitHubRepositories: cloneStrings(repositories), Every: every, Label: label,
+			GitHubRepositories: maps.Clone(repositories), Every: every, Label: label,
 			SelectionName: selection, Model: strings.TrimSpace(definition.Model), Command: command,
 		}
-		resolved.Signature, err = triggerSignature(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("trigger %q signature: %w", identity, err)
+		if result, err = appendTrigger(result, resolved); err != nil {
+			return nil, err
 		}
-		result = append(result, resolved)
 	}
 
 	for _, name := range sortedMapKeys(c.Triggers.Interval) {
@@ -157,11 +156,9 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 			Identity: identity, Family: "interval", Name: name, Repository: repository, GitHubRepository: slug,
 			Every: every, SelectionName: selection, Model: strings.TrimSpace(definition.Model), Prompt: prompt, Command: command,
 		}
-		resolved.Signature, err = triggerSignature(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("trigger %q signature: %w", identity, err)
+		if result, err = appendTrigger(result, resolved); err != nil {
+			return nil, err
 		}
-		result = append(result, resolved)
 	}
 
 	for _, name := range sortedMapKeys(c.Triggers.Cron) {
@@ -191,11 +188,9 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 			Schedule: parsed.Expression(), Timezone: parsed.Timezone(), SelectionName: selection,
 			Model: strings.TrimSpace(definition.Model), Prompt: prompt, Command: command, cron: parsed,
 		}
-		resolved.Signature, err = triggerSignature(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("trigger %q signature: %w", identity, err)
+		if result, err = appendTrigger(result, resolved); err != nil {
+			return nil, err
 		}
-		result = append(result, resolved)
 	}
 	return result, nil
 }
@@ -334,6 +329,15 @@ func (t ResolvedTrigger) NextDue(after time.Time) time.Time {
 	return time.Time{}
 }
 
+func appendTrigger(result []ResolvedTrigger, trigger ResolvedTrigger) ([]ResolvedTrigger, error) {
+	signature, err := triggerSignature(trigger)
+	if err != nil {
+		return nil, fmt.Errorf("trigger %q signature: %w", trigger.Identity, err)
+	}
+	trigger.Signature = signature
+	return append(result, trigger), nil
+}
+
 func triggerSignature(trigger ResolvedTrigger) (string, error) {
 	type repositoryPair struct{ Name, Slug string }
 	repositories := make([]repositoryPair, 0, len(trigger.GitHubRepositories))
@@ -358,12 +362,4 @@ func triggerSignature(trigger ResolvedTrigger) (string, error) {
 	}
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:]), nil
-}
-
-func cloneStrings(input map[string]string) map[string]string {
-	result := make(map[string]string, len(input))
-	for key, value := range input {
-		result[key] = value
-	}
-	return result
 }

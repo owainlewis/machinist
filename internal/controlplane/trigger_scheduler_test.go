@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,7 +138,7 @@ func TestManagedGitHubTriggerCommitsBeforeLabelsAndRepairsWithoutDuplicate(t *te
 	}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
 
-	if err := server.processManagedTriggers(t.Context()); err == nil {
+	if err := processManagedTriggers(t.Context(), server); err == nil {
 		t.Fatal("expected label update failure")
 	}
 	snapshot, err := store.Snapshot(t.Context())
@@ -150,7 +151,7 @@ func TestManagedGitHubTriggerCommitsBeforeLabelsAndRepairsWithoutDuplicate(t *te
 
 	clock = clock.Add(trigger.Every)
 	client.replaceErr = nil
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err = store.Snapshot(t.Context())
@@ -178,7 +179,7 @@ func TestManagedGitHubTriggerFinishesAdmittedLabelRepairAfterRepositoryRemoval(t
 		permission: "write", replaceErr: errors.New("label update failed"),
 	}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
-	if err := server.processManagedTriggers(t.Context()); err == nil {
+	if err := processManagedTriggers(t.Context(), server); err == nil {
 		t.Fatal("expected initial label update failure")
 	}
 
@@ -191,7 +192,7 @@ func TestManagedGitHubTriggerFinishesAdmittedLabelRepairAfterRepositoryRemoval(t
 	}
 	server.triggers = []config.ResolvedTrigger{current}
 	client.replaceErr = nil
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	if client.replaceCalls != 2 || hasGitHubLabel(client.details.Labels, trigger.Label) || !hasGitHubLabel(client.details.Labels, queuedGitHubLabel) {
@@ -219,7 +220,7 @@ func TestManagedGitHubTriggerRejectsUnauthorizedActor(t *testing.T) {
 		permission: "read",
 	}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.Snapshot(t.Context())
@@ -256,7 +257,7 @@ func TestManagedGitHubTriggerRecoversNewerRequestAfterPostRemovalReadFailure(t *
 	}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
 
-	if err := server.processManagedTriggers(t.Context()); err == nil {
+	if err := processManagedTriggers(t.Context(), server); err == nil {
 		t.Fatal("expected the post-removal read to fail")
 	}
 	if err := store.Close(); err != nil {
@@ -278,7 +279,7 @@ func TestManagedGitHubTriggerRecoversNewerRequestAfterPostRemovalReadFailure(t *
 	server.triggers = []config.ResolvedTrigger{currentTrigger}
 	delete(client.detailsErrors, 2)
 	clock = clock.Add(currentTrigger.Every)
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.Snapshot(t.Context())
@@ -296,7 +297,7 @@ func TestManagedGitHubTriggerRecoversNewerRequestAfterPostRemovalReadFailure(t *
 		t.Fatal(err)
 	}
 	clock = clock.Add(currentTrigger.Every)
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err = store.Snapshot(t.Context())
@@ -310,7 +311,7 @@ func TestManagedGitHubTriggerRecoversNewerRequestAfterPostRemovalReadFailure(t *
 	if len(snapshot.Jobs) != 2 || !newerAdmitted {
 		t.Fatalf("newer durable request was not admitted: %#v", snapshot.Jobs)
 	}
-	if !containsString(client.permissionActors, "second-owner") || containsString(client.permissionActors, "machinist") {
+	if !slices.Contains(client.permissionActors, "second-owner") || slices.Contains(client.permissionActors, "machinist") {
 		t.Fatalf("permission actors = %v, want original newer actor", client.permissionActors)
 	}
 }
@@ -333,11 +334,11 @@ func TestManagedGitHubTriggerConsumesUnauthorizedCandidatesBeyondSearchWindow(t 
 		client.detailsByNumber[number] = GitHubIssueDetails{GitHubCandidate: candidate, Labels: []string{"machinist:requested"}, RequestedEvent: &GitHubLabelEvent{ID: fmt.Sprint(number), Actor: actor, CreatedAt: candidate.CreatedAt, OccurrenceKey: fmt.Sprintf("github.com:%d", number)}}
 	}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	clock = clock.Add(trigger.Every)
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.Snapshot(t.Context())
@@ -381,7 +382,7 @@ func TestManagedGitHubTriggerAdmitsAuthorizedWorkflowTokenActor(t *testing.T) {
 	}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
 
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.Snapshot(t.Context())
@@ -489,7 +490,7 @@ func TestManagedIntervalTriggerCoalescesBacklogAndActiveOccurrences(t *testing.T
 		t.Fatal(err)
 	}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, now: func() time.Time { return clock }}
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.Snapshot(t.Context())
@@ -502,7 +503,7 @@ func TestManagedIntervalTriggerCoalescesBacklogAndActiveOccurrences(t *testing.T
 	}
 
 	clock = startup.Add(4 * time.Hour)
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err = store.Snapshot(t.Context())
@@ -634,7 +635,7 @@ func assertFixedTriggerRetriesPendingOccurrence(t *testing.T, trigger config.Res
 	invalid := trigger
 	invalid.Command = config.ResolvedCommand{}
 	server := &Server{store: store, triggers: []config.ResolvedTrigger{invalid}, now: func() time.Time { return clock }}
-	if err := server.processManagedTriggers(t.Context()); err == nil {
+	if err := processManagedTriggers(t.Context(), server); err == nil {
 		t.Fatal("expected first admission to fail")
 	}
 	statuses, err := store.TriggerSnapshot(t.Context())
@@ -659,7 +660,7 @@ func assertFixedTriggerRetriesPendingOccurrence(t *testing.T, trigger config.Res
 		t.Fatal(err)
 	}
 	server = &Server{store: reopened, triggers: []config.ResolvedTrigger{trigger}, now: func() time.Time { return clock }}
-	if err := server.processManagedTriggers(t.Context()); err != nil {
+	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := reopened.Snapshot(t.Context())
@@ -694,4 +695,14 @@ func openManagedTriggerTestStore(t *testing.T, clock *time.Time) *Store {
 	store.now = func() time.Time { return *clock }
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func processManagedTriggers(ctx context.Context, server *Server) error {
+	var failures []error
+	for _, trigger := range server.triggers {
+		if err := server.processManagedTrigger(ctx, trigger); err != nil {
+			failures = append(failures, fmt.Errorf("trigger %q: %w", trigger.Identity, err))
+		}
+	}
+	return errors.Join(failures...)
 }

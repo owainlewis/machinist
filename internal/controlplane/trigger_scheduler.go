@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,16 +19,6 @@ type githubTriggerClient interface {
 	IssueDetails(context.Context, string, int, string) (GitHubIssueDetails, error)
 	Permission(context.Context, string, string) (string, error)
 	AcknowledgeRequest(context.Context, string, int, string, string, bool) error
-}
-
-func (s *Server) processManagedTriggers(ctx context.Context) error {
-	var failures []error
-	for _, trigger := range s.triggers {
-		if err := s.processManagedTrigger(ctx, trigger); err != nil {
-			failures = append(failures, fmt.Errorf("trigger %q: %w", trigger.Identity, err))
-		}
-	}
-	return errors.Join(failures...)
 }
 
 func (s *Server) processManagedTrigger(ctx context.Context, trigger config.ResolvedTrigger) error {
@@ -135,11 +126,9 @@ func fixedOccurrenceWindow(trigger config.ResolvedTrigger, firstDue, now time.Ti
 }
 
 func (s *Server) processGitHubTrigger(ctx context.Context, trigger config.ResolvedTrigger, generation string) error {
-	repositories := make([]string, 0, len(trigger.GitHubRepositories))
-	for _, slug := range trigger.GitHubRepositories {
-		repositories = append(repositories, slug)
-	}
-	sort.Slice(repositories, func(i, j int) bool { return strings.ToLower(repositories[i]) < strings.ToLower(repositories[j]) })
+	repositories := slices.SortedFunc(maps.Values(trigger.GitHubRepositories), func(left, right string) int {
+		return strings.Compare(strings.ToLower(left), strings.ToLower(right))
+	})
 	var failures []error
 	reconciliations, err := s.store.GitHubTriggerReconciliations(ctx, trigger.Identity)
 	if err != nil {

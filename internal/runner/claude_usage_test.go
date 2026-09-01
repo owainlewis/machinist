@@ -60,7 +60,7 @@ func TestClaudeDebugFlagPreservesExplicitOutputFormat(t *testing.T) {
 	if got := structuredClaudeCommand("claude", command); !slices.Equal(got, command) {
 		t.Fatalf("command = %q, want unchanged", got)
 	}
-	if got := newClaudeUsageCollector("claude", command); got == nil {
+	if got := newUsageCollector("claude", command); got == nil {
 		t.Fatal("collector = nil, want enabled for explicit JSON output")
 	}
 }
@@ -70,7 +70,7 @@ func TestClaudeDebugFilterSeparateValueIsRejected(t *testing.T) {
 	if got := structuredClaudeCommand("claude", command); !slices.Equal(got, command) {
 		t.Fatalf("command = %q, want unchanged", got)
 	}
-	if got := newClaudeUsageCollector("claude", command); got != nil {
+	if got := newUsageCollector("claude", command); got != nil {
 		t.Fatalf("collector = %#v, want disabled", got)
 	}
 }
@@ -89,7 +89,7 @@ func TestClaudeUsageCollectorAcceptsCurrentPrintOptions(t *testing.T) {
 		{"claude", "--print", "--strict-mcp-config"},
 		{"claude", "--print", "--prompt-suggestions=false"},
 	} {
-		if got := newClaudeUsageCollector("claude", command); got == nil {
+		if got := newUsageCollector("claude", command); got == nil {
 			t.Fatalf("collector disabled for command %q", command)
 		}
 	}
@@ -105,7 +105,7 @@ func TestClaudeCommandRecognitionRejectsTrailingNiceWrappers(t *testing.T) {
 		if got := structuredClaudeCommand("claude", command); !slices.Equal(got, command) {
 			t.Fatalf("command = %q, want unchanged", got)
 		}
-		if got := newClaudeUsageCollector("claude", command); got != nil {
+		if got := newUsageCollector("claude", command); got != nil {
 			t.Fatalf("collector = %#v, want disabled", got)
 		}
 	}
@@ -133,7 +133,7 @@ func TestClaudeCommandRecognitionRejectsAmbiguousArguments(t *testing.T) {
 			if got := structuredClaudeCommand(test.executor, test.command); !slices.Equal(got, test.command) {
 				t.Fatalf("command = %q, want unchanged", got)
 			}
-			if got := newClaudeUsageCollector(test.executor, test.command); got != nil {
+			if got := newUsageCollector(test.executor, test.command); got != nil {
 				t.Fatalf("collector = %#v, want disabled", got)
 			}
 		})
@@ -141,7 +141,7 @@ func TestClaudeCommandRecognitionRejectsAmbiguousArguments(t *testing.T) {
 }
 
 func TestClaudeUsageCollectorReadsAllUsageFields(t *testing.T) {
-	collector := newClaudeUsageCollector("claude", []string{"claude", "--print"})
+	collector := newUsageCollector("claude", []string{"claude", "--print"})
 	output := `{"type":"system","subtype":"init"}` + "\n" +
 		`{"type":"result","usage":{"input_tokens":100,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":4}}`
 	if _, err := collector.Write([]byte(output)); err != nil {
@@ -165,7 +165,7 @@ func TestClaudeUsageCollectorRejectsInvalidFinalUsage(t *testing.T) {
 		{name: "malformed field before type", line: `{"usage":invalid,"type":"result"}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			collector := newClaudeUsageCollector("claude", []string{"claude", "--print"})
+			collector := newUsageCollector("claude", []string{"claude", "--print"})
 			_, _ = collector.Write([]byte(`{"type":"result","usage":{"input_tokens":1,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}` + "\n" + test.line + "\n"))
 			if got := collector.tokenUsage(); got != nil {
 				t.Fatalf("token usage = %d, want unavailable", *got)

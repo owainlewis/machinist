@@ -192,10 +192,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	streamErrors := make(chan error, 2)
 	var streams sync.WaitGroup
 	streams.Add(2)
-	usageCollector := newCodexUsageCollector(options.Command.Executor, executorCommand)
-	if usageCollector == nil {
-		usageCollector = newClaudeUsageCollector(options.Command.Executor, executorCommand)
-	}
+	usageCollector := newUsageCollector(options.Command.Executor, executorCommand)
 	stdoutDestination := options.Stdout
 	if usageCollector != nil {
 		stdoutDestination = io.MultiWriter(options.Stdout, usageCollector)
@@ -261,6 +258,15 @@ func supervise(ctx context.Context, process *os.Process, timeout time.Duration, 
 	setOutputDeadline(timeoutAt, outputWriters...)
 	inputDone := false
 	var inputErr error
+	// abort stops the process immediately, releases every pipe, and returns the
+	// process result so callers can decide how to report the failure.
+	abort := func() processWait {
+		setOutputDeadline(time.Now(), outputWriters...)
+		_ = terminateProcessTree(process)
+		closeInput()
+		closeStreams()
+		return <-processResult
+	}
 
 	for {
 		select {
@@ -288,38 +294,22 @@ func supervise(ctx context.Context, process *os.Process, timeout time.Duration, 
 			inputDone = true
 			inputErr = err
 			if err != nil {
-				setOutputDeadline(time.Now(), outputWriters...)
-				_ = terminateProcessTree(process)
-				closeInput()
-				closeStreams()
-				waited := <-processResult
+				waited := abort()
 				<-streamsDone
 				return operationFailure(waited, err)
 			}
 		case err := <-streamErrors:
-			setOutputDeadline(time.Now(), outputWriters...)
-			_ = terminateProcessTree(process)
-			closeInput()
-			closeStreams()
-			waited := <-processResult
+			waited := abort()
 			inputErr = awaitInput(inputResult, inputDone, inputErr)
 			<-streamsDone
 			return operationFailure(waited, errors.Join(err, inputErr))
 		case <-ctx.Done():
-			setOutputDeadline(time.Now(), outputWriters...)
-			_ = terminateProcessTree(process)
-			closeInput()
-			closeStreams()
-			<-processResult
+			abort()
 			_ = awaitInput(inputResult, inputDone, inputErr)
 			<-streamsDone
 			return StateCancelled, 130, errors.New("run cancelled")
 		case <-timer.C:
-			setOutputDeadline(time.Now(), outputWriters...)
-			_ = terminateProcessTree(process)
-			closeInput()
-			closeStreams()
-			<-processResult
+			abort()
 			_ = awaitInput(inputResult, inputDone, inputErr)
 			<-streamsDone
 			return StateTimedOut, 124, fmt.Errorf("command exceeded timeout %s", timeout)

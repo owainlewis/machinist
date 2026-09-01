@@ -10,7 +10,6 @@ import (
 )
 
 const maxStructuredEventBytes = 1 << 20
-const maxCodexEventBytes = maxStructuredEventBytes
 
 type structuredUsageCollector struct {
 	buffer     []byte
@@ -20,29 +19,17 @@ type structuredUsageCollector struct {
 	cache      bool
 }
 
-type codexUsageCollector = structuredUsageCollector
-
-func newCodexUsageCollector(executor string, command []string) *codexUsageCollector {
-	execIndex := codexExecIndex(executor, command)
-	if execIndex < 1 || !slices.Contains(command[execIndex+1:], "--json") {
-		return nil
+// newUsageCollector returns a collector for the executor's structured output,
+// or nil when the command does not emit a parseable usage event.
+func newUsageCollector(executor string, command []string) *structuredUsageCollector {
+	if execIndex := codexExecIndex(executor, command); execIndex >= 1 && slices.Contains(command[execIndex+1:], "--json") {
+		return &structuredUsageCollector{resultType: "turn.completed"}
 	}
-	return newStructuredUsageCollector("turn.completed", false)
-}
-
-func newClaudeUsageCollector(executor string, command []string) *structuredUsageCollector {
 	info, ok := claudeCommandInfo(executor, command)
-	if !ok {
+	if !ok || (info.hasOutputFormat && info.outputFormat != "json" && info.outputFormat != "stream-json") {
 		return nil
 	}
-	if info.hasOutputFormat && info.outputFormat != "json" && info.outputFormat != "stream-json" {
-		return nil
-	}
-	return newStructuredUsageCollector("result", true)
-}
-
-func newStructuredUsageCollector(resultType string, cache bool) *structuredUsageCollector {
-	return &structuredUsageCollector{resultType: resultType, cache: cache}
+	return &structuredUsageCollector{resultType: "result", cache: true}
 }
 
 func structuredCommand(executor string, command []string) []string {
@@ -75,7 +62,7 @@ type claudeCommand struct {
 
 func claudeCommandInfo(executor string, command []string) (claudeCommand, bool) {
 	programIndex := claudeProgramIndex(command)
-	if programIndex < 0 || (claudeExecutableName(command[programIndex]) != "claude" && !claudeExecutorName(executor)) {
+	if programIndex < 0 || (executableName(command[programIndex]) != "claude" && !executorNamed(executor, "claude")) {
 		return claudeCommand{}, false
 	}
 	return claudeCommandInfoAfter(command, programIndex)
@@ -83,7 +70,7 @@ func claudeCommandInfo(executor string, command []string) (claudeCommand, bool) 
 
 func claudeProgramIndex(command []string) int {
 	programIndex := wrappedProgramIndex(command)
-	if programIndex >= 0 && claudeExecutableName(command[programIndex]) == "nice" {
+	if programIndex >= 0 && executableName(command[programIndex]) == "nice" {
 		programIndex++
 		if programIndex >= len(command) {
 			return -1
@@ -206,17 +193,6 @@ func claudeVariadicOption(argument string) bool {
 	return slices.Contains(variadicOptions, argument)
 }
 
-func claudeExecutorName(executor string) bool {
-	parts := strings.FieldsFunc(strings.ToLower(executor), func(character rune) bool {
-		return character == '-' || character == '_' || character == '.'
-	})
-	return slices.Contains(parts, "claude")
-}
-
-func claudeExecutableName(command string) string {
-	return strings.TrimSuffix(strings.ToLower(filepath.Base(command)), ".exe")
-}
-
 func structuredCodexCommand(executor string, command []string) []string {
 	execIndex := codexExecIndex(executor, command)
 	if execIndex < 1 || slices.Contains(command[execIndex+1:], "--json") {
@@ -229,9 +205,9 @@ func structuredCodexCommand(executor string, command []string) []string {
 }
 
 func codexExecIndex(executor string, command []string) int {
-	if codexExecutorName(executor) {
+	if executorNamed(executor, "codex") {
 		for programIndex, argument := range command {
-			if codexExecutableName(argument) == "codex" {
+			if executableName(argument) == "codex" {
 				if execIndex := codexExecIndexAfter(command, programIndex); execIndex >= 0 {
 					return execIndex
 				}
@@ -239,7 +215,7 @@ func codexExecIndex(executor string, command []string) int {
 		}
 	}
 	programIndex := wrappedProgramIndex(command)
-	if programIndex < 0 || (codexExecutableName(command[programIndex]) != "codex" && !codexExecutorName(executor)) {
+	if programIndex < 0 || (executableName(command[programIndex]) != "codex" && !executorNamed(executor, "codex")) {
 		return -1
 	}
 	return codexExecIndexAfter(command, programIndex)
@@ -252,7 +228,7 @@ func wrappedProgramIndex(command []string) int {
 	programIndex := 0
 	for programIndex < len(command) {
 		var nestedProgramIndex int
-		switch codexExecutableName(command[programIndex]) {
+		switch executableName(command[programIndex]) {
 		case "env":
 			nestedProgramIndex = envProgramIndex(command[programIndex:])
 		case "mise":
@@ -440,14 +416,16 @@ func codexRootOption(argument string) (bool, bool) {
 	return false, false
 }
 
-func codexExecutorName(executor string) bool {
+// executorNamed reports whether a configured executor name contains the tool
+// name as one dash, underscore, or dot separated word, such as "claude-fast".
+func executorNamed(executor, tool string) bool {
 	parts := strings.FieldsFunc(strings.ToLower(executor), func(character rune) bool {
 		return character == '-' || character == '_' || character == '.'
 	})
-	return slices.Contains(parts, "codex")
+	return slices.Contains(parts, tool)
 }
 
-func codexExecutableName(command string) string {
+func executableName(command string) string {
 	return strings.TrimSuffix(strings.ToLower(filepath.Base(command)), ".exe")
 }
 

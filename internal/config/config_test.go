@@ -107,7 +107,7 @@ path = "repository"
 	if token, err := worker.WorkerToken(); err != nil || token != "secret" {
 		t.Fatalf("token = %q, %v", token, err)
 	}
-	resolved, err := worker.ResolveCommand(ResolvedCommand{Executor: "test"})
+	resolved, err := worker.ResolveCommandModel(ResolvedCommand{Executor: "test"}, "")
 	if err != nil || len(resolved.Command) != 2 || resolved.Command[1] != "run" {
 		t.Fatalf("agent = %#v, %v", resolved, err)
 	}
@@ -289,7 +289,7 @@ timeout = "45s"
 	if agent.Timeout != 45*time.Second {
 		t.Fatalf("timeout = %s", agent.Timeout)
 	}
-	resolved, err := (Worker{Executors: map[string]Executor{"test": {Command: []string{"agent", "run"}}}}).ResolveCommand(agent)
+	resolved, err := (Worker{Executors: map[string]Executor{"test": {Command: []string{"agent", "run"}}}}).ResolveCommandModel(agent, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestResolveCommandModelUsesAliasAndLeavesDefaultOptional(t *testing.T) {
 	if resolved.Model != "gpt-5.6-luna" || strings.Join(resolved.Command, " ") != "codex exec --model=gpt-5.6-luna -" {
 		t.Fatalf("resolved = %#v", resolved)
 	}
-	defaulted, err := worker.ResolveCommand(agent)
+	defaulted, err := worker.ResolveCommandModel(agent, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
@@ -30,6 +31,9 @@ var (
 
 const leaseDuration = 30 * time.Second
 const maxTriggerErrorLength = 2000
+
+// reclaimExpiredLeasesSQL returns running runs whose lease lapsed to the queue.
+const reclaimExpiredLeasesSQL = `UPDATE runs SET state='queued',worker_instance=NULL,worker_name='',lease_token=NULL,lease_expires_at=NULL,started_at=NULL WHERE state='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?)`
 
 type Store struct {
 	db  *sql.DB
@@ -269,58 +273,35 @@ func (s *Store) SyncTriggers(ctx context.Context, definitions []TriggerDefinitio
 	}
 	defer tx.Rollback()
 	now := s.now().UTC().Format(time.RFC3339Nano)
+	placeholders := make([]string, 0, len(definitions))
+	identities := make([]any, 0, len(definitions))
 	for _, definition := range definitions {
+		placeholders = append(placeholders, "?")
+		identities = append(identities, definition.Identity)
 		generationID, err := randomID("trigger", 12)
 		if err != nil {
 			return fmt.Errorf("generate trigger %q configuration generation: %w", definition.Identity, err)
 		}
-		nextDue := nullableTimeText(definition.NextDueAt)
+		// A changed family or signature discards every piece of durable state, so the
+		// row is recreated from scratch. An unchanged trigger keeps its schedule and
+		// generation, gaining a generation only if it never had one.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM trigger_state WHERE identity=? AND (family<>? OR config_signature<>?)`, definition.Identity, definition.Family, definition.ConfigSignature); err != nil {
+			return fmt.Errorf("sync trigger %q: %w", definition.Identity, err)
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO trigger_state(identity,family,config_signature,generation_id,next_due_at,health,updated_at)
 VALUES(?,?,?,?,?,'healthy',?)
 ON CONFLICT(identity) DO UPDATE SET
-  family=excluded.family,
-  config_signature=excluded.config_signature,
-  generation_id=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature OR trigger_state.generation_id='' THEN excluded.generation_id ELSE trigger_state.generation_id END,
-  next_due_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN excluded.next_due_at ELSE trigger_state.next_due_at END,
-  pending_occurrence_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.pending_occurrence_at END,
-  last_attempt_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.last_attempt_at END,
-  last_success_at=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN NULL ELSE trigger_state.last_success_at END,
-  last_job_state=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN '' ELSE trigger_state.last_job_state END,
-  last_job_error=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN '' ELSE trigger_state.last_job_error END,
-  health=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 'healthy' ELSE trigger_state.health END,
-  latest_error=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN '' ELSE trigger_state.latest_error END,
-  candidate_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.candidate_count END,
-  admission_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.admission_count END,
-  coalesced_count=CASE WHEN trigger_state.family<>excluded.family OR trigger_state.config_signature<>excluded.config_signature THEN 0 ELSE trigger_state.coalesced_count END,
-  updated_at=excluded.updated_at`, definition.Identity, definition.Family, definition.ConfigSignature, generationID, nextDue, now); err != nil {
+  generation_id=CASE WHEN trigger_state.generation_id='' THEN excluded.generation_id ELSE trigger_state.generation_id END,
+  updated_at=excluded.updated_at`, definition.Identity, definition.Family, definition.ConfigSignature, generationID, nullableTimeText(definition.NextDueAt), now); err != nil {
 			return fmt.Errorf("sync trigger %q: %w", definition.Identity, err)
 		}
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT identity FROM trigger_state`)
-	if err != nil {
-		return fmt.Errorf("list durable triggers: %w", err)
+	removeStale := `DELETE FROM trigger_state`
+	if len(identities) > 0 {
+		removeStale += ` WHERE identity NOT IN (` + strings.Join(placeholders, ",") + `)`
 	}
-	var removed []string
-	for rows.Next() {
-		var identity string
-		if err := rows.Scan(&identity); err != nil {
-			rows.Close()
-			return fmt.Errorf("list durable triggers: %w", err)
-		}
-		if !seen[identity] {
-			removed = append(removed, identity)
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("list durable triggers: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("list durable triggers: %w", err)
-	}
-	for _, identity := range removed {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM trigger_state WHERE identity=?`, identity); err != nil {
-			return fmt.Errorf("remove trigger %q: %w", identity, err)
-		}
+	if _, err := tx.ExecContext(ctx, removeStale, identities...); err != nil {
+		return fmt.Errorf("remove stale triggers: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit trigger sync: %w", err)
@@ -767,13 +748,14 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	if _, err := tx.ExecContext(ctx, `INSERT INTO workers(instance_id,name,last_seen_at) VALUES(?,?,?) ON CONFLICT(instance_id) DO UPDATE SET name=excluded.name,last_seen_at=excluded.last_seen_at`, request.InstanceID, request.Name, now); err != nil {
 		return nil, fmt.Errorf("update worker: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runs SET state='queued',worker_instance=NULL,worker_name='',lease_token=NULL,lease_expires_at=NULL,started_at=NULL WHERE state='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?)`, nowTime.UnixNano()); err != nil {
+	if _, err := tx.ExecContext(ctx, reclaimExpiredLeasesSQL, nowTime.UnixNano()); err != nil {
 		return nil, fmt.Errorf("reclaim expired leases: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM worker_repositories WHERE worker_instance=?`, request.InstanceID); err != nil {
 		return nil, fmt.Errorf("clear worker repositories: %w", err)
 	}
-	for repository := range stringSet(request.Repositories) {
+	repositories := stringSet(request.Repositories)
+	for repository := range repositories {
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO known_repositories(repository) VALUES(?)`, repository); err != nil {
 			return nil, fmt.Errorf("store known repository: %w", err)
 		}
@@ -801,7 +783,6 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	}
 
 	executors := stringSet(request.Executors)
-	repositories := stringSet(request.Repositories)
 	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.job_id,r.command,r.command_hash,r.executor,r.model,r.repository,r.rendered_prompt,r.timeout_ms,j.state FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.state='queued' ORDER BY r.rowid`)
 	if err != nil {
 		return nil, err
@@ -983,7 +964,7 @@ func (s *Store) DeleteJob(ctx context.Context, jobID string) error {
 }
 
 func (s *Store) ReclaimExpiredLeases(ctx context.Context) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE runs SET state='queued',worker_instance=NULL,worker_name='',lease_token=NULL,lease_expires_at=NULL,started_at=NULL WHERE state='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?)`, s.now().UTC().UnixNano())
+	result, err := s.db.ExecContext(ctx, reclaimExpiredLeasesSQL, s.now().UTC().UnixNano())
 	if err != nil {
 		return 0, fmt.Errorf("reclaim expired leases: %w", err)
 	}
@@ -1096,54 +1077,32 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 }
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,prompt,repository,github_issue_title,command,schedule_name,trigger_identity,occurrence_key,trigger_subject,state,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	jobs := []Job{}
-	for rows.Next() {
-		var job Job
-		var created, updated string
-		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.GitHubIssueTitle, &job.Command, &job.ScheduleName, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated); err != nil {
-			return nil, err
-		}
-		job.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		job.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
-		jobs = append(jobs, job)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for index := range jobs {
-		jobs[index].Runs, err = s.listRuns(ctx, jobs[index].ID)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return jobs, nil
-}
-
-func (s *Store) listRuns(ctx context.Context, jobID string) ([]Run, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.command,r.executor,r.model,r.state,COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage FROM runs r LEFT JOIN workers w ON w.instance_id=r.worker_instance WHERE r.job_id=?`, jobID)
+	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.prompt,j.repository,j.github_issue_title,j.command,j.schedule_name,j.trigger_identity,j.occurrence_key,j.trigger_subject,j.state,j.created_at,j.updated_at,
+COALESCE(r.id,''),COALESCE(r.command,''),COALESCE(r.executor,''),COALESCE(r.model,''),COALESCE(r.state,''),COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage
+FROM jobs j LEFT JOIN runs r ON r.job_id=j.id LEFT JOIN workers w ON w.instance_id=r.worker_instance ORDER BY j.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	runs := []Run{}
+	jobs := []Job{}
 	for rows.Next() {
+		job := Job{Runs: []Run{}}
 		var run Run
-		var started, completed string
-		if err := rows.Scan(&run.ID, &run.Command, &run.Executor, &run.Model, &run.State, &run.WorkerName, &run.ExitCode, &run.Error, &started, &completed, &run.DurationMillis, &run.TokenUsage); err != nil {
+		var created, updated, started, completed string
+		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.GitHubIssueTitle, &job.Command, &job.ScheduleName, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated,
+			&run.ID, &run.Command, &run.Executor, &run.Model, &run.State, &run.WorkerName, &run.ExitCode, &run.Error, &started, &completed, &run.DurationMillis, &run.TokenUsage); err != nil {
 			return nil, err
 		}
-		run.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
-		run.CompletedAt, _ = time.Parse(time.RFC3339Nano, completed)
-		runs = append(runs, run)
+		job.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		job.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+		if run.ID != "" {
+			run.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
+			run.CompletedAt, _ = time.Parse(time.RFC3339Nano, completed)
+			job.Runs = append(job.Runs, run)
+		}
+		jobs = append(jobs, job)
 	}
-	return runs, rows.Err()
+	return jobs, rows.Err()
 }
 
 func resultMetrics(result []byte) (*int64, *int64) {
@@ -1182,44 +1141,37 @@ func (s *Store) listWorkers(ctx context.Context) ([]Worker, error) {
 	}
 	workers := []Worker{}
 	for rows.Next() {
-		var worker Worker
+		worker := Worker{Repositories: []string{}}
 		var lastSeen string
 		if err := rows.Scan(&worker.InstanceID, &worker.Name, &lastSeen); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		worker.LastSeenAt, _ = time.Parse(time.RFC3339Nano, lastSeen)
 		workers = append(workers, worker)
 	}
-	if err := rows.Close(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for index := range workers {
-		workers[index].Repositories, err = s.listWorkerRepositories(ctx, workers[index].InstanceID)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return workers, nil
-}
-
-func (s *Store) listWorkerRepositories(ctx context.Context, instanceID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT repository FROM worker_repositories WHERE worker_instance=? ORDER BY repository`, instanceID)
+	repositories, err := s.db.QueryContext(ctx, `SELECT worker_instance,repository FROM worker_repositories ORDER BY worker_instance,repository`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	repositories := []string{}
-	for rows.Next() {
-		var repository string
-		if err := rows.Scan(&repository); err != nil {
+	defer repositories.Close()
+	byInstance := make(map[string]int, len(workers))
+	for index, worker := range workers {
+		byInstance[worker.InstanceID] = index
+	}
+	for repositories.Next() {
+		var instanceID, repository string
+		if err := repositories.Scan(&instanceID, &repository); err != nil {
 			return nil, err
 		}
-		repositories = append(repositories, repository)
+		if index, ok := byInstance[instanceID]; ok {
+			workers[index].Repositories = append(workers[index].Repositories, repository)
+		}
 	}
-	return repositories, rows.Err()
+	return workers, repositories.Err()
 }
 
 func scanRunSpec(row *sql.Row) (protocol.RunSpec, error) {

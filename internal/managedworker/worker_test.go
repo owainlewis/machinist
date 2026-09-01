@@ -229,9 +229,8 @@ func TestCompletionDoesNotRetryPermanentClientError(t *testing.T) {
 	defer server.Close()
 	worker := &Worker{
 		config:     config.Worker{ControlPlane: config.ControlPlane{URL: server.URL}},
-		token:      "secret",
 		instanceID: "worker-test",
-		client:     server.Client(),
+		client:     newClient(server.URL, "secret", server.Client()),
 		stderr:     io.Discard,
 	}
 	err := worker.deliver(t.Context(), "run_0123456789abcdef01234567", protocol.Completion{})
@@ -269,9 +268,8 @@ func TestManagedWorkerHeartbeatsDuringExecutionAndContinuesAfterFailure(t *testi
 	var stderr strings.Builder
 	worker := &Worker{
 		config:         config.Worker{ControlPlane: config.ControlPlane{URL: server.URL}},
-		token:          "secret",
 		instanceID:     "worker-test",
-		client:         server.Client(),
+		client:         newClient(server.URL, "secret", server.Client()),
 		stderr:         &stderr,
 		heartbeatTicks: ticks,
 		executeRun: func(context.Context, protocol.RunSpec) protocol.Completion {
@@ -341,9 +339,8 @@ func TestManagedWorkerHeartbeatsUntilCompletionIsAcknowledged(t *testing.T) {
 	ticks := make(chan time.Time, 1)
 	worker := &Worker{
 		config:         config.Worker{ControlPlane: config.ControlPlane{URL: server.URL}},
-		token:          "secret",
 		instanceID:     "worker-test",
-		client:         server.Client(),
+		client:         newClient(server.URL, "secret", server.Client()),
 		stderr:         io.Discard,
 		heartbeatTicks: ticks,
 	}
