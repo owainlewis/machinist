@@ -209,7 +209,7 @@ func TestExecuteUsesClaudeFileFallbackForExplicitText(t *testing.T) {
 }
 
 func TestExecuteUsesClaudeFileFallbackForExplicitTextAfterTimeout(t *testing.T) {
-	claude := claudeAgentWithCommand(t, []string{"--print", "--output-format", "text"}, `cat >/dev/null; printf 2468 > "$MACHINIST_TOKEN_USAGE_PATH"; sleep 60`, time.Second)
+	claude := claudeAgentWithCommand(t, []string{"--print", "--output-format", "text"}, `cat >/dev/null; printf 2468 > "$MACHINIST_TOKEN_USAGE_PATH"; sleep 60`, 5*time.Second)
 	result, err := Execute(t.Context(), Options{
 		Command: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
 	})
