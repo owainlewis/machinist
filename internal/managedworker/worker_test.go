@@ -219,6 +219,21 @@ func TestManagedWorkerRequiresHTTPSForRemoteControlPlane(t *testing.T) {
 	}
 }
 
+func TestControlPlaneEndpointRejectsQueryAndFragment(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://control.example.com?tenant=machinist",
+		"https://control.example.com?",
+		"https://control.example.com#api",
+		"https://control.example.com#",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			if _, err := controlPlaneEndpoint(endpoint); err == nil {
+				t.Fatalf("controlPlaneEndpoint(%q) succeeded", endpoint)
+			}
+		})
+	}
+}
+
 func TestCompletionDoesNotRetryPermanentClientError(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
