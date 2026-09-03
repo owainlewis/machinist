@@ -114,6 +114,9 @@ func controlPlaneEndpoint(raw string) (string, error) {
 	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
 		return "", errors.New("control_plane.url must use http or https")
 	}
+	if endpoint.RawQuery != "" || endpoint.ForceQuery || strings.Contains(raw, "#") {
+		return "", errors.New("control_plane.url must not contain a query or fragment")
+	}
 	if endpoint.Scheme == "http" && !loopbackHost(endpoint.Hostname()) {
 		return "", errors.New("control_plane.url must use https for a non-loopback host")
 	}
