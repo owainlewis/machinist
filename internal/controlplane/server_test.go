@@ -861,3 +861,51 @@ func deleteRequest(t *testing.T, endpoint string, headers map[string]string) *ht
 	}
 	return response
 }
+
+func TestServerReturnsRunOutputAndNotFoundForUnknownRun(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+
+	if _, err := server.store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request")); err != nil {
+		t.Fatal(err)
+	}
+	run, err := server.store.Poll(t.Context(), pollRequest("worker-1", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %v, %v", run, err)
+	}
+	if err := server.store.Complete(t.Context(), run.ID, protocol.Completion{
+		InstanceID: "worker-1",
+		LeaseToken: run.LeaseToken,
+		State:      "succeeded",
+		ExitCode:   0,
+		Result:     json.RawMessage(`{"state":"succeeded"}`),
+		Events:     "{\"type\":\"run.started\"}\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := http.Get(webServer.URL + "/api/v1/runs/" + run.ID + "/output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var output runOutputResponse
+	if err := json.NewDecoder(response.Body).Decode(&output); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("status = %d, cache-control = %q", response.StatusCode, response.Header.Get("Cache-Control"))
+	}
+	if string(output.Result) != `{"state":"succeeded"}` || output.Events != "{\"type\":\"run.started\"}\n" {
+		t.Fatalf("output = %#v", output)
+	}
+
+	missing, err := http.Get(webServer.URL + "/api/v1/runs/run_missing/output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer missing.Body.Close()
+	if missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing run status = %d", missing.StatusCode)
+	}
+}

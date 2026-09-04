@@ -75,6 +75,11 @@ type definitionsResponse struct {
 	Commands []commandDefinitionResponse `json:"commands"`
 }
 
+type runOutputResponse struct {
+	Result json.RawMessage `json:"result,omitempty"`
+	Events string          `json:"events,omitempty"`
+}
+
 type catalogResponse struct {
 	Commands     []string `json:"commands"`
 	Repositories []string `json:"repositories"`
@@ -253,6 +258,7 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("GET /api/v1/catalog", s.catalog)
 	mux.HandleFunc("GET /api/v1/definitions", s.definitions)
+	mux.HandleFunc("GET /api/v1/runs/{id}/output", s.runOutput)
 	mux.HandleFunc("POST /api/v1/jobs", s.authorizeSubmission(s.submit))
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
 	mux.HandleFunc("POST /api/v1/workers/poll", s.authorizeWorker(s.poll))
@@ -329,6 +335,24 @@ func (s *Server) catalog(response http.ResponseWriter, request *http.Request) {
 		Commands:     definition.CommandNames(),
 		Repositories: repositories,
 	})
+}
+
+func (s *Server) runOutput(response http.ResponseWriter, request *http.Request) {
+	output, err := s.store.RunOutput(request.Context(), request.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(response, http.StatusNotFound, errors.New("run does not exist"))
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	body := runOutputResponse{Events: output.Events}
+	if output.Result != "" {
+		body.Result = json.RawMessage(output.Result)
+	}
+	writeJSON(response, http.StatusOK, body)
 }
 
 func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
