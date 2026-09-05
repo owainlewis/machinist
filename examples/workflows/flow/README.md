@@ -1,70 +1,74 @@
-# Flow: task to reviewed pull request
+# Flow: task to pull request
 
-One file takes a task from implementation to a pull request that has answered its
-reviewers. The script owns git and GitHub. One Codex thread owns the code and keeps its
-context from implementation through every repair.
+A small Python script does three things:
 
-1. Create a branch and ask the thread to implement the task, have a fresh subagent review
-   the diff, run the tests, and commit.
-2. Ask the thread for a title and body as JSON, push, and open the pull request.
-3. Wait for feedback. Feedback is anything newer than the last push: an unresolved review
-   thread with a new comment, a review that requests changes, or a failing check on the
-   current head.
-4. Hand the feedback to the same thread. It triages each item: real defects get the
-   smallest fix, nitpicks and impossible edge cases get a short reply saying why, unrelated
-   failing checks get a separate commit or are called a flake. It replies in and resolves
-   every thread it handled. A person can reopen any of them.
-5. Push and go back to step 3, at most `FLOW_MAX_ROUNDS` times, then wait once more for the
-   verdict on the last push.
+1. Fetch `origin/main` and create a `codex/` branch in a new worktree.
+2. Run Codex in that worktree to implement the task, run local checks, and get a
+   fresh subagent review. The builder fixes findings, with at most three repair rounds.
+3. Push the reviewed commit, open a PR, print its URL, and exit.
 
-The loop ends with exit 0 when the pull request is approved after its latest push with green checks, when no new
-feedback arrives within `FLOW_FEEDBACK_WAIT` seconds, or when the thread decides nothing
-needs to change. It ends with exit 1 when feedback is still open after the last round. The
-last push is the only cursor, so the script keeps no state on disk and a rerun starts from
-a fresh branch and a fresh thread.
+A worktree is another checkout of the same Git repository with its own branch and
+files. Your original checkout, including any uncommitted work, stays as it is.
+The new checkout starts from remote `main`; it does not include local changes.
+The script passes its path as Codex's working directory.
 
-## Set up
+## Run it
 
-Copy `flow.py` into the repository Machinist will run, for example as `scripts/flow.py`.
-The file declares its own dependency on the [Codex Python SDK](https://github.com/openai/codex/tree/main/sdk/python)
-with inline script metadata, so `uv run` installs it on first use. Add the executor to
-`worker.toml`:
+The machine needs `uv`, Git, an authenticated `gh`, and Codex login credentials.
+The pinned Python SDK supplies the Codex binary. Run from the target repository:
+
+```sh
+printf '%s\n' 'Add a --json flag to the status command' |
+  uv run --script /absolute/path/to/flow.py
+```
+
+The repository must have an `origin` remote on GitHub and a `main` branch.
+Worktrees are created under `~/Code/.worktrees/<repo>/<task>-<id>`. Set
+`FLOW_WORKTREE_ROOT` to use another parent directory.
+
+Codex uses `full-access` by default, allowing dependency installation and Git
+writes to the shared repository metadata. A worktree isolates edits, not process
+permissions. Set `FLOW_SANDBOX=workspace-write` if your Codex configuration grants
+access to the worktree's shared Git metadata and any network access checks need.
+Subagent review must be available in the selected Codex configuration; otherwise
+the agent is instructed to report blocked.
+
+## Run through Machinist
+
+Copy `flow.py` to your repository, for example as `scripts/flow.py`, and register
+it in `worker.toml`:
 
 ```toml
 [executors.flow]
 command = ["uv", "run", "--script", "./scripts/flow.py"]
 ```
 
-The worker needs `uv`, authenticated `git` and `gh` commands, and network access to PyPI on
-the first run. The SDK bundles its own Codex binary, so `codex` need not be on the path, but
-the worker must already be logged in to Codex. To lock the resolved dependency next to the script, run
-`uv lock --script scripts/flow.py` and add `--locked` to the executor command.
-
-Token usage is written to `MACHINIST_TOKEN_USAGE_PATH`, so Machinist records it for the run
-the same way it does for a direct Codex executor.
-
-The thread runs with Codex's full-access sandbox by default because it must reach GitHub to
-reply in review threads. Machinist workers are isolated machines, which is what makes that
-acceptable; set `FLOW_SANDBOX=workspace-write` if your Codex config grants network access
-another way.
-
-## Run it
+Use the adjacent `config.toml` for the command definition:
 
 ```sh
 machinist run \
-  --machinist-config=/path/to/machinist/examples/workflows/flow/config.toml \
+  --machinist-config=/absolute/path/to/examples/workflows/flow/config.toml \
   --command=flow \
-  --repo=/path/to/repo \
+  --repo=/absolute/path/to/repo \
   --prompt="Add a --json flag to the status command"
 ```
 
-Or queue it through the control plane with `machinist submit`, or select it from a trigger.
+The script reports SDK token usage through `MACHINIST_TOKEN_USAGE_PATH` when set.
+Machinist owns the overall timeout and cancellation.
 
-## Limits
+## Where it stops
 
-Machinist sees only the script's output and exit code. A timeout or cancellation kills the
-script and the Codex process underneath it. The thread resolves review threads it has
-answered, because branch protection often requires it; reopen any you disagree with. The
-script never merges. Bot reviewers that reply within minutes fit the
-default wait of 30 minutes; raise `FLOW_FEEDBACK_WAIT` and the command timeout for repos
-that rely on human review.
+Exit 0 means the PR was opened. The script does not wait for CI, answer GitHub
+reviews, or merge. Those are separate work after this first step.
+
+Before publishing, Python requires a clean worktree on the expected branch, a
+change descended from the fetched base, and an approved report for the exact
+commit being pushed. Tests and independent review are performed by the coding
+agent and its subagent. Their report is agent-provided evidence; Python does not
+independently prove that the reported checks or review happened.
+
+The worktree is kept on success or failure, and its path is printed before coding
+starts. Inspect failed work there. Each invocation creates new work; rerunning
+is not a resume and can create another PR. If pushing succeeds but PR creation
+fails, the branch remains available to open a PR manually. After the PR is merged
+or closed, remove its clean worktree with `git worktree remove <path>`.
