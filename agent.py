@@ -10,6 +10,9 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
+import sys
+import time
 from urllib.parse import urlparse
 
 from openai_codex import Codex, CodexConfig, Sandbox
@@ -80,18 +83,85 @@ def run_codex(prompt: str) -> dict:
         return json.loads(result.final_response or "")
 
 
+def wait_for_ci_feedback(repo: str, pr_number: int, *, timeout: float = 1200,
+                         interval: float = 30) -> dict:
+    """Wait for visible CI checks, then collect available reviews (including history).
+
+    An empty check list keeps waiting. Human reviews may still arrive after return.
+    This only collects feedback; it does not run an agent or repair failures.
+    """
+    if timeout <= 0 or interval <= 0:
+        raise ValueError("timeout and interval must be positive")
+    deadline = time.monotonic() + timeout
+
+    def gh(*args: str):
+        result = subprocess.run(
+            ["gh", *args], capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or "gh command failed")
+        return json.loads(result.stdout)
+
+    while True:
+        pr = gh("pr", "view", str(pr_number), "--repo", repo,
+                "--json", "headRefOid,statusCheckRollup")
+        checks = pr["statusCheckRollup"] or []
+        finished = bool(checks) and all(
+            c.get("status") == "COMPLETED" if "status" in c
+            else c.get("state") in {"SUCCESS", "FAILURE", "ERROR"}
+            for c in checks
+        )
+        remaining = deadline - time.monotonic()
+        if finished or remaining <= 0:
+            break
+        time.sleep(min(interval, remaining))
+
+    passed = finished and all(
+        c.get("conclusion", c.get("state")) in {"SUCCESS", "NEUTRAL", "SKIPPED"}
+        for c in checks
+    )
+    feedback = {
+        "pr_number": pr_number,
+        "head_sha": pr["headRefOid"],
+        "ci_status": "passed" if passed else "failed" if finished else "timed_out",
+        "checks": checks,
+    }
+    # Review bodies and inline comments are separate GitHub endpoints. Include all
+    # pages and retain commit IDs so earlier feedback is not mistaken for new review.
+    for key, endpoint in {
+        "reviews": f"pulls/{pr_number}/reviews",
+        "review_comments": f"pulls/{pr_number}/comments",
+        "comments": f"issues/{pr_number}/comments",
+    }.items():
+        pages = gh("api", f"repos/{repo}/{endpoint}", "--paginate", "--slurp")
+        feedback[key] = [item for page in pages for item in page]
+    current = gh("pr", "view", str(pr_number), "--repo", repo, "--json", "headRefOid")
+    if current["headRefOid"] != feedback["head_sha"]:
+        raise RuntimeError("PR head changed while collecting feedback; run again")
+    return feedback
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Implement a GitHub issue with Codex.")
     parser.add_argument("task", type=issue_url, metavar="ISSUE_URL")
     args = parser.parse_args(argv)
+    report = {"status": "failed", "pr_number": None, "summary": ""}
     try:
         report = run_codex(PROMPT.format(task=args.task))
         if report["status"] == "completed" and report["pr_number"] is None:
             raise ValueError("agent reported completion without a PR number")
+        if report["pr_number"] is not None:
+            repo = "/".join(urlparse(args.task).path.split("/")[1:3])
+            feedback = wait_for_ci_feedback(repo, report["pr_number"])
+            print(json.dumps(feedback), file=sys.stderr)
+            if feedback["ci_status"] != "passed" and report["status"] == "completed":
+                report["status"] = "blocked"
+                report["summary"] += f" CI feedback: {feedback['ci_status']}."
         exit_code = 0 if report["status"] == "completed" else 1
     except Exception as error:
         # SDK failures can happen before the agent returns a structured result.
-        report = {"status": "failed", "pr_number": None, "summary": str(error) or type(error).__name__}
+        report = {"status": "failed", "pr_number": report["pr_number"],
+                  "summary": str(error) or type(error).__name__}
         exit_code = 1
     print(json.dumps(report))
     return exit_code

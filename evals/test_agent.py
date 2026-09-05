@@ -23,6 +23,38 @@ with patch.dict(sys.modules, {"openai_codex": sdk, "openai_codex.types": sdk_typ
 
 
 class AgentTests(unittest.TestCase):
+    def setUp(self):
+        poll = patch.object(agent, "wait_for_ci_feedback", return_value={"ci_status": "passed"})
+        self.poll = poll.start()
+        self.addCleanup(poll.stop)
+        stderr = contextlib.redirect_stderr(io.StringIO())
+        stderr.__enter__()
+        self.addCleanup(stderr.__exit__, None, None, None)
+
+    def test_feedback_prints_separately_and_uses_issue_repository(self):
+        report = {"status": "completed", "pr_number": 467, "summary": "done"}
+        with patch.object(agent, "run_codex", return_value=report):
+            with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(agent.main(["https://github.com/owner/repo/issues/123"]), 0)
+        self.poll.assert_called_once_with("owner/repo", 467)
+        self.assertEqual(json.loads(out.getvalue()), report)
+        self.assertEqual(json.loads(err.getvalue()), {"ci_status": "passed"})
+
+    def test_polling_failure_keeps_pr(self):
+        self.poll.side_effect = RuntimeError("GitHub unavailable")
+        with patch.object(agent, "run_codex", return_value={"status": "completed", "pr_number": 467, "summary": "done"}):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(agent.main(["https://github.com/owner/repo/issues/123"]), 1)
+        self.assertEqual(json.loads(out.getvalue()), {"status": "failed", "pr_number": 467, "summary": "GitHub unavailable"})
+
+    def test_failed_or_timed_out_checks_block_completion(self):
+        for status in ["failed", "timed_out"]:
+            self.poll.return_value = {"ci_status": status}
+            with patch.object(agent, "run_codex", return_value={"status": "completed", "pr_number": 467, "summary": "done"}):
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(agent.main(["https://github.com/owner/repo/issues/123"]), 1)
+            self.assertEqual(json.loads(out.getvalue())["status"], "blocked")
+
     def test_issue_url_becomes_the_task(self):
         url = "https://github.com/owner/repo/issues/123"
         report = {"status": "completed", "pr_number": 467, "summary": "PR opened; verification passed."}
@@ -115,6 +147,51 @@ class AgentTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "codex was not found on PATH"):
                 agent.run_codex("implement issue")
         factory.assert_not_called()
+
+
+class FeedbackTests(unittest.TestCase):
+    def poll(self, snapshots, *, clock=None, reviews=None, head="abc"):
+        replies = [*snapshots, reviews or [[]], [[{"body": "fix this", "path": "agent.py"}]],
+                   [[{"body": "bot summary"}]], {"headRefOid": head}]
+        def respond(*args, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=json.dumps(replies.pop(0)), stderr="")
+        with patch.object(agent.subprocess, "run", side_effect=respond) as run, patch.object(agent.time, "sleep") as sleep:
+            with patch.object(agent.time, "monotonic", side_effect=clock or [0, 1, 2]):
+                result = agent.wait_for_ci_feedback("owner/repo", 467, timeout=10, interval=2)
+        return result, run, sleep
+
+    def test_waits_for_pending_checks_and_collects_all_review_pages(self):
+        result, run, sleep = self.poll([
+            {"headRefOid": "abc", "statusCheckRollup": [{"status": "IN_PROGRESS"}]},
+            {"headRefOid": "abc", "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}]},
+        ], reviews=[[{"body": "first", "commit_id": "old"}], [{"body": "second", "commit_id": "abc"}]])
+        self.assertEqual(result["ci_status"], "passed")
+        self.assertEqual(len(result["reviews"]), 2)
+        self.assertEqual(result["review_comments"][0]["path"], "agent.py")
+        self.assertEqual(result["comments"][0]["body"], "bot summary")
+        sleep.assert_called_once_with(2)
+        self.assertIn("--paginate", run.call_args_list[2].args[0])
+
+    def test_missing_and_pending_checks_time_out(self):
+        for checks in [[], [{"status": "IN_PROGRESS"}], [{"state": "PENDING"}]]:
+            result, _, _ = self.poll([{"headRefOid": "abc", "statusCheckRollup": checks}], clock=[0, 10])
+            self.assertEqual(result["ci_status"], "timed_out")
+            self.assertTrue(result["review_comments"])
+
+    def test_failed_and_legacy_checks(self):
+        for check, expected in [({"state": "SUCCESS"}, "passed"), ({"state": "ERROR"}, "failed"),
+                                ({"status": "COMPLETED", "conclusion": "FAILURE"}, "failed")]:
+            result, _, _ = self.poll([{"headRefOid": "abc", "statusCheckRollup": [check]}])
+            self.assertEqual(result["ci_status"], expected)
+
+    def test_changed_head_rejects_stale_snapshot(self):
+        with self.assertRaisesRegex(RuntimeError, "head changed"):
+            self.poll([{"headRefOid": "abc", "statusCheckRollup": [{"state": "SUCCESS"}]}], head="new")
+
+    def test_github_errors_are_not_empty_feedback(self):
+        with patch.object(agent.subprocess, "run", return_value=SimpleNamespace(returncode=1, stderr="authentication failed")):
+            with self.assertRaisesRegex(RuntimeError, "authentication failed"):
+                agent.wait_for_ci_feedback("owner/repo", 467)
 
 
 if __name__ == "__main__":
