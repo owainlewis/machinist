@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         report = run_codex(PROMPT.format(task=args.task))
         if report["status"] == "completed" and report["pr_number"] is None:
             raise ValueError("agent reported completion without a PR number")
-        if report["pr_number"] is not None:
+        if report["status"] == "completed" and report["pr_number"] is not None:
             repo = "/".join(urlparse(args.task).path.split("/")[1:3])
             feedback = wait_for_ci_feedback(repo, report["pr_number"])
             print(json.dumps(feedback), file=sys.stderr)

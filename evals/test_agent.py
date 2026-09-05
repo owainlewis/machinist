@@ -97,6 +97,8 @@ class AgentTests(unittest.TestCase):
                         self.assertEqual(agent.main(["https://github.com/owner/repo/issues/123"]), 1)
                     self.assertEqual(json.loads(output.getvalue()), report)
 
+        self.poll.assert_not_called()
+
     def test_completion_without_a_pr_is_not_success(self):
         report = {"status": "completed", "pr_number": None, "summary": "done"}
         with patch.object(agent, "run_codex", return_value=report):
