@@ -86,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         report = run_codex(PROMPT.format(task=args.task))
+        if report["status"] == "completed" and report["pr_number"] is None:
+            raise ValueError("agent reported completion without a PR number")
         exit_code = 0 if report["status"] == "completed" else 1
     except Exception as error:
         # SDK failures can happen before the agent returns a structured result.

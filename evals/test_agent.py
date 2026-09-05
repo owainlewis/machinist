@@ -65,6 +65,15 @@ class AgentTests(unittest.TestCase):
                         self.assertEqual(agent.main(["https://github.com/owner/repo/issues/123"]), 1)
                     self.assertEqual(json.loads(output.getvalue()), report)
 
+    def test_completion_without_a_pr_is_not_success(self):
+        report = {"status": "completed", "pr_number": None, "summary": "done"}
+        with patch.object(agent, "run_codex", return_value=report):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(agent.main(["https://github.com/owner/repo/issues/123"]), 1)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("without a PR number", result["summary"])
+
     def test_installed_cli_runs_in_current_repository(self):
         factory = MagicMock()
         client = factory.return_value.__enter__.return_value
