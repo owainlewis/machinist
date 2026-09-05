@@ -14,10 +14,11 @@ The script passes its path as Codex's working directory.
 
 ## Run it
 
-The machine needs `uv`, Git, an authenticated `gh`, and Codex login credentials.
-The pinned Python SDK supplies the Codex binary. If your configured model requires
-a newer runtime, set `FLOW_CODEX_BIN` to the absolute path of an updated Codex CLI
-(for example, the path returned by `command -v codex`). The model stays as configured.
+The machine needs `uv`, Git, an authenticated `gh`, and a logged-in Codex CLI.
+The script uses `codex` from your `PATH` by default. Set `FLOW_CODEX_BIN` to an
+absolute executable path to override it. With no override and no `codex` on `PATH`,
+it stops before creating a worktree. Keep your CLI updated for your configured model; the script
+does not change the model or fall back to the SDK's bundled runtime.
 Run from the target repository:
 
 ```sh

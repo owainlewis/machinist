@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,9 @@ def run(args: list[str], cwd: Path) -> str:
 
 
 def flow(task: str) -> int:
+    codex_bin = os.environ.get("FLOW_CODEX_BIN") or shutil.which("codex")
+    if not codex_bin:
+        raise RuntimeError("codex was not found on PATH; install Codex or set FLOW_CODEX_BIN")
     source = Path.cwd()
     remote = run(["git", "remote", "get-url", "origin"], source)
     repo = json.loads(run(["gh", "repo", "view", remote, "--json", "nameWithOwner"], source))["nameWithOwner"]
@@ -87,7 +91,7 @@ def flow(task: str) -> int:
     log(f"branch: {branch}; base: {base_head}")
 
     sandbox = Sandbox(os.environ.get("FLOW_SANDBOX", "full-access"))
-    with Codex(CodexConfig(codex_bin=os.environ.get("FLOW_CODEX_BIN"))) as codex:
+    with Codex(CodexConfig(codex_bin=codex_bin)) as codex:
         thread = codex.thread_start(cwd=str(worktree), sandbox=sandbox)
         log(f"implement and review (thread {thread.id})")
         result = thread.run(

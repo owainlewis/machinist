@@ -52,6 +52,9 @@ class FlowTests(unittest.TestCase):
 
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
+        self.local_codex = bin_dir / "codex"
+        self.local_codex.write_text("#!/bin/sh\nexit 0\n")
+        self.local_codex.chmod(0o755)
         gh = bin_dir / "gh"
         gh.write_text(f"#!{sys.executable}\n" + '''import json, os, pathlib, sys
 args = sys.argv[1:]
@@ -76,6 +79,7 @@ with open(os.environ["GH_LOG"], "a") as log:
             "FLOW_WORKTREE_ROOT": str(self.worktrees),
             "GH_LOG": str(self.gh_log),
             "MACHINIST_TOKEN_USAGE_PATH": str(self.usage_path),
+            "FLOW_CODEX_BIN": "",
         }))
         self.enterContext(patch.object(flow.Path, "cwd", return_value=self.repo))
         self.output = self.enterContext(contextlib.redirect_stdout(io.StringIO()))
@@ -148,6 +152,7 @@ with open(os.environ["GH_LOG"], "a") as log:
         self.assertEqual(calls[1]["cwd"], str(self.worktree))
         self.assertIn("\n\nVerification:", calls[1]["body"])
         self.thread.run.assert_called_once()
+        self.assertEqual(self.codex_factory.call_args.args[0].codex_bin, str(self.local_codex))
         self.assertEqual(self.usage_path.read_text(), "15")
         self.assertIn("opened https://github.com/owner/project/pull/7", self.output.getvalue())
         self.assert_source_unchanged()
@@ -192,6 +197,14 @@ with open(os.environ["GH_LOG"], "a") as log:
         with patch.dict(os.environ, {"FLOW_CODEX_BIN": "/opt/codex"}):
             self.assertEqual(flow.flow("Add a --json flag"), 0)
         self.assertEqual(self.codex_factory.call_args.args[0].codex_bin, "/opt/codex")
+
+    def test_missing_codex_stops_before_creating_worktree(self):
+        with patch.object(flow.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "codex was not found on PATH"):
+                flow.flow("Add a --json flag")
+        self.codex_factory.assert_not_called()
+        self.assertFalse(self.worktrees.exists())
+        self.assertFalse(self.gh_log.exists())
 
 
 if __name__ == "__main__":
