@@ -26,6 +26,9 @@ with patch.dict(sys.modules, {"openai_codex": sdk, "openai_codex.types": sdk_typ
 
 class AgentTests(unittest.TestCase):
     def setUp(self):
+        login = patch.object(agent, "gh", return_value={"login": "builder"})
+        login.start()
+        self.addCleanup(login.stop)
         poll = patch.object(agent, "wait_for_ci", return_value={"ci_status": "passed"})
         self.poll = poll.start()
         self.addCleanup(poll.stop)
@@ -368,6 +371,20 @@ class IterationTests(unittest.TestCase):
         feedback["reviews"] = [
             {"id": 1, "body": "Looks good", "state": "APPROVED"},
             {"id": 2, "body": "Old finding", "state": "DISMISSED"},
+        ]
+        with patch.object(agent, "run_codex") as run:
+            result = agent.iterate(self.task, "owner/repo", self.report, feedback)
+        self.assertEqual(result["status"], "completed")
+        run.assert_not_called()
+
+    def test_previous_run_replies_do_not_trigger_repairs(self):
+        feedback = self.feedback()
+        feedback["comments"] = [
+            {
+                "id": 2,
+                "body": "[agent.py repair] Already fixed.",
+                "user": {"login": "builder"},
+            }
         ]
         with patch.object(agent, "run_codex") as run:
             result = agent.iterate(self.task, "owner/repo", self.report, feedback)

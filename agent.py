@@ -197,7 +197,7 @@ def review_items(feedback: dict, repair_author: str | None = None) -> set[str]:
 def iterate(task: str, repo: str, report: dict, feedback: dict) -> dict:
     """Run at most three repair passes, checking each result before completing."""
     reviewed = set()
-    repair_author = None
+    repair_author = gh("api", "user")["login"]
     pr_number = report["pr_number"]
     for attempt in range(1, 4):
         if feedback["ci_status"] == "timed_out":
@@ -211,8 +211,6 @@ def iterate(task: str, repo: str, report: dict, feedback: dict) -> dict:
         ):
             return report
 
-        if repair_author is None:
-            repair_author = gh("api", "user")["login"]
         print(f"Repair pass {attempt}/3 for PR #{pr_number}", file=sys.stderr)
         repaired = run_codex(
             REPAIR_PROMPT.format(
