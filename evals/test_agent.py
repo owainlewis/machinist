@@ -377,6 +377,17 @@ class IterationTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         run.assert_not_called()
 
+    def test_clean_or_timed_out_ci_does_not_need_author_lookup(self):
+        for status, expected in [("passed", "completed"), ("timed_out", "blocked")]:
+            with patch.object(
+                agent, "gh", side_effect=RuntimeError("unavailable")
+            ) as lookup:
+                result = agent.iterate(
+                    self.task, "owner/repo", self.report, self.feedback(status)
+                )
+            self.assertEqual(result["status"], expected)
+            lookup.assert_not_called()
+
     def test_previous_run_replies_do_not_trigger_repairs(self):
         feedback = self.feedback()
         feedback["comments"] = [
