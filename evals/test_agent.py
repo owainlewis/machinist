@@ -363,6 +363,17 @@ class IterationTests(unittest.TestCase):
         self.assertIn("PR #467", run.call_args.args[0])
         wait.assert_called_once_with("owner/repo", 467)
 
+    def test_approved_and_dismissed_reviews_do_not_trigger_repairs(self):
+        feedback = self.feedback()
+        feedback["reviews"] = [
+            {"id": 1, "body": "Looks good", "state": "APPROVED"},
+            {"id": 2, "body": "Old finding", "state": "DISMISSED"},
+        ]
+        with patch.object(agent, "run_codex") as run:
+            result = agent.iterate(self.task, "owner/repo", self.report, feedback)
+        self.assertEqual(result["status"], "completed")
+        run.assert_not_called()
+
     def test_own_repair_replies_do_not_trigger_another_pass(self):
         initial = self.feedback(body="Fix this")
         final = self.feedback(head="fixed", body="Fix this")

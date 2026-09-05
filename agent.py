@@ -184,6 +184,7 @@ def review_items(feedback: dict, repair_author: str | None = None) -> set[str]:
         json.dumps([kind, item.get("id"), item.get("body"), item.get("state")])
         for kind in ("reviews", "review_comments", "comments")
         for item in feedback.get(kind, [])
+        if kind != "reviews" or item.get("state") not in {"APPROVED", "DISMISSED"}
         if item.get("body") or item.get("state") == "CHANGES_REQUESTED"
         if not (
             repair_author
