@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 # The script's SDK is installed by uv in production. Tests need no SDK or network.
 sdk = ModuleType("openai_codex")
 sdk.Codex = MagicMock()
+sdk.CodexConfig = SimpleNamespace
 sdk.Sandbox = str
 sdk_types = ModuleType("openai_codex.types")
 sdk_types.TurnStatus = SimpleNamespace(completed="completed")
@@ -82,7 +83,7 @@ with open(os.environ["GH_LOG"], "a") as log:
         self.thread = self.codex.thread_start.return_value
         self.thread.id = "test-thread"
         self.thread.run.side_effect = self.build
-        self.enterContext(patch.object(flow, "Codex", return_value=MagicMock(
+        self.codex_factory = self.enterContext(patch.object(flow, "Codex", return_value=MagicMock(
             __enter__=MagicMock(return_value=self.codex),
         )))
         self.mode = "approved"
@@ -186,6 +187,11 @@ with open(os.environ["GH_LOG"], "a") as log:
         self.codex.thread_start.assert_not_called()
         self.assertFalse(self.worktrees.exists())
         self.assertFalse(self.gh_log.exists())
+
+    def test_explicit_codex_binary_is_passed_to_sdk(self):
+        with patch.dict(os.environ, {"FLOW_CODEX_BIN": "/opt/codex"}):
+            self.assertEqual(flow.flow("Add a --json flag"), 0)
+        self.assertEqual(self.codex_factory.call_args.args[0].codex_bin, "/opt/codex")
 
 
 if __name__ == "__main__":

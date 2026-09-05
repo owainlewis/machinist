@@ -15,7 +15,10 @@ The script passes its path as Codex's working directory.
 ## Run it
 
 The machine needs `uv`, Git, an authenticated `gh`, and Codex login credentials.
-The pinned Python SDK supplies the Codex binary. Run from the target repository:
+The pinned Python SDK supplies the Codex binary. If your configured model requires
+a newer runtime, set `FLOW_CODEX_BIN` to the absolute path of an updated Codex CLI
+(for example, the path returned by `command -v codex`). The model stays as configured.
+Run from the target repository:
 
 ```sh
 printf '%s\n' 'Add a --json flag to the status command' |

@@ -20,7 +20,7 @@ import sys
 import tempfile
 from uuid import uuid4
 
-from openai_codex import Codex, Sandbox
+from openai_codex import Codex, CodexConfig, Sandbox
 from openai_codex.types import TurnStatus
 
 
@@ -87,7 +87,7 @@ def flow(task: str) -> int:
     log(f"branch: {branch}; base: {base_head}")
 
     sandbox = Sandbox(os.environ.get("FLOW_SANDBOX", "full-access"))
-    with Codex() as codex:
+    with Codex(CodexConfig(codex_bin=os.environ.get("FLOW_CODEX_BIN"))) as codex:
         thread = codex.thread_start(cwd=str(worktree), sandbox=sandbox)
         log(f"implement and review (thread {thread.id})")
         result = thread.run(
