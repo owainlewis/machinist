@@ -33,7 +33,7 @@ function App() {
   const [submitting, setSubmitting] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [filter, setFilter] = useState("all");
-  const [runsView, setRunsView] = useState("board");
+  const [runsView, setRunsView] = useState("table");
   const [dark, setDark] = useState(() => localStorage.getItem("machinist-theme") !== "light");
   const [route, setRoute] = useState(() => routeFromHash(window.location.hash));
   const view = route.view;
