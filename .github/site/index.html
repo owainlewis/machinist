@@ -84,7 +84,7 @@
         <div class="section-kicker">HOW IT WORKS</div>
         <div class="section-heading">
           <h2 id="factory-title">Give Machinist an issue. Get back a reviewed pull request.</h2>
-          <p>The foreman plans the task and delegates the build. A different agent reviews the change. Failed checks and valid findings go through a repair loop. Machinist never merges the pull request.</p>
+          <p>An agent builds the change in an isolated worktree. A fresh agent reviews it. Failed checks and valid review findings are repaired before handoff. Machinist never merges the pull request.</p>
         </div>
         <figure class="technical-drawing drawing-system">
           <img src="technical-drawings.webp" width="1693" height="929" loading="lazy" decoding="async" alt="Architectural plan of a supervised coding-agent system with orchestration, execution, governance, and review layers">
@@ -159,7 +159,7 @@ command = [<span class="code-string">"your-agent"</span>, <span class="code-stri
           <li>
             <span class="step-number">03</span>
             <div><h3>Run</h3><p>Send a narrow GitHub issue through the supervised production line.</p></div>
-            <button class="copy-command" type="button" data-copy="./bin/machinist run --command=foreman --repo=/path/to/repo --prompt='Complete issue #123'" aria-label="Copy run command"><code>machinist run --command=foreman ...</code><span aria-live="polite">COPY</span></button>
+            <button class="copy-command" type="button" data-copy="./bin/machinist run --command=task-to-pr --repo=/path/to/repo --prompt='Complete issue #123'" aria-label="Copy run command"><code>machinist run --command=task-to-pr ...</code><span aria-live="polite">COPY</span></button>
           </li>
         </ol>
       </section>

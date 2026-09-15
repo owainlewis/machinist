@@ -1,4 +1,0 @@
-[commands.issue-to-pr]
-executor = "codex"
-prompt_file = "prompts/issue-to-pr.md"
-timeout = "120m"

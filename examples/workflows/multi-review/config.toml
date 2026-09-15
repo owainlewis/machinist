@@ -1,3 +1,0 @@
-[commands.multi-review]
-executor = "multi-review-script"
-timeout = "90m"

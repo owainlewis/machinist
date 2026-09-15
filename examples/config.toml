@@ -4,28 +4,31 @@ database = "~/.machinist/server/machinist.db"
 worker_token_file = "~/.machinist/server/worker.token"
 # max_concurrent_jobs = 1
 
-[commands.foreman]
+# Take a task or GitHub issue to a reviewed pull request.
+[commands.task-to-pr]
 executor = "codex"
-prompt_file = "prompts/foreman.md"
+prompt_file = "prompts/task-to-pr.md"
 timeout = "120m"
 
+# Find verified correctness bugs and report them as GitHub issues.
 [commands.audit]
 executor = "codex"
 prompt_file = "prompts/audit.md"
 timeout = "60m"
 
-[commands.shepherd]
-executor = "codex"
-prompt_file = "prompts/shepherd.md"
-timeout = "120m"
-
-# Schedule Shepherd for one configured repository with a trigger like this:
+# Queue task-to-pr when an issue is labelled machinist:requested, and audit weekly.
+# Each repository name must also exist in worker.toml.
 # [github.repositories]
 # my-project = "owner/my-project"
 #
-# [triggers.cron.shepherd-my-project]
-# schedule = "*/30 * * * *"
+# [triggers.github.issue-intake]
+# every = "5m"
+# label = "machinist:requested"
+# command = "task-to-pr"
+#
+# [triggers.cron.weekly-audit]
+# schedule = "0 6 * * 1"
 # timezone = "UTC"
 # repository = "my-project"
-# command = "shepherd"
-# prompt = "Run the Shepherd queue for my-project with max_actions=3. Perform at most 3 mutating actions in this run."
+# command = "audit"
+# prompt = "Audit the repository for high-confidence correctness bugs."

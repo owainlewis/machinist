@@ -1,4 +1,0 @@
-[commands.code-audit]
-executor = "codex"
-prompt_file = "prompts/code-audit.md"
-timeout = "60m"

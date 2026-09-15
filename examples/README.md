@@ -1,23 +1,15 @@
 # Examples
 
-The files at this level are the small default installed by `machinist init`:
+`machinist init` installs the files at this level:
 
-- `config.toml` defines the shipped `foreman`, `audit`, and `shepherd` commands.
+- `config.toml` defines two commands and a commented trigger example.
+  - `task-to-pr` takes a task or GitHub issue to a reviewed pull request.
+  - `audit` finds verified correctness bugs and reports them as GitHub issues.
 - `worker.toml` shows local Codex and Claude Code executors.
-- `prompts/` contains the editable default prompts.
+- `prompts/` contains the editable prompts for both commands.
 
-`config.toml` includes a commented cron trigger that schedules Shepherd. Enable it only
-after its repository name exists in `worker.toml`. Shepherd ensures the repository defines the
-`machinist:auto-merge` label, but it never applies the label to a pull request. Unlabelled
-pull requests remain read-only to Shepherd.
+The [workflow examples](workflows/README.md) compare this prompt-driven style with a
+workflow written as a script.
 
-The [workflow examples](workflows/README.md) are self-contained definitions with exact
-setup and run commands:
-
-- issue to pull request;
-- Codex and Claude Code multi-review;
-- read-only code audit and issue creation.
-
-The [GitHub comment intake example](github-actions/README.md) safely turns a new,
-authorized `@machinist` issue comment into a `machinist:requested` label for a
-managed GitHub trigger.
+The [GitHub comment intake example](github-actions/README.md) turns a new, authorized
+`@machinist` issue comment into a `machinist:requested` label for a managed GitHub trigger.

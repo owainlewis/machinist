@@ -45,20 +45,21 @@ mkdir -p ./bin && go build -o ./bin/machinist ./cmd/machinist
 ./bin/machinist init
 ```
 
-Configure an approved command:
+`init` writes `~/.machinist/config.toml` with two commands, `task-to-pr` and `audit`.
+Each is a prompt, an executor, and a timeout:
 
 ```toml
 # ~/.machinist/config.toml
-[commands.foreman]
+[commands.task-to-pr]
 executor = "codex"
-prompt_file = "prompts/foreman.md" # optional
-timeout = "45m"
+prompt_file = "prompts/task-to-pr.md" # optional
+timeout = "120m"
 ```
 
 Run it directly:
 
 ```sh
-./bin/machinist run --command=foreman --repo=/path/to/repo --prompt="Implement issue 42"
+./bin/machinist run --command=task-to-pr --repo=/path/to/repo --prompt="Complete https://github.com/owner/repo/issues/42"
 ```
 
 ## How execution works
@@ -75,7 +76,7 @@ Scripts are intentionally opaque. Their internal stages appear in logs, but Mach
 | [Configuration](docs/configuration.md) | Commands, executors, workers, models, and repositories |
 | [Development](docs/development.md) | Build, test, and work on Machinist locally |
 | [VM deployment](docs/vm-deployment.md) | Run the control plane and worker as services |
-| [Workflow examples](examples/workflows/README.md) | Repository-owned multi-step orchestration |
+| [Workflow examples](examples/workflows/README.md) | Prompt-driven and scripted workflows |
 
 ## Contributing
 
