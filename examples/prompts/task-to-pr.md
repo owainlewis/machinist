@@ -37,4 +37,4 @@ Never merge, force-push, or rewrite published history.
 
 Finish with the status (completed, blocked, or failed), the pull request URL if one exists,
 and a short summary of the change and how it was verified. Completed means the pull request
-is open, CI passes, and no valid review findings remain.
+is open, every expected check passes, and no valid review findings remain.
