@@ -35,6 +35,28 @@ The control plane uses the repository's `examples/config.toml`. The managed
 worker continues to use `~/.machinist/worker.toml` because executors,
 credentials, and repository paths are machine-owned configuration.
 
+## Issue launcher
+
+Run the local workflow from the target repository with an authenticated `gh` and
+`codex` on `PATH`:
+
+```sh
+uv run agent.py https://github.com/OWNER/REPO/issues/123
+```
+
+Python verifies the issue repository against `origin` before starting Codex. The
+current check supports standard github.com SSH and HTTPS remotes; custom SSH host
+aliases need a canonical origin URL. The agent implements the task and opens a PR,
+then Python waits for checks and known active reviews and allows up to three repair
+passes.
+
+Feedback includes PR comments, unresolved review threads, and failed GitHub Actions
+step logs. Outdated unresolved findings stay available for assessment. Log excerpts
+are limited to 12,000 characters per job and 48,000 overall, within the remaining CI
+wait budget. Missing or truncated logs keep the job link so the agent can investigate.
+Raw job logs are passed to the agent and are not printed by the collector. These
+excerpts are not a general secret-redaction mechanism.
+
 ## Verify
 
 Run the complete project check before opening a pull request:

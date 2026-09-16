@@ -56,6 +56,14 @@ def streamed_codex(events):
     return factory, thread
 
 
+def thread_page(*threads):
+    return {
+        "data": {
+            "repository": {"pullRequest": {"reviewThreads": {"nodes": list(threads)}}}
+        }
+    }
+
+
 def codex_review_status(state="Running", head="abcdef0"):
     """The status-only comment format observed in the issue #472 run."""
     return {
@@ -73,6 +81,9 @@ def codex_review_status(state="Running", head="abcdef0"):
 
 class AgentTests(unittest.TestCase):
     def setUp(self):
+        repository = patch.object(agent, "validate_repository")
+        repository.start()
+        self.addCleanup(repository.stop)
         login = patch.object(
             agent,
             "gh",
@@ -508,6 +519,7 @@ class FeedbackTests(unittest.TestCase):
             [[{"body": "bot summary"}]],
             reviews or [[]],
             [[{"body": "fix this", "path": "agent.py"}]],
+            [thread_page()],
             {"headRefOid": head, "state": "OPEN"},
         ]
 
@@ -602,6 +614,8 @@ class FeedbackTests(unittest.TestCase):
             calls.append(args)
             if args[0] == "pr":
                 return pr
+            if args[1] == "graphql":
+                return [thread_page()]
             if args[1].endswith("issues/467/comments"):
                 return [[codex_review_status(next(statuses), review_head)]]
             if args[1].endswith("pulls/467/comments"):
@@ -626,11 +640,12 @@ class FeedbackTests(unittest.TestCase):
         # Observe completion before fetching the findings it promises are ready.
         endpoints = [call[1] for call in calls if call[0] == "api"]
         self.assertEqual(
-            endpoints[-3:],
+            endpoints[-4:],
             [
                 "repos/owner/repo/issues/467/comments",
                 "repos/owner/repo/pulls/467/reviews",
                 "repos/owner/repo/pulls/467/comments",
+                "graphql",
             ],
         )
 
@@ -678,6 +693,244 @@ class FeedbackTests(unittest.TestCase):
         with patch.object(agent, "gh", return_value={"state": "CLOSED"}):
             with self.assertRaisesRegex(RuntimeError, "no longer open"):
                 agent.wait_for_ci("owner/repo", 467)
+
+
+class CollectedFeedbackTests(unittest.TestCase):
+    def test_thread_pages_use_full_comment_ids_and_preserve_unresolved_outdated_state(
+        self,
+    ):
+        resolved = {
+            "id": "resolved",
+            "isResolved": True,
+            "isOutdated": False,
+            "comments": {"nodes": [{"fullDatabaseId": "3952481309"}]},
+        }
+        outdated = {
+            "id": "outdated",
+            "isResolved": False,
+            "isOutdated": True,
+            "comments": {"nodes": [{"fullDatabaseId": "3952481310"}]},
+        }
+        with patch.object(
+            agent, "gh", return_value=[thread_page(resolved), thread_page(outdated)]
+        ) as api:
+            states = agent.review_thread_status("owner/repo", 467)
+        self.assertTrue(states[3952481309]["is_resolved"])
+        self.assertEqual(
+            states[3952481310],
+            {
+                "thread_id": "outdated",
+                "is_resolved": False,
+                "is_outdated": True,
+            },
+        )
+        self.assertIn("--paginate", api.call_args.args)
+
+    def test_collection_filters_resolved_roots_and_replies_but_keeps_unknown_findings(
+        self,
+    ):
+        comments = [
+            {"id": 1, "body": "Resolved root"},
+            {"id": 2, "in_reply_to_id": 1, "body": "Resolved reply"},
+            {"id": 3, "body": "Outdated but unresolved"},
+            {"id": 4, "body": "Unknown thread"},
+        ]
+        pr = {
+            "state": "OPEN",
+            "headRefOid": "abc",
+            "statusCheckRollup": [{"state": "SUCCESS"}],
+        }
+        with (
+            patch.object(agent, "gh", side_effect=[pr, [[]], [[]], [comments], pr]),
+            patch.object(
+                agent,
+                "review_thread_status",
+                return_value={
+                    1: {"thread_id": "T1", "is_resolved": True, "is_outdated": False},
+                    3: {"thread_id": "T3", "is_resolved": False, "is_outdated": True},
+                },
+            ),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            feedback = agent.wait_for_ci("owner/repo", 467)
+        self.assertEqual(
+            [item["id"] for item in agent.review_items(feedback).values()], [3, 4]
+        )
+        self.assertEqual(feedback["review_comments"][1]["thread_id"], "T1")
+
+    def test_failed_job_logs_are_included_before_the_head_is_rechecked(self):
+        url = "https://github.com/owner/repo/actions/runs/10/job/20"
+        check = {
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "name": "tests",
+            "detailsUrl": url,
+        }
+        pr = {"state": "OPEN", "headRefOid": "abc", "statusCheckRollup": [check]}
+        calls = []
+
+        def api(*args):
+            calls.append(args)
+            return pr if args[0] == "pr" else [[]]
+
+        def logs(*args, **kwargs):
+            calls.append(("logs",))
+            return "test failure detail"
+
+        with (
+            patch.object(agent, "gh", side_effect=api),
+            patch.object(agent, "review_thread_status", return_value={}),
+            patch.object(agent, "gh_text", side_effect=logs),
+            contextlib.redirect_stderr(io.StringIO()) as output,
+        ):
+            feedback = agent.wait_for_ci("owner/repo", 467)
+        self.assertEqual(feedback["failed_job_logs"][0]["text"], "test failure detail")
+        self.assertEqual(calls[-2], ("logs",))
+        self.assertEqual(calls[-1][0], "pr")
+        self.assertNotIn("test failure detail", output.getvalue())
+
+    def test_log_collection_is_bounded_and_only_reads_this_repositorys_failed_jobs(
+        self,
+    ):
+        def job(number, state="FAILURE", repo="owner/repo"):
+            return {
+                "name": str(number),
+                "state": state,
+                "targetUrl": f"https://github.com/{repo}/actions/runs/10/job/{number}",
+            }
+
+        checks = [
+            job(1, "SUCCESS"),
+            job(2),
+            job(2),
+            job(3, repo="other/repo"),
+            job(4),
+            job(5),
+            job(6),
+            job(7),
+        ]
+        with patch.object(
+            agent, "gh_text", return_value="x" * 15000 + "FAILURE"
+        ) as cli:
+            logs = agent.failed_job_logs("owner/repo", checks)
+        self.assertEqual(cli.call_count, 4)
+        excerpts = [item for item in logs if "text" in item]
+        self.assertEqual(sum(len(item["text"]) for item in excerpts), 48000)
+        self.assertTrue(
+            all(
+                item["truncated"] and item["text"].endswith("FAILURE")
+                for item in excerpts
+            )
+        )
+        self.assertIn("already included", logs[1]["unavailable"])
+        self.assertIn("provider", logs[2]["unavailable"])
+        self.assertIn("limit", logs[-1]["unavailable"])
+
+    def test_log_collection_uses_the_existing_deadline(self):
+        checks = [
+            {
+                "state": "FAILURE",
+                "targetUrl": f"https://github.com/owner/repo/actions/runs/10/job/{number}",
+            }
+            for number in (20, 21)
+        ]
+        with (
+            patch.object(agent.time, "monotonic", side_effect=[9, 11]),
+            patch.object(agent, "gh_text", return_value="failure") as cli,
+        ):
+            logs = agent.failed_job_logs("owner/repo", checks, deadline=10)
+        cli.assert_called_once()
+        self.assertEqual(cli.call_args.kwargs["timeout"], 1)
+        self.assertIn("timed out", logs[1]["unavailable"])
+
+    def test_missing_logs_keep_failure_context_without_exposing_command_errors(self):
+        check = {
+            "name": "tests",
+            "state": "FAILURE",
+            "targetUrl": "https://github.com/owner/repo/actions/runs/10/job/20",
+        }
+        for error in (
+            RuntimeError("private error detail"),
+            agent.subprocess.TimeoutExpired("gh", 30),
+        ):
+            with (
+                self.subTest(error=error),
+                patch.object(agent, "gh_text", side_effect=error),
+            ):
+                logs = agent.failed_job_logs("owner/repo", [check])
+            self.assertEqual(logs[0]["url"], check["targetUrl"])
+            self.assertIn("unavailable", logs[0])
+            self.assertNotIn("private error detail", json.dumps(logs))
+        with patch.object(agent, "gh_text", return_value=""):
+            self.assertIn(
+                "unavailable", agent.failed_job_logs("owner/repo", [check])[0]
+            )
+
+    def test_resolved_threads_do_not_start_an_agent_but_logs_reach_repairs(self):
+        report = {"status": "completed", "pr_number": 467, "summary": "done"}
+        feedback = {
+            "ci_status": "passed",
+            "head_sha": "abc",
+            "review_comments": [{"id": 1, "body": "fixed", "is_resolved": True}],
+        }
+        with (
+            patch.object(agent, "run_codex") as run,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(
+                agent.iterate("task", "owner/repo", report, feedback), report
+            )
+        run.assert_not_called()
+        failed = {
+            **feedback,
+            "ci_status": "failed",
+            "failed_job_logs": [{"text": "actual failed test"}],
+        }
+        with (
+            patch.object(agent, "gh", return_value={"login": "builder"}),
+            patch.object(agent, "run_codex", return_value=report) as run,
+            patch.object(agent, "wait_for_ci", return_value=feedback),
+            contextlib.redirect_stderr(io.StringIO()) as output,
+        ):
+            agent.iterate("task", "owner/repo", report, failed)
+        self.assertIn("actual failed test", run.call_args.args[0])
+        self.assertNotIn("actual failed test", output.getvalue())
+
+
+class RepositoryTests(unittest.TestCase):
+    task = "https://github.com/owner/repo/issues/123"
+
+    def test_matching_origin_supports_ssh_and_https_and_case_insensitive_names(self):
+        for remote in (
+            "git@github.com:Owner/Repo.git",
+            "https://github.com/owner/repo.git",
+            "ssh://git@github.com/owner/repo.git",
+            "https://user:password@github.com/owner/repo.git",
+        ):
+            with (
+                self.subTest(remote=remote),
+                patch.object(
+                    agent.subprocess, "run", return_value=SimpleNamespace(stdout=remote)
+                ),
+            ):
+                agent.validate_repository(self.task)
+
+    def test_wrong_repository_is_rejected_before_the_agent_starts(self):
+        for remote in (
+            "git@github.com:other/repo.git",
+            "https://other.example/owner/repo.git",
+            "/local/repo",
+        ):
+            with (
+                self.subTest(remote=remote),
+                patch.object(
+                    agent.subprocess, "run", return_value=SimpleNamespace(stdout=remote)
+                ),
+                patch.object(agent, "run_codex") as run,
+            ):
+                with self.assertRaisesRegex(ValueError, "does not match"):
+                    agent.implement(self.task)
+                run.assert_not_called()
 
 
 class IterationTests(unittest.TestCase):
