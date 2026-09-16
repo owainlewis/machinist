@@ -259,7 +259,33 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.authorizeWorker(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.authorizeWorker(s.complete))
 	mux.Handle("/", http.FileServer(http.FS(dist)))
-	return securityHeaders(mux), nil
+	return securityHeaders(requireLoopbackHost(mux)), nil
+}
+
+func requireLoopbackHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !loopbackRequestHost(request.Host) {
+			writeError(response, http.StatusForbidden, errors.New("request host must be loopback"))
+			return
+		}
+		next.ServeHTTP(response, request)
+	})
+}
+
+func loopbackRequestHost(value string) bool {
+	parsed, err := url.Parse("http://" + value)
+	if err != nil || parsed.Host != value || parsed.User != nil || parsed.Hostname() == "" {
+		return false
+	}
+	if strings.Contains(value, ":") && parsed.Port() == "" && !strings.HasSuffix(value, "]") {
+		return false
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) definitions(response http.ResponseWriter, request *http.Request) {
