@@ -1,23 +1,21 @@
 ---
 name: machinist
-description: Use Machinist to create, assign, monitor, and resume software tasks. Use when a coding agent needs to work with Machinist, its GitHub issue workflow, lifecycle labels, direct runs, or managed queue.
+description: Use Machinist to create, assign, and monitor software tasks. Use when a coding agent needs to work with Machinist, its GitHub issue workflow, intake labels, direct runs, or managed queue.
 ---
 
 # Machinist
 
-Machinist turns one open GitHub issue into a planned, implemented, independently
-reviewed, and checked pull request. It never merges the pull request.
+Machinist turns a task or GitHub issue into an implemented, independently reviewed, and
+checked pull request. It never merges the pull request.
 
 ## Core model
 
-- A task is one open GitHub issue in the target repository.
+- A task is one GitHub issue in the target repository, or a plain description.
 - Assigning a task means starting `machinist run` or queuing `machinist submit`.
-- Foreman lifecycle labels report workflow state. Configured GitHub intake labels can
-  enqueue managed work.
-- Reassign the same issue to resume existing work. The foreman recovers its branch,
-  worktree, pull request, checks, and repair count.
+- Assign the same issue again to continue interrupted work. The `task-to-pr` command
+  reuses an existing branch, worktree, and pull request for the task.
 - When `MACHINIST_RUN_ID` is set, the agent is already inside a Machinist run. Follow the
-  assigned role and do not start or submit another run.
+  assigned task and do not start or submit another run.
 
 ## Create a task
 
@@ -38,7 +36,7 @@ Use direct mode for immediate local work. Pass an absolute Git worktree path:
 
 ```sh
 machinist run \
-  --command=foreman \
+  --command=task-to-pr \
   --repo=/absolute/path/to/repository \
   --prompt="Complete https://github.com/owner/repository/issues/123"
 ```
@@ -48,7 +46,7 @@ repository name from `worker.toml`:
 
 ```sh
 machinist submit \
-  --command=foreman \
+  --command=task-to-pr \
   --repo=repository-name \
   --prompt="Complete https://github.com/owner/repository/issues/123"
 ```
@@ -60,44 +58,18 @@ configured input label, normally `machinist:requested`, delegates that issue thr
 managed queue. Machinist verifies the label event and actor, admits the job durably, then
 replaces the input label with `machinist:queued`. The label has no effect when that GitHub
 trigger or its repository is not configured. `machinist:requested` and
-`machinist:queued` are intake labels, not Foreman lifecycle labels.
+`machinist:queued` are intake labels; they do not report progress after the job starts.
 
-## Lifecycle labels
+## Report status
 
-Keep exactly one lifecycle or exception label on the issue:
+Check the run in the control-plane UI or the `machinist run` output, then the linked pull
+request and its checks. The command finishes as completed, blocked, or failed with a short
+summary.
 
-| Label | Meaning | Command action |
-| --- | --- | --- |
-| `machinist:planning` | The issue is being refined into a clear task. | Wait for planning or answer a question if asked. |
-| `machinist:building` | A worker is implementing or repairing the change. | Do not start overlapping work. |
-| `machinist:verifying` | Independent review, CI, or automated review is running. | Wait for the current head to finish verification. |
-| `machinist:ready-for-review` | The pull request is verified and ready for a person. | Hand the pull request to a person. Do not merge it. |
-| `machinist:needs-human` | A product or technical decision is missing. | Answer the precise issue question, then assign the same issue again. |
-| `machinist:blocked` | Tooling, credentials, or infrastructure stopped work. | Read the evidence, remove the external blocker, then assign the same issue again. |
-
-The foreman creates and transitions these labels. If a label is missing during manual
-recovery, create it with GitHub CLI, then add it to the issue:
-
-```sh
-gh label create "machinist:planning" --color 1d76db --description "Machinist is planning this task"
-gh issue edit https://github.com/owner/repository/issues/123 --add-label "machinist:planning"
-```
-
-Use the same pattern for the label named in the table. Remove the previous lifecycle label
-before adding another. Do not change a label merely to make progress appear further along.
-
-## Manage and resume work
-
-Inspect the issue labels, the `<!-- machinist:foreman-state -->` issue comment, the linked
-pull request, and current checks. Verify the recorded branch, worktree, SHAs, pull request,
-checks, and repair count against current Git and GitHub state before using them.
-
-- For `machinist:needs-human`, answer the issue question and reassign the same issue.
-- For `machinist:blocked`, fix the reported external cause and reassign the same issue.
-- For interrupted or stale work, reassign the same issue. Do not create a second branch or
-  pull request.
-- For `machinist:ready-for-review`, hand the pull request to a person. Never merge unless
-  that person explicitly decides to do so outside the shipped foreman workflow.
+- For blocked work, fix the reported cause or answer the question, then assign the same
+  issue again.
+- For completed work, hand the pull request to a person. Never merge unless that person
+  explicitly decides to do so.
 
 When reporting status, include the issue URL, job ID when managed, pull request URL when
-created, current label, checks, review verdict, and blocker or next human action.
+created, checks, and blocker or next human action.

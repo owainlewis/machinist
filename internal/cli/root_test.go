@@ -33,9 +33,7 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 	wantFiles := []string{
 		"config.toml",
 		"prompts/audit.md",
-		"prompts/foreman.md",
-		"prompts/merge.md",
-		"prompts/shepherd.md",
+		"prompts/task-to-pr.md",
 		"server/worker.token",
 		"worker.toml",
 	}
@@ -89,10 +87,10 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions.Commands) != 5 {
+	if len(definitions.Commands) != 2 {
 		t.Fatalf("installed definitions = commands %#v", definitions.Commands)
 	}
-	for _, name := range []string{"foreman", "audit", "shepherd", "merge", "deliver"} {
+	for _, name := range []string{"task-to-pr", "audit"} {
 		if _, err := config.LoadCommand(definition, name); err != nil {
 			t.Fatalf("load installed agent %s: %v", name, err)
 		}
@@ -146,14 +144,14 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	}
 	directory := filepath.Join(home, ".machinist")
 	for name, body := range map[string]string{
-		"config.toml":         "custom config\n",
-		"worker.toml":         "custom worker\n",
-		"prompts/foreman.md":  "custom foreman\n",
-		"prompts/plan.md":     "old plan\n",
-		"prompts/build.md":    "old build\n",
-		"prompts/verify.md":   "old verify\n",
-		"prompts/custom.md":   "custom agent\n",
-		"server/worker.token": "custom token\n",
+		"config.toml":           "custom config\n",
+		"worker.toml":           "custom worker\n",
+		"prompts/task-to-pr.md": "custom task-to-pr\n",
+		"prompts/plan.md":       "old plan\n",
+		"prompts/build.md":      "old build\n",
+		"prompts/verify.md":     "old verify\n",
+		"prompts/custom.md":     "custom agent\n",
+		"server/worker.token":   "custom token\n",
 	} {
 		if err := os.WriteFile(filepath.Join(directory, filepath.FromSlash(name)), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
@@ -190,7 +188,7 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	if !bytes.Equal(audit, wantAudit) {
 		t.Fatal("init failed to restore the missing audit default")
 	}
-	if !strings.Contains(stdout.String(), "kept prompts/foreman.md") || !strings.Contains(stdout.String(), "created prompts/audit.md") || !strings.Contains(stdout.String(), "kept server/worker.token") {
+	if !strings.Contains(stdout.String(), "kept prompts/task-to-pr.md") || !strings.Contains(stdout.String(), "created prompts/audit.md") || !strings.Contains(stdout.String(), "kept server/worker.token") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -346,22 +344,6 @@ func TestRunExecutesOneAgent(t *testing.T) {
 		"--config=" + writeCLIConfig(t, "success"),
 	}, strings.NewReader(""), &stdout, &stderr, "test")
 	if exitCode != 0 || stdout.String() != "configured plan prompt\n\nPrompt:\nissue 42\n" {
-		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
-	}
-}
-
-func TestRunExecutesShepherdCommandDirectly(t *testing.T) {
-	workerConfig := writeCLIConfig(t, "success")
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"run",
-		"--command=shepherd",
-		"--prompt=exercise a disposable queue",
-		"--repo=" + newCLIRepository(t),
-		"--config=" + workerConfig,
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 || !strings.Contains(stdout.String(), "configured shepherd prompt") {
 		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
 	}
 }
@@ -788,9 +770,6 @@ func writeCLIConfig(t *testing.T, mode string) string {
 	if err := os.WriteFile(filepath.Join(directory, "verify.md"), []byte("configured verify prompt\n\nPrompt:\n{{machinist.prompt}}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "shepherd.md"), []byte("configured shepherd prompt\n\nPrompt:\n{{machinist.prompt}}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	definition := filepath.Join(directory, "config.toml")
 	script := "cat"
 	if mode == "fail" {
@@ -818,10 +797,6 @@ func writeCLIConfig(t *testing.T, mode string) string {
 		"[commands.verify]\n" +
 		"executor = \"default\"\n" +
 		"prompt_file = \"verify.md\"\n" +
-		"timeout = \"5s\"\n\n" +
-		"[commands.shepherd]\n" +
-		"executor = \"default\"\n" +
-		"prompt_file = \"shepherd.md\"\n" +
 		"timeout = \"5s\"\n"
 	if err := os.WriteFile(definition, []byte(definitionBody), 0o600); err != nil {
 		t.Fatal(err)

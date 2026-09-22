@@ -224,7 +224,7 @@ func loadConfigFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse Machinist config %q: pipelines were removed; replace each pipeline with a repository-owned orchestration script configured under [commands]", absPath)
 	}
 	if _, ok := raw["shepherd"]; ok {
-		return Config{}, fmt.Errorf("parse Machinist config %q: shepherd schedules were removed; schedule the shepherd command with a [triggers.cron.NAME] or [triggers.interval.NAME] trigger", absPath)
+		return Config{}, fmt.Errorf("parse Machinist config %q: shepherd schedules were removed; schedule a command with a [triggers.cron.NAME] or [triggers.interval.NAME] trigger", absPath)
 	}
 	if _, ok := raw["agents"]; ok {
 		return Config{}, fmt.Errorf("parse Machinist config %q: agents were renamed to commands; move [agents.NAME] definitions to [commands.NAME] and use --command", absPath)

@@ -8,7 +8,7 @@ triage and implementation. Commands can run agent prompts or scripts.
 
 ```toml
 [workflows.deliver]
-steps = ["foreman"]
+steps = ["task-to-pr"]
 
 [workflows.checked_delivery]
 steps = ["triage", "build"]

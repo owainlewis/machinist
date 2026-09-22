@@ -45,20 +45,21 @@ mkdir -p ./bin && go build -o ./bin/machinist ./cmd/machinist
 ./bin/machinist init
 ```
 
-Configure an approved command:
+`init` writes `~/.machinist/config.toml` with two commands, `task-to-pr` and `audit`.
+Each is a prompt, an executor, and a timeout:
 
 ```toml
 # ~/.machinist/config.toml
-[commands.foreman]
+[commands.task-to-pr]
 executor = "codex"
-prompt_file = "prompts/foreman.md" # optional
-timeout = "45m"
+prompt_file = "prompts/task-to-pr.md" # optional
+timeout = "120m"
 ```
 
 Run it directly:
 
 ```sh
-./bin/machinist run --command=foreman --repo=/path/to/repo --prompt="Implement issue 42"
+./bin/machinist run --command=task-to-pr --repo=/path/to/repo --prompt="Complete https://github.com/owner/repo/issues/42"
 ```
 
 ## How execution works
@@ -71,7 +72,7 @@ For explicit steps, [configure a workflow](docs/workflows.md):
 
 ```toml
 [workflows.deliver]
-steps = ["foreman"]
+steps = ["task-to-pr"]
 ```
 
 Workflow tasks retain results and saved files, support approval and feedback, and keep earlier attempts in history. Each stage can read and write `{{task.output_dir}}`; Machinist restores and saves the shared folder between stages.
@@ -87,7 +88,7 @@ Start with [your first task workflow](docs/task-guide.md): create a task from an
 | [Configuration](docs/configuration.md) | Commands, executors, workers, models, and repositories |
 | [Development](docs/development.md) | Build, test, and work on Machinist locally |
 | [VM deployment](docs/vm-deployment.md) | Run the control plane and worker as services |
-| [Workflow examples](examples/workflows/README.md) | Repository-owned multi-step orchestration |
+| [Workflow examples](examples/workflows/README.md) | Prompt-driven and scripted workflows |
 
 ## Contributing
 

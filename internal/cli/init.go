@@ -17,10 +17,8 @@ import (
 var initialFiles = []string{
 	"config.toml",
 	"worker.toml",
-	"prompts/foreman.md",
-	"prompts/merge.md",
+	"prompts/task-to-pr.md",
 	"prompts/audit.md",
-	"prompts/shepherd.md",
 }
 
 func newInitCommand(options *commandOptions) *cobra.Command {

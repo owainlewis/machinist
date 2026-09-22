@@ -1,6 +1,6 @@
 # Scale AI engineering through executable workflows
 
-> Historical design roadmap. The current product now supports sequential workflows, approval and revision, shared task files, and an optional merge-policy example. Start with [the task guide](task-guide.md) for shipped behavior; proposed architecture and exclusions below are not a current feature list.
+> Historical roadmap. For shipped stages, approvals, shared files and optional merge policies, see [the task guide](task-guide.md).
 
 
 > Status: Proposed roadmap, 6 September 2026. This document describes future work. The current runtime and workflow examples are identified separately below.
@@ -23,14 +23,12 @@ Scripts control stages, waiting, budgets, and recovery. Agents receive bounded p
 
 The current [architecture](../ARCHITECTURE.md) deliberately separates execution from orchestration. The runner starts one approved process, supplies its input through stdin, streams output, captures artifacts and reported token usage, and enforces process timeout and cancellation. The control plane stores jobs and runs and leases work to capable workers. Each job has one run; process results determine terminal state.
 
-There are competing delivery examples:
+There are two delivery examples:
 
-- [The foreman prompt](../examples/prompts/foreman.md) asks an agent to orchestrate planning, building, review, GitHub state, and recovery.
-- [The self-contained issue-to-PR workflow](../examples/workflows/issue-to-pr/README.md) supplies its own configuration and foreman prompt, with fresh planning, build, review, and repair agents, issue-state labels, and explicit GitHub verification gates. It has no fixed repair-pass cap.
-- [The Python flow example](../examples/workflows/flow/flow.py) owns Git/GitHub mechanics, creates an isolated worktree, runs implementation with subagent review, opens the PR, and exits.
-- [The issue launcher](../agent.py) accepts a GitHub issue URL as an argument or through Machinist stdin, asks either Codex or Claude to implement and repair, polls CI, and limits repair passes. It starts a new coding session per call and has no durable workflow checkpoint.
+- [The task-to-pr prompt](../examples/prompts/task-to-pr.md) asks one agent to implement a task in an isolated worktree, obtain a subagent review, open a PR, and repair CI and review feedback.
+- [The issue launcher](../agent.py) accepts a GitHub issue URL, asks agents to implement and repair, polls CI, and limits repair passes. It starts a new coding session per call and has no durable workflow checkpoint.
 
-These are useful experiments, not yet one fully supported contract. The issue launcher now shares one workflow between direct and Machinist input and between Codex and Claude, but its control-flow tests do not demonstrate unattended delivery quality or high concurrency.
+These are useful experiments, not one supported contract. The issue launcher's argument input also differs from Machinist's stdin interface. Its control-flow tests do not demonstrate unattended delivery quality or high concurrency.
 
 Keep the runtime boundary. Workflow stages and checkpoints belong to workflow code, not a new general-purpose graph engine inside the control plane.
 
@@ -64,7 +62,7 @@ Return ready-for-review or a precise stopping reason
 
 Use one maker session across implementation and repairs when the harness supports it. Start a fresh checker with the ticket, relevant design, exact diff, and evidence; it must not edit the implementation. Persist durable artifacts so recovery does not depend on retaining a conversation. A new maker can continue from the verified work state when session recovery is unavailable.
 
-The script makes phase calls and validates their outputs. It does not ask a foreman to choose an orchestration strategy. Thin phase prompts specify the immediate task, constraints, expected result, and stopping rule. Changes to prompts are versioned with the workflow and tested against its scenarios.
+The script makes phase calls and validates their outputs. It does not ask an agent to choose an orchestration strategy. Thin phase prompts specify the immediate task, constraints, expected result, and stopping rule. Changes to prompts are versioned with the workflow and tested against its scenarios.
 
 ### Evidence and stopping rules
 
