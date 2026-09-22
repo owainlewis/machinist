@@ -2,11 +2,9 @@ package config
 
 import (
 	"fmt"
-	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type Storage struct {
@@ -15,19 +13,17 @@ type Storage struct {
 type ArtifactStorage struct {
 	Backend     string `toml:"backend"`
 	Path        string `toml:"path"`
-	Retention   string `toml:"retention"`
 	MaxFileSize string `toml:"max_file_size"`
 	MaxRunSize  string `toml:"max_run_size"`
 }
 type ResolvedStorage struct {
 	Path                      string
-	Retention                 time.Duration
 	MaxFileBytes, MaxRunBytes int64
 }
 
 func (c Config) ResolveStorage(defaultPath string) (ResolvedStorage, error) {
 	a := c.Storage.Artifacts
-	r := ResolvedStorage{Path: defaultPath, Retention: 30 * 24 * time.Hour, MaxFileBytes: 100 << 20, MaxRunBytes: 1 << 30}
+	r := ResolvedStorage{Path: defaultPath, MaxFileBytes: 100 << 20, MaxRunBytes: 1 << 30}
 	if a.Backend != "" && a.Backend != "filesystem" {
 		return r, fmt.Errorf("unsupported artifact backend %q", a.Backend)
 	}
@@ -36,21 +32,6 @@ func (c Config) ResolveStorage(defaultPath string) (ResolvedStorage, error) {
 		r.Path, err = resolveConfigPath(a.Path, filepath.Dir(c.path))
 		if err != nil {
 			return r, err
-		}
-	}
-	if a.Retention != "" {
-		value := a.Retention
-		if strings.HasSuffix(value, "d") {
-			days, e := strconv.ParseFloat(strings.TrimSuffix(value, "d"), 64)
-			if e != nil || math.IsNaN(days) || days <= 0 || days > 36500 {
-				return r, fmt.Errorf("invalid retention %q", value)
-			}
-			r.Retention = time.Duration(days * 24 * float64(time.Hour))
-		} else {
-			r.Retention, err = time.ParseDuration(value)
-			if err != nil || r.Retention <= 0 {
-				return r, fmt.Errorf("invalid retention %q", value)
-			}
 		}
 	}
 	if a.MaxFileSize != "" {

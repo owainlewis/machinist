@@ -64,10 +64,7 @@ files remain outputs; they do not overwrite the submitted spec.
 
 - `MACHINIST_OUTPUT_DIR`: published task files for this attempt; only intended deliverables belong here.
 - `MACHINIST_SCRATCH_DIR`: private temporary work (clones, helper scripts, caches, raw logs); not uploaded or passed to later stages.
-- `MACHINIST_INPUT_DIR`: directory containing declared input files, named by alias.
-- `{{inputs.alias}}`: absolute path to that input file.
 - `{{task.output_dir}}`: shared task files, restored into this attempt’s local directory.
-- `{{stage.output_dir}}`: legacy empty per-attempt output directory.
 - `MACHINIST_STEP_RESULT_PATH`: JSON outcome and summary, separate from outputs.
 
 Regular files in the output directory are collected after the process exits,
@@ -91,29 +88,26 @@ are rejected. Completion must include all published files and every required out
 [storage.artifacts]
 backend = "filesystem"
 path = "~/.machinist/artifacts"
-retention = "30d"
 max_file_size = "100MB"
 max_run_size = "1GB"
 ```
 
 Default storage is `artifacts` beside the server database. Relative paths resolve
 against the server config file. Size units are binary multiples (KB = 1,024 bytes).
-Retention accepts days or Go durations such as `72h`. Settings apply at startup.
+Settings apply at startup.
 Back up the database and artifact directory together. Changing the path does not
 migrate existing files. Filesystem is the initial backend; buckets remain future work.
 
 Files live under task/run/artifact IDs. SQLite stores paths, MIME types, sizes,
-SHA-256 checksums, timestamps, and expiration tombstones. Retention starts after
-the task reaches succeeded, failed, or cancelled. Active, blocked, approval, and
-interrupted tasks remain protected. Cleanup runs periodically and retries failed
-deletions. Deleting a task makes its files eligible for cleanup. Expired inputs
-block a new consuming attempt.
+SHA-256 checksums, timestamps, and deletion tombstones. Files are kept until you
+delete their task. There is no time-based expiry. Cleanup runs periodically after
+task deletion and retries failed file deletions.
 
 ## UI and API access
 
 Task detail presents the latest complete snapshot in Files and older outputs in History.
-Files download through authenticated requests. Expired files retain metadata and
-display an expiration label.
+Files download through authenticated requests. Files expired by older server
+versions retain their metadata and display an expiration label.
 
 - `PUT /api/v1/runs/{run_id}/artifacts?path=spec.md`: raw bytes; worker bearer token,
   `X-Machinist-Instance`, and `X-Machinist-Lease` headers.
@@ -126,7 +120,8 @@ per-user access control. Responses use attachment and sandbox headers. The UI pr
 
 ## Shared task folder
 
-Use `{{task.output_dir}}` in every stage prompt. Planning can write
+Every new workflow shares task files automatically, including scripts using only
+`MACHINIST_OUTPUT_DIR`. In prompts, use `{{task.output_dir}}`. Planning can write
 `{{task.output_dir}}/plan.md`; build reads that same path. No `inputs` mappings
 are needed. Before each stage, Machinist downloads the latest completed stage's
 entire snapshot into a fresh local output folder. After execution it uploads a
@@ -138,6 +133,7 @@ Snapshots preserve older versions and avoid relying on a worker's temporary disk
 Files and raw-text previews are available on the task page; previews are limited
 to text files up to 1 MiB, with downloads for larger or binary files.
 
-Existing workflows using `{{stage.output_dir}}` and explicit `inputs` retain their
-previous behavior. Switch every stage to `{{task.output_dir}}` to adopt the shared
-folder. Already-submitted tasks retain their snapshotted workflow definitions.
+Already-submitted tasks retain their snapshotted workflow definitions, including
+legacy input mappings. For new submissions, remove `inputs` from workflow config
+and read files by name from `{{task.output_dir}}` instead. `{{stage.output_dir}}`
+is accepted as a compatibility alias for that same folder.

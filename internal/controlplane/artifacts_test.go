@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,13 +25,14 @@ func artifactTask(t *testing.T, s *Store, steps []config.WorkflowStep) (string, 
 		t.Fatalf("old worker admitted: %v %v", r, e)
 	}
 	old.Artifacts = true
+	old.SharedOutputs = true
 	r, e := s.Poll(t.Context(), old)
 	if e != nil || r == nil {
 		t.Fatalf("poll %v %v", r, e)
 	}
 	return id, r
 }
-func TestArtifactPublishBindRetention(t *testing.T) {
+func TestArtifactFilesPersistUntilTaskDeletion(t *testing.T) {
 	s := openTestStore(t, t.TempDir()+"/db")
 	steps := []config.WorkflowStep{{ID: "plan", Command: testAgent("plan", "{{task.spec}}"), RequiredOutputs: []string{"spec.md"}}, {ID: "build", Command: testAgent("build", "{{inputs.spec}}"), Approval: true, Inputs: map[string]string{"spec": "plan/spec.md"}}}
 	id, r := artifactTask(t, s, steps)
@@ -60,10 +62,10 @@ func TestArtifactPublishBindRetention(t *testing.T) {
 	if job.State != "awaiting_approval" || job.Task.Title != "Build it" {
 		t.Fatalf("%+v", job)
 	}
-	// Approval keeps the planning artifact alive beyond the configured TTL.
+	// Time alone never removes files, including while awaiting approval.
 	now := s.now()
 	s.now = func() time.Time { return now.Add(60 * 24 * time.Hour) }
-	if err = s.ExpireArtifacts(t.Context()); err != nil {
+	if err = s.CleanupArtifacts(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	_, f, err := s.OpenArtifact(t.Context(), a.ID)
@@ -76,6 +78,7 @@ func TestArtifactPublishBindRetention(t *testing.T) {
 	}
 	worker := workflowWorker()
 	worker.Artifacts = true
+	worker.SharedOutputs = true
 	next, err := s.Poll(t.Context(), worker)
 	if err != nil || next == nil {
 		t.Fatalf("%v %v", next, err)
@@ -86,11 +89,28 @@ func TestArtifactPublishBindRetention(t *testing.T) {
 	finishStep(t, s, next, "complete")
 	terminal := s.now()
 	s.now = func() time.Time { return terminal.Add(31 * 24 * time.Hour) }
-	if err = s.ExpireArtifacts(t.Context()); err != nil {
+	if err = s.CleanupArtifacts(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_, f, err = s.OpenArtifact(t.Context(), a.ID)
+	if err != nil {
+		t.Fatal("completed task lost its files:", err)
+	}
+	f.Close()
+	if err = s.DeleteJob(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.CleanupArtifacts(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = s.OpenArtifact(t.Context(), a.ID); !errors.Is(err, ErrArtifactExpired) {
 		t.Fatal(err)
+	}
+	if file, err := s.artifactStore.Open(a.JobID + "/" + a.RunID + "/" + a.ID); !errors.Is(err, os.ErrNotExist) {
+		if file != nil {
+			file.Close()
+		}
+		t.Fatalf("deleted task still has stored bytes: %v", err)
 	}
 	list, err := s.ListArtifacts(t.Context(), id)
 	if err != nil || len(list) != 1 || list[0].ExpiredAt == nil {

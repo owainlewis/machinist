@@ -40,12 +40,12 @@ Commands reference `{{task.source_url}}` and `{{task.spec}}`. Existing
 `{{machinist.prompt}}` templates receive the combined task brief.
 
 Workflow templates are saved at submission. Each attempt snapshots the task and
-the shared-folder snapshot or legacy explicit upstream artifact IDs; the worker renders local paths at execution.
+the shared-folder snapshot; the worker renders local paths at execution.
 Editing configuration does not change a submitted workflow.
 See [Artifact workflows](artifacts.md) for passing files between stages.
 
-Legacy `--prompt` submissions remain supported for workflows without artifact
-bindings. They retain eager rendering and do not collect output files.
+Legacy `--prompt` workflow submissions are accepted as task specs. They use the
+same file collection and template rendering as other tasks.
 
 ## Step result contract
 

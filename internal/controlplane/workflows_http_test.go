@@ -26,7 +26,7 @@ func TestWorkflowHTTPSubmissionAndApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.store.Poll(t.Context(), protocol.PollRequest{InstanceID: "worker-a", Name: "host", Executors: []string{"test"}, Repositories: []string{"machinist"}, Workflows: true})
+	_, err = s.store.Poll(t.Context(), protocol.PollRequest{InstanceID: "worker-a", Name: "host", Executors: []string{"test"}, Repositories: []string{"machinist"}, Workflows: true, Artifacts: true, SharedOutputs: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestWorkflowHTTPSubmissionAndApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stages := definitions.WorkflowSteps["deliver"]
+	stages := definitions.Workflows["deliver"]
 	if len(stages) != 1 || stages[0].Name != "plan" || !stages[0].Approval {
 		t.Fatalf("approval metadata missing: %+v", stages)
 	}
@@ -56,6 +56,9 @@ func TestWorkflowHTTPSubmissionAndApproval(t *testing.T) {
 	response.Body.Close()
 	status = getStatus(t, web.URL)
 	job := status.Jobs[0]
+	if job.Task == nil || job.Task.Spec != "issue" {
+		t.Fatalf("legacy prompt was not normalized: %+v", job.Task)
+	}
 	if job.State != "awaiting_approval" || job.Workflow.Name != "deliver" {
 		t.Fatal(job)
 	}
@@ -70,7 +73,7 @@ func TestWorkflowHTTPSubmissionAndApproval(t *testing.T) {
 		t.Fatalf("approval %d", response.StatusCode)
 	}
 	response.Body.Close()
-	response = postJSON(t, web.URL+"/api/v1/workers/poll", protocol.PollRequest{InstanceID: "worker-a", Name: "host", Executors: []string{"test"}, Repositories: []string{"machinist"}, Workflows: true}, map[string]string{"Authorization": "Bearer secret"})
+	response = postJSON(t, web.URL+"/api/v1/workers/poll", protocol.PollRequest{InstanceID: "worker-a", Name: "host", Executors: []string{"test"}, Repositories: []string{"machinist"}, Workflows: true, Artifacts: true, SharedOutputs: true}, map[string]string{"Authorization": "Bearer secret"})
 	defer response.Body.Close()
 	var polled protocol.PollResponse
 	if err = json.NewDecoder(response.Body).Decode(&polled); err != nil {
@@ -91,7 +94,7 @@ func TestWorkflowEndToEndWithScriptExecutors(t *testing.T) {
 	command := config.ResolvedCommand{Name: "triage", Executor: "script", Prompt: "issue URL", Timeout: time.Second, Command: []string{"sh", "-c", script}}
 	build := command
 	build.Name = "build"
-	id, err := s.CreateWorkflowJob(t.Context(), "issue URL", "machinist", "deliver", []config.WorkflowStep{{Command: command}, {Command: build}})
+	id, err := s.createLegacyWorkflowJob(t.Context(), "issue URL", "machinist", "deliver", []config.WorkflowStep{{Command: command}, {Command: build}})
 	if err != nil {
 		t.Fatal(err)
 	}

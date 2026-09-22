@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -25,7 +26,7 @@ func finishStep(t *testing.T, s *Store, r *protocol.RunSpec, outcome string) {
 }
 func workflowJob(t *testing.T, s *Store, approval bool) string {
 	t.Helper()
-	id, err := s.CreateWorkflowJob(t.Context(), "issue URL", "machinist", "deliver", []config.WorkflowStep{{Command: testAgent("triage", "issue URL")}, {Command: testAgent("build", "issue URL"), Approval: approval}})
+	id, err := s.createLegacyWorkflowJob(t.Context(), "issue URL", "machinist", "deliver", []config.WorkflowStep{{Command: testAgent("triage", "issue URL")}, {Command: testAgent("build", "issue URL"), Approval: approval}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +161,7 @@ func TestWorkflowWorkerAffinityAndWholePlanCapabilities(t *testing.T) {
 	s := openTestStore(t, filepath.Join(t.TempDir(), "db"))
 	build := testAgent("build", "issue")
 	build.Executor = "claude"
-	_, err := s.CreateWorkflowJob(t.Context(), "issue", "machinist", "deliver", []config.WorkflowStep{{Command: testAgent("triage", "issue")}, {Command: build}})
+	_, err := s.createLegacyWorkflowJob(t.Context(), "issue", "machinist", "deliver", []config.WorkflowStep{{Command: testAgent("triage", "issue")}, {Command: build}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,4 +293,9 @@ func TestDynamicApprovalSurvivesRestart(t *testing.T) {
 	if r, err := s.Poll(t.Context(), workflowWorker()); err != nil || r == nil {
 		t.Fatalf("approved dispatch: %v %v", r, err)
 	}
+}
+
+// Fixtures for workflows submitted before task specs and shared files.
+func (s *Store) createLegacyWorkflowJob(ctx context.Context, prompt, repository, name string, steps []config.WorkflowStep) (string, error) {
+	return s.createWorkflowJob(ctx, prompt, repository, name, steps, nil)
 }

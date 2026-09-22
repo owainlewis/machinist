@@ -780,13 +780,22 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 		if err := enrichReview(ctx, tx, &active); err != nil {
 			return nil, err
 		}
-		for alias := range active.Inputs {
-			if strings.HasPrefix(alias, "__workspace__/") && !request.SharedOutputs {
+		if activeWorkflow && !request.SharedOutputs {
+			var plan string
+			var index int
+			if err := tx.QueryRowContext(ctx, `SELECT w.plan,a.step FROM workflow_jobs w JOIN workflow_attempts a ON a.run_id=? WHERE w.job_id=?`, active.ID, active.JobID).Scan(&plan, &index); err != nil {
+				return nil, err
+			}
+			var steps []config.WorkflowStep
+			if err := json.Unmarshal([]byte(plan), &steps); err != nil {
+				return nil, err
+			}
+			if index < 0 || index >= len(steps) {
+				return nil, errors.New("invalid workflow step")
+			}
+			if steps[index].SharedOutputs {
 				return nil, errors.New("worker must support shared task outputs")
 			}
-		}
-		if strings.Contains(active.RenderedPrompt, "{{task.output_dir}}") && !request.SharedOutputs {
-			return nil, errors.New("worker must support shared task outputs")
 		}
 		if active.Revision != nil && !request.Reviews {
 			return nil, errors.New("worker must support review feedback")

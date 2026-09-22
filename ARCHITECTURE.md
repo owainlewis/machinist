@@ -20,8 +20,9 @@ that records completion. Optional approval gates and explicit retries are persis
 Workflow lease loss interrupts the job rather than replaying external effects.
 See [Workflows](docs/workflows.md) for the result contract and recovery limits.
 
-The [accepted task and artifact model](docs/task-artifact-model.md) defines the
-next evolution: explicit task requirements and sources, per-execution output
-directories, worker-published artifacts, and configurable durable storage and
-retention. Those artifact capabilities are design decisions, not current runtime
-features.
+Tasks carry explicit requirements and an optional source URL. Each stage restores
+the latest completed artifact snapshot into its output directory; workers publish
+a new immutable snapshot after execution. The control plane stores the files on
+disk in a configurable directory and keeps them until their task is deleted.
+See [Artifact workflows](docs/artifacts.md) for the storage and file-handoff contract,
+and [the task model](docs/task-artifact-model.md) for design rationale.

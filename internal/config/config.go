@@ -199,11 +199,6 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, name := range machinistConfig.WorkflowNames() {
-		if _, err := machinistConfig.ResolveTaskWorkflow(name, ""); err != nil {
-			return Config{}, err
-		}
-	}
 	return machinistConfig, nil
 }
 

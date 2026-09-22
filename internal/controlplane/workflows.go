@@ -53,10 +53,6 @@ type WorkflowProgress struct {
 	CurrentStep int      `json:"current_step"`
 }
 
-func (s *Store) CreateWorkflowJob(ctx context.Context, prompt, repository, name string, steps []config.WorkflowStep) (string, error) {
-	return s.createWorkflowJob(ctx, prompt, repository, name, steps, nil)
-}
-
 func (s *Store) createWorkflowJob(ctx context.Context, prompt, repository, name string, steps []config.WorkflowStep, task *protocol.Task) (string, error) {
 	if len(steps) == 0 {
 		return "", errors.New("workflow requires steps")

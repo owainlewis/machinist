@@ -36,62 +36,60 @@ func bindTaskInputs(ctx context.Context, tx *sql.Tx, job, run string, step confi
 	if err != nil {
 		return "", err
 	}
-	if err = tx.QueryRowContext(ctx, "SELECT plan FROM workflow_jobs WHERE job_id=?", job).Scan(&plan); err != nil {
-		return "", err
-	}
-	var steps []config.WorkflowStep
-	if err = json.Unmarshal([]byte(plan), &steps); err != nil {
-		return "", err
-	}
 	inputs := map[string]protocol.Artifact{}
 	problem := ""
-	for alias, ref := range step.Inputs {
-		parts := strings.SplitN(ref, "/", 2)
-		index := -1
-		for i, s := range steps {
-			if s.ID == parts[0] {
-				index = i
-				break
+	if len(step.Inputs) > 0 {
+		// Compatibility for already-submitted plans with named input mappings.
+		if err = tx.QueryRowContext(ctx, "SELECT plan FROM workflow_jobs WHERE job_id=?", job).Scan(&plan); err != nil {
+			return "", err
+		}
+		var steps []config.WorkflowStep
+		if err = json.Unmarshal([]byte(plan), &steps); err != nil {
+			return "", err
+		}
+		for alias, ref := range step.Inputs {
+			parts := strings.SplitN(ref, "/", 2)
+			index := -1
+			for i, s := range steps {
+				if s.ID == parts[0] {
+					index = i
+					break
+				}
 			}
+			if len(parts) != 2 || index < 0 {
+				return "", fmt.Errorf("invalid input %q", ref)
+			}
+			// Most recent successful attempt, never a file from a blocked attempt.
+			a, _, e := scanArtifact(tx.QueryRowContext(ctx, `SELECT `+artifactColumns+` FROM artifacts WHERE path=? AND run_id=(SELECT r.id FROM runs r JOIN workflow_attempts w ON w.run_id=r.id WHERE r.job_id=? AND w.step=? AND w.outcome='complete' ORDER BY r.rowid DESC LIMIT 1)`, parts[1], job, index))
+			if errors.Is(e, sql.ErrNoRows) {
+				problem = "Missing input " + ref
+				continue
+			}
+			if e != nil {
+				return "", e
+			}
+			if a.ExpiredAt != nil {
+				problem = "Expired input " + ref
+				continue
+			}
+			inputs[alias] = a
 		}
-		if len(parts) != 2 || index < 0 {
-			return "", fmt.Errorf("invalid input %q", ref)
-		}
-		// Most recent successful attempt, never a file from a blocked attempt.
-		a, _, e := scanArtifact(tx.QueryRowContext(ctx, `SELECT `+artifactColumns+` FROM artifacts WHERE path=? AND run_id=(SELECT r.id FROM runs r JOIN workflow_attempts w ON w.run_id=r.id WHERE r.job_id=? AND w.step=? AND w.outcome='complete' ORDER BY r.rowid DESC LIMIT 1)`, parts[1], job, index))
-		if errors.Is(e, sql.ErrNoRows) {
-			problem = "Missing input " + ref
-			continue
-		}
-		if e != nil {
-			return "", e
-		}
-		if a.ExpiredAt != nil {
-			problem = "Expired input " + ref
-			continue
-		}
-		inputs[alias] = a
+
 	}
 	if step.SharedOutputs {
 		rows, err := tx.QueryContext(ctx, `SELECT `+artifactColumns+` FROM artifacts WHERE run_id=(SELECT r.id FROM runs r JOIN workflow_attempts w ON w.run_id=r.id WHERE r.job_id=? AND w.outcome='complete' ORDER BY r.rowid DESC LIMIT 1)`, job)
 		if err != nil {
 			return "", err
 		}
-		for rows.Next() {
-			a, _, err := scanArtifact(rows)
-			if err != nil {
-				rows.Close()
-				return "", err
-			}
+		files, err := readArtifacts(rows)
+		if err != nil {
+			return "", err
+		}
+		for _, a := range files {
 			if a.ExpiredAt != nil {
 				problem = "Expired task file " + a.Path
 			}
 			inputs["__workspace__/"+a.Path] = a
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return "", err
 		}
 	}
 
@@ -145,8 +143,8 @@ func (s *Store) loadTasks(ctx context.Context, jobs []Job) error {
 	return rows.Err()
 }
 func validateOutputs(ctx context.Context, tx *sql.Tx, run string, c protocol.Completion) (string, error) {
-	var required, inputs string
-	err := tx.QueryRowContext(ctx, "SELECT required,inputs FROM execution_inputs WHERE run_id=?", run).Scan(&required, &inputs)
+	var required string
+	err := tx.QueryRowContext(ctx, "SELECT required FROM execution_inputs WHERE run_id=?", run).Scan(&required)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

@@ -13,22 +13,17 @@ type Workflow struct {
 	Steps []any `toml:"steps"`
 }
 type WorkflowStep struct {
-	SharedOutputs   bool              `json:"shared_outputs,omitempty"`
-	ID              string            `json:"id,omitempty"`
-	RequiredOutputs []string          `json:"required_outputs,omitempty"`
-	Inputs          map[string]string `json:"inputs,omitempty"`
-	Command         ResolvedCommand   `json:"command"`
-	Approval        bool              `json:"approval"`
+	SharedOutputs   bool     `json:"shared_outputs,omitempty"`
+	ID              string   `json:"id,omitempty"`
+	RequiredOutputs []string `json:"required_outputs,omitempty"`
+	// Inputs is read only for workflow plans saved before shared task files.
+	Inputs   map[string]string `json:"inputs,omitempty"`
+	Command  ResolvedCommand   `json:"command"`
+	Approval bool              `json:"approval"`
 }
 
 func (c Config) WorkflowNames() []string { return sortedMapKeys(c.Workflows) }
-func (c Config) ResolveWorkflow(name, prompt, model string) ([]WorkflowStep, error) {
-	return c.resolveWorkflow(name, prompt, model, false)
-}
 func (c Config) ResolveTaskWorkflow(name, model string) ([]WorkflowStep, error) {
-	return c.resolveWorkflow(name, "", model, true)
-}
-func (c Config) resolveWorkflow(name, prompt, model string, snapshot bool) ([]WorkflowStep, error) {
 	workflow, ok := c.Workflows[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown workflow %q", name)
@@ -72,20 +67,8 @@ func (c Config) resolveWorkflow(name, prompt, model string, snapshot bool) ([]Wo
 					step.RequiredOutputs = append(step.RequiredOutputs, path)
 				}
 			}
-			if rawInputs, ok := value["inputs"]; ok {
-				values, ok := rawInputs.(map[string]any)
-				if !ok {
-					return nil, fmt.Errorf("inputs must be a table")
-				}
-				step.Inputs = map[string]string{}
-				for alias, raw := range values {
-					ref, ok := raw.(string)
-					from, path, found := strings.Cut(ref, "/")
-					if !identifier.MatchString(alias) || !ok || !found || !seen[from] || !artifacts.ValidPath(path) {
-						return nil, fmt.Errorf("input %q must reference an earlier step ID and artifact path", alias)
-					}
-					step.Inputs[alias] = ref
-				}
+			if _, ok := value["inputs"]; ok {
+				return nil, fmt.Errorf("workflow %q: inputs mappings are no longer needed; read files from {{task.output_dir}}", name)
 			}
 			if setting, exists := value["approval"]; exists {
 				if setting != "before" {
@@ -103,15 +86,6 @@ func (c Config) resolveWorkflow(name, prompt, model string, snapshot bool) ([]Wo
 		if err != nil {
 			return nil, err
 		}
-		if !snapshot {
-			if len(step.Inputs) > 0 || len(step.RequiredOutputs) > 0 || strings.Contains(command.Prompt, "{{task.") || strings.Contains(command.Prompt, "{{inputs.") || strings.Contains(command.Prompt, "{{stage.") {
-				return nil, fmt.Errorf("workflow %q uses task artifacts; submit spec or source_url instead of prompt", name)
-			}
-			command, err = RenderPrompt(command, prompt)
-			if err != nil {
-				return nil, err
-			}
-		}
 		command.Model = model
 		if step.ID == "" {
 			step.ID = commandName
@@ -120,17 +94,11 @@ func (c Config) resolveWorkflow(name, prompt, model string, snapshot bool) ([]Wo
 			return nil, fmt.Errorf("duplicate step ID %q; set an explicit id", step.ID)
 		}
 		seen[step.ID] = true
-		step.SharedOutputs = strings.Contains(command.Prompt, "{{task.output_dir}}")
+		step.SharedOutputs = true
 		step.Command = command
 		step.Approval = approval
-		if snapshot {
-			inputPaths := map[string]string{}
-			for alias := range step.Inputs {
-				inputPaths[alias] = "input"
-			}
-			if _, err := RenderTaskTemplate(command.Prompt, protocol.Task{Spec: "validation"}, "outputs", inputPaths); err != nil {
-				return nil, err
-			}
+		if _, err := RenderTaskTemplate(command.Prompt, protocol.Task{Spec: "validation"}, "outputs", nil); err != nil {
+			return nil, err
 		}
 		steps = append(steps, step)
 	}

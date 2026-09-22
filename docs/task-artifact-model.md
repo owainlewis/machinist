@@ -115,45 +115,34 @@ execution and its published artifacts.
 Later stages receive the entire latest complete snapshot. Bind its files to
 concrete artifact IDs before dispatch; restore them in the shared task folder.
 Overwrites and deletions carry forward; earlier immutable snapshots remain in
-history. Legacy explicit input mappings remain supported. File contents are not
+history. Already-submitted tasks retain legacy input mappings; new workflows use the shared folder. File contents are not
 automatically inserted into prompts.
 
 Snapshot workflow templates when the task is submitted, then resolve artifact
 inputs and render each step when it is ready to execute. Save the resolved inputs
-with the execution. This changes the current eager rendering of all step prompts.
+with the execution. Legacy prompt submissions are normalized into task specs at the API boundary.
 
-## Storage configuration and retention
+## Storage configuration
 
 Storage is server-level configuration, separate from workflow definitions. The
-following settings are supported. These limits and retention are defaults:
+following settings are supported. These size limits are defaults:
 
 ```toml
 [storage.artifacts]
 backend = "filesystem"
 path = "~/.machinist/artifacts"
-retention = "30d"
 max_file_size = "100MB"
 max_run_size = "1GB"
 ```
 
-The retention clock begins when the task finishes. Preserve artifacts while a
-task is active or waiting for approval/input. Explicitly retrying a task protects
-its remaining required artifacts while it is active; it cannot recover bytes
-already deleted.
-
-Expiration deletes file contents but preserves artifact metadata and execution
-history. The UI displays "Artifact expired" instead of a broken download. A retry
-or downstream step requiring expired input is blocked with an explanation.
-
-Cleanup must coordinate with task activation and input binding so it cannot
-delete an artifact that has become required by active work. Ordinary workspace
-cleanup is separate from artifact retention.
+Files are kept until their task is deleted. Cleanup then removes the saved bytes,
+retrying failed deletions. Worker scratch directories are separate from saved files.
 
 ## Implementation scope
 
 The initial implementation includes task fields, snapshot templates and inputs,
 filesystem storage, worker uploads, authenticated file access, UI downloads and raw-text previews,
-shared snapshots and legacy explicit input bindings, required outputs, and retention cleanup.
+shared snapshots, compatibility for saved explicit input bindings, required outputs, and cleanup for deleted tasks.
 
 Bucket backends, task-spec editing/adoption, and automatic publication recovery
 after worker restart remain future work. A live worker retries transient transfer

@@ -1,25 +1,36 @@
 import { FileText, Download, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 
-export function Artifacts({ job, runID, csrfToken }) {
-  const previewRequest = useRef(null);
-  const [preview, setPreview] = useState(null);
-  const [loading, setLoading] = useState("");
-  const [files, setFiles] = useState([]);
-  const [error, setError] = useState("");
-  const [downloading, setDownloading] = useState("");
+// One metadata request per task, shared by Result, Files, and History.
+export function useTaskArtifacts(job, csrfToken) {
+  const [state, setState] = useState({ jobID: null, byRun: {}, error: "" });
   useEffect(() => {
-    setFiles([]); setPreview(null); setLoading(""); setError("");
-    return () => previewRequest.current?.abort();
-  }, [job.id, runID]);
-  useEffect(() => {
+    if (!job?.task) return;
     const controller = new AbortController();
     fetch(`/api/v1/jobs/${encodeURIComponent(job.id)}/artifacts`, { headers: { "X-Machinist-CSRF": csrfToken }, signal: controller.signal })
       .then(async r => { if (!r.ok) throw new Error("Could not load outputs"); return r.json(); })
-      .then(data => { if (controller.signal.aborted) return; setFiles(runID ? data.filter(file=>file.run_id===runID) : data); setError(""); })
-      .catch(e => { if (!controller.signal.aborted) setError(e.message); });
+      .then(files => {
+        const byRun = Object.create(null);
+        for (const file of files) (byRun[file.run_id] ||= []).push(file);
+        if (!controller.signal.aborted) setState({ jobID: job.id, byRun, error: "" });
+      })
+      .catch(e => { if (!controller.signal.aborted) setState({ jobID: job.id, byRun: {}, error: e.message }); });
     return () => controller.abort();
-  }, [job.id, job.updated_at, csrfToken, runID]);
+  }, [job?.id, job?.updated_at, Boolean(job?.task), csrfToken]);
+  return state.jobID === job?.id ? state : { byRun: {}, error: "" };
+}
+
+export function Artifacts({ artifacts, runID, csrfToken }) {
+  const previewRequest = useRef(null);
+  const [preview, setPreview] = useState(null);
+  const [loading, setLoading] = useState("");
+  const [error, setError] = useState("");
+  const [downloading, setDownloading] = useState("");
+  const files = artifacts.byRun[runID] || [];
+  useEffect(() => {
+    setPreview(null); setLoading(""); setError("");
+    return () => previewRequest.current?.abort();
+  }, [runID]);
   function canPreview(file) { return file.size <= 1024*1024 && (file.content_type?.startsWith("text/") || /\.(md|txt|json|csv|log|ya?ml|toml|py|js|ts|go|sh|html|xml|css)$/i.test(file.path)); }
   async function view(file) {
     previewRequest.current?.abort();
@@ -47,9 +58,9 @@ export function Artifacts({ job, runID, csrfToken }) {
     } catch (e) { setError(e.message); }
     finally { setDownloading(""); }
   }
-  if (!files.length && !error) return null;
+  if (!files.length && !error && !artifacts.error) return null;
   return <section aria-label="Files" className="space-y-2">
-    {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+    {(error || artifacts.error) && <p role="alert" className="text-sm text-danger">{error || artifacts.error}</p>}
     <ul className="divide-y divide-border rounded-lg border border-border">{files.map(file => <li key={file.id} className="flex min-w-0 items-center gap-4 px-4 py-3 text-sm">
       <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
       {file.expired_at ? <span className="min-w-0 flex-1 break-all text-muted-foreground">{file.path}</span> : <button type="button" className="min-w-0 flex-1 break-all text-left font-medium text-primary underline underline-offset-4 hover:decoration-2 focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-60" aria-label={`${canPreview(file) ? "View" : "Download"} ${file.path}`} disabled={Boolean(loading || downloading)} onClick={() => canPreview(file) ? view(file) : download(file)}>{loading === file.id ? "Opening…" : file.path}</button>}

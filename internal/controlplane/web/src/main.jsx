@@ -1,11 +1,9 @@
-import { Tabs } from "@/components/ui/tabs";
-import { DetailPanel } from "@/components/ui/detail-panel";
-import { Artifacts } from "./artifacts.jsx";
-import { taskPresentation } from "./task-presentation.js";
+import { TaskDetail } from "./task-detail.jsx";
+import { State, friendlyName, relativeTime } from "./task-display.jsx";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/manrope";
-import { Activity, ArrowLeft, ArrowRight, Check, BarChart3, Bot, GitBranch, LayoutDashboard, Moon, Play, Plus, Server, Sun, Table2, TimerReset, Trash2, X } from "lucide-react";
+import { Activity, BarChart3, Bot, GitBranch, LayoutDashboard, Moon, Play, Plus, Server, Sun, Table2, TimerReset, X } from "lucide-react";
 import { Analytics } from "@/analytics";
 import { CommandsPage, WorkersPage } from "@/catalog";
 import { Badge } from "@/components/ui/badge";
@@ -13,14 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeading } from "@/components/ui/page-heading";
 import { cn } from "@/lib/utils";
-import { formatDurationMillis, formatTaskTokenUsage, formatTokenUsage, runModelSummary, taskDurationMillis, tokenUsageSummary } from "@/run-metrics";
 import { routeFromHash } from "@/routes";
-import { boardColumns, currentRun, filterJobs, githubIssueReference, groupJobsByBoardColumn, jobCounts, jobDisplayTitle, needsAttention } from "@/runs-board";
+import { boardColumns, currentRun, filterJobs, groupJobsByBoardColumn, jobCounts, jobDisplayTitle } from "@/runs-board";
 import { createStatusLoader } from "@/status-loader";
 import { TriggersPage } from "@/triggers";
 import "./styles.css";
 
-const zeroTime = "0001-01-01T00:00:00Z";
 
 function App() {
   const [status, setStatus] = useState({ jobs: [], workers: [], commands: [], repositories: [], triggers: [], csrf_token: "" });
@@ -228,58 +224,6 @@ function App() {
   );
 }
 
-function TaskDetail({ csrfToken, job, loaded, error, deleting, onDelete, onWorkflowAction }) {
-  if (!job) return <div className="p-8"><a href="#/runs" className="text-sm underline">Back to tasks</a><p className="mt-4">{!loaded ? "Loading task…" : "Task not found."}</p>{error && <p role="alert">{error}</p>}</div>;
-  const terminal=["succeeded","failed"].includes(job.state);
-  const latest=job.runs.at(-1);
-  const { result, history, stages } = taskPresentation(job);
-  const reviewing = job.state === "awaiting_approval";
-  return <div className="mx-auto max-w-[1000px] space-y-7 p-4 sm:p-6 lg:p-8">
-    <header className="space-y-4"><Button asChild variant="ghost" size="sm" className="-ml-3"><a href="#/runs"><ArrowLeft className="size-4" />Back to tasks</a></Button>
-      <div className="flex flex-wrap items-start justify-between gap-3"><h1 className="min-w-0 break-words text-2xl font-semibold">{jobDisplayTitle(job)}</h1><State value={job.state} /></div>
-      <p className="text-sm text-muted-foreground">{job.repository} · {friendlyName(job.workflow?.name || job.command)}</p>
-      {job.task?.source_url && <a className="block text-sm text-primary underline" href={job.task.source_url} target="_blank" rel="noreferrer">Original issue ↗</a>}
-      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-    </header>
-    {stages.length > 1 && <ol className="flex flex-wrap items-center gap-3 text-sm" aria-label="Task progress">{stages.map((stage,index)=><li key={index} className="flex items-center gap-3" aria-current={stage.current ? "step" : undefined}>
-      {index > 0 && <ArrowRight className="size-4 text-muted-foreground" aria-hidden="true" />}
-      <span className={cn("flex items-center gap-2 py-1", stage.current ? "font-medium text-foreground" : "text-muted-foreground")}>
-        {stage.complete ? <Check className="size-4 text-success" aria-label="Complete" /> : <span className="text-xs">{index+1}</span>}{friendlyName(stage.name)}
-        {stage.current && <span className="text-xs text-muted-foreground">{reviewing ? "Awaiting approval" : stateLabel(job.state)}</span>}
-      </span>
-    </li>)}</ol>}
-    <Tabs key={job.id} label="Task sections" items={[
-      { id: "result", label: "Result", content: (    <Card className="space-y-5 p-5 sm:p-6" aria-label="Current result">
-      <h2 className="text-lg font-semibold">{reviewing ? result ? `${friendlyName(result.command)} ready for review` : `Ready to start ${friendlyName(latest?.command).toLowerCase()}` : job.state === "running" ? `${friendlyName(latest?.command)} in progress` : job.state === "queued" ? `${friendlyName(latest?.command)} queued` : job.state === "succeeded" ? "Task complete" : `${friendlyName(latest?.command)} · ${stateLabel(job.state)}`}</h2>
-      {result?.summary && <p className="line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{result.summary}</p>}
-      {result?.error && result.error!==result.summary && <p role="alert" className="whitespace-pre-wrap break-words text-sm text-danger">{result.error}</p>}
-      {result && job.task && <Artifacts key={result.id} job={job} runID={result.id} csrfToken={csrfToken} />}
-      {job.workflow && <WorkflowProgress key={`${job.id}:${latest?.id}:${job.state}`} job={job} result={result} onAction={onWorkflowAction} />}
-    </Card>) },
-      ...(job.task && job.runs.some(r=>r.outcome === "complete") ? [{ id: "files", label: "Files", content: <Artifacts job={job} runID={job.runs.findLast(r=>r.outcome === "complete").id} csrfToken={csrfToken} /> }] : []),
-      ...(history.length ? [{ id: "history", label: "History", content: (<ol className="space-y-4">{history.map(run=><li key={run.id} className="space-y-3 border-l-2 border-border pl-4">
-        <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">{run.outcome === "changes_requested" ? "Changes requested" : friendlyName(run.command)}</h3><State value={run.outcome === "complete" ? "succeeded" : run.outcome || run.state} /></div>
-        {run.summary && <p className="whitespace-pre-wrap leading-6">{run.summary}</p>}
-        {run.error && run.error!==run.summary && <p className="text-danger">{run.error}</p>}
-        {job.task && <Artifacts job={job} runID={run.id} csrfToken={csrfToken} />}
-        <ExecutionDetails run={run} />
-      </li>)}</ol>) }] : []),
-      { id: "instructions", label: "Instructions", content: (<pre className="whitespace-pre-wrap break-words font-sans leading-6">{job.task ? job.task.spec || "Use the linked source for requirements." : job.prompt}</pre>) },
-      { id: "details", label: "Details", content: <div className="space-y-6 text-sm">
-        {result?.revision && <section><h2 className="mb-2 font-medium">Requested changes</h2><p className="whitespace-pre-wrap">{result.revision.feedback}</p></section>}
-        {result?.summary && <section><h2 className="mb-2 font-medium">Full summary</h2><p className="whitespace-pre-wrap leading-6">{result.summary}</p></section>}
-        {result && <ExecutionDetails run={result} />}
-        <section className="border-t border-border pt-4"><dl className="my-4 grid gap-3 sm:grid-cols-3"><RunMetric label="Task ID" value={job.id} /><RunMetric label="Repository" value={job.repository} /><RunMetric label="Created" value={formatTimestamp(job.created_at)} /><RunMetric label="Updated" value={formatTimestamp(job.updated_at)} /></dl><Button variant="outline" disabled={!terminal || deleting} onClick={()=>onDelete(job)}>{deleting ? "Deleting…" : "Delete task"}</Button></section>
-      </div> },
-    ]} />
-  </div>;
-}
-
-function ExecutionDetails({ run }) { return <section aria-label="execution details" className="text-xs text-muted-foreground"><dl className="mt-3 grid gap-3 sm:grid-cols-3"><RunMetric label="Started" value={formatTimestamp(run.started_at)} /><RunMetric label="Completed" value={formatTimestamp(run.completed_at)} /><RunMetric label="Exit code" value={run.exit_code === undefined ? "Unavailable" : String(run.exit_code)} /><RunMetric label="Run ID" value={run.id} mono /><RunMetric label="Executor" value={run.executor} /><RunMetric label="Worker" value={run.worker_name || "Unassigned"} /><RunMetric label="Duration" value={Number.isSafeInteger(run.duration_millis) ? formatDurationMillis(run.duration_millis) : "Not available"} /><RunMetric label="Model" value={run.model || "Executor default"} /><RunMetric label="Tokens" value={formatTokenUsage(run.token_usage) === "Unavailable" ? "Not reported" : formatTokenUsage(run.token_usage)} /></dl></section>; }
-
-function DetailMetric({ label, value, mono = false }) { return <div className="min-w-0 border-b border-border py-3 last:border-b-0 sm:border-r sm:px-4 sm:first:pl-0 lg:border-b-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={cn("mt-1 truncate text-sm font-medium", mono && "font-mono")} title={value}>{value}</dd></div>; }
-function RunMetric({ label, value, mono = false }) { return <div className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={cn("mt-0.5 truncate text-sm", mono && "font-mono")} title={value}>{value}</dd></div>; }
-
 function RunComposer({ title,setTitle,sourceURL,setSourceURL,choices,repositories,selection,setSelection,repository,setRepository,prompt,setPrompt,model,setModel,submitting,submit,close }) {
   const specHintID=React.useId();
   const isTask=selection.startsWith("workflow:");
@@ -333,11 +277,6 @@ function RunRow({ job }) {
   return <article className="border-b border-border last:border-b-0"><a href={`#/runs/${encodeURIComponent(job.id)}`} className="flex items-center justify-between gap-4 px-5 py-4 hover:bg-muted/35" aria-label={`Open task ${title}`}><div className="min-w-0"><p className="truncate text-sm font-medium">{title}</p><p className="mt-1 text-xs text-muted-foreground">{job.repository} · {friendlyName(run?.command || job.command)}</p></div><div className="flex shrink-0 flex-col items-end gap-1"><State value={job.state} /><time className="text-xs text-muted-foreground" dateTime={job.created_at}>{relativeTime(job.created_at)}</time></div></a></article>;
 }
 
-function State({ value }) {
-  const tones = { running: "border-warning/25 bg-warning/10 text-warning", queued: "border-warning/25 bg-warning/10 text-warning", succeeded: "border-success/25 bg-success/10 text-success", failed: "border-danger/25 bg-danger/10 text-danger", timed_out: "border-danger/25 bg-danger/10 text-danger", cancelled: "border-danger/25 bg-danger/10 text-danger" };
-  return <Badge className={cn("gap-1.5", tones[value] || tones.queued)}><span className="size-1.5 rounded-full bg-current" />{stateLabel(value)}</Badge>;
-}
-
 function EmptyRuns({ filtered, openComposer }) {
   return <div className="grid place-items-center px-6 py-16 text-center"><span className="grid size-10 place-items-center rounded-full bg-muted text-muted-foreground"><GitBranch className="size-5" /></span><h3 className="mt-3 text-sm font-semibold">{filtered ? "No matching tasks" : "No tasks yet"}</h3><p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">{filtered ? "Try a different state filter." : "Describe the work or paste an issue link to get started."}</p>{!filtered && <Button variant="outline" size="sm" className="mt-4" onClick={openComposer}><Plus className="size-3.5" />New task</Button>}</div>;
 }
@@ -349,33 +288,10 @@ function MachinistMark() {
   </svg>;
 }
 
-function friendlyName(name) { return String(name || "").replaceAll("_", " ").replaceAll("-", " ").replace(/^./,c=>c.toUpperCase()); }
 function selectionChoices(status) {
  const workflows=status.workflows || [];
  return workflows.length ? workflows.map(name=>({value:`workflow:${name}`,label:friendlyName(name)})) : (status.commands || []).map(name=>({value:`command:${name}`,label:friendlyName(name)}));
 }
 function firstSelection(status) { return selectionChoices(status)[0]?.value || ""; }
 function shortId(id) { const [, value = id] = id.split("_", 2); return value.slice(0, 8); }
-function relativeTime(value) { if (!value || value === zeroTime) return "Not started"; const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 1000)); if (seconds < 10) return "just now"; if (seconds < 60) return `${seconds}s ago`; const minutes = Math.floor(seconds / 60); if (minutes < 60) return `${minutes}m ago`; const hours = Math.floor(minutes / 60); if (hours < 24) return `${hours}h ago`; return `${Math.floor(hours / 24)}d ago`; }
-function formatTimestamp(value) { return !value || value === zeroTime || !Number.isFinite(Date.parse(value)) ? "Unavailable" : new Date(value).toLocaleString(); }
-function stateLabel(value) { return String(value || "unknown").replaceAll("_", " "); }
 createRoot(document.getElementById("root")).render(<App />);
-
-function WorkflowProgress({ job, result, onAction }) {
- const [stopped, setStopped] = useState(false);
- const [requesting,setRequesting]=useState(false);
- const [feedback,setFeedback]=useState("");
- const [busy, setBusy] = useState(false);
- const latest = job.runs.at(-1);
- const prURL = (result || latest)?.summary?.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/)?.[0];
- const action = async (name) => { setBusy(true); try { await onAction(job, name, stopped, name === "request_changes" ? feedback : ""); } finally { setBusy(false); } };
- const retry = ["blocked", "failed", "interrupted", "cancelled"].includes(job.state);
- return <div className="space-y-3">
-  {prURL && <Button asChild variant="outline"><a href={prURL} target="_blank" rel="noreferrer">Open PR</a></Button>}
-  {job.state === "awaiting_approval" && <div className="space-y-3"><div className="flex flex-wrap gap-2"><Button disabled={busy || requesting} onClick={() => action("approve")}>Approve and start {friendlyName(latest?.command).toLowerCase()}</Button>{latest?.reviewed_run_id && <Button variant="outline" disabled={busy} onClick={()=>setRequesting(true)}>Request changes</Button>}</div>{requesting && <div className="space-y-3"><label className="block"><span className="field-label">What needs to change?</span><textarea className="field-control min-h-24" value={feedback} onChange={e=>setFeedback(e.target.value)} maxLength={4000} placeholder="Explain what to revise in the previous stage’s result." /></label><p className="text-xs text-muted-foreground">You’ll review the revised result before continuing.</p><div className="flex flex-wrap gap-2"><Button disabled={busy || !feedback.trim()} onClick={()=>action("request_changes")}>{busy ? "Submitting…" : "Send feedback and revise"}</Button><Button variant="ghost" disabled={busy} onClick={()=>setRequesting(false)}>Keep reviewing</Button></div></div>}</div>}
-  {job.state === "blocked" && <p className="text-sm text-muted-foreground">Update the issue or resolve the blocker, then retry this step.</p>}
-  {["interrupted", "cancelled"].includes(job.state) && <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={stopped} onChange={(event) => setStopped(event.target.checked)} />I have verified the previous worker process has stopped. Retrying will inspect existing work before continuing.</label>}
-  {["queued", "running", "awaiting_approval", "blocked"].includes(job.state) && <Button variant="ghost" className="text-muted-foreground hover:text-danger" disabled={busy} onClick={() => action("cancel")}>Cancel task</Button>}
-  {retry && <Button disabled={busy || (["interrupted", "cancelled"].includes(job.state) && !stopped)} onClick={() => action("retry")}>Retry {friendlyName(latest?.command).toLowerCase()}</Button>}
- </div>;
-}

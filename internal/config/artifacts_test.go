@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestTaskTemplateDoesNotRetemplateUserInput(t *testing.T) {
@@ -18,17 +17,12 @@ func TestTaskTemplateDoesNotRetemplateUserInput(t *testing.T) {
 	}
 }
 func TestArtifactStorageSettings(t *testing.T) {
-	c := Config{Storage: Storage{Artifacts: ArtifactStorage{Retention: "2d", MaxFileSize: "4KB", MaxRunSize: "8KB"}}}
+	c := Config{Storage: Storage{Artifacts: ArtifactStorage{MaxFileSize: "4KB", MaxRunSize: "8KB"}}}
 	r, err := c.ResolveStorage("/tmp/artifacts")
-	if err != nil || r.Retention != 48*time.Hour || r.MaxFileBytes != 4096 {
+	if err != nil || r.MaxFileBytes != 4096 {
 		t.Fatalf("%+v %v", r, err)
 	}
-	for _, v := range []string{"0d", "NaNd", "-1h", "forever"} {
-		c.Storage.Artifacts.Retention = v
-		if _, err = c.ResolveStorage("/tmp/artifacts"); err == nil {
-			t.Fatal(v)
-		}
-	}
+
 }
 func TestWorkflowArtifactReferences(t *testing.T) {
 	for _, ref := range []string{"plan/spec.md", "build/spec.md", "missing/spec.md", "plan/../secret"} {
@@ -39,8 +33,30 @@ func TestWorkflowArtifactReferences(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := LoadDefinitions(p)
-		if (err == nil) != (ref == "plan/spec.md") {
+		if err == nil {
 			t.Fatalf("%s: %v", ref, err)
+		}
+	}
+}
+
+func TestArtifactStorageDirectory(t *testing.T) {
+	dir := t.TempDir()
+	for _, path := range []string{"saved-files", filepath.Join(dir, "absolute-files")} {
+		configPath := filepath.Join(dir, "config.toml")
+		if err := os.WriteFile(configPath, []byte("[storage.artifacts]\npath = '"+path+"'\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := LoadDefinitions(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		storage, err := c.ResolveStorage(filepath.Join(dir, "default"))
+		expected := path
+		if !filepath.IsAbs(path) {
+			expected = filepath.Join(dir, path)
+		}
+		if err != nil || storage.Path != expected {
+			t.Fatalf("%+v %v, want %s", storage, err, expected)
 		}
 	}
 }

@@ -12,7 +12,7 @@ func TestSharedSnapshotsPreserveDeletionAndRejectLegacyWorkers(t *testing.T) {
 	s := openTestStore(t, t.TempDir()+"/db")
 	steps := []config.WorkflowStep{}
 	for _, name := range []string{"plan", "build", "verify"} {
-		steps = append(steps, config.WorkflowStep{ID: name, SharedOutputs: true, Command: testAgent(name, "{{task.output_dir}}")})
+		steps = append(steps, config.WorkflowStep{ID: name, SharedOutputs: true, Command: testAgent(name, "{{task.spec}}")})
 	}
 	_, err := s.CreateTaskJob(t.Context(), protocol.Task{Spec: "test"}, "machinist", "shared", steps)
 	if err != nil {

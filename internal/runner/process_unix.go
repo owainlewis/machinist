@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"syscall"
+	"time"
 )
 
 func configureProcess(cmd *exec.Cmd) {
@@ -31,7 +32,23 @@ func ignorableProcessTreeTerminationError(err error, probeProcessGroup func() er
 	if errors.Is(err, syscall.ESRCH) {
 		return true
 	}
-	return runtime.GOOS == "darwin" && errors.Is(err, syscall.EPERM) && errors.Is(probeProcessGroup(), syscall.ESRCH)
+	if runtime.GOOS != "darwin" || !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	// Darwin can briefly return EPERM while an exited group is being reaped.
+	// Only ignore it once a probe confirms the group is gone; an accessible or
+	// persistently inaccessible group must still report the cleanup failure.
+	for attempt := 0; attempt < 6; attempt++ {
+		probeErr := probeProcessGroup()
+		if errors.Is(probeErr, syscall.ESRCH) {
+			return true
+		}
+		if !errors.Is(probeErr, syscall.EPERM) || attempt == 5 {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func processExitCode(state *os.ProcessState) int {

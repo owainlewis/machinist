@@ -82,9 +82,8 @@ type workflowStepDefinition struct {
 }
 
 type definitionsResponse struct {
-	WorkflowSteps map[string][]workflowStepDefinition `json:"workflow_steps"`
-	Workflows     map[string][]string                 `json:"workflows"`
-	Commands      []commandDefinitionResponse         `json:"commands"`
+	Workflows map[string][]workflowStepDefinition `json:"workflows"`
+	Commands  []commandDefinitionResponse         `json:"commands"`
 }
 
 type catalogResponse struct {
@@ -239,7 +238,7 @@ func (s *Server) runScheduler(ctx context.Context) error {
 		})
 	}
 	loop(true, s.maintainState)
-	loop(true, s.store.ExpireArtifacts)
+	loop(true, s.store.CleanupArtifacts)
 	<-ctx.Done()
 	schedulers.Wait()
 	return nil
@@ -307,8 +306,7 @@ func (s *Server) definitions(response http.ResponseWriter, request *http.Request
 		}
 		commands = append(commands, commandDefinitionResponse{Name: command.Name, Executor: command.Executor, Timeout: command.Timeout.String(), Hash: command.Hash, Prompt: command.Prompt})
 	}
-	workflows := map[string][]string{}
-	workflowSteps := map[string][]workflowStepDefinition{}
+	workflows := map[string][]workflowStepDefinition{}
 	for _, name := range definition.WorkflowNames() {
 		steps, err := definition.ResolveTaskWorkflow(name, "")
 		if err != nil {
@@ -316,11 +314,10 @@ func (s *Server) definitions(response http.ResponseWriter, request *http.Request
 			return
 		}
 		for _, step := range steps {
-			workflows[name] = append(workflows[name], step.Command.Name)
-			workflowSteps[name] = append(workflowSteps[name], workflowStepDefinition{Name: step.Command.Name, Approval: step.Approval})
+			workflows[name] = append(workflows[name], workflowStepDefinition{Name: step.Command.Name, Approval: step.Approval})
 		}
 	}
-	writeJSON(response, http.StatusOK, definitionsResponse{Commands: commands, Workflows: workflows, WorkflowSteps: workflowSteps})
+	writeJSON(response, http.StatusOK, definitionsResponse{Commands: commands, Workflows: workflows})
 }
 
 func (s *Server) status(response http.ResponseWriter, request *http.Request) {
@@ -412,35 +409,25 @@ func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
 			writeError(response, http.StatusBadRequest, err)
 			return
 		}
-		if input.SourceURL != "" || input.Spec != "" || input.Title != "" {
-			if input.Prompt != "" {
-				writeError(response, 400, errors.New("use spec instead of prompt for a task"))
-				return
-			}
-			task := protocol.Task{Title: input.Title, SourceURL: input.SourceURL, Spec: input.Spec}
-			if err := task.Validate(); err != nil {
-				writeError(response, 400, err)
-				return
-			}
-			steps, err := definition.ResolveTaskWorkflow(input.Workflow, input.Model)
-			if err != nil {
-				writeError(response, 400, err)
-				return
-			}
-			id, err := s.store.CreateTaskJob(request.Context(), task, input.Repository, input.Workflow, steps)
-			if err != nil {
-				writeError(response, 500, err)
-				return
-			}
-			writeJSON(response, 201, map[string]string{"id": id})
+		if input.Prompt != "" && (input.SourceURL != "" || input.Spec != "" || input.Title != "") {
+			writeError(response, http.StatusBadRequest, errors.New("use spec instead of prompt for a task"))
 			return
 		}
-		steps, err := definition.ResolveWorkflow(input.Workflow, input.Prompt, input.Model)
+		task := protocol.Task{Title: input.Title, SourceURL: input.SourceURL, Spec: input.Spec}
+		// Normalize older clients at the boundary; every new workflow is a task.
+		if input.Prompt != "" {
+			task.Spec = input.Prompt
+		}
+		if err := task.Validate(); err != nil {
+			writeError(response, http.StatusBadRequest, err)
+			return
+		}
+		steps, err := definition.ResolveTaskWorkflow(input.Workflow, input.Model)
 		if err != nil {
 			writeError(response, http.StatusBadRequest, err)
 			return
 		}
-		id, err := s.store.CreateWorkflowJob(request.Context(), input.Prompt, input.Repository, input.Workflow, steps)
+		id, err := s.store.CreateTaskJob(request.Context(), task, input.Repository, input.Workflow, steps)
 		if err != nil {
 			writeError(response, http.StatusInternalServerError, err)
 			return

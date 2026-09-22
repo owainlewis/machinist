@@ -9,6 +9,10 @@ import (
 )
 
 func TestReviewRevisionPreservesVersionsAndRebindsApproval(t *testing.T) {
+	t.Run("legacy", func(t *testing.T) { testReviewRevision(t, false) })
+	t.Run("shared", func(t *testing.T) { testReviewRevision(t, true) })
+}
+func testReviewRevision(t *testing.T, shared bool) {
 	path := t.TempDir() + "/db"
 	s, err := OpenStore(path)
 	if err != nil {
@@ -16,6 +20,11 @@ func TestReviewRevisionPreservesVersionsAndRebindsApproval(t *testing.T) {
 	}
 	defer func() { s.Close() }()
 	steps := []config.WorkflowStep{{ID: "plan", Command: testAgent("plan", "{{task.spec}}"), RequiredOutputs: []string{"plan.md"}}, {ID: "build", Approval: true, Command: testAgent("build", "{{inputs.plan}}"), Inputs: map[string]string{"plan": "plan/plan.md"}}}
+	if shared {
+		for i := range steps {
+			steps[i].SharedOutputs = true
+		}
+	}
 	id, r := artifactTask(t, s, steps)
 	publish := func(run *protocol.RunSpec, body string) protocol.Artifact {
 		t.Helper()
@@ -59,6 +68,7 @@ func TestReviewRevisionPreservesVersionsAndRebindsApproval(t *testing.T) {
 	}
 	worker := old
 	worker.Reviews = true
+	worker.SharedOutputs = shared
 	revision, e := s.Poll(t.Context(), worker)
 	if e != nil || revision == nil {
 		t.Fatalf("%+v %v", revision, e)
@@ -66,7 +76,14 @@ func TestReviewRevisionPreservesVersionsAndRebindsApproval(t *testing.T) {
 	if revision.Command != "plan" || revision.Revision.Feedback != feedback || revision.Revision.PreviousRunID != r.ID || revision.Task.Spec != "literal {{stage.output_dir}}" {
 		t.Fatalf("bad revision %+v", revision)
 	}
-	if revision.Inputs["__review_"+first.ID].ID != first.ID {
+	alias := "__review_" + first.ID
+	if shared {
+		alias = "__workspace__/plan.md"
+		if len(revision.Revision.Artifacts) != 0 {
+			t.Fatal("shared revision duplicates file handoff")
+		}
+	}
+	if revision.Inputs[alias].ID != first.ID {
 		t.Fatal("missing original output")
 	}
 	// A failed revision remains recoverable with its feedback intact.
@@ -105,7 +122,7 @@ func TestReviewRevisionPreservesVersionsAndRebindsApproval(t *testing.T) {
 
 func TestInitialApprovalCannotRequestChanges(t *testing.T) {
 	s := openTestStore(t, t.TempDir()+"/db")
-	id, e := s.CreateWorkflowJob(t.Context(), "request", "machinist", "single", []config.WorkflowStep{{Command: testAgent("build", "request"), Approval: true}})
+	id, e := s.createLegacyWorkflowJob(t.Context(), "request", "machinist", "single", []config.WorkflowStep{{Command: testAgent("build", "request"), Approval: true}})
 	if e != nil {
 		t.Fatal(e)
 	}

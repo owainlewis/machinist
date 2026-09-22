@@ -40,3 +40,22 @@ func TestIgnorableProcessTreeTerminationError(t *testing.T) {
 		t.Fatal("unexpected error should be preserved")
 	}
 }
+
+func TestDarwinTerminationWaitsForGroupToDisappear(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin process group cleanup")
+	}
+	calls := 0
+	if !ignorableProcessTreeTerminationError(syscall.EPERM, func() error {
+		calls++
+		if calls == 1 {
+			return syscall.EPERM
+		}
+		return syscall.ESRCH
+	}) {
+		t.Fatal("disappeared process group should be ignored")
+	}
+	if calls != 2 {
+		t.Fatalf("probes = %d", calls)
+	}
+}

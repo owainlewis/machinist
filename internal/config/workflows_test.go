@@ -35,11 +35,11 @@ func TestWorkflowConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			steps, err := c.ResolveWorkflow("deliver", "https://github.com/a/b/issues/1", "")
+			steps, err := c.ResolveTaskWorkflow("deliver", "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if steps[0].Command.Prompt != "https://github.com/a/b/issues/1" {
+			if !steps[0].SharedOutputs {
 				t.Fatalf("prompt %q", steps[0].Command.Prompt)
 			}
 			if test.name == "sequence" && !steps[1].Approval {

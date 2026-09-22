@@ -118,7 +118,7 @@ files are not published or carried forward. Python cache files are excluded from
 publication. The local folder path can change between attempts; use the template
 variable or environment variable rather than saving an absolute path in a plan.
 
-See [artifacts and storage](artifacts.md) for retention, size limits, and legacy
+See [artifacts and storage](artifacts.md) for storage settings, size limits, and legacy
 input mappings. Already-submitted tasks retain their original workflow definition.
 
 ## Approvals, failures, and merging

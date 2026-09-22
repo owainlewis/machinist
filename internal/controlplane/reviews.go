@@ -56,34 +56,31 @@ func requestChanges(ctx context.Context, tx *sql.Tx, job, gate, repository, plan
 	if len(revision.PriorFeedback) >= 100 {
 		return fmt.Errorf("%w: revision limit reached", ErrWorkflowAction)
 	}
-	revision.Artifacts = map[string]protocol.Artifact{}
-	rows, err := tx.QueryContext(ctx, "SELECT "+artifactColumns+" FROM artifacts WHERE run_id=?", revision.PreviousRunID)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		a, _, e := scanArtifact(rows)
-		if e != nil {
-			rows.Close()
-			return e
-		}
-		if a.ExpiredAt != nil {
-			rows.Close()
-			return fmt.Errorf("%w: previous output %s has expired", ErrWorkflowAction, a.Path)
-		}
-		revision.Artifacts["__review_"+a.ID] = a
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
 	var steps []config.WorkflowStep
 	if err = json.Unmarshal([]byte(plan), &steps); err != nil {
 		return err
 	}
 	if index <= 0 || index >= len(steps) {
 		return ErrWorkflowAction
+	}
+	// Older saved plans used separate read-only review inputs. New stages restore
+	// the reviewed snapshot directly into the shared output directory.
+	if !steps[index-1].SharedOutputs {
+		revision.Artifacts = map[string]protocol.Artifact{}
+		rows, err := tx.QueryContext(ctx, "SELECT "+artifactColumns+" FROM artifacts WHERE run_id=?", revision.PreviousRunID)
+		if err != nil {
+			return err
+		}
+		files, err := readArtifacts(rows)
+		if err != nil {
+			return err
+		}
+		for _, a := range files {
+			if a.ExpiredAt != nil {
+				return fmt.Errorf("%w: previous output %s has expired", ErrWorkflowAction, a.Path)
+			}
+			revision.Artifacts["__review_"+a.ID] = a
+		}
 	}
 	// Supersede this gate. It can never start with the rejected version's inputs.
 	if _, err = tx.ExecContext(ctx, "UPDATE review_gates SET decision='changes_requested',feedback=? WHERE run_id=?", feedback, gate); err != nil {

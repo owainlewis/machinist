@@ -142,6 +142,11 @@ func (s *Store) ListArtifacts(ctx context.Context, job string) ([]protocol.Artif
 	if err != nil {
 		return nil, err
 	}
+	return readArtifacts(rows)
+}
+
+// Owns the cursor so every artifact query closes rows and checks iteration errors.
+func readArtifacts(rows *sql.Rows) ([]protocol.Artifact, error) {
 	defer rows.Close()
 	result := []protocol.Artifact{}
 	for rows.Next() {
@@ -165,12 +170,13 @@ func (s *Store) OpenArtifact(ctx context.Context, id string) (protocol.Artifact,
 	return a, f, err
 }
 
-// Tombstone first so retries cannot bind files while cleanup removes them.
+// Only deleted tasks are eligible for cleanup. Task age never removes files.
+// Keep the existing tombstones for files removed by older server versions.
 // Keep metadata and retry failed deletes on the next maintenance pass.
-func (s *Store) ExpireArtifacts(ctx context.Context) error {
+func (s *Store) CleanupArtifacts(ctx context.Context) error {
 	now := s.now().UTC()
 	_, err := s.db.ExecContext(ctx, `UPDATE artifacts SET expired_at=? WHERE expired_at IS NULL AND
- (NOT EXISTS(SELECT 1 FROM jobs WHERE jobs.id=artifacts.job_id) OR EXISTS(SELECT 1 FROM jobs WHERE jobs.id=artifacts.job_id AND state IN ('succeeded','failed','cancelled') AND julianday(updated_at)<=julianday(?)))`, now.Format(time.RFC3339Nano), now.Add(-s.storageConfig.Retention).Format(time.RFC3339Nano))
+ NOT EXISTS(SELECT 1 FROM jobs WHERE jobs.id=artifacts.job_id)`, now.Format(time.RFC3339Nano))
 	if err != nil {
 		return err
 	}

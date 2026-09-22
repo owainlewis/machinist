@@ -21,7 +21,7 @@ export function CommandsPage() {
   const data = definitions.value;
   const names = Object.keys(data.workflows || {});
   const selected = names.includes(selection) ? selection : names[0];
-  const steps = data.workflow_steps?.[selected] || (data.workflows?.[selected] || []).map(name => ({name}));
+  const steps = data.workflows?.[selected] || [];
   const commands = steps.map(step => data.commands.find(command => command.name === step.name));
   return <Page title="Workflows" description="Choose how a task gets done, from one agent to a sequence of steps.">
     {definitions.loading ? <Loading /> : definitions.error ? <Failure value={definitions.error} /> : names.length ? <div className="max-w-4xl space-y-6">
@@ -36,7 +36,7 @@ export function CommandsPage() {
             <div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">{displayName(step.name)}</h2><p className="mt-1 text-sm text-muted-foreground">{step.approval ? "Waits for your approval before starting." : index === 0 ? "Starts when you submit a task." : "Starts when the previous step completes."}</p></div>
             {step.approval && <Badge className="shrink-0 border-warning/25 bg-warning/10 text-warning">Approval</Badge>}
           </li>)}</ol>
-          <p className="text-sm leading-6 text-muted-foreground">Files carry forward between steps when prompts use <code>{"{{task.output_dir}}"}</code>. A failed or blocked step pauses the task. A policy step can also request approval.</p>
+          <p className="text-sm leading-6 text-muted-foreground">Files carry forward automatically between steps. Read and write them at <code>{"{{task.output_dir}}"}</code>. A failed or blocked step pauses the task. A policy step can also request approval.</p>
           <p className="text-xs text-muted-foreground">Choose this workflow when creating a new task. Edit workflow definitions in config.toml.</p>
         </section>},
         {id:"prompts",label:"Prompts",content:<div className="space-y-5">{steps.map((step,index)=><Card key={index} className="overflow-hidden"><header className="flex flex-wrap justify-between gap-2 border-b border-border px-5 py-3"><h2 className="text-sm font-semibold">{index+1}. {displayName(step.name)}</h2><p className="text-xs text-muted-foreground">{commands[index]?.executor} · {commands[index]?.timeout}</p></header><pre tabIndex={0} aria-label={`${step.name} prompt template`} className="max-h-96 overflow-auto whitespace-pre-wrap break-words p-5 font-mono text-xs leading-6">{commands[index]?.prompt || "Uses the task instructions directly."}</pre></Card>)}</div>},

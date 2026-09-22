@@ -26,6 +26,6 @@ func revisionPrompt(r *protocol.Revision, inputs map[string]string) string {
 	for _, alias := range aliases {
 		fmt.Fprintf(&b, "Previous output %q is available at %q\n", r.Artifacts[alias].Path, inputs[alias])
 	}
-	b.WriteString("Use the original task requirements and the review feedback. Revise the existing work, preserve unrelated changes, and publish the revised deliverables to your output directory. Do not overwrite the previous output files. Report what changed. Completion will return this result for human review.\n")
+	b.WriteString("Use the original task requirements and the review feedback. Revise the existing work, preserve unrelated changes, and publish the revised deliverables to your output directory. Historical snapshots are preserved by Machinist. Update the files in your output directory. Report what changed. Completion will return this result for human review.\n")
 	return b.String()
 }

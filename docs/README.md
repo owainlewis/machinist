@@ -11,4 +11,4 @@ Start with [your first task workflow](task-guide.md) to run a task, review its f
 - [Development](development.md)
 - [Article: coding workflows in Python](coding-workflows-in-code.md)
 
-- [Artifact workflows](artifacts.md): task inputs, saved files, handoffs, and retention.
+- [Artifact workflows](artifacts.md): task inputs, saved files, handoffs, and storage.
