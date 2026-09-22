@@ -35,12 +35,12 @@
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
           <h1 id="hero-title">A better way to put coding agents to work.</h1>
-          <p class="lede">Supervised coding agents. On your machine.</p>
+          <p class="lede">Give agents a task. Review the result.</p>
           <div class="hero-actions">
             <a class="button button-primary" href="https://github.com/owainlewis/machinist/tree/main/docs">Read the documentation</a>
             <a class="button button-secondary" href="https://github.com/owainlewis/machinist">View on GitHub <span aria-hidden="true">↗</span></a>
           </div>
-          <p class="hero-note">Give Machinist a GitHub issue. It plans the work, builds the change, sends it to a separate reviewer, waits for checks, and hands you the pull request.</p>
+          <p class="hero-note">Start with an issue link or a description. Choose a workflow, track its progress, and review the saved files. Run one agent or split the work into steps with approvals.</p>
         </div>
         <figure class="technical-drawing drawing-machine" id="workflow">
           <img src="technical-drawings.webp" width="1693" height="929" fetchpriority="high" alt="Hand-drawn sectional elevation of a compact CNC milling machine with dimensions and numbered parts">
@@ -49,7 +49,7 @@
       </section>
 
       <section class="proof-strip" aria-label="Machinist product principles">
-        <div><span>⊕</span><strong>Local first</strong><small>Your code stays with you</small></div>
+        <div><span>⊕</span><strong>Local first</strong><small>Workers use your repositories</small></div>
         <div><span>□</span><strong>Supervised by design</strong><small>Agents act under policies</small></div>
         <div><span>＋</span><strong>Open and extensible</strong><small>Bring your own harness</small></div>
         <div><span>○</span><strong>Precision tools</strong><small>Reliable, repeatable work</small></div>
@@ -65,7 +65,7 @@
           <article>
             <span class="card-number">01 / PROOF</span>
             <h3>Require proof</h3>
-            <p>Machinist records the run, sends the exact change to a separate reviewer, and waits for repository checks before it hands the work back.</p>
+            <p>Keep results, files and execution history together. Add test and review steps to your workflow so you can inspect the evidence before continuing.</p>
           </article>
           <article>
             <span class="card-number">02 / FREEDOM</span>
@@ -83,8 +83,8 @@
       <section class="section factory-section" aria-labelledby="factory-title">
         <div class="section-kicker">HOW IT WORKS</div>
         <div class="section-heading">
-          <h2 id="factory-title">Give Machinist an issue. Get back a reviewed pull request.</h2>
-          <p>The foreman plans the task and delegates the build. A different agent reviews the change. Failed checks and valid findings go through a repair loop. Machinist never merges the pull request.</p>
+          <h2 id="factory-title">One task. Clear steps. Saved results.</h2>
+          <p>A workflow is an ordered list of agent prompts or scripts. Steps run automatically until one needs attention. Add an approval before building, or use a merge policy that sends higher-risk changes back for human review.</p>
         </div>
         <figure class="technical-drawing drawing-system">
           <img src="technical-drawings.webp" width="1693" height="929" loading="lazy" decoding="async" alt="Architectural plan of a supervised coding-agent system with orchestration, execution, governance, and review layers">
@@ -92,9 +92,23 @@
         </figure>
         <div class="factory-values">
           <article><span>DEFINED</span><h3>Configuration in files</h3><p>Prompts, commands, and models use TOML and Markdown that you can review and version.</p></article>
-          <article><span>INDEPENDENT</span><h3>Separate builder and reviewer</h3><p>The agent that writes the code does not review it. A fresh agent reviews the exact commit before handoff.</p></article>
-          <article><span>PERSISTENT</span><h3>Verified repair loop</h3><p>Valid code defects return to a fresh repair and review cycle. External blockers still stop safely with clear evidence.</p></article>
+          <article><span>REVIEWABLE</span><h3>Approve or request changes</h3><p>Review a stage’s saved result. Approve the next step or send feedback and review a revised version.</p></article>
+          <article><span>PERSISTENT</span><h3>Files that follow the task</h3><p>Each step reads and writes a shared task folder. Machinist saves snapshots, keeps earlier versions, and lets you view text files or download any output.</p></article>
         </div>
+      </section>
+
+      <section class="section" aria-labelledby="task-workflow-title">
+        <div class="section-kicker">A WORKFLOW YOU CAN START WITH</div>
+        <div class="section-heading"><h2 id="task-workflow-title">Plan, review, then build.</h2><p>Planning saves plan.md. You review it before build starts. Both stages use the same task folder; there are no file-input mappings to wire up.</p></div>
+        <ol class="workflow-example" aria-label="Example workflow">
+          <li><span>01</span><h3>Plan</h3><p>Agent writes plan.md</p></li>
+          <li><span>02</span><h3>Your approval</h3><p>Approve or request changes</p></li>
+          <li><span>03</span><h3>Build</h3><p>Agent reads the plan and implements it</p></li>
+        </ol>
+        <div class="code-window"><div class="console-bar"><span>config.toml · using your configured commands</span></div><pre><code>[workflows.plan_then_build]
+steps = ["plan", { command = "build", approval = "before" }]</code></pre></div>
+        <p class="workflow-note">Prefer one agent? Use one step. Want automatic merging? The optional classify-then-merge example only auto-merges small, low-risk documentation changes after checks pass. Other changes require approval; missing checks or a changed reviewed commit block merging.</p>
+        <a class="text-link" href="https://github.com/owainlewis/machinist/blob/main/docs/task-guide.md">Set up your first task workflow <span aria-hidden="true">→</span></a>
       </section>
 
       <section class="section evaluation-section" id="evaluation">

@@ -1,7 +1,8 @@
 export const boardColumns = [
   { id: "queued", title: "Queued", description: "Waiting to start" },
-  { id: "running", title: "Running", description: "In progress" },
-  { id: "finished", title: "Finished", description: "Terminal tasks" },
+  { id: "running", title: "In progress", description: "Work underway" },
+  { id: "attention", title: "Needs attention", description: "Approval or input needed" },
+  { id: "finished", title: "Finished", description: "Completed or stopped" },
 ];
 
 const activeStates = new Set(["queued", "running"]);
@@ -10,6 +11,7 @@ const failedStates = new Set(["failed", "timed_out"]);
 export function boardColumnForState(state) {
   if (state === "queued") return "queued";
   if (state === "running") return "running";
+  if (["blocked", "awaiting_approval", "interrupted"].includes(state)) return "attention";
   return "finished";
 }
 
@@ -27,7 +29,7 @@ export function filterJobs(jobs, filter) {
 }
 
 export function groupJobsByBoardColumn(jobs) {
-  const groups = { queued: [], running: [], finished: [] };
+  const groups = { queued: [], running: [], attention: [], finished: [] };
   for (const job of jobs) groups[boardColumnForState(job.state)].push(job);
   return groups;
 }
@@ -43,12 +45,13 @@ export function jobCounts(jobs) {
 }
 
 export function currentRun(job) {
+  if (job.workflow) return job.runs.at(-1);
   return [...job.runs].reverse().find((run) => run.state !== "queued") || job.runs[0];
 }
 
 export function jobDisplayTitle(job) {
   const title = typeof job.github_issue_title === "string" ? job.github_issue_title.trim() : "";
-  return title || job.prompt || job.id;
+  return job.task?.title || title || job.task?.spec || job.task?.source_url || job.prompt || job.id;
 }
 
 export function githubIssueReference(job) {

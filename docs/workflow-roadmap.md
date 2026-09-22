@@ -1,5 +1,8 @@
 # Scale AI engineering through executable workflows
 
+> Historical design roadmap. The current product now supports sequential workflows, approval and revision, shared task files, and an optional merge-policy example. Start with [the task guide](task-guide.md) for shipped behavior; proposed architecture and exclusions below are not a current feature list.
+
+
 > Status: Proposed roadmap, 6 September 2026. This document describes future work. The current runtime and workflow examples are identified separately below.
 
 ## 1. Outcome and boundary
@@ -25,9 +28,9 @@ There are competing delivery examples:
 - [The foreman prompt](../examples/prompts/foreman.md) asks an agent to orchestrate planning, building, review, GitHub state, and recovery.
 - [The self-contained issue-to-PR workflow](../examples/workflows/issue-to-pr/README.md) supplies its own configuration and foreman prompt, with fresh planning, build, review, and repair agents, issue-state labels, and explicit GitHub verification gates. It has no fixed repair-pass cap.
 - [The Python flow example](../examples/workflows/flow/flow.py) owns Git/GitHub mechanics, creates an isolated worktree, runs implementation with subagent review, opens the PR, and exits.
-- [The issue launcher](../agent.py) accepts a GitHub issue URL, asks agents to implement and repair, polls CI, and limits repair passes. It starts a new coding session per call and has no durable workflow checkpoint.
+- [The issue launcher](../agent.py) accepts a GitHub issue URL as an argument or through Machinist stdin, asks either Codex or Claude to implement and repair, polls CI, and limits repair passes. It starts a new coding session per call and has no durable workflow checkpoint.
 
-These are useful experiments, not one supported contract. The issue launcher's argument input also differs from Machinist's stdin interface. Its control-flow tests do not demonstrate unattended delivery quality or high concurrency.
+These are useful experiments, not yet one fully supported contract. The issue launcher now shares one workflow between direct and Machinist input and between Codex and Claude, but its control-flow tests do not demonstrate unattended delivery quality or high concurrency.
 
 Keep the runtime boundary. Workflow stages and checkpoints belong to workflow code, not a new general-purpose graph engine inside the control plane.
 

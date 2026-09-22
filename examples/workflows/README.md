@@ -5,6 +5,8 @@ approved executor in `worker.toml`, then select its command with `--command`.
 
 - `multi-review` runs two agent CLIs in order with `set -e` behavior.
 - `flow` creates an isolated worktree, runs Codex with subagent review, opens a PR, and exits.
+- [gvisor-pr](gvisor-pr/README.md) clones main inside a disposable gVisor container,
+  implements a prompt, opens a PR, and removes the container.
 
 Stages are visible only through logs. Timeout or cancellation kills the script process tree.
 A new run starts from the beginning unless the script implements its own checkpointing.

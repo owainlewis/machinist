@@ -150,7 +150,7 @@ test("analytics presents task KPIs while retaining completed run metrics", async
 test("task detail keeps executor, model, and usage reporting explicit", async () => {
   const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
   assert.doesNotMatch(source, /run\.worker_name\s*\|\|\s*run\.executor/);
-  assert.match(source, /tokenUsageSummary\(job\.runs\)/);
+  assert.match(source, /execution details/);
   const taskDetail = source.match(/function TaskDetail[\s\S]+?function DetailMetric/)?.[0];
   assert.ok(taskDetail);
   assert.match(taskDetail, /label="Executor" value=\{run\.executor\}/);
@@ -158,7 +158,7 @@ test("task detail keeps executor, model, and usage reporting explicit", async ()
   assert.match(taskDetail, /"Not reported"/);
 });
 
-test("board cards are compact links while list rows retain model and usage", async () => {
+test("board cards and list rows link to task details", async () => {
   const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
   const runCard = source.match(/function RunCard[\s\S]+?function RunRow/)?.[0];
   assert.ok(runCard);
@@ -169,16 +169,16 @@ test("board cards are compact links while list rows retain model and usage", asy
 
   const runRow = source.match(/function RunRow[\s\S]+?function State/)?.[0];
   assert.ok(runRow);
-  assert.match(runRow, /runModelSummary\(job\.runs\)/);
-  assert.match(runRow, /tokenUsageSummary\(job\.runs\)/);
-  assert.match(runRow, /tokens/);
+  assert.match(runRow, /job.repository/);
+  assert.match(runRow, /<State/);
+  assert.doesNotMatch(runRow, /worker_name|tokens/);
 });
 
 test("task detail provides deletion and complete run metadata", async () => {
   const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
   const taskDetail = source.match(/function TaskDetail[\s\S]+?function DetailMetric/)?.[0];
   assert.ok(taskDetail);
-  for (const label of ["Prompt", "Execution", "Repository", "Command", "Requested model", "Duration", "Token usage", "Executor", "Worker", "Started", "Completed", "Exit code", "Error"]) {
+  for (const label of ["instructions", "execution details", "Repository", "Model", "Duration", "Tokens", "Executor", "Worker", "Started", "Completed", "Exit code"]) {
     assert.match(taskDetail, new RegExp(label));
   }
   assert.match(source, /method: "DELETE"/);

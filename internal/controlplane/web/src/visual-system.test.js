@@ -10,10 +10,10 @@ test("every top-level control plane view uses the shared editorial heading", asy
     readFile(new URL("./triggers.jsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(main, /<PageHeading title="Runs"/);
+  assert.match(main, /<PageHeading title="Tasks"/);
   assert.match(analytics, /<PageHeading title="Task analytics"/);
   assert.match(catalog, /<Page title="Workers"/);
-  assert.match(catalog, /<Page title="Commands"/);
+  assert.match(catalog, /<Page title="Workflows"/);
   assert.match(triggers, /<PageHeading title=\{title\}/);
   assert.doesNotMatch([main, analytics, catalog, triggers].join("\n"), /Control plane \/|index="0[1-5]"/);
 });

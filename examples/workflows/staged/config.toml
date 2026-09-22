@@ -1,0 +1,23 @@
+# Add these definitions to the control plane's config.toml.
+# The worker must register a "codex" executor and the target repository.
+[commands.ready]
+executor = "codex"
+prompt_file = "triage.md"
+timeout = "10m"
+
+[commands.implement]
+executor = "codex"
+prompt_file = "build.md"
+timeout = "60m"
+
+# A single agent may orchestrate its own subagents and repair cycle.
+[workflows.deliver]
+steps = ["implement"]
+
+# The steps automatically follow each other after a complete result.
+[workflows.checked_delivery]
+steps = ["ready", "implement"]
+
+# Add a human checkpoint only where you want one.
+[workflows.approved_delivery]
+steps = ["ready", { command = "implement", approval = "before" }]

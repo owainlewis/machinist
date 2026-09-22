@@ -19,6 +19,15 @@ executor = "codex"
 prompt_file = "prompts/shepherd.md"
 timeout = "120m"
 
+[commands.merge]
+executor = "codex"
+prompt_file = "prompts/merge.md"
+timeout = "30m"
+
+[commands.deliver]
+executor = "agent-codex"
+timeout = "120m"
+
 # Schedule Shepherd for one configured repository with a trigger like this:
 # [github.repositories]
 # my-project = "owner/my-project"

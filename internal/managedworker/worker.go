@@ -86,11 +86,13 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) executeWithHeartbeats(ctx context.Context, spec protocol.RunSpec) protocol.Completion {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	execute := w.executeRun
 	if execute == nil {
 		execute = w.execute
 	}
-	return withHeartbeats(ctx, w, spec, "", func() protocol.Completion { return execute(ctx, spec) })
+	return withHeartbeats(ctx, w, spec, "", func() protocol.Completion { return execute(ctx, spec) }, cancel)
 }
 
 func (w *Worker) deliverWithHeartbeats(ctx context.Context, spec protocol.RunSpec, completion protocol.Completion) error {
@@ -103,7 +105,7 @@ func (w *Worker) deliverWithHeartbeats(ctx context.Context, spec protocol.RunSpe
 // withHeartbeats runs work in the background and keeps the run lease alive
 // until it returns. Cancellation does not abandon the work; the work observes
 // ctx itself and its result is always returned.
-func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec, phase string, work func() T) T {
+func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec, phase string, work func() T, stop ...context.CancelFunc) T {
 	ticks := w.heartbeatTicks
 	if ticks == nil {
 		ticker := time.NewTicker(heartbeatInterval)
@@ -119,6 +121,10 @@ func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec
 		case <-ticks:
 			if err := w.heartbeat(ctx, spec); err != nil {
 				fmt.Fprintf(w.stderr, "machinist: heartbeat run %s%s: %v\n", spec.ID, phase, err)
+				var responseErr *ResponseError
+				if spec.Workflow && len(stop) > 0 && errors.As(err, &responseErr) && (responseErr.Status == 409 || responseErr.Status == 404) {
+					stop[0]()
+				}
 			}
 		case <-ctx.Done():
 			return <-done
@@ -128,11 +134,15 @@ func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec
 
 func (w *Worker) poll(ctx context.Context) (*protocol.RunSpec, error) {
 	request := protocol.PollRequest{
-		InstanceID:   w.instanceID,
-		Name:         w.config.Name,
-		Executors:    w.config.ExecutorNames(),
-		Repositories: w.config.RepositoryNames(),
-		Models:       w.config.ModelCapabilities(),
+		SharedOutputs: true,
+		Reviews:       true,
+		Workflows:     true,
+		Artifacts:     true,
+		InstanceID:    w.instanceID,
+		Name:          w.config.Name,
+		Executors:     w.config.ExecutorNames(),
+		Repositories:  w.config.RepositoryNames(),
+		Models:        w.config.ModelCapabilities(),
 	}
 	var response protocol.PollResponse
 	if err := w.client.Post(ctx, "/api/v1/workers/poll", request, &response); err != nil {
@@ -161,6 +171,9 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 		return completion
 	}
 	result, runErr := runner.Execute(ctx, runner.Options{
+		Revision: spec.Revision,
+		Workflow: spec.Workflow, JobID: spec.JobID,
+		Task: spec.Task, PrepareInputs: w.prepareInputs(spec),
 		RunID:         spec.ID,
 		ArtifactKey:   spec.LeaseToken,
 		Command:       command,
@@ -175,6 +188,13 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 		completion.Result, _ = os.ReadFile(filepath.Join(filepath.Dir(result.EventsPath), "result.json"))
 		if events, readErr := os.ReadFile(result.EventsPath); readErr == nil {
 			completion.Events = string(events)
+		}
+	}
+	if spec.Task != nil && result.EventsPath != "" {
+		ids, err := w.publishOutputs(ctx, spec, filepath.Join(filepath.Dir(result.EventsPath), "outputs"))
+		completion.Artifacts = ids
+		if err != nil {
+			completion.PublicationError = err.Error()
 		}
 	}
 	if runErr != nil {

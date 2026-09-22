@@ -14,6 +14,10 @@ models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
 command = ["claude", "--print", "--verbose", "--output-format", "stream-json", "--model={{machinist.model}}", "--dangerously-skip-permissions"]
 models = { haiku = "haiku", sonnet = "sonnet", opus = "opus" }
 
+[executors.agent-codex]
+command = ["/absolute/path/to/uv", "run", "--script", "/absolute/path/to/machinist/agent.py", "--provider", "codex", "--model={{machinist.model}}"]
+models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
+
 # Register each repository that managed workers may run in.
 # [repositories.my-project]
 # path = "/absolute/path/to/my-project"

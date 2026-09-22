@@ -18,6 +18,7 @@ var initialFiles = []string{
 	"config.toml",
 	"worker.toml",
 	"prompts/foreman.md",
+	"prompts/merge.md",
 	"prompts/audit.md",
 	"prompts/shepherd.md",
 }

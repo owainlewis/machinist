@@ -405,8 +405,8 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions.Commands) != 3 {
-		t.Fatalf("example commands = %#v, want foreman, audit, and shepherd", definitions.Commands)
+	if len(definitions.Commands) != 5 {
+		t.Fatalf("example commands = %#v, want foreman, audit, shepherd, merge, and deliver", definitions.Commands)
 	}
 	if _, ok := definitions.Commands["foreman"]; !ok {
 		t.Fatal("example foreman agent is missing")
@@ -417,8 +417,14 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	if _, ok := definitions.Commands["shepherd"]; !ok {
 		t.Fatal("example shepherd agent is missing")
 	}
+	if _, ok := definitions.Commands["merge"]; !ok {
+		t.Fatal("example merge command is missing")
+	}
+	if _, ok := definitions.Commands["deliver"]; !ok {
+		t.Fatal("example deliver command is missing")
+	}
 
-	for _, name := range []string{"foreman", "audit", "shepherd"} {
+	for _, name := range []string{"foreman", "audit", "shepherd", "merge", "deliver"} {
 		t.Run(name, func(t *testing.T) {
 			agent, err := LoadCommand(definition, name)
 			if err != nil {

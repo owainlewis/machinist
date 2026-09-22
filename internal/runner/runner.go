@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 const (
@@ -37,6 +38,11 @@ const (
 )
 
 type Options struct {
+	Revision      *protocol.Revision
+	Task          *protocol.Task
+	PrepareInputs func(context.Context, string) (map[string]string, error)
+	Workflow      bool
+	JobID         string
 	RunID         string
 	ArtifactKey   string
 	Command       config.ResolvedCommand
@@ -47,18 +53,19 @@ type Options struct {
 }
 
 type Result struct {
-	ID             string    `json:"id"`
-	Command        string    `json:"command"`
-	CommandHash    string    `json:"command_hash"`
-	Definition     string    `json:"definition"`
-	Repository     string    `json:"repository"`
-	State          State     `json:"state"`
-	ExitCode       int       `json:"exit_code"`
-	StartedAt      time.Time `json:"started_at"`
-	CompletedAt    time.Time `json:"completed_at"`
-	DurationMillis int64     `json:"duration_millis"`
-	TokenUsage     *int64    `json:"token_usage,omitempty"`
-	EventsPath     string    `json:"events_path"`
+	StepResult     *protocol.StepResult `json:"step_result,omitempty"`
+	ID             string               `json:"id"`
+	Command        string               `json:"command"`
+	CommandHash    string               `json:"command_hash"`
+	Definition     string               `json:"definition"`
+	Repository     string               `json:"repository"`
+	State          State                `json:"state"`
+	ExitCode       int                  `json:"exit_code"`
+	StartedAt      time.Time            `json:"started_at"`
+	CompletedAt    time.Time            `json:"completed_at"`
+	DurationMillis int64                `json:"duration_millis"`
+	TokenUsage     *int64               `json:"token_usage,omitempty"`
+	EventsPath     string               `json:"events_path"`
 }
 
 type OutcomeError struct {
@@ -141,6 +148,43 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	if err := log.append("run.started", "", fmt.Sprintf("command=%s repository=%s", options.Command.Name, repository)); err != nil {
 		return result, &RuntimeError{Cause: err}
 	}
+	outputDirectory := ""
+	scratchDirectory := ""
+	if options.Task != nil {
+		outputDirectory = filepath.Join(runDirectory, "outputs")
+		scratchDirectory = filepath.Join(runDirectory, "scratch")
+		if err := os.Mkdir(scratchDirectory, 0700); err != nil {
+			return completeFailure(&result, log, runDirectory, err)
+		}
+		if err := os.Mkdir(outputDirectory, 0700); err != nil {
+			return completeFailure(&result, log, runDirectory, err)
+		}
+		inputs := map[string]string{}
+		if options.PrepareInputs != nil {
+			var err error
+			inputs, err = options.PrepareInputs(ctx, filepath.Join(runDirectory, "inputs"))
+			if err != nil {
+				return completeFailure(&result, log, runDirectory, err)
+			}
+		}
+		rendered, err := config.RenderTaskTemplate(options.Command.Prompt, *options.Task, outputDirectory, inputs)
+		if err != nil {
+			return completeFailure(&result, log, runDirectory, err)
+		}
+		rendered += revisionPrompt(options.Revision, inputs)
+		options.Command.Prompt = rendered
+		snapshot, _ := json.Marshal(struct {
+			Task   *protocol.Task    `json:"task"`
+			Prompt string            `json:"prompt"`
+			Inputs map[string]string `json:"inputs"`
+		}{options.Task, rendered, inputs})
+		if err = os.WriteFile(filepath.Join(runDirectory, "input.json"), snapshot, 0600); err != nil {
+			return completeFailure(&result, log, runDirectory, err)
+		}
+	}
+	if options.Task == nil {
+		options.Command.Prompt += revisionPrompt(options.Revision, nil)
+	}
 	tokenUsagePath := filepath.Join(runDirectory, tokenUsageFileName)
 	if err := os.Remove(tokenUsagePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return completeFailure(&result, log, runDirectory, fmt.Errorf("reset executor token usage report: %w", err))
@@ -150,6 +194,17 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	command := exec.Command(executorCommand[0], executorCommand[1:]...)
 	command.Dir = repository
 	command.Env = append(sanitizedEnvironment(os.Environ()), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
+	if outputDirectory != "" {
+		command.Env = append(command.Env, "MACHINIST_OUTPUT_DIR="+outputDirectory, "MACHINIST_SCRATCH_DIR="+scratchDirectory, "MACHINIST_INPUT_DIR="+filepath.Join(runDirectory, "inputs"))
+	}
+	if options.Workflow {
+		resultPath := filepath.Join(runDirectory, "step-result.json")
+		command.Env = append(command.Env, "MACHINIST_STEP_RESULT_PATH="+resultPath, "MACHINIST_JOB_ID="+options.JobID)
+		_, claudeAgent := claudeCommandInfo(options.Command.Executor, executorCommand)
+		if codexExecIndex(options.Command.Executor, executorCommand) >= 1 || claudeAgent {
+			options.Command.Prompt += "\n\nMachinist workflow contract: perform the work above, then write a JSON object to the file named by the MACHINIST_STEP_RESULT_PATH environment variable. Use exactly the fields outcome (complete, blocked, or failed) and summary (a nonempty explanation). MACHINIST_OUTPUT_DIR is the published task folder: save only requested deliverables and files needed by later stages there. Every file there is uploaded and shown to the user. Use MACHINIST_SCRATCH_DIR for temporary clones, helper scripts, caches, raw command logs, and other working files; scratch files are not published or carried forward. Summarize verification in the final report; publish raw logs only when requested or needed to explain a failure. Do not report complete if work remains blocked. The next step starts only after complete. Reconcile existing issue/PR work before repeating side effects; this may be a retry.\n"
+		}
+	}
 	configureProcess(command)
 
 	stdinReader, stdinWriter, err := os.Pipe()
@@ -213,6 +268,14 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	closeInput := func() { _ = stdinWriter.Close() }
 	closeStreams := func() { closeFiles(stdoutReader, stderrReader) }
 	state, exitCode, outcome := supervise(ctx, command.Process, options.Command.Timeout, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr)
+	if options.Workflow && state == StateSucceeded {
+		step, err := readStepResult(filepath.Join(runDirectory, "step-result.json"))
+		if err != nil {
+			state, exitCode, outcome = StateFailed, 1, err
+		} else {
+			result.StepResult = step
+		}
+	}
 	var collectedTokenUsage *int64
 	collectedTokenUsageIsAuthoritative := usageCollector != nil
 	if usageCollector != nil {
@@ -591,7 +654,7 @@ func sanitizedEnvironment(environ []string) []string {
 	clean := make([]string, 0, len(environ))
 	for _, entry := range environ {
 		name, _, _ := strings.Cut(entry, "=")
-		if isRepositoryGitEnvironment(name) {
+		if isRepositoryGitEnvironment(name) || name == "MACHINIST_STEP_RESULT_PATH" || name == "MACHINIST_JOB_ID" || name == "MACHINIST_OUTPUT_DIR" || name == "MACHINIST_INPUT_DIR" || name == "MACHINIST_SCRATCH_DIR" {
 			continue
 		}
 		clean = append(clean, entry)

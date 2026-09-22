@@ -499,3 +499,29 @@ func TestManagedWorkerStopsHeartbeatLoopWhenTerminated(t *testing.T) {
 	}
 	ticks <- time.Time{}
 }
+
+func TestWorkflowStopsProcessAfterLeaseRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusConflict) }))
+	defer server.Close()
+	ticks := make(chan time.Time, 1)
+	started := make(chan struct{})
+	worker := &Worker{client: newClient(server.URL, "secret", server.Client()), stderr: io.Discard, instanceID: "worker", heartbeatTicks: ticks,
+		executeRun: func(ctx context.Context, spec protocol.RunSpec) protocol.Completion {
+			close(started)
+			<-ctx.Done()
+			return protocol.Completion{State: "cancelled", ExitCode: 130}
+		},
+	}
+	done := make(chan protocol.Completion, 1)
+	go func() { done <- worker.executeWithHeartbeats(t.Context(), protocol.RunSpec{ID: "run", Workflow: true}) }()
+	<-started
+	ticks <- time.Now()
+	select {
+	case result := <-done:
+		if result.State != "cancelled" {
+			t.Fatal(result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("workflow kept executing after definitive lease rejection")
+	}
+}

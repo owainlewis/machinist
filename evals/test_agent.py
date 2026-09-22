@@ -73,6 +73,9 @@ def codex_review_status(state="Running", head="abcdef0"):
 
 class AgentTests(unittest.TestCase):
     def setUp(self):
+        preflight = patch.object(agent, "preflight")
+        preflight.start()
+        self.addCleanup(preflight.stop)
         login = patch.object(
             agent,
             "gh",
@@ -157,6 +160,98 @@ class AgentTests(unittest.TestCase):
         self.assertIn(url, run.call_args.args[0])
         self.assertNotIn("{task}", run.call_args.args[0])
 
+    def test_direct_and_machinist_stdin_use_the_same_flow(self):
+        url = "https://github.com/owner/repo/issues/123"
+        report = {"status": "blocked", "pr_number": None, "summary": "needs input"}
+        prompts = []
+
+        def record(prompt, provider, model):
+            prompts.append((prompt, provider, model))
+            return report
+
+        with patch.object(agent, "run_agent", side_effect=record):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(agent.main([url, "--provider", "claude"]), 1)
+            with (
+                patch.object(sys, "stdin", io.StringIO(f"Complete {url}\n")),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(agent.main(["--provider", "claude"]), 1)
+
+        self.assertEqual(prompts[0], prompts[1])
+        self.assertEqual(prompts[0][1:], ("claude", None))
+
+    def test_prompt_flag_uses_the_same_flow(self):
+        url = "https://github.com/owner/repo/issues/123"
+        report = {"status": "blocked", "pr_number": None, "summary": "needs input"}
+        prompts = []
+
+        def record(prompt, provider, model):
+            prompts.append(prompt)
+            return report
+
+        with patch.object(agent, "run_agent", side_effect=record):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(agent.main([url]), 1)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(agent.main(["--prompt", f"Complete {url}"]), 1)
+
+        self.assertEqual(prompts[0], prompts[1])
+
+    def test_prompt_flag_and_positional_task_are_mutually_exclusive(self):
+        url = "https://github.com/owner/repo/issues/123"
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as error,
+        ):
+            agent.main([url, "--prompt", url])
+        self.assertEqual(error.exception.code, 2)
+
+    def test_provider_adapter_forwards_model(self):
+        report = {"status": "blocked", "pr_number": None, "summary": "done"}
+        with (
+            patch.object(agent, "run_codex", return_value=report) as codex,
+            patch.object(agent, "run_claude", return_value=report) as claude,
+        ):
+            self.assertEqual(agent.run_agent("task", "codex", "sol"), report)
+            codex.assert_called_once_with("task", "sol")
+            claude.assert_not_called()
+
+            self.assertEqual(agent.run_agent("task", "claude", "opus"), report)
+            claude.assert_called_once_with("task", "opus")
+
+    def test_claude_stream_returns_the_shared_result_contract(self):
+        report = {"status": "completed", "pr_number": 467, "summary": "done"}
+        process = MagicMock()
+        process.stdin = MagicMock()
+        process.stdout = iter(
+            [
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [{"type": "text", "text": "Working."}]
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps({"type": "result", "structured_output": report}) + "\n",
+            ]
+        )
+        process.wait.return_value = 0
+        process.poll.return_value = 0
+        with (
+            patch.object(agent.shutil, "which", return_value="/bin/claude"),
+            patch.object(agent.subprocess, "Popen", return_value=process) as popen,
+        ):
+            self.assertEqual(agent.run_claude("implement issue", "opus"), report)
+
+        process.stdin.write.assert_called_once_with("implement issue")
+        command = popen.call_args.args[0]
+        self.assertIn("--json-schema", command)
+        self.assertEqual(command[-2:], ["--model", "opus"])
+        self.assertIn("Agent: Working.", self.progress.getvalue())
+
     def test_invalid_arguments_never_launch_codex(self):
         for args in [
             [],
@@ -165,6 +260,7 @@ class AgentTests(unittest.TestCase):
             ["https://github.com/o/r/pull/1"],
             ["https://github.com/o/r/issues/0"],
             ["https://github.com/o/r/issues/1", "extra"],
+            ["--prompt", "not-a-task"],
         ]:
             with self.subTest(args=args), patch.object(agent, "run_codex") as run:
                 with (
@@ -685,6 +781,12 @@ class IterationTests(unittest.TestCase):
     report = {"status": "completed", "pr_number": 467, "summary": "Implemented."}
 
     def setUp(self):
+        agent.reset_metrics()
+        assessment = patch.object(agent, "assess_feedback", return_value={
+            "decision": "changes_required", "findings": ["Test finding"], "summary": "Needs inspection"
+        })
+        assessment.start()
+        self.addCleanup(assessment.stop)
         login = patch.object(agent, "gh", return_value={"login": "builder"})
         login.start()
         self.addCleanup(login.stop)
@@ -791,7 +893,7 @@ class IterationTests(unittest.TestCase):
         self.assertIn("Fix a bug", run.call_args.args[0])
         self.assertIn("PR #467", run.call_args.args[0])
         self.assertIn(
-            "Starting AI agent to assess feedback and fix valid findings (pass 1/3",
+            "Starting repair pass 1/3",
             self.progress.getvalue(),
         )
         wait.assert_called_once_with("owner/repo", 467)
@@ -1005,6 +1107,80 @@ class IterationTests(unittest.TestCase):
                 agent.iterate(
                     self.task, "owner/repo", self.report, self.feedback("failed")
                 )
+
+
+class MetricsTests(unittest.TestCase):
+    def setUp(self):
+        agent.reset_metrics()
+
+    def test_unknown_usage_is_not_zero(self):
+        agent.record_usage(None)
+        agent.record_usage({})
+        self.assertIsNone(agent.METRICS["tokens"])
+
+    def test_preflight_rejects_missing_provider(self):
+        with patch.object(agent.shutil, "which", side_effect=lambda name: None if name == "claude" else "/bin/tool"):
+            with self.assertRaisesRegex(RuntimeError, "missing claude"):
+                agent.preflight("claude")
+
+    def test_preflight_checks_ci_linter_pin(self):
+        workflow = MagicMock()
+        workflow.read_text.return_value = "- uses: golangci/golangci-lint-action@v9\n  with:\n    version: v2.12.2\n"
+        with patch.object(agent.Path, "glob", return_value=[workflow]), \
+             patch.object(agent.shutil, "which", return_value="/bin/tool"), \
+             patch.object(agent.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="golangci-lint has version 2.11.0")):
+            with self.assertRaisesRegex(RuntimeError, "must match CI"):
+                agent.preflight("codex")
+
+    def test_provider_cache_accounting(self):
+        agent.record_usage({"input_tokens": 100, "output_tokens": 20, "cached_input_tokens": 80})
+        agent.record_usage({"input_tokens": 10, "output_tokens": 5,
+                            "cache_read_input_tokens": 40, "cache_creation_input_tokens": 15}, "claude")
+        self.assertEqual(agent.METRICS["tokens"], 190)
+        self.assertEqual(agent.METRICS["input_tokens"], 165)
+        self.assertEqual(agent.METRICS["cached_input_tokens"], 120)
+        self.assertEqual(agent.METRICS["cache_write_input_tokens"], 15)
+
+    def test_codex_counts_latest_cumulative_event_once(self):
+        def usage_event(inputs):
+            return SimpleNamespace(method="thread/tokenUsage/updated", payload=SimpleNamespace(
+                token_usage=SimpleNamespace(total=SimpleNamespace(input_tokens=inputs,
+                    output_tokens=20, cached_input_tokens=10))))
+        report = {"status": "completed", "pr_number": 1, "summary": "done"}
+        factory, _ = streamed_codex([usage_event(50), usage_event(100),
+                                     message_event(json.dumps(report)), completed_event()])
+        with patch.object(agent, "Codex", factory), patch.object(agent.shutil, "which", return_value="codex"):
+            agent.run_codex("test")
+        self.assertEqual(agent.METRICS["tokens"], 120)
+        self.assertEqual(agent.METRICS["usage_reports"], 1)
+
+    def test_phase_records_failure_time(self):
+        with patch.object(agent.time, "monotonic", side_effect=[10, 13]):
+            with self.assertRaises(ValueError), agent.phase("repair"):
+                raise ValueError("failed")
+        self.assertEqual(agent.METRICS["repair_seconds"], 3)
+
+    def test_approval_with_findings_is_invalid(self):
+        with self.assertRaises(ValueError):
+            agent.validate_output({"decision": "approved", "findings": ["bug"], "summary": "great"}, agent.ASSESSMENT_SCHEMA)
+
+    def test_positive_assessment_does_not_launch_repair(self):
+        report = {"status": "completed", "pr_number": 1, "summary": "implemented"}
+        feedback = {"ci_status": "passed", "head_sha": "abc",
+                    "reviews": [{"id": 1, "body": "No findings"}]}
+        with patch.object(agent, "assess_feedback", return_value={"decision": "approved", "findings": [], "summary": "clean"}), \
+             patch.object(agent, "gh", return_value={"login": "builder", "headRefOid": "abc"}), \
+             patch.object(agent, "run_agent") as run:
+            self.assertEqual(agent.iterate("task", "repo", report, feedback), report)
+        run.assert_not_called()
+        self.assertEqual(agent.METRICS["repair_calls"], 0)
+
+    def test_positive_assessment_cannot_approve_changed_head(self):
+        report = {"status": "completed", "pr_number": 1, "summary": "implemented"}
+        feedback = {"ci_status": "passed", "head_sha": "abc", "reviews": [{"id": 1, "body": "clean"}]}
+        with patch.object(agent, "assess_feedback", return_value={"decision": "approved", "findings": [], "summary": "clean"}), \
+             patch.object(agent, "gh", return_value={"login": "builder", "headRefOid": "new"}):
+            self.assertEqual(agent.iterate("task", "repo", report, feedback)["status"], "blocked")
 
 
 if __name__ == "__main__":

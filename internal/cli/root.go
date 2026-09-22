@@ -133,11 +133,16 @@ func newUpdateCommand(options *commandOptions) *cobra.Command {
 }
 
 type submitCatalog struct {
+	Workflows    []string `json:"workflows"`
 	Commands     []string `json:"commands"`
 	Repositories []string `json:"repositories"`
 }
 
 type submitJobRequest struct {
+	Title      string `json:"title,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
+	Spec       string `json:"spec,omitempty"`
+	Workflow   string `json:"workflow,omitempty"`
 	Prompt     string `json:"prompt"`
 	Repository string `json:"repository"`
 	Command    string `json:"command"`
@@ -149,26 +154,47 @@ type submitJobResponse struct {
 }
 
 func newSubmitCommand(options *commandOptions) *cobra.Command {
-	var commandName, prompt, model, repository string
+	var commandName, workflowName, prompt, model, repository, title, sourceURL, spec string
 	submit := &cobra.Command{
 		Use:   "submit",
 		Short: "Queue work for a managed Machinist Worker",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return submitSelection(command.Context(), options, commandName, prompt, model, repository)
+			if title != "" || sourceURL != "" || spec != "" {
+				if workflowName == "" || prompt != "" {
+					return errors.New("task fields require --workflow and cannot be combined with --prompt")
+				}
+				return submitRequestToServer(command.Context(), options, submitJobRequest{Workflow: workflowName, Repository: repository, Model: model, Title: title, SourceURL: sourceURL, Spec: spec})
+			}
+			if strings.TrimSpace(prompt) == "" {
+				return errors.New("provide --spec or --source-url for a workflow, or --prompt for a command")
+			}
+			return submitSelection(command.Context(), options, commandName, prompt, model, repository, workflowName)
 		},
 	}
+	submit.Flags().StringVar(&workflowName, "workflow", "", "workflow name from the control plane")
 	submit.Flags().StringVar(&commandName, "command", "", "command name from the control plane")
-	submit.Flags().StringVar(&prompt, "prompt", "", "work request supplied to the command on standard input (required)")
+	submit.Flags().StringVar(&prompt, "prompt", "", "legacy work request supplied to a command or workflow")
 	submit.Flags().StringVar(&model, "model", "", "executor model or configured alias for this task")
 	submit.Flags().StringVar(&repository, "repo", "", "configured repository name (required)")
-	_ = submit.MarkFlagRequired("command")
-	_ = submit.MarkFlagRequired("prompt")
+	submit.MarkFlagsOneRequired("command", "workflow")
+	submit.MarkFlagsMutuallyExclusive("command", "workflow")
+	submit.Flags().StringVar(&title, "title", "", "task title")
+	submit.Flags().StringVar(&sourceURL, "source-url", "", "original issue or task URL")
+	submit.Flags().StringVar(&spec, "spec", "", "task requirements")
 	_ = submit.MarkFlagRequired("repo")
 	return submit
 }
 
-func submitSelection(ctx context.Context, options *commandOptions, commandName, prompt, model, repository string) error {
+func submitSelection(ctx context.Context, options *commandOptions, commandName, prompt, model, repository string, workflows ...string) error {
+	workflow := ""
+	if len(workflows) > 0 {
+		workflow = workflows[0]
+	}
+	return submitRequestToServer(ctx, options, submitJobRequest{Workflow: workflow, Prompt: prompt, Repository: repository, Command: commandName, Model: model})
+}
+func submitRequestToServer(ctx context.Context, options *commandOptions, request submitJobRequest) error {
+	repository, workflow, commandName := request.Repository, request.Workflow, request.Command
 	worker, err := config.LoadWorker(options.configPath)
 	if err != nil {
 		return err
@@ -184,11 +210,13 @@ func submitSelection(ctx context.Context, options *commandOptions, commandName, 
 	if !slices.Contains(catalog.Repositories, repository) {
 		return fmt.Errorf("repository %q is not defined in the control plane; check the configured repository name and worker registration", repository)
 	}
-	if !slices.Contains(catalog.Commands, commandName) {
+	if workflow != "" && !slices.Contains(catalog.Workflows, workflow) {
+		return fmt.Errorf("workflow %q is not defined in the control plane", workflow)
+	}
+	if workflow == "" && !slices.Contains(catalog.Commands, commandName) {
 		return fmt.Errorf("command %q is not defined in the control plane", commandName)
 	}
 	var result submitJobResponse
-	request := submitJobRequest{Prompt: prompt, Repository: repository, Command: commandName, Model: model}
 	if err := client.Post(ctx, "/api/v1/jobs", request, &result); err != nil {
 		return fmt.Errorf("submit job: %w", err)
 	}
@@ -266,7 +294,7 @@ func newRunCommand(options *commandOptions) *cobra.Command {
 	}
 	run.Flags().StringVar(&options.commandName, "command", "", "command name from the Machinist definition")
 	_ = run.MarkFlagRequired("command")
-	run.Flags().StringVar(&options.prompt, "prompt", "", "work request supplied to the command on standard input (required)")
+	run.Flags().StringVar(&options.prompt, "prompt", "", "legacy work request supplied to a command or workflow")
 	run.Flags().StringVar(&options.model, "model", "", "executor model or configured alias for this task")
 	run.Flags().StringVar(&options.repository, "repo", ".", "Git repository path")
 	run.Flags().StringVar(&options.machinistConfigPath, "machinist-config", "", "shared Machinist configuration file")

@@ -399,3 +399,11 @@ footer .brand { color: var(--ink); }
   .status i { animation: pulse 2s ease-out infinite; }
   @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(131, 199, 149, .12); } 50% { box-shadow: 0 0 0 7px rgba(131, 199, 149, 0); } }
 }
+
+.workflow-example { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; list-style: none; padding: 0; margin: 2rem 0; }
+.workflow-example li { padding: 1.5rem; border: 1px solid var(--border, #c7cdca); border-radius: 8px; }
+.workflow-example li > span { font-size: .75rem; color: var(--mark); }
+.workflow-example h3 { margin: .75rem 0; }
+.workflow-example p, .workflow-note { line-height: 1.7; }
+.workflow-note { margin: 1.5rem 0; }
+@media (max-width: 640px) { .workflow-example { grid-template-columns: 1fr; } }

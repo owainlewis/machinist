@@ -1,0 +1,25 @@
+# Paths are relative to this config. Register codex, risk-gate, risk-merge
+# executors on the worker; see README.md.
+[commands.build_pr]
+executor = "codex"
+prompt_file = "build.md"
+timeout = "45m"
+[commands.classify_risk]
+executor = "codex"
+prompt_file = "classify.md"
+timeout = "15m"
+[commands.merge_policy]
+executor = "risk-gate"
+prompt_file = "gate.json"
+timeout = "5m"
+[commands.merge_pr]
+executor = "risk-merge"
+prompt_file = "merge.json"
+timeout = "5m"
+[workflows.classify_then_merge]
+steps = [
+  { command="build_pr", required_outputs=["pr.json"] },
+  { command="classify_risk", required_outputs=["risk.json"] },
+  { command="merge_policy", required_outputs=["decision.json"] },
+  { command="merge_pr" }
+]

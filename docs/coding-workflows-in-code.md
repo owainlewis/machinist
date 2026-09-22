@@ -446,7 +446,7 @@ These are reasons to add state and execution controls as the workflow grows. The
 
 In this system, Blueprint describes how to approach the engineering work and supplies reusable skills. Python encodes a chosen delivery workflow. Machinist runs workflow jobs and exposes their progress and results.
 
-The current argument-based `agent.py ISSUE_URL` launcher is not yet the complete Machinist job contract. Machinist supplies executor input through stdin. A small adapter can translate that input into the same workflow function; the [roadmap](workflow-roadmap.md) describes the additional execution, ownership, and recovery work.
+Update: `agent.py` now accepts an issue URL on stdin as well as a CLI argument. See [the agent workflow guide](agent-workflow.md) for that script and [the task workflow guide](task-guide.md) for managed stages, approval, and saved files. The example above describes the original experiment.
 
 The next useful proof is a task that encounters a real failure, repairs it, and returns with valid evidence. I would measure human attention per accepted PR, cost, and defects across several tasks. Running more agents or producing more PRs would not answer whether the system is helping me ship better software.
 
