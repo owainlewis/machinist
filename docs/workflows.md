@@ -149,3 +149,9 @@ configured `approval="before"`. The final stage has no subsequent action to gate
 See [classify then merge](../examples/workflows/risk_delivery/README.md) for an
 issue-to-PR pipeline with independent risk assessment and a deterministic merge
 policy. Only small low-risk documentation changes qualify for automatic merging.
+
+Script revisions keep their original stdin format. When feedback is present,
+`MACHINIST_REVISION_PATH` points to a JSON file containing `feedback`,
+`previous_run_id`, `previous_summary`, and any `prior_feedback`. Scripts may read
+this context separately. Recognized Codex and Claude executors also receive the
+feedback in their prompt.

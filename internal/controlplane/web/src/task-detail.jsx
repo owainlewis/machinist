@@ -452,7 +452,7 @@ function TaskActions({ job, result, onAction }) {
           inspect existing work before continuing.
         </label>
       )}
-      {["queued", "running", "awaiting_approval", "blocked"].includes(
+      {["queued", "running", "awaiting_approval", "blocked", "interrupted"].includes(
         job.state,
       ) && (
         <Button

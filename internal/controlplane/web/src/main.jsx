@@ -294,4 +294,5 @@ function selectionChoices(status) {
 }
 function firstSelection(status) { return selectionChoices(status)[0]?.value || ""; }
 function shortId(id) { const [, value = id] = id.split("_", 2); return value.slice(0, 8); }
-createRoot(document.getElementById("root")).render(<App />);
+export const appRoot = createRoot(document.getElementById("root"));
+appRoot.render(<App />);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { act } from "react";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 
@@ -26,7 +27,14 @@ test("runs default to board view and share filters when switching views", async 
       { id: "build", command: "build", state: "succeeded", outcome: "complete", summary: "Built", executor: "test-executor", model: "test-model", worker_name: "test-worker", duration_millis: 1000, exit_code: 0 },
     ],
   };
-  globalThis.fetch = async url => {
+  const interruptedJob = { ...detailJob, id: "job_interrupted", state: "interrupted", workflow: { name: "build", steps: ["build"], current_step: 0 }, runs: [{ id: "interrupted", command: "build", state: "interrupted" }] };
+  let cancelled = false;
+  globalThis.fetch = async (url, options) => {
+    if (url.endsWith("/cancel") && options?.method === "POST") {
+      cancelled = true;
+      interruptedJob.state = "cancelled";
+      return { ok: true, json: async () => ({}) };
+    }
     if (url.endsWith("/artifacts")) {
       artifactRequests += 1;
       return { ok: true, json: async () => [
@@ -35,11 +43,16 @@ test("runs default to board view and share filters when switching views", async 
       ] };
     }
     if (url.endsWith("/content")) return { ok: true, text: async () => "<script>literal file text</script>" };
-    return { ok: true, json: async () => ({ jobs: [...jobs, detailJob], workers: [], commands: [], repositories: [], triggers: [], csrf_token: "test" }) };
+    return { ok: true, json: async () => ({ jobs: [...jobs, detailJob, interruptedJob], workers: [], commands: [], repositories: [], triggers: [], csrf_token: "test" }) };
   };
 
   const server = await createServer({ server: { middlewareMode: true }, appType: "custom" });
+  let mountedRoot;
   context.after(async () => {
+    const previousActEnvironment = globalThis.IS_REACT_ACT_ENVIRONMENT;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    await act(async () => mountedRoot?.unmount());
+    globalThis.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
     await server.close();
     dom.window.close();
     for (const [name, descriptor] of priorGlobals) {
@@ -48,7 +61,7 @@ test("runs default to board view and share filters when switching views", async 
     }
   });
 
-  await server.ssrLoadModule("/src/main.jsx");
+  mountedRoot = (await server.ssrLoadModule("/src/main.jsx")).appRoot;
   await eventually(() => assert.match(document.body.textContent, /Failed fixture/));
 
   assert.equal(button("Board").getAttribute("aria-pressed"), "true");
@@ -90,6 +103,12 @@ test("runs default to board view and share filters when switching views", async 
   await eventually(() => assert.match(document.querySelector('[role="tabpanel"]:not([hidden])').textContent, /<script>literal file text<\/script>/));
   assert.equal(document.querySelectorAll("script").length, 0, "preview renders text, not markup");
   assert.equal(artifactRequests, 1, "changing tabs does not refetch metadata");
+  window.location.hash = "#/runs/job_interrupted";
+  await eventually(() => assert.ok([...document.querySelectorAll("button")].find(el => el.textContent === "Cancel task")));
+  button("Cancel task").click();
+  await eventually(() => assert.equal(cancelled, true));
+  await eventually(() => assert.equal([...document.querySelectorAll("button")].find(el => el.textContent === "Cancel task"), undefined));
+
 });
 
 function button(label) {

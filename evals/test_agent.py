@@ -1085,6 +1085,7 @@ class IterationTests(unittest.TestCase):
 
     def test_late_repair_exception_retains_pr_in_cli_result(self):
         with (
+            patch.object(agent, "preflight"),
             patch.object(agent, "validate_pr"),
             patch.object(agent, "implement", return_value=self.report),
             patch.object(agent, "wait_for_ci", return_value=self.feedback("failed")),
