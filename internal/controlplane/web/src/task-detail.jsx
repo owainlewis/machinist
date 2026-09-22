@@ -35,7 +35,7 @@ export function TaskDetail({
         {error && <p role="alert">{error}</p>}
       </div>
     );
-  const terminal = ["succeeded", "failed"].includes(job.state);
+  const terminal = ["succeeded", "failed", "cancelled"].includes(job.state);
   const latest = job.runs.at(-1);
   const lastCompleted = job.runs.findLast((run) => run.outcome === "complete");
   const { result, history, stages } = taskPresentation(job);

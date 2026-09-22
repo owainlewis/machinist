@@ -170,3 +170,24 @@ func TestArtifactHTTPBinaryRangeAndAuth(t *testing.T) {
 		t.Fatalf("%d %v", resp.StatusCode, b)
 	}
 }
+
+func TestCancelledTaskCanBeDeletedWithArtifacts(t *testing.T) {
+	s := openTestStore(t, t.TempDir()+"/db")
+	id, run := artifactTask(t, s, []config.WorkflowStep{{ID: "build", Command: testAgent("build", "{{task.spec}}")}})
+	file, err := s.PublishArtifact(t.Context(), run.ID, "worker-a", run.LeaseToken, "report.md", strings.NewReader("partial work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WorkflowAction(t.Context(), id, run.ID, "cancel", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteJob(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CleanupArtifacts(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.OpenArtifact(t.Context(), file.ID); !errors.Is(err, ErrArtifactExpired) {
+		t.Fatalf("deleted task artifact: %v", err)
+	}
+}

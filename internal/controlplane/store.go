@@ -1334,11 +1334,11 @@ func boundedTriggerError(message string) string {
 }
 
 func terminalRunState(state string) bool {
-	return state == "succeeded" || state == "failed" || state == "timed_out" || state == "cancelled"
+	return state == "succeeded" || state == "failed" || state == "cancelled" || state == "timed_out" || state == "cancelled"
 }
 
 func terminalJobState(state string) bool {
-	return state == "succeeded" || state == "failed"
+	return state == "succeeded" || state == "failed" || state == "cancelled"
 }
 
 func validateOutcome(state string, exitCode int) error {

@@ -107,6 +107,7 @@ test("runs default to board view and share filters when switching views", async 
   await eventually(() => assert.ok([...document.querySelectorAll("button")].find(el => el.textContent === "Cancel task")));
   button("Cancel task").click();
   await eventually(() => assert.equal(cancelled, true));
+  await eventually(() => assert.equal(button("Delete task").disabled, false));
   await eventually(() => assert.equal([...document.querySelectorAll("button")].find(el => el.textContent === "Cancel task"), undefined));
 
 });
