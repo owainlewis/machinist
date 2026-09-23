@@ -65,6 +65,7 @@ type Result struct {
 	CompletedAt    time.Time            `json:"completed_at"`
 	DurationMillis int64                `json:"duration_millis"`
 	TokenUsage     *int64               `json:"token_usage,omitempty"`
+	FinalMessage   string               `json:"final_message,omitempty"`
 	EventsPath     string               `json:"events_path"`
 }
 
@@ -294,6 +295,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	collectedTokenUsageIsAuthoritative := usageCollector != nil
 	if usageCollector != nil {
 		collectedTokenUsage = usageCollector.tokenUsage()
+		result.FinalMessage = usageCollector.lastMessage()
 	}
 	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage, collectedTokenUsageIsAuthoritative); err != nil {
 		if outcome != nil {
