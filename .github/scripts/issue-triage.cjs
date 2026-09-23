@@ -1,5 +1,3 @@
-const fs = require('node:fs');
-
 const LABELS = ['bug', 'enhancement', 'documentation', 'needs-human'];
 
 function promptFor(issue) {
@@ -49,9 +47,12 @@ async function applyLabel(github, repo, issueNumber, raw) {
   }
 }
 
-if (require.main === module) {
-  const event = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-  fs.writeFileSync(process.argv[3], promptFor(event.issue));
+function parseIssueNumber(value) {
+  const number = Number(value);
+  if (!/^[1-9][0-9]*$/.test(String(value)) || !Number.isSafeInteger(number)) {
+    throw new Error('Expected a positive issue number');
+  }
+  return number;
 }
 
-module.exports = {promptFor, parseLabel, applyLabel};
+module.exports = {promptFor, parseLabel, parseIssueNumber, applyLabel};

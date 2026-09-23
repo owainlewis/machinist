@@ -1,23 +1,36 @@
 name: Luna issue triage
+run-name: Luna triage issue ${{ github.event.issue.number || inputs.issue_number }}
 
 on:
   issues:
     types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Existing issue number to triage
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: issue-triage-${{ github.event.issue.number }}
+  group: issue-triage-${{ github.event.issue.number || inputs.issue_number }}
   cancel-in-progress: false
 
 jobs:
   classify:
     # Keep this public-repository demo limited to issues opened by its owner.
-    if: github.event.issue.user.login == github.repository_owner
+    if: >-
+      (github.event_name == 'issues' && github.event.issue.user.login == github.repository_owner) ||
+      (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
     outputs:
+      issue_number: ${{ steps.prepare.outputs.issue_number }}
       classification: ${{ steps.codex.outputs.final-message }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,7 +45,20 @@ jobs:
             exit 1
           fi
       - name: Prepare issue prompt
-        run: node .github/scripts/issue-triage.cjs "$GITHUB_EVENT_PATH" "$RUNNER_TEMP/triage-prompt.txt"
+        id: prepare
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REQUESTED_ISSUE: ${{ inputs.issue_number }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const { promptFor, parseIssueNumber } = require('./.github/scripts/issue-triage.cjs');
+            const number = parseIssueNumber(context.payload.issue?.number ?? process.env.REQUESTED_ISSUE);
+            const { data: issue } = await github.rest.issues.get({...context.repo, issue_number: number});
+            if (issue.pull_request) throw new Error('Expected an issue, not a pull request');
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'triage-prompt.txt'), promptFor(issue));
+            core.setOutput('issue_number', number);
       - name: Classify with Codex Luna
         id: codex
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
@@ -60,8 +86,9 @@ jobs:
       - name: Validate and apply label
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
+          ISSUE_NUMBER: ${{ needs.classify.outputs.issue_number }}
           CLASSIFICATION: ${{ needs.classify.outputs.classification }}
         with:
           script: |
-            const { applyLabel } = require('./.github/scripts/issue-triage.cjs');
-            await applyLabel(github, context.repo, context.issue.number, process.env.CLASSIFICATION);
+            const { applyLabel, parseIssueNumber } = require('./.github/scripts/issue-triage.cjs');
+            await applyLabel(github, context.repo, parseIssueNumber(process.env.ISSUE_NUMBER), process.env.CLASSIFICATION);

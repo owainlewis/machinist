@@ -26,10 +26,19 @@ an allowed, existing label to the issue identified by the GitHub event. It
 preserves other labels and skips closed issues or issues already carrying one
 of the four categories. It reads the issue back to confirm the write.
 
+For an existing issue, the repository owner can choose **Run workflow** and
+enter its issue number, or run:
+
+```sh
+gh workflow run issue-triage.yml --repo owainlewis/machinist -f issue_number=487
+```
+
+The manual trigger can classify issues from any author. Both triggers fetch the
+current issue title and body from GitHub, and reject pull request numbers.
+
 The workflow fails clearly if the API secret is missing, classification fails,
 the model returns invalid output, or GitHub rejects the label. Rerun the failed
-workflow after fixing the cause. A rerun still classifies the original event
-text; it does not respond to subsequent edits.
+workflow after fixing the cause. Reruns fetch the latest issue text; edits alone do not trigger a run.
 
 ## Verification
 
