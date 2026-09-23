@@ -56,6 +56,7 @@ format-check:
     files="$(gofmt -l cmd internal)"; test -z "$files" || { printf '%s\n' "$files"; exit 1; }
 
 check:
+    node --test .github/scripts/issue-triage.test.cjs
     cd internal/controlplane/web && npm ci && npm test && npm run build
     just format-check
     python3 -m unittest discover -s evals -p 'test_*.py'

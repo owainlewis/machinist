@@ -27,6 +27,8 @@ jobs:
           node-version: 22.22.2
           cache: npm
           cache-dependency-path: internal/controlplane/web/package-lock.json
+      - name: Test issue triage
+        run: node --test .github/scripts/issue-triage.test.cjs
       - name: Confirm toolchain
         run: test "$(go env GOVERSION)" = "go1.26.6"
       - name: Install frontend dependencies

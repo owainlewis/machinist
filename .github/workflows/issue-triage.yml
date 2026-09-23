@@ -1,0 +1,67 @@
+name: Luna issue triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-triage-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  classify:
+    # Keep this public-repository demo limited to issues opened by its owner.
+    if: github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      classification: ${{ steps.codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require API authentication
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo '::error::Add the OPENAI_API_KEY repository secret to enable Luna triage.'
+            exit 1
+          fi
+      - name: Prepare issue prompt
+        run: node .github/scripts/issue-triage.cjs "$GITHUB_EVENT_PATH" "$RUNNER_TEMP/triage-prompt.txt"
+      - name: Classify with Codex Luna
+        id: codex
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: gpt-6-luna
+          effort: low
+          permission-profile: ':read-only'
+          safety-strategy: drop-sudo
+          prompt-file: ${{ runner.temp }}/triage-prompt.txt
+          output-schema: |
+            {"type":"object","properties":{"label":{"type":"string","enum":["bug","enhancement","documentation","needs-human"]}},"required":["label"],"additionalProperties":false}
+
+  label:
+    needs: classify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate and apply label
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          CLASSIFICATION: ${{ needs.classify.outputs.classification }}
+        with:
+          script: |
+            const { applyLabel } = require('./.github/scripts/issue-triage.cjs');
+            await applyLabel(github, context.repo, context.issue.number, process.env.CLASSIFICATION);
