@@ -5,7 +5,6 @@ export const triggerFields = [
   ["last_attempt", "Last attempt"],
   ["last_success", "Last success"],
   ["active_job", "Active job"],
-  ["candidate_count", "Candidates"],
   ["admission_count", "Admissions"],
   ["coalesced_count", "Coalesced"],
 ];

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"regexp"
 	"strings"
 	"time"
@@ -15,10 +14,8 @@ import (
 )
 
 const (
-	minTriggerEvery   = time.Minute
-	maxGitHubEvery    = 24 * time.Hour
-	maxIntervalEvery  = 720 * time.Hour
-	queuedGitHubLabel = "machinist:queued"
+	minTriggerEvery  = time.Minute
+	maxIntervalEvery = 720 * time.Hour
 )
 
 var (
@@ -46,7 +43,6 @@ func validateTriggerKeys(raw map[string]any) error {
 		return errors.New("triggers must be a table")
 	}
 	allowed := map[string]map[string]bool{
-		"github":   {"every": true, "label": true, "command": true, "model": true},
 		"interval": {"every": true, "repository": true, "command": true, "model": true, "prompt": true},
 		"cron":     {"schedule": true, "timezone": true, "repository": true, "command": true, "model": true, "prompt": true},
 	}
@@ -54,6 +50,9 @@ func validateTriggerKeys(raw map[string]any) error {
 		definitions, ok := families[family].(map[string]any)
 		if !ok {
 			return fmt.Errorf("trigger family %q must be a table", family)
+		}
+		if family == "github" {
+			return errors.New("GitHub issue intake was removed: delete [triggers.github.*] and submit work directly")
 		}
 		fields, known := allowed[family]
 		if !known && len(definitions) == 0 {
@@ -85,50 +84,7 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := make([]ResolvedTrigger, 0, len(c.Triggers.GitHub)+len(c.Triggers.Interval)+len(c.Triggers.Cron))
-	seenLabels := make(map[string]string, len(c.Triggers.GitHub))
-
-	for _, name := range sortedMapKeys(c.Triggers.GitHub) {
-		identity, err := triggerIdentity("github", name)
-		if err != nil {
-			return nil, err
-		}
-		definition := c.Triggers.GitHub[name]
-		every, err := triggerDuration(identity, "every", definition.Every, minTriggerEvery, maxGitHubEvery)
-		if err != nil {
-			return nil, err
-		}
-		label, err := triggerLabel(identity, definition.Label)
-		if err != nil {
-			return nil, err
-		}
-		if strings.EqualFold(label, queuedGitHubLabel) {
-			return nil, fmt.Errorf("trigger %q label must differ from reserved label %q", identity, queuedGitHubLabel)
-		}
-		canonicalLabel := strings.ToLower(label)
-		if previous, ok := seenLabels[canonicalLabel]; ok {
-			return nil, fmt.Errorf("trigger %q uses the same case-insensitive label as trigger %q", identity, previous)
-		}
-		seenLabels[canonicalLabel] = identity
-		if len(repositories) == 0 {
-			return nil, fmt.Errorf("trigger %q requires at least one github.repositories entry", identity)
-		}
-		selection, command, err := c.resolveTriggerSelection(identity, definition.TriggerSelection, "")
-		if err != nil {
-			return nil, err
-		}
-		if _, err := RenderPrompt(command, maximumGitHubIssuePrompt()); err != nil {
-			return nil, fmt.Errorf("trigger %q: %w", identity, err)
-		}
-		resolved := ResolvedTrigger{
-			Identity: identity, Family: "github", Name: name,
-			GitHubRepositories: maps.Clone(repositories), Every: every, Label: label,
-			SelectionName: selection, Model: strings.TrimSpace(definition.Model), Command: command,
-		}
-		if result, err = appendTrigger(result, resolved); err != nil {
-			return nil, err
-		}
-	}
+	result := make([]ResolvedTrigger, 0, len(c.Triggers.Interval)+len(c.Triggers.Cron))
 
 	for _, name := range sortedMapKeys(c.Triggers.Interval) {
 		identity, err := triggerIdentity("interval", name)
@@ -195,12 +151,6 @@ func (c Config) ResolveTriggers() ([]ResolvedTrigger, error) {
 	return result, nil
 }
 
-// maximumGitHubIssuePrompt matches the longest issue prompt the GitHub adapter
-// can construct from a valid repository slug and a positive 64-bit issue number.
-func maximumGitHubIssuePrompt() string {
-	return "Complete https://github.com/" + strings.Repeat("o", 39) + "/" + strings.Repeat("r", 100) + "/issues/" + strings.Repeat("9", 19)
-}
-
 func resolveGitHubRepositories(input map[string]string) (map[string]string, error) {
 	result := make(map[string]string, len(input))
 	seen := make(map[string]string, len(input))
@@ -242,14 +192,6 @@ func triggerDuration(identity, field, input string, min, max time.Duration) (tim
 		return 0, fmt.Errorf("trigger %q %s must be between %s and %s", identity, field, min, max)
 	}
 	return value, nil
-}
-
-func triggerLabel(identity, input string) (string, error) {
-	label := strings.TrimSpace(input)
-	if label == "" || label != input || len(label) > 50 || strings.ContainsAny(label, "\x00\r\n,") {
-		return "", fmt.Errorf("trigger %q label must be a non-empty GitHub label of at most 50 bytes on one line without commas", identity)
-	}
-	return label, nil
 }
 
 func triggerPrompt(identity, input string) (string, error) {
@@ -336,11 +278,9 @@ func appendTrigger(result []ResolvedTrigger, trigger ResolvedTrigger) ([]Resolve
 }
 
 func triggerSignature(trigger ResolvedTrigger) (string, error) {
+	// Label and Repositories belonged to the removed GitHub trigger. They stay
+	// empty so existing interval and cron signatures, and schedules, are unchanged.
 	type repositoryPair struct{ Name, Slug string }
-	repositories := make([]repositoryPair, 0, len(trigger.GitHubRepositories))
-	for _, name := range sortedMapKeys(trigger.GitHubRepositories) {
-		repositories = append(repositories, repositoryPair{name, trigger.GitHubRepositories[name]})
-	}
 	body, err := json.Marshal(struct {
 		Identity, Family, Repository, GitHubRepository, Schedule, Timezone, Label string
 		Every                                                                     int64
@@ -350,9 +290,9 @@ func triggerSignature(trigger ResolvedTrigger) (string, error) {
 	}{
 		Identity: trigger.Identity, Family: trigger.Family, Repository: trigger.Repository,
 		GitHubRepository: trigger.GitHubRepository, Schedule: trigger.Schedule, Timezone: trigger.Timezone,
-		Label: trigger.Label, Every: int64(trigger.Every),
+		Every:         int64(trigger.Every),
 		SelectionName: trigger.SelectionName, Model: trigger.Model, Prompt: trigger.Prompt,
-		Repositories: repositories, CommandHash: trigger.Command.Name + ":" + trigger.Command.Hash,
+		Repositories: []repositoryPair{}, CommandHash: trigger.Command.Name + ":" + trigger.Command.Hash,
 	})
 	if err != nil {
 		return "", err

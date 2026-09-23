@@ -11,5 +11,3 @@
 The [workflow examples](workflows/README.md) compare this prompt-driven style with a
 workflow written as a script.
 
-The [GitHub comment intake example](github-actions/README.md) turns a new, authorized
-`@machinist` issue comment into a `machinist:requested` label for a managed GitHub trigger.

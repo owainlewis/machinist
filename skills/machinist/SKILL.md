@@ -1,6 +1,6 @@
 ---
 name: machinist
-description: Use Machinist to create, assign, and monitor software tasks. Use when a coding agent needs to work with Machinist, its GitHub issue workflow, intake labels, direct runs, or managed queue.
+description: Use Machinist to create, assign, and monitor software tasks. Use when a coding agent needs to work with Machinist, its GitHub issue workflow, direct runs, or managed queue.
 ---
 
 # Machinist
@@ -53,12 +53,7 @@ machinist submit \
 
 `submit` prints a job ID. Follow managed work in the local control-plane UI.
 
-When the shared configuration defines a `[triggers.github.<name>]` trigger, adding its
-configured input label, normally `machinist:requested`, delegates that issue through the
-managed queue. Machinist verifies the label event and actor, admits the job durably, then
-replaces the input label with `machinist:queued`. The label has no effect when that GitHub
-trigger or its repository is not configured. `machinist:requested` and
-`machinist:queued` are intake labels; they do not report progress after the job starts.
+Machinist does not watch GitHub issues or labels. Submit work directly.
 
 ## Report status
 

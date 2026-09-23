@@ -38,7 +38,6 @@ type Server struct {
 	store             *Store
 	definitionPath    string
 	triggers          []config.ResolvedTrigger
-	github            githubTriggerClient
 	schedulerEvery    time.Duration
 	now               func() time.Time
 	schedulerError    func(error)
@@ -127,8 +126,7 @@ func NewServer(store *Store, definitionPath, workerToken string, maxConcurrentJo
 		return nil, fmt.Errorf("restore managed triggers: %w", err)
 	}
 	server := &Server{
-		store: store, definitionPath: definitionPath, triggers: managedTriggers,
-		github: NewGitHubCLI("gh", 30*time.Second), now: time.Now,
+		store: store, definitionPath: definitionPath, triggers: managedTriggers, now: time.Now,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
 		maxConcurrentJobs: maxConcurrentJobs, workerToken: workerToken, csrfToken: csrfToken,
@@ -229,14 +227,7 @@ func (s *Server) runScheduler(ctx context.Context) error {
 			}
 		}()
 	}
-	for _, trigger := range s.triggers {
-		loop(false, func(ctx context.Context) error {
-			if err := s.processManagedTrigger(ctx, trigger); err != nil {
-				return fmt.Errorf("trigger %q: %w", trigger.Identity, err)
-			}
-			return nil
-		})
-	}
+	loop(false, s.processManagedTriggers)
 	loop(true, s.maintainState)
 	loop(true, s.store.CleanupArtifacts)
 	<-ctx.Done()
