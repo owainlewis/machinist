@@ -1,0 +1,9 @@
+# Standalone config for `machinist run` (no control plane, no worker daemon
+# is started, so [control_plane] and [repositories] are not needed - `run`
+# takes the repository path directly via --repo, see config.toml).
+# Copy to the self-hosted agent and point `machinist run --machinist-config`
+# at the sibling config.toml.
+
+[executors.claude]
+command = ["claude", "--print", "--verbose", "--output-format", "stream-json", "--model={{machinist.model}}", "--dangerously-skip-permissions"]
+models = { sonnet = "sonnet", opus = "opus" }

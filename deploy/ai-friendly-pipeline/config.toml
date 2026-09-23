@@ -1,0 +1,15 @@
+# Standalone config for `machinist run`. No [server]/[triggers] section here:
+# the Azure Pipeline's own cron schedule is the trigger, and the Linear label
+# poll/swap happens in assignment-app's scripts/ai-friendly-poll.mjs, not here.
+
+# Runs the assignment-app "assignment" Claude Code plugin's autonomous
+# ticket-to-PR flow. Prompt is supplied per-invocation via `--prompt`, and
+# --repo is a literal path to whatever assignment-app checkout is running
+# this (the pipeline's own $(Build.SourcesDirectory)/codebase - see README), e.g.
+#   machinist run --command=assignment-start \
+#     --repo=/path/to/assignment-app/codebase \
+#     --machinist-config=deploy/ai-friendly-pipeline/config.toml \
+#     --prompt="/assignment:start ASN-1234" --model=sonnet
+[commands.assignment-start]
+executor = "claude"
+timeout = "180m"
