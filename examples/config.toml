@@ -4,6 +4,12 @@ database = "~/.machinist/server/machinist.db"
 worker_token_file = "~/.machinist/server/worker.token"
 # max_concurrent_jobs = 1
 
+# Run your instructions as the whole prompt, for one-off tasks.
+[commands.run]
+executor = "codex"
+prompt_file = "prompts/run.md"
+timeout = "60m"
+
 # Take a task or GitHub issue to a reviewed pull request.
 [commands.task-to-pr]
 executor = "codex"

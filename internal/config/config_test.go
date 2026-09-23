@@ -405,7 +405,7 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := []string{"audit", "task-to-pr"}
+	names := []string{"audit", "run", "task-to-pr"}
 	if len(definitions.Commands) != len(names) {
 		t.Fatalf("example commands = %#v, want %v", definitions.Commands, names)
 	}
