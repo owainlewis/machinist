@@ -456,3 +456,28 @@ func TestLoadConfigRejectsRemovedShepherdSchedules(t *testing.T) {
 		t.Fatalf("error = %v, want removed shepherd schedule guidance", err)
 	}
 }
+
+func TestDirectCommandNamesLeavesOutWorkflowOnlyCommands(t *testing.T) {
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "plan.md"), "Plan {{task.spec}} into {{task.output_dir}}\n")
+	writeTestFile(t, filepath.Join(directory, "audit.md"), "Audit: {{machinist.prompt}}\n")
+	path := filepath.Join(directory, "config.toml")
+	writeTestFile(t, path, `[commands.run]
+executor = "codex"
+
+[commands.audit]
+executor = "codex"
+prompt_file = "audit.md"
+
+[commands.plan]
+executor = "codex"
+prompt_file = "plan.md"
+`)
+	definition, err := LoadDefinitions(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(definition.DirectCommandNames(), ","); got != "audit,run" {
+		t.Fatalf("direct commands = %s, want audit,run", got)
+	}
+}

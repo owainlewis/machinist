@@ -246,6 +246,20 @@ func (c Config) Path() string { return c.path }
 // CommandNames lists the defined command names in sorted order.
 func (c Config) CommandNames() []string { return sortedMapKeys(c.Commands) }
 
+// DirectCommandNames lists commands that can run on their own because their
+// prompt takes {{machinist.prompt}}. Commands written only for workflow steps
+// use task variables instead and are left out.
+func (c Config) DirectCommandNames() []string {
+	var names []string
+	for _, name := range c.CommandNames() {
+		command, err := c.ResolveCommand(name)
+		if err == nil && strings.Contains(command.Prompt, promptParameter) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 func (w Worker) ResolveMachinistConfig(override string) (string, error) {
 	if override != "" {
 		return resolveConfigPath(override, "")
