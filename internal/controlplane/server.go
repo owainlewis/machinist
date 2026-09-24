@@ -346,7 +346,7 @@ func (s *Server) status(response http.ResponseWriter, request *http.Request) {
 	}
 	writeJSON(response, http.StatusOK, statusResponse{
 		Snapshot:     snapshot,
-		Commands:     definition.CommandNames(),
+		Commands:     definition.DirectCommandNames(),
 		Workflows:    definition.WorkflowNames(),
 		Repositories: repositories,
 		CSRFToken:    s.csrfToken,

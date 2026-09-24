@@ -23,7 +23,7 @@ backward loops, or parallel steps. Commands own their internal repair policy.
 
 ## Run a workflow
 
-Use the web job composer to choose a workflow and repository, then supply the
+Use the web job composer to choose a workflow (or a command) and repository, then supply the
 issue URL or request. Or submit it to the control plane:
 
 ```sh

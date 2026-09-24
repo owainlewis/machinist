@@ -17,6 +17,7 @@ import (
 var initialFiles = []string{
 	"config.toml",
 	"worker.toml",
+	"prompts/run.md",
 	"prompts/task-to-pr.md",
 	"prompts/audit.md",
 }

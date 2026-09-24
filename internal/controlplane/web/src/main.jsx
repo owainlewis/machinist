@@ -1,5 +1,6 @@
 import { TaskDetail } from "./task-detail.jsx";
 import { State, friendlyName, relativeTime } from "./task-display.jsx";
+import { firstSelection, selectionChoices } from "./selection.js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/manrope";
@@ -234,13 +235,13 @@ function RunComposer({ title,setTitle,sourceURL,setSourceURL,choices,repositorie
       <p id={specHintID} className="text-xs leading-5 text-muted-foreground">{isTask ? <>This is your task’s spec: describe what to build and what counts as done. Prompt templates reference it as <code>{"{{task.spec}}"}</code>. A link on its own is saved as the source instead. <a href="#/workflows" className="text-primary underline">Template variables</a></> : "Write the instructions for this command. Its prompt template receives them as {{machinist.prompt}}."}</p>
       <section className="text-sm">
         <div className="grid gap-4 sm:grid-cols-2">
-          <label><span className="field-label">{isTask ? "Workflow" : "Command"}</span><select className="field-control" value={selection} onChange={e=>setSelection(e.target.value)} required>{choices.map(c=><option key={c.value} value={c.value}>{c.label}</option>)}</select></label>
+          <label><span className="field-label">{isTask ? "Workflow" : "Command"}</span><select className="field-control" value={selection} onChange={e=>setSelection(e.target.value)} required>{["Workflows","Commands"].map(group=>{const options=choices.filter(c=>c.group===group);return options.length>0&&<optgroup key={group} label={group}>{options.map(c=><option key={c.value} value={c.value}>{friendlyName(c.name)}</option>)}</optgroup>;})}</select></label>
           <label><span className="field-label">Repository</span><select className="field-control" value={repository} onChange={e=>setRepository(e.target.value)} required>{!repositories.length && <option value="">No repositories available</option>}{repositories.map(r=><option key={r} value={r}>{r}</option>)}</select></label>
           {isTask && <><label><span className="field-label">Title · optional</span><input className="field-control" value={title} onChange={e=>setTitle(e.target.value)} maxLength={512} placeholder="From your instructions by default" /><span className="mt-1 block text-xs text-muted-foreground">Template: <code>{"{{task.title}}"}</code></span></label><label><span className="field-label">Source link · optional</span><input type="url" className="field-control" value={sourceURL} onChange={e=>setSourceURL(e.target.value)} placeholder="https://github.com/…" /><span className="mt-1 block text-xs text-muted-foreground">Template: <code>{"{{task.source_url}}"}</code></span></label></>}
           <label><span className="field-label">Model · optional</span><input className="field-control" value={model} onChange={e=>setModel(e.target.value)} maxLength={128} placeholder="Workflow default" /></label>
         </div>
       </section>
-      {!choices.length && <p role="alert" className="text-sm text-danger">Configure a workflow before starting a task.</p>}
+      {!choices.length && <p role="alert" className="text-sm text-danger">Configure a workflow or command before starting a task.</p>}
       <div className="flex justify-end"><Button disabled={submitting || !selection || !repository}>{submitting ? "Starting…" : "Start task"}<Play className="size-3.5" /></Button></div>
     </form>
   </Card>;
@@ -288,11 +289,6 @@ function MachinistMark() {
   </svg>;
 }
 
-function selectionChoices(status) {
- const workflows=status.workflows || [];
- return workflows.length ? workflows.map(name=>({value:`workflow:${name}`,label:friendlyName(name)})) : (status.commands || []).map(name=>({value:`command:${name}`,label:friendlyName(name)}));
-}
-function firstSelection(status) { return selectionChoices(status)[0]?.value || ""; }
 function shortId(id) { const [, value = id] = id.split("_", 2); return value.slice(0, 8); }
 export const appRoot = createRoot(document.getElementById("root"));
 appRoot.render(<App />);

@@ -45,7 +45,7 @@ mkdir -p ./bin && go build -o ./bin/machinist ./cmd/machinist
 ./bin/machinist init
 ```
 
-`init` writes `~/.machinist/config.toml` with two commands, `task-to-pr` and `audit`.
+`init` writes `~/.machinist/config.toml` with three commands: `run` for one-off tasks, `task-to-pr`, and `audit`.
 Each is a prompt, an executor, and a timeout:
 
 ```toml

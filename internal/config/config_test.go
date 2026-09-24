@@ -405,7 +405,7 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := []string{"audit", "task-to-pr"}
+	names := []string{"audit", "run", "task-to-pr"}
 	if len(definitions.Commands) != len(names) {
 		t.Fatalf("example commands = %#v, want %v", definitions.Commands, names)
 	}
@@ -454,5 +454,30 @@ func TestLoadConfigRejectsRemovedShepherdSchedules(t *testing.T) {
 	_, err := LoadDefinitions(path)
 	if err == nil || !strings.Contains(err.Error(), "shepherd schedules were removed") {
 		t.Fatalf("error = %v, want removed shepherd schedule guidance", err)
+	}
+}
+
+func TestDirectCommandNamesLeavesOutWorkflowOnlyCommands(t *testing.T) {
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "plan.md"), "Plan {{task.spec}} into {{task.output_dir}}\n")
+	writeTestFile(t, filepath.Join(directory, "audit.md"), "Audit: {{machinist.prompt}}\n")
+	path := filepath.Join(directory, "config.toml")
+	writeTestFile(t, path, `[commands.run]
+executor = "codex"
+
+[commands.audit]
+executor = "codex"
+prompt_file = "audit.md"
+
+[commands.plan]
+executor = "codex"
+prompt_file = "plan.md"
+`)
+	definition, err := LoadDefinitions(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(definition.DirectCommandNames(), ","); got != "audit,run" {
+		t.Fatalf("direct commands = %s, want audit,run", got)
 	}
 }
