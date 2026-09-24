@@ -4,7 +4,7 @@ Machinist owns process execution and optional coarse workflow progression.
 Commands own the work inside each step.
 
 - `config.toml` defines portable named commands, optional prompt templates, timeouts,
-  triggers, and server settings.
+  workflows, triggers, artifact storage, and server settings.
 - `worker.toml` defines approved executor argument arrays and logical repository paths.
 - `internal/runner` starts one process in one repository, writes the prompt to stdin,
   streams both output channels, records artifacts and token usage, and terminates the

@@ -9,6 +9,7 @@ Start with [your first task workflow](task-guide.md) to run a task, review its f
 - [Architecture](../ARCHITECTURE.md)
 - [VM deployment](vm-deployment.md)
 - [Development](development.md)
-- [Article: coding workflows in Python](coding-workflows-in-code.md)
+- [Agent workflow script](agent-workflow.md)
+- [Issue triage demo](issue-triage-demo.md)
 
 - [Artifact workflows](artifacts.md): task inputs, saved files, handoffs, and storage.
