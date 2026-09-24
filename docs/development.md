@@ -43,7 +43,8 @@ Run the complete project check before opening a pull request:
 just check
 ```
 
-This installs the locked frontend dependencies, runs frontend tests, rebuilds
+This runs the issue triage script tests, installs the locked frontend
+dependencies, runs frontend tests, rebuilds
 the embedded assets, runs Python eval tests, checks and vets the Go code, runs
 Go tests with the race detector, and builds all Go packages.
 
@@ -61,11 +62,15 @@ go test ./internal/runner
 ```text
 cmd/machinist/                CLI entry point
 examples/                     embedded default configuration and prompts
+internal/artifacts/           durable task file storage
 internal/cli/                 command behavior
 internal/config/              strict TOML loading and template resolution
-internal/runner/              process execution and event recording
 internal/controlplane/        HTTP server, SQLite store, and embedded UI
 internal/managedworker/       polling, leases, execution, and result delivery
+internal/protocol/            control plane and worker message types
+internal/runner/              process execution and event recording
+internal/triggers/            cron schedule parsing
+internal/updater/             release updates
 docs/                         user and design documentation
 ```
 

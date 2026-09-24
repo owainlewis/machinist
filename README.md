@@ -66,6 +66,8 @@ Run it directly:
 
 For a direct run, Machinist maps the configured command name to a fixed executable and uses the path supplied with `--repo` as the working directory. Managed submissions instead resolve an approved repository name from the worker configuration. In both cases, Machinist renders the prompt, sends it on standard input, streams stdout and stderr, and applies one overall timeout and cancellation. Exit code 0 succeeds; every non-zero exit code fails.
 
+When the executor is `codex exec --json` or `claude --print`, the agent's last message (up to 16 KB) is saved with the run and shown as its summary in the UI. Workflow stages show their step summary instead. Other executors, such as scripts, show no summary; read their logs.
+
 Inside each command, scripts are intentionally opaque. Their internal stages appear in logs, but Machinist does not infer their internal stages. A killed script restarts from the beginning unless the script owns checkpointing.
 
 For explicit steps, [configure a workflow](docs/workflows.md):

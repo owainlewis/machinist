@@ -28,6 +28,36 @@ path = "/absolute/path/to/my-project"
 Managed triggers select one command with `command = "audit"`. Model selection remains
 available when the executor command includes `{{machinist.model}}`.
 
+## Triggers
+
+Triggers queue a command on a schedule. Each trigger names a repository from
+`[github.repositories]`, which must also exist in the worker's `worker.toml`.
+
+```toml
+[github.repositories]
+my-project = "owner/my-project"
+
+# Every six hours. The first run is one interval after the server starts.
+[triggers.interval.issue-triage]
+every = "6h"
+repository = "my-project"
+command = "triage"
+prompt = "Triage all open issues."
+
+# Mondays at 06:00 UTC.
+[triggers.cron.weekly-audit]
+schedule = "0 6 * * 1"
+timezone = "UTC"
+repository = "my-project"
+command = "audit"
+prompt = "Audit the repository for high-confidence correctness bugs."
+```
+
+`every` must be between 1 minute and 720 hours. `schedule` is a five-field cron
+expression evaluated in `timezone`, a required IANA name such as `UTC`. Both accept an optional `model`. While a
+trigger's job is still running, new occurrences are coalesced rather than queued.
+Triggers load when the server starts; restart it after changing them.
+
 ## Task workflows
 
 ```toml
