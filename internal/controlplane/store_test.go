@@ -1116,3 +1116,57 @@ PRAGMA user_version=5;`); err != nil {
 		t.Fatalf("historical jobs = %#v", snapshot.Jobs)
 	}
 }
+
+func TestSnapshotShowsTheAgentFinalMessageAsTheRunSummary(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result string
+		want   string
+	}{
+		{name: "final message", result: `{"final_message":"Labelled #496 as bug."}`, want: "Labelled #496 as bug."},
+		{name: "no final message", result: `{"duration_millis":5}`, want: ""},
+		{name: "malformed result", result: `not json`, want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+			jobID, err := store.CreateJob(t.Context(), "Triage issues", "machinist", "triage", testAgent("triage", "Triage issues"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+			if err != nil || run == nil {
+				t.Fatalf("poll = %#v, %v", run, err)
+			}
+			if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", Result: []byte(test.result)}); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := store.Snapshot(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID || snapshot.Jobs[0].Runs[0].Summary != test.want {
+				t.Fatalf("jobs = %#v, want summary %q", snapshot.Jobs, test.want)
+			}
+		})
+	}
+}
+
+func TestSnapshotPrefersTheWorkflowStepSummaryOverTheFinalMessage(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	workflowJob(t, store, false)
+	run, err := store.Poll(t.Context(), workflowWorker())
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	result := []byte(`{"step_result":{"outcome":"complete","summary":"Plan ready"},"final_message":"Long agent reply"}`)
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.Jobs[0].Runs[0].Summary; got != "Plan ready" {
+		t.Fatalf("summary = %q, want the step summary", got)
+	}
+}

@@ -7,16 +7,22 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
-const maxStructuredEventBytes = 1 << 20
+const (
+	maxStructuredEventBytes = 1 << 20
+	// maxFinalMessageBytes bounds the agent's last message shown as a run summary.
+	maxFinalMessageBytes = 16 << 10
+)
 
 type structuredUsageCollector struct {
-	buffer     []byte
-	discarding bool
-	usage      *int64
-	resultType string
-	cache      bool
+	buffer       []byte
+	discarding   bool
+	usage        *int64
+	resultType   string
+	cache        bool
+	finalMessage string
 }
 
 // newUsageCollector returns a collector for the executor's structured output,
@@ -444,11 +450,30 @@ func (collector *structuredUsageCollector) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-func (collector *structuredUsageCollector) tokenUsage() *int64 {
+func (collector *structuredUsageCollector) flush() {
 	if !collector.discarding && len(collector.buffer) > 0 {
 		collector.parseLine(collector.buffer)
 		collector.buffer = nil
 	}
+}
+
+// lastMessage returns the agent's final message: the last Codex agent_message
+// item or the Claude result text.
+func (collector *structuredUsageCollector) lastMessage() string {
+	collector.flush()
+	message := strings.TrimSpace(collector.finalMessage)
+	if len(message) <= maxFinalMessageBytes {
+		return message
+	}
+	cut := maxFinalMessageBytes
+	for cut > 0 && !utf8.RuneStart(message[cut]) {
+		cut--
+	}
+	return message[:cut] + "\n\n[truncated]"
+}
+
+func (collector *structuredUsageCollector) tokenUsage() *int64 {
+	collector.flush()
 	if collector.usage == nil {
 		return nil
 	}
@@ -483,14 +508,25 @@ func (collector *structuredUsageCollector) completeLine() {
 
 func (collector *structuredUsageCollector) parseLine(line []byte) {
 	var event struct {
-		Type  string          `json:"type"`
-		Usage json.RawMessage `json:"usage"`
+		Type   string          `json:"type"`
+		Usage  json.RawMessage `json:"usage"`
+		Result string          `json:"result"`
+		Item   struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"item"`
 	}
 	if err := json.Unmarshal(line, &event); err != nil {
 		if isUsageResultCandidate(line, collector.resultType) {
 			collector.usage = nil
 		}
 		return
+	}
+	switch {
+	case event.Type == "item.completed" && event.Item.Type == "agent_message" && event.Item.Text != "":
+		collector.finalMessage = event.Item.Text
+	case collector.cache && event.Type == "result" && event.Result != "":
+		collector.finalMessage = event.Result
 	}
 	if event.Type != collector.resultType {
 		return
