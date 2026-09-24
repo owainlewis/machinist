@@ -80,7 +80,7 @@ see [configuration](configuration.md).
 1. On **Tasks**, choose **New task**.
 2. Enter what you want done, or paste an issue link. This description is the spec;
    a link on its own becomes the source URL.
-3. Choose the repository and workflow. Title, separate source link, and model are optional.
+3. Choose the repository and a workflow, or a command such as `run` for one-off work. Title, separate source link, and model are optional and apply to workflows.
 4. Start the task. The board shows Queued, In progress, Needs attention, and Finished.
 
 The **Workflows** page shows the steps in each configured workflow and where it
