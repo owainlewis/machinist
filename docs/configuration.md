@@ -73,3 +73,8 @@ an ordered `steps` list for stages tracked by Machinist, or use one script comma
 when the script should own its internal process. See [the task workflow guide](task-guide.md)
 and [workflow configuration](workflows.md). Pre-command databases are
 recreated once because this release intentionally consolidates the schema before active use.
+
+GitHub issue intake was removed. A config that still defines `[triggers.github.NAME]`
+fails to load; delete those tables and submit work directly. `[github.repositories]`
+stays, because interval and cron triggers use it. Upgrading drops the
+`github_trigger_requests` table; jobs it created keep their history.

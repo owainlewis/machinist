@@ -5,7 +5,6 @@ import (
 	"database/sql"
 
 	"errors"
-	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -72,7 +71,7 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || version != 5 {
+	if count != 0 || version != 6 {
 		t.Fatalf("migrated database count=%d version=%d", count, version)
 	}
 }
@@ -83,7 +82,7 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=6;`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=7;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -516,40 +515,6 @@ func TestStoreDeletesTerminalJobAndRejectsActiveJob(t *testing.T) {
 	}
 }
 
-func TestStoreDeletingTriggeredJobPreservesPendingReconciliation(t *testing.T) {
-	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: "github/intake", Family: "github", ConfigSignature: "v1"}}); err != nil {
-		t.Fatal(err)
-	}
-	admission := TriggerAdmission{
-		Identity: "github/intake", Family: "github", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "github/intake"),
-		OccurrenceKey: "github.com/event/1", Subject: "https://github.com/owainlewis/machinist/issues/396", ScheduledAt: time.Now().UTC(),
-		Prompt: "Complete issue", Repository: "machinist", SelectionName: "foreman", Command: testAgent("foreman", "Complete issue"),
-		GitHubRepository: "owainlewis/machinist", GitHubIssueNumber: 396, RequestActor: "owner", RequestLabel: "machinist:requested",
-	}
-	jobID, created, err := store.CreateTriggeredJob(t.Context(), admission)
-	if err != nil || !created {
-		t.Fatalf("triggered job = %q, %v, %v", jobID, created, err)
-	}
-	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
-	if err != nil || run == nil {
-		t.Fatalf("poll = %#v, %v", run, err)
-	}
-	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.DeleteJob(t.Context(), jobID); err != nil {
-		t.Fatal(err)
-	}
-	reconciliations, err := store.GitHubTriggerReconciliations(t.Context(), admission.Identity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reconciliations) != 1 || reconciliations[0].OccurrenceKey != admission.OccurrenceKey || reconciliations[0].State != "admitted" || reconciliations[0].JobID != "" {
-		t.Fatalf("reconciliations = %#v", reconciliations)
-	}
-}
-
 func TestAvailableRepositoriesExcludesStaleWorkerInstances(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	if _, err := store.Poll(t.Context(), pollRequest("worker-old", []string{"codex"}, []string{"removed"})); err != nil {
@@ -599,12 +564,12 @@ func TestStoreSyncsDurableTriggerStateAcrossRestartAndConfigurationChanges(t *te
 	firstDue := clock.Now().Add(time.Hour)
 	definitions := []TriggerDefinition{
 		{Identity: "interval/audit", Family: "interval", ConfigSignature: "v1", NextDueAt: firstDue},
-		{Identity: "github/intake", Family: "github", ConfigSignature: "v1"},
+		{Identity: "cron/nightly", Family: "cron", ConfigSignature: "v1"},
 	}
 	if err := store.SyncTriggers(t.Context(), definitions); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordTriggerAttempt(t.Context(), "github/intake", mustTriggerGeneration(t, store, "github/intake"), 3, errors.New(strings.Repeat("x", maxTriggerErrorLength+10))); err != nil {
+	if err := store.RecordTriggerAttempt(t.Context(), "cron/nightly", mustTriggerGeneration(t, store, "cron/nightly"), errors.New(strings.Repeat("x", maxTriggerErrorLength+10))); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(time.Minute)
@@ -624,25 +589,25 @@ func TestStoreSyncsDurableTriggerStateAcrossRestartAndConfigurationChanges(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 2 || statuses[0].Identity != "github/intake" || statuses[1].Identity != "interval/audit" {
+	if len(statuses) != 2 || statuses[0].Identity != "cron/nightly" || statuses[1].Identity != "interval/audit" {
 		t.Fatalf("trigger statuses = %#v", statuses)
 	}
-	if statuses[0].Health != "failed" || statuses[0].CandidateCount != 3 || len([]rune(statuses[0].LatestError)) != maxTriggerErrorLength {
-		t.Fatalf("GitHub status = %#v", statuses[0])
+	if statuses[0].Health != "failed" || len([]rune(statuses[0].LatestError)) != maxTriggerErrorLength {
+		t.Fatalf("cron status = %#v", statuses[0])
 	}
 	if statuses[1].NextDueAt == nil || !statuses[1].NextDueAt.Equal(firstDue.Add(time.Hour)) {
 		t.Fatalf("unchanged next due = %#v", statuses[1].NextDueAt)
 	}
 
 	changedDue := clock.Now().Add(4 * time.Hour)
-	if err := reopened.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: "github/intake", Family: "github", ConfigSignature: "v2", NextDueAt: changedDue}}); err != nil {
+	if err := reopened.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: "cron/nightly", Family: "cron", ConfigSignature: "v2", NextDueAt: changedDue}}); err != nil {
 		t.Fatal(err)
 	}
 	statuses, err = reopened.TriggerSnapshot(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 1 || statuses[0].Identity != "github/intake" || statuses[0].Health != "healthy" || statuses[0].CandidateCount != 0 || statuses[0].LastAttemptAt != nil || statuses[0].LatestError != "" {
+	if len(statuses) != 1 || statuses[0].Identity != "cron/nightly" || statuses[0].Health != "healthy" || statuses[0].LastAttemptAt != nil || statuses[0].LatestError != "" {
 		t.Fatalf("changed trigger status = %#v", statuses)
 	}
 	if statuses[0].NextDueAt == nil || !statuses[0].NextDueAt.Equal(changedDue) {
@@ -716,36 +681,34 @@ func TestStorePreservesLatestFailedJobHealthAcrossSuccessfulPolls(t *testing.T) 
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	store.now = clock.Now
 	definitions := []TriggerDefinition{
-		{Identity: "github/jobs", Family: "github", ConfigSignature: "jobs"},
-		{Identity: "github/polls", Family: "github", ConfigSignature: "polls"},
+		{Identity: "cron/jobs", Family: "cron", ConfigSignature: "jobs"},
+		{Identity: "cron/polls", Family: "cron", ConfigSignature: "polls"},
 	}
 	if err := store.SyncTriggers(t.Context(), definitions); err != nil {
 		t.Fatal(err)
 	}
 	_, created, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{
-		Identity: "github/jobs", Family: "github", ConfigSignature: "jobs", ConfigGeneration: mustTriggerGeneration(t, store, "github/jobs"),
-		OccurrenceKey: "github.com:event:1", Subject: "https://github.com/o/r/issues/1", ScheduledAt: clock.Now(),
-		Prompt: "Complete issue", Repository: "machinist", SelectionName: "foreman", Command: testAgent("foreman", "Complete issue"),
-		GitHubRepository: "o/r", GitHubIssueNumber: 1, RequestActor: "owner", RequestLabel: "machinist:requested",
+		Identity: "cron/jobs", Family: "cron", ConfigSignature: "jobs", ConfigGeneration: mustTriggerGeneration(t, store, "cron/jobs"),
+		ScheduledAt: clock.Now(), Prompt: "Audit", Repository: "machinist", SelectionName: "audit", Command: testAgent("audit", "Audit"),
 	})
 	if err != nil || !created {
-		t.Fatalf("admit github job = %v, %v", created, err)
+		t.Fatalf("admit cron job = %v, %v", created, err)
 	}
 	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
 	if err != nil || run == nil {
-		t.Fatalf("poll github job = %#v, %v", run, err)
+		t.Fatalf("poll cron job = %#v, %v", run, err)
 	}
 	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: "failed", ExitCode: 1, Error: "agent failed"}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(time.Minute)
-	if err := store.RecordTriggerAttempt(t.Context(), "github/jobs", mustTriggerGeneration(t, store, "github/jobs"), 0, nil); err != nil {
+	if err := store.RecordTriggerAttempt(t.Context(), "cron/jobs", mustTriggerGeneration(t, store, "cron/jobs"), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordTriggerAttempt(t.Context(), "github/polls", mustTriggerGeneration(t, store, "github/polls"), 0, errors.New("temporary poll failure")); err != nil {
+	if err := store.RecordTriggerAttempt(t.Context(), "cron/polls", mustTriggerGeneration(t, store, "cron/polls"), errors.New("temporary poll failure")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordTriggerAttempt(t.Context(), "github/polls", mustTriggerGeneration(t, store, "github/polls"), 0, nil); err != nil {
+	if err := store.RecordTriggerAttempt(t.Context(), "cron/polls", mustTriggerGeneration(t, store, "cron/polls"), nil); err != nil {
 		t.Fatal(err)
 	}
 	statuses, err := store.TriggerSnapshot(t.Context())
@@ -756,57 +719,11 @@ func TestStorePreservesLatestFailedJobHealthAcrossSuccessfulPolls(t *testing.T) 
 	for _, status := range statuses {
 		byIdentity[status.Identity] = status
 	}
-	if status := byIdentity["github/jobs"]; status.Health != "failed" || status.LatestError != "agent failed" {
+	if status := byIdentity["cron/jobs"]; status.Health != "failed" || status.LatestError != "agent failed" {
 		t.Fatalf("failed job health was erased by successful poll: %#v", status)
 	}
-	if status := byIdentity["github/polls"]; status.Health != "healthy" || status.LatestError != "" {
+	if status := byIdentity["cron/polls"]; status.Health != "healthy" || status.LatestError != "" {
 		t.Fatalf("recovered poll error was retained: %#v", status)
-	}
-}
-
-func TestStorePreservesTriggerHealthFromActualCompletionOrder(t *testing.T) {
-	clock := newTestClock(time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC))
-	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-	store.now = clock.Now
-	identity := "github/jobs"
-	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: identity, Family: "github", ConfigSignature: "jobs"}}); err != nil {
-		t.Fatal(err)
-	}
-	generation := mustTriggerGeneration(t, store, identity)
-	for issue := 1; issue <= 2; issue++ {
-		_, created, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{
-			Identity: identity, Family: "github", ConfigSignature: "jobs", ConfigGeneration: generation,
-			OccurrenceKey: fmt.Sprintf("github.com:event:%d", issue), Subject: fmt.Sprintf("https://github.com/o/r/issues/%d", issue), ScheduledAt: clock.Now(),
-			Prompt: "Complete issue", Repository: "machinist", SelectionName: "foreman", Command: testAgent("foreman", "Complete issue"),
-			GitHubRepository: "o/r", GitHubIssueNumber: issue, RequestActor: "owner", RequestLabel: "machinist:requested",
-		})
-		if err != nil || !created {
-			t.Fatalf("admit github job %d = %v, %v", issue, created, err)
-		}
-	}
-	older, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
-	if err != nil || older == nil {
-		t.Fatalf("poll older job = %#v, %v", older, err)
-	}
-	newer, err := store.Poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}))
-	if err != nil || newer == nil || newer.JobID == older.JobID {
-		t.Fatalf("poll newer job = %#v, %v", newer, err)
-	}
-	if err := store.Complete(t.Context(), newer.ID, protocol.Completion{InstanceID: "worker-b", LeaseToken: newer.LeaseToken, State: "failed", ExitCode: 1, Error: "newer job failed"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Complete(t.Context(), older.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: older.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordTriggerAttempt(t.Context(), identity, generation, 0, nil); err != nil {
-		t.Fatal(err)
-	}
-	statuses, err := store.TriggerSnapshot(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(statuses) != 1 || statuses[0].Health != "healthy" || statuses[0].LatestError != "" {
-		t.Fatalf("completion-order health = %#v, want healthy", statuses)
 	}
 }
 
@@ -844,7 +761,7 @@ func TestStoreIgnoresCompletionFromPreviousTriggerConfiguration(t *testing.T) {
 			if err := store.Complete(t.Context(), run.ID, completion); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.RecordTriggerAttempt(t.Context(), identity, mustTriggerGeneration(t, store, identity), 0, nil); err != nil {
+			if err := store.RecordTriggerAttempt(t.Context(), identity, mustTriggerGeneration(t, store, identity), nil); err != nil {
 				t.Fatal(err)
 			}
 			statuses, err := store.TriggerSnapshot(t.Context())
@@ -869,7 +786,7 @@ func TestStoreRejectsSchedulerWritesFromPreviousTriggerConfiguration(t *testing.
 	}
 	staleWrites := []func() error{
 		func() error {
-			return store.RecordTriggerAttempt(t.Context(), identity, "v1", 1, errors.New("stale failure"))
+			return store.RecordTriggerAttempt(t.Context(), identity, "v1", errors.New("stale failure"))
 		},
 		func() error { return store.SetTriggerNextDue(t.Context(), identity, "v1", clock.Now().Add(time.Hour)) },
 		func() error { return store.SetTriggerPendingOccurrence(t.Context(), identity, "v1", clock.Now()) },
@@ -884,7 +801,7 @@ func TestStoreRejectsSchedulerWritesFromPreviousTriggerConfiguration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 1 || statuses[0].ConfigSignature != "v2" || statuses[0].NextDueAt == nil || !statuses[0].NextDueAt.Equal(v2Due) || statuses[0].PendingOccurrenceAt != nil || statuses[0].LastAttemptAt != nil || statuses[0].Health != "healthy" || statuses[0].CandidateCount != 0 || statuses[0].CoalescedCount != 0 || statuses[0].LatestError != "" {
+	if len(statuses) != 1 || statuses[0].ConfigSignature != "v2" || statuses[0].NextDueAt == nil || !statuses[0].NextDueAt.Equal(v2Due) || statuses[0].PendingOccurrenceAt != nil || statuses[0].LastAttemptAt != nil || statuses[0].Health != "healthy" || statuses[0].CoalescedCount != 0 || statuses[0].LatestError != "" {
 		t.Fatalf("v2 status changed by stale scheduler: %#v", statuses)
 	}
 }
@@ -917,39 +834,19 @@ func TestStoreUsesDistinctTriggerGenerationsAcrossABAAndRecreation(t *testing.T)
 	}
 }
 
-func TestStoreRetriesUncommittedAdmissionAndPreventsSubjectOverlap(t *testing.T) {
+func TestStoreRetriesUncommittedAdmissionIdempotently(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
-	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{
-		{Identity: "github/intake", Family: "github", ConfigSignature: "v1"},
-		{Identity: "github/security", Family: "github", ConfigSignature: "v1"},
-	}); err != nil {
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{Identity: "cron/audit", Family: "cron", ConfigSignature: "v1"}}); err != nil {
 		t.Fatal(err)
 	}
-	admission := TriggerAdmission{Identity: "github/intake", Family: "github", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "github/intake"), OccurrenceKey: "github.com/event/1", Subject: "https://github.com/owainlewis/machinist/issues/396", Prompt: "Complete issue", Repository: "machinist", SelectionName: "foreman", GitHubRepository: "owainlewis/machinist", GitHubIssueNumber: 396, RequestActor: "owner", RequestLabel: "machinist:requested", ScheduledAt: time.Now().UTC()}
+	admission := TriggerAdmission{Identity: "cron/audit", Family: "cron", ConfigSignature: "v1", ConfigGeneration: mustTriggerGeneration(t, store, "cron/audit"), Prompt: "Audit", Repository: "machinist", SelectionName: "audit", ScheduledAt: time.Now().UTC()}
 	if _, _, err := store.CreateTriggeredJob(t.Context(), admission); err == nil {
 		t.Fatal("expected incomplete admission to fail")
 	}
-	admission.Command = testAgent("foreman", "Complete issue")
+	admission.Command = testAgent("audit", "Audit")
 	firstID, created, err := store.CreateTriggeredJob(t.Context(), admission)
 	if err != nil || !created {
 		t.Fatalf("retried admission = %q, %v, %v", firstID, created, err)
-	}
-	exists, err := store.TriggerOccurrenceExists(t.Context(), admission.Identity, admission.OccurrenceKey)
-	if err != nil || !exists {
-		t.Fatalf("committed occurrence exists = %v, %v", exists, err)
-	}
-	reapplied := admission
-	reapplied.Identity = "github/security"
-	reapplied.ConfigSignature = "v1"
-	reapplied.ConfigGeneration = mustTriggerGeneration(t, store, "github/security")
-	reapplied.OccurrenceKey = "github.com/event/2"
-	activeID, created, err := store.CreateTriggeredJob(t.Context(), reapplied)
-	if err != nil || created || activeID != firstID {
-		t.Fatalf("overlapping subject = %q, %v, %v", activeID, created, err)
-	}
-	exists, err = store.TriggerOccurrenceExists(t.Context(), reapplied.Identity, reapplied.OccurrenceKey)
-	if err != nil || exists {
-		t.Fatalf("blocked occurrence exists = %v, %v", exists, err)
 	}
 	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
 	if err != nil || run == nil {
@@ -962,9 +859,13 @@ func TestStoreRetriesUncommittedAdmissionAndPreventsSubjectOverlap(t *testing.T)
 	if err != nil || created || duplicateID != firstID {
 		t.Fatalf("terminal duplicate occurrence = %q, %v, %v", duplicateID, created, err)
 	}
-	secondID, created, err := store.CreateTriggeredJob(t.Context(), reapplied)
-	if err != nil || !created || secondID == firstID {
-		t.Fatalf("reapplied occurrence = %q, %v, %v", secondID, created, err)
+}
+
+func TestStoreRejectsRemovedGitHubTriggerAdmission(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	_, _, err := store.CreateTriggeredJob(t.Context(), TriggerAdmission{Identity: "github/intake", Family: "github", ConfigSignature: "v1", ConfigGeneration: "g", OccurrenceKey: "event", Command: testAgent("audit", "Audit")})
+	if err == nil || !strings.Contains(err.Error(), `unsupported trigger family "github"`) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -1140,8 +1041,8 @@ func testVersionOneUpgrade(t *testing.T, partial string) {
 	}
 	defer store.Close()
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 5 {
-		t.Fatalf("schema version = %d, %v, want 5", version, err)
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 6 {
+		t.Fatalf("schema version = %d, %v, want 6", version, err)
 	}
 	var columns int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('has_shepherd','schedule_name')`).Scan(&columns); err != nil || columns != 0 {
@@ -1183,6 +1084,37 @@ PRAGMA user_version=1;` + extra); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestOpenStoreRemovesGitHubIntakeAndKeepsHistoricalJobs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "machinist.db")
+	store := openTestStore(t, path)
+	if _, err := store.db.Exec(`CREATE TABLE github_trigger_requests(trigger_identity TEXT NOT NULL, occurrence_key TEXT NOT NULL, job_id TEXT);
+CREATE UNIQUE INDEX jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
+INSERT INTO jobs(id,prompt,repository,command,trigger_identity,occurrence_key,trigger_subject,github_issue_title,state,created_at,updated_at)
+VALUES('job_1','Complete https://github.com/o/r/issues/7','machinist','foreman','github/intake','event-1','https://github.com/o/r/issues/7','Fix navigation','succeeded','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+INSERT INTO github_trigger_requests VALUES('github/intake','event-1','job_1');
+PRAGMA user_version=5;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openTestStore(t, path)
+	var version, leftovers int
+	if err := reopened.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 6 {
+		t.Fatalf("schema version = %d, %v, want 6", version, err)
+	}
+	if err := reopened.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name IN ('github_trigger_requests','jobs_active_trigger_subject')`).Scan(&leftovers); err != nil || leftovers != 0 {
+		t.Fatalf("GitHub intake schema objects = %d, %v, want 0", leftovers, err)
+	}
+	snapshot, err := reopened.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].GitHubIssueTitle != "Fix navigation" || snapshot.Jobs[0].TriggerSubject != "https://github.com/o/r/issues/7" {
+		t.Fatalf("historical jobs = %#v", snapshot.Jobs)
+	}
 }
 
 func TestSnapshotShowsTheAgentFinalMessageAsTheRunSummary(t *testing.T) {

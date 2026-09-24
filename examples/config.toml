@@ -16,15 +16,9 @@ executor = "codex"
 prompt_file = "prompts/audit.md"
 timeout = "60m"
 
-# Queue task-to-pr when an issue is labelled machinist:requested, and audit weekly.
-# Each repository name must also exist in worker.toml.
+# Audit weekly. Each repository name must also exist in worker.toml.
 # [github.repositories]
 # my-project = "owner/my-project"
-#
-# [triggers.github.issue-intake]
-# every = "5m"
-# label = "machinist:requested"
-# command = "task-to-pr"
 #
 # [triggers.cron.weekly-audit]
 # schedule = "0 6 * * 1"

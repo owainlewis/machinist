@@ -82,7 +82,6 @@ type GitHub struct {
 }
 
 type TriggerDefinitions struct {
-	GitHub   map[string]GitHubTrigger   `toml:"github"`
 	Interval map[string]IntervalTrigger `toml:"interval"`
 	Cron     map[string]CronTrigger     `toml:"cron"`
 }
@@ -90,12 +89,6 @@ type TriggerDefinitions struct {
 type TriggerSelection struct {
 	Command string `toml:"command"`
 	Model   string `toml:"model"`
-}
-
-type GitHubTrigger struct {
-	TriggerSelection
-	Every string `toml:"every"`
-	Label string `toml:"label"`
 }
 
 type IntervalTrigger struct {
@@ -114,22 +107,20 @@ type CronTrigger struct {
 }
 
 type ResolvedTrigger struct {
-	Identity           string
-	Family             string
-	Name               string
-	Repository         string
-	GitHubRepository   string
-	GitHubRepositories map[string]string
-	Every              time.Duration
-	Schedule           string
-	Timezone           string
-	Label              string
-	SelectionName      string
-	Model              string
-	Prompt             string
-	Command            ResolvedCommand
-	Signature          string
-	cron               *triggers.Cron
+	Identity         string
+	Family           string
+	Name             string
+	Repository       string
+	GitHubRepository string
+	Every            time.Duration
+	Schedule         string
+	Timezone         string
+	SelectionName    string
+	Model            string
+	Prompt           string
+	Command          ResolvedCommand
+	Signature        string
+	cron             *triggers.Cron
 }
 
 type Command struct {

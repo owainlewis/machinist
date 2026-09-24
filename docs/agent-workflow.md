@@ -40,13 +40,6 @@ Select the adapter in shared configuration:
 executor = "agent-codex"
 timeout = "120m"
 
-[github.repositories]
-neo = "owainlewis/neo"
-
-[triggers.github.issue-delivery]
-every = "5m"
-label = "machinist:requested"
-command = "deliver"
 ```
 
 Both of these enter the same Python workflow:
@@ -60,9 +53,8 @@ machinist run \
   --prompt="Complete https://github.com/owainlewis/neo/issues/123"
 ```
 
-In managed mode, adding `machinist:requested` to an eligible issue queues the
-same command. The trigger supplies `Complete <issue-url>` on stdin; `agent.py`
-normalizes that to the same canonical URL used by direct invocation.
+`agent.py` normalizes `Complete <issue-url>` to the same canonical URL used by
+direct invocation.
 
 ## Feedback and measurements
 
