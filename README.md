@@ -87,6 +87,7 @@ Start with [your first task workflow](docs/task-guide.md): create a task from an
 | [Task workflow guide](docs/task-guide.md) | Set up planning, approval, shared files, and build |
 | [Configuration](docs/configuration.md) | Commands, executors, workers, models, and repositories |
 | [Development](docs/development.md) | Build, test, and work on Machinist locally |
+| [Codex cloud agents](docs/codex-cloud.md) | Submit, resume, verify, and publish hosted Codex tasks |
 | [VM deployment](docs/vm-deployment.md) | Run the control plane and worker as services |
 | [Workflow examples](examples/workflows/README.md) | Prompt-driven and scripted workflows |
 

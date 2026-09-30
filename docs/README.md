@@ -7,6 +7,7 @@ Start with [your first task workflow](task-guide.md) to run a task, review its f
 - [Current workflow configuration](workflows.md)
 - [Workflow roadmap: scaling AI engineering](workflow-roadmap.md)
 - [Architecture](../ARCHITECTURE.md)
+- [Codex cloud agents](codex-cloud.md)
 - [VM deployment](vm-deployment.md)
 - [Development](development.md)
 - [Article: coding workflows in Python](coding-workflows-in-code.md)
