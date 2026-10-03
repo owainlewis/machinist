@@ -1,0 +1,514 @@
+.factory-shell {
+  display: flex;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 14px;
+  min-height: 100dvh;
+}
+.factory-sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+.factory-brand {
+  font-size: 23px;
+  font-weight: 750;
+  letter-spacing: -1px;
+  padding: 0 8px 30px;
+}
+.factory-brand small {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 2px;
+  color: var(--muted-foreground);
+  margin-top: 4px;
+}
+.factory-label {
+  padding: 0 9px 10px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.factory-sidebar nav button,
+.factory-sidebar footer button,
+.factory-sidebar footer a {
+  display: block;
+  text-align: left;
+  width: 100%;
+  padding: 10px;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+}
+.factory-sidebar button:hover,
+.factory-sidebar a:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.factory-sidebar button[aria-current] {
+  background: var(--muted);
+  color: var(--foreground);
+  font-weight: 650;
+}
+.factory-sidebar footer {
+  margin-top: auto;
+  padding-top: 24px;
+}
+.factory-main {
+  flex: 1;
+  min-width: 0;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+.factory-header {
+  padding: 20px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+}
+.factory-header h1 {
+  font-size: 17px;
+  font-weight: 650;
+  margin-bottom: 3px;
+}
+.factory-shell small,
+.factory-muted {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.factory-tabs {
+  display: flex;
+  gap: 3px;
+  border: 1px solid var(--border);
+  padding: 3px;
+  border-radius: 7px;
+}
+.factory-tabs button {
+  padding: 7px 12px;
+  color: var(--muted-foreground);
+  border-radius: 4px;
+}
+.factory-tabs button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--foreground);
+}
+.factory-chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  max-width: 900px;
+  width: 100%;
+  margin: auto;
+  padding: 0 32px 24px;
+}
+.factory-messages {
+  overflow: auto;
+  flex: 1;
+  padding: 28px 0;
+  scrollbar-gutter: stable;
+}
+.factory-welcome {
+  padding: 12vh 0 48px;
+  max-width: 470px;
+}
+.factory-welcome h2 {
+  font-size: 28px;
+  letter-spacing: -0.8px;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+.factory-welcome p {
+  color: var(--muted-foreground);
+  line-height: 1.8;
+}
+.factory-message {
+  padding: 14px 0 22px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.factory-message > small {
+  display: block;
+  font-weight: 650;
+  margin-bottom: 7px;
+}
+.factory-message > div {
+  white-space: pre-wrap;
+}
+.factory-message.user {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.factory-composer {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 12px 16px;
+  flex-shrink: 0;
+}
+.factory-composer textarea {
+  background: transparent;
+  resize: vertical;
+  outline: none;
+  width: 100%;
+  min-height: 70px;
+  max-height: 250px;
+  line-height: 1.6;
+}
+.factory-composer > div:last-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.factory-composer > div:last-child > small {
+  margin-right: auto;
+  font-size: 10px;
+}
+.factory-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--primary);
+  margin-bottom: 10px;
+}
+.factory-error {
+  margin: 12px 24px;
+  padding: 12px;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  border-radius: 5px;
+}
+.factory-attention {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--muted);
+  border-radius: 5px;
+  font-size: 12px;
+  text-align: left;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.factory-attention span {
+  color: var(--primary);
+  white-space: nowrap;
+}
+.factory-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 18px;
+  padding: 28px;
+  overflow: auto;
+  flex: 1;
+  align-items: start;
+}
+.factory-board section > header {
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.factory-board h2 {
+  font-weight: 650;
+}
+.factory-board section > p {
+  padding: 24px 0;
+}
+.factory-card {
+  padding: 16px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  width: 100%;
+  text-align: left;
+}
+.factory-card:hover {
+  border-color: var(--primary);
+}
+.factory-card strong {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.factory-card p {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 10px 0;
+}
+.factory-card small {
+  font-size: 10px;
+  color: var(--primary);
+}
+.factory-settings {
+  padding: 32px;
+  overflow: auto;
+  max-width: 800px;
+  line-height: 1.7;
+}
+.factory-settings h2 {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.factory-settings h3 {
+  margin: 28px 0 12px;
+  font-weight: 650;
+}
+.factory-settings section {
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
+}
+.factory-settings ol {
+  padding-left: 20px;
+  list-style: decimal;
+  margin-top: 12px;
+}
+.factory-settings li {
+  margin-bottom: 9px;
+}
+.factory-settings a,
+.factory-inspector a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+.factory-inspector {
+  width: 420px;
+  max-width: 100vw;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  height: 100dvh;
+  overflow: auto;
+}
+.factory-inspector > header {
+  padding: 16px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+.factory-inspector > header button {
+  padding: 5px 10px;
+}
+.factory-inspector > div,
+.factory-inspector > p {
+  padding: 24px;
+  line-height: 1.7;
+}
+.factory-inspector h2 {
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+.factory-inspector p {
+  margin: 10px 0 14px;
+}
+.factory-inspector section {
+  margin-top: 24px;
+}
+.factory-inspector h3 {
+  font-size: 13px;
+  font-weight: 650;
+  margin-bottom: 10px;
+}
+.factory-inspector section > button {
+  margin: 0 6px 8px 0;
+}
+.factory-inspector pre,
+.factory-settings pre,
+.factory-activity pre {
+  font-family: ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.factory-diff {
+  background: var(--background);
+  padding: 12px;
+  max-height: 440px;
+  overflow: auto;
+}
+.factory-decision {
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+.factory-decision label {
+  display: block;
+  margin: 12px 0;
+  font-size: 12px;
+}
+.factory-decision textarea {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--background);
+}
+.factory-activity {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  padding: 8px 0;
+}
+.factory-activity summary {
+  cursor: pointer;
+}
+.factory-activity pre {
+  padding-top: 12px;
+}
+.factory-permission {
+  border: 1px solid var(--warning);
+  padding: 16px;
+  border-radius: 6px;
+  margin: 12px 0;
+}
+.factory-permission p {
+  margin: 10px 0;
+  white-space: pre-wrap;
+}
+.factory-permission button {
+  margin-right: 8px;
+}
+.factory-empty,
+.factory-loading {
+  padding: 48px;
+  line-height: 1.8;
+}
+.factory-empty h2,
+.factory-loading h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.factory-empty p {
+  max-width: 500px;
+  color: var(--muted-foreground);
+  margin-bottom: 20px;
+}
+.factory-return {
+  display: block;
+  padding: 6px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--primary);
+}
+.factory-shell button:focus-visible,
+.factory-shell a:focus-visible,
+.factory-shell textarea:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.factory-shell button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (max-width: 1100px) {
+  .factory-inspector {
+    position: fixed;
+    right: 0;
+    top: 0;
+    z-index: 30;
+    box-shadow: -10px 0 40px #0003;
+  }
+  .factory-sidebar {
+    width: 180px;
+  }
+  .factory-board {
+    gap: 12px;
+    padding: 20px;
+  }
+}
+@media (max-width: 650px) {
+  .factory-shell {
+    display: block;
+  }
+  .factory-sidebar {
+    height: auto;
+    width: 100%;
+    padding: 12px;
+    flex-direction: row;
+    align-items: center;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+  .factory-brand {
+    font-size: 18px;
+    padding: 0;
+  }
+  .factory-brand small,
+  .factory-label {
+    display: none;
+  }
+  .factory-sidebar nav {
+    display: flex;
+    overflow: auto;
+    flex: 1;
+  }
+  .factory-sidebar nav button {
+    white-space: nowrap;
+  }
+  .factory-sidebar footer {
+    margin: 0;
+    padding: 0;
+  }
+  .factory-sidebar footer a,
+  .factory-sidebar footer button:last-child {
+    display: none;
+  }
+  .factory-main {
+    height: calc(100dvh - 66px);
+  }
+  .factory-header {
+    padding: 14px 16px;
+  }
+  .factory-chat {
+    padding: 0 16px 16px;
+  }
+  .factory-header h1 {
+    font-size: 14px;
+  }
+  .factory-tabs button {
+    padding: 6px 8px;
+  }
+  .factory-board {
+    grid-template-columns: repeat(4, 230px);
+    padding: 16px;
+  }
+  .factory-composer > div:last-child > small {
+    max-width: 150px;
+  }
+  .factory-inspector {
+    width: 100%;
+  }
+  .factory-settings {
+    padding: 24px;
+  }
+}

@@ -1,10 +1,11 @@
 # Documentation
 
-Start with [your first task workflow](task-guide.md) to run a task, review its files, and approve or request changes.
+Start with [the browser factory](factory.md) to talk to your foreman, submit work, and review changes. Existing batch users can follow [the task workflow guide](task-guide.md).
 
 - [Configuration and migration](configuration.md)
 - [Accepted task, stage, and artifact model](task-artifact-model.md)
 - [Current workflow configuration](workflows.md)
+- [Proposed coordinator design](coordinator/design.md) and [implementation plan](coordinator/plan.md)
 - [Workflow roadmap: scaling AI engineering](workflow-roadmap.md)
 - [Architecture](../ARCHITECTURE.md)
 - [VM deployment](vm-deployment.md)

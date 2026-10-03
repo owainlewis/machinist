@@ -1,0 +1,1 @@
+Read the task and repository. Produce a small design with acceptance criteria and relevant checks. Prefer existing patterns and simple changes. Ask the foreman about blocking uncertainties. Do not modify application code, publish changes, or merge. Report the design and any blockers clearly.

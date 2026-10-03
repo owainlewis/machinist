@@ -1,0 +1,1 @@
+{"name":"machinist-claude-runtime","private":true,"dependencies":{"@agentclientprotocol/claude-agent-acp":"0.85.1"}}

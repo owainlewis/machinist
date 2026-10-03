@@ -1,3 +1,4 @@
+import { FactoryEntry } from "./factory.jsx";
 import { TaskDetail } from "./task-detail.jsx";
 import { State, friendlyName, relativeTime } from "./task-display.jsx";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -295,4 +296,4 @@ function selectionChoices(status) {
 function firstSelection(status) { return selectionChoices(status)[0]?.value || ""; }
 function shortId(id) { const [, value = id] = id.split("_", 2); return value.slice(0, 8); }
 export const appRoot = createRoot(document.getElementById("root"));
-appRoot.render(<App />);
+appRoot.render(<FactoryEntry LegacyApp={App} />);

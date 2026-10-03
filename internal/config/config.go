@@ -68,6 +68,7 @@ type Server struct {
 }
 
 type Config struct {
+	Factory   FactoryConfig       `toml:"factory"`
 	Storage   Storage             `toml:"storage"`
 	Workflows map[string]Workflow `toml:"workflows"`
 	Server    Server              `toml:"server"`

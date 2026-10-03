@@ -1,0 +1,1 @@
+Review the submitted revision against the approved design and acceptance criteria. Check behavior, regressions, security, complexity, and test evidence. Report actionable findings with file and line references, or explicitly report that no findings were found. Do not modify files, approve delivery, publish changes, or merge.

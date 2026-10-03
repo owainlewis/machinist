@@ -14,12 +14,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
@@ -36,6 +38,7 @@ var webAssets embed.FS
 
 type Server struct {
 	store             *Store
+	factory           *factory.Service
 	definitionPath    string
 	triggers          []config.ResolvedTrigger
 	github            githubTriggerClient
@@ -133,6 +136,19 @@ func NewServer(store *Store, definitionPath, workerToken string, maxConcurrentJo
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
 		maxConcurrentJobs: maxConcurrentJobs, workerToken: workerToken, csrfToken: csrfToken,
 	}
+	factoryConfig, err := definition.ResolveFactory()
+	if err != nil {
+		return nil, err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	server.factory, err = factory.New(store.db, factoryConfig, executable)
+	if err != nil {
+		return nil, fmt.Errorf("initialize factory: %w", err)
+	}
+	server.factory.SetCSRFToken(csrfToken)
 	server.handler, err = server.routes()
 	if err != nil {
 		return nil, err
@@ -151,6 +167,8 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 		return fmt.Errorf("listen on %s: %w", listen, err)
 	}
 	defer listener.Close()
+	defer s.factory.Close()
+	s.factory.SetURL("http://" + listener.Addr().String())
 	if onListening != nil {
 		onListening(listener.Addr())
 	}
@@ -169,9 +187,13 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 	}()
 	schedulerCtx, stopScheduler := context.WithCancel(ctx)
 	defer stopScheduler()
+	observerDone := make(chan struct{})
+	go func() { defer close(observerDone); s.factory.Observe(schedulerCtx) }()
+	defer func() { stopScheduler(); <-observerDone }()
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- s.runScheduler(schedulerCtx) }()
 	stopHTTP := func() error {
+		s.factory.Close()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 		defer cancel()
 		shutdownErr := httpServer.Shutdown(shutdownCtx)
@@ -274,6 +296,13 @@ func (s *Server) routes() (http.Handler, error) {
 		return nil, err
 	}
 	mux := http.NewServeMux()
+	mux.Handle("/api/factory/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/factory/tools/") && r.Method != http.MethodGet && !s.validBrowserRequest(r) {
+			writeError(w, http.StatusForbidden, errors.New("invalid submission origin or CSRF token"))
+			return
+		}
+		s.factory.Handler().ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("PUT /api/v1/runs/{id}/artifacts", s.authorizeWorker(s.uploadArtifact))
 	mux.HandleFunc("GET /api/v1/jobs/{id}/artifacts", s.authorizeArtifact(s.listArtifacts))
 	mux.HandleFunc("GET /api/v1/artifacts/{id}/content", s.authorizeArtifact(s.artifactContent))
