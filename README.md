@@ -20,47 +20,26 @@
 
 <p align="center"><sub>Machine section · supervised agent system · exploded assembly</sub></p>
 
-Machinist is an open-source software factory implementation. It runs on your machine, keeps repository access and credentials local, and records the work from request to handoff. Commands can invoke Codex, Claude Code, another agent CLI, a test runner, a shell script, or repository-owned orchestration.
+Machinist is a browser-based software factory. Talk to one local foreman, let it
+coordinate task agents on local or SSH-connected hosts, and inspect the work on a
+Design, Build, Review, Done board. Agents and pipeline steps are configuration.
 
-Please note: this is early access software and subject to change. 
+This is early access software. The factory currently supports Claude Code for
+live conversations and human code review. Existing batch executors remain
+available for other agent CLIs and scripts.
 
-## Why Machinist
+## Start with the browser factory
 
-- **One controlled entrypoint.** Workers expose named commands and repositories, never arbitrary shell text or machine-local paths.
-- **Bring your own harness.** Use any executable that accepts a prompt on standard input.
-- **Keep authority local.** Repositories, credentials, model aliases, and executor configuration stay on the worker.
-- **Inspect every run.** Stream output, retain durable events and artifacts, and track terminal outcomes, duration, and reported token use.
-- **Choose where to approve.** Pause before a step, review its files, and approve or request changes. Optional merge policies can automate narrowly defined low-risk changes.
+Follow the [factory setup guide](docs/factory.md) to install the structured Claude
+adapter, enable the example configuration, and start Machinist. Submit tasks,
+answer questions, inspect diffs, and approve work in the browser. A turn ending
+does not mark a coding task Done; a linked approved revision must be merged.
 
-<a id="quick-start"></a>
+## Existing batch workflows
 
-## Quick start
-
-Build and initialize Machinist:
-
-```sh
-git clone https://github.com/owainlewis/machinist.git
-cd machinist
-mkdir -p ./bin && go build -o ./bin/machinist ./cmd/machinist
-./bin/machinist init
-```
-
-`init` writes `~/.machinist/config.toml` with two commands, `task-to-pr` and `audit`.
-Each is a prompt, an executor, and a timeout:
-
-```toml
-# ~/.machinist/config.toml
-[commands.task-to-pr]
-executor = "codex"
-prompt_file = "prompts/task-to-pr.md" # optional
-timeout = "120m"
-```
-
-Run it directly:
-
-```sh
-./bin/machinist run --command=task-to-pr --repo=/path/to/repo --prompt="Complete https://github.com/owner/repo/issues/42"
-```
+The CLI and managed worker APIs remain supported for configured batch commands.
+[Initialize Machinist](docs/configuration.md), then run a named command directly
+or follow [the task workflow guide](docs/task-guide.md).
 
 ## How execution works
 
@@ -84,6 +63,7 @@ Start with [your first task workflow](docs/task-guide.md): create a task from an
 | Guide | What it covers |
 | --- | --- |
 | [Documentation](docs/README.md) | Choose the right setup and operations guide |
+| [Browser factory](docs/factory.md) | Foreman chat, task agents, review, and remote setup |
 | [Task workflow guide](docs/task-guide.md) | Set up planning, approval, shared files, and build |
 | [Configuration](docs/configuration.md) | Commands, executors, workers, models, and repositories |
 | [Development](docs/development.md) | Build, test, and work on Machinist locally |

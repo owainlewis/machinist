@@ -1,0 +1,80 @@
+# Merge this [factory] section into your existing Machinist config.
+# Paths are relative to this file. Authenticate Claude Code on the local host.
+[factory]
+enabled = true
+foreman = "foreman"
+default_pipeline = "delivery"
+
+[factory.projects.machinist]
+name = "Machinist"
+path = ".."
+github = "owainlewis/machinist"
+
+[factory.agents.foreman]
+prompt_file = "factory-prompts/foreman.md"
+runtime = "claude"
+timeout = "30m"
+
+[factory.agents.planning]
+prompt_file = "factory-prompts/planning.md"
+runtime = "claude"
+
+[factory.agents.build]
+prompt_file = "factory-prompts/build.md"
+runtime = "claude"
+
+[factory.agents.review]
+prompt_file = "factory-prompts/review.md"
+runtime = "claude"
+
+[factory.pipelines.delivery]
+name = "Feature delivery"
+[[factory.pipelines.delivery.steps]]
+id = "plan"
+name = "Plan the change"
+stage = "design"
+type = "agent"
+agent = "planning"
+[[factory.pipelines.delivery.steps]]
+id = "approve-design"
+name = "Approve design"
+stage = "design"
+type = "approval"
+subject = "design"
+[[factory.pipelines.delivery.steps]]
+id = "build"
+name = "Build the change"
+stage = "build"
+type = "agent"
+agent = "build"
+[[factory.pipelines.delivery.steps]]
+id = "checks"
+name = "Run checks"
+stage = "build"
+type = "script"
+command = ["just", "check"]
+timeout = "30m"
+[[factory.pipelines.delivery.steps]]
+id = "review"
+name = "Review the change"
+stage = "review"
+type = "agent"
+agent = "review"
+[[factory.pipelines.delivery.steps]]
+id = "approve-code"
+name = "Approve delivery"
+stage = "review"
+type = "approval"
+subject = "code"
+
+# Optional remote execution. Install/authenticate Claude Code, an ACP adapter,
+# and Machinist on the remote host. SSH must work without interactive prompts.
+# The reverse tunnel binds its tool endpoint to remote loopback only.
+# [factory.hosts.remote]
+# name = "Build machine"
+# ssh = "worker@example.org"
+# acp_command = ["claude-agent-acp"]
+# machinist_command = "machinist"
+# tools_port = 7332
+#
+# Set host = "remote" and an absolute host-local path in a project above.
