@@ -27,9 +27,21 @@ func TestACPProcess(t *testing.T) {
 		case "initialize":
 			result = map[string]any{"agentCapabilities": map[string]any{"loadSession": true}}
 		case "session/new":
+			checkExpectedProfile(f.Params)
 			result = map[string]string{"sessionId": "saved-session"}
 		case "session/load":
+			checkExpectedProfile(f.Params)
 			enc.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "old"}}}})
+		case "session/set_model":
+			os.Exit(9)
+		case "session/set_config_option":
+			if expected := os.Getenv("MACHINIST_EXPECTED_MODEL"); expected != "" {
+				var p struct{ ConfigID, Value string }
+				json.Unmarshal(f.Params, &p)
+				if p.ConfigID != "model" || p.Value != expected {
+					os.Exit(8)
+				}
+			}
 		case "session/prompt":
 			enc.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call_update", "content": []any{}, "toolCallId": "write", "status": "in_progress"}}})
 			enc.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "hello"}}}})
@@ -162,5 +174,37 @@ func TestPermissionDecodesACPToolNameSeparatelyFromTitle(t *testing.T) {
 	}
 	if err := json.Unmarshal(output.Bytes(), &response); err != nil || response.Result.Outcome.OptionID != "allow" {
 		t.Fatal("permission response incorrect", output.String(), err)
+	}
+}
+
+func checkExpectedProfile(raw json.RawMessage) {
+	if expected := os.Getenv("MACHINIST_EXPECTED_SYSTEM"); expected != "" {
+		var params struct {
+			Meta struct{ SystemPrompt struct{ Append string } } `json:"_meta"`
+		}
+		json.Unmarshal(raw, &params)
+		if params.Meta.SystemPrompt.Append != expected {
+			os.Exit(7)
+		}
+	}
+}
+func TestAcceptedProfileAppliedToNewAndLoadedACP(t *testing.T) {
+	t.Setenv("MACHINIST_FAKE_ACP", "1")
+	t.Setenv("MACHINIST_EXPECTED_SYSTEM", "Saved coordinator profile")
+	c := Claude{Command: os.Args[0], Args: []string{"-test.run=^TestACPProcess$"}}
+	for _, model := range []string{"explicit-model", ""} {
+		for _, previous := range []string{"", "saved-session"} {
+			expected := model
+			if expected == "" {
+				expected = "default"
+			}
+			t.Setenv("MACHINIST_EXPECTED_MODEL", expected)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_, err := c.Run(ctx, Request{Directory: t.TempDir(), SessionID: previous, Prompt: "Continue", SystemPrompt: "Saved coordinator profile", Model: model}, func(Event) {}, func(context.Context, Permission) (bool, error) { return false, nil })
+			cancel()
+			if err != nil {
+				t.Fatal(model, previous, err)
+			}
+		}
 	}
 }

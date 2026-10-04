@@ -354,6 +354,7 @@ func (s *Service) tool(w http.ResponseWriter, r *http.Request, name string) {
 		} else if foreman.Status == "running" || foreman.Status == "awaiting_permission" || foreman.Status == "interrupted" || foreman.Status == "failed" || foreman.Status == "cancelled" {
 			foreman.ReportQueue = append(foreman.ReportQueue, notification)
 		} else {
+			s.captureForemanProfile(foreman)
 			foreman.Status = "queued"
 			foreman.Pending = notification
 			foreman.RequestID = id("report_")
@@ -483,6 +484,7 @@ func (s *Service) commitTransition(original, t *Task, message string, updates ma
 	case "queued":
 		copyForeman.Pending += "\n" + message
 	default:
+		s.captureForemanProfile(&copyForeman)
 		copyForeman.Status = "queued"
 		copyForeman.Pending = message
 		copyForeman.RequestID = id("notification_")

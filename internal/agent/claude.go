@@ -282,10 +282,12 @@ func (c *Claude) Run(ctx context.Context, r Request, emit func(Event), permissio
 	if err = w.call(ctx, "session/set_mode", map[string]any{"sessionId": sessionID, "modeId": mode}, nil); err != nil {
 		return sessionID, err
 	}
-	if r.Model != "" {
-		if err = w.call(ctx, "session/set_model", map[string]any{"sessionId": sessionID, "modelId": r.Model}, nil); err != nil {
-			return sessionID, err
-		}
+	model := r.Model
+	if model == "" {
+		model = "default"
+	}
+	if err = w.call(ctx, "session/set_config_option", map[string]any{"sessionId": sessionID, "configId": "model", "value": model}, nil); err != nil {
+		return sessionID, err
 	}
 	cancelled := make(chan struct{})
 	defer close(cancelled)

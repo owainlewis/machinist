@@ -17,21 +17,22 @@ type Event struct {
 	At         string `json:"at"`
 }
 type Session struct {
-	Reported    bool     `json:"-"`
-	Delivery    bool     `json:"delivery,omitempty"`
-	ReportQueue []string `json:"-"`
-	ID          string   `json:"id"`
-	ProjectID   string   `json:"project_id"`
-	TaskID      string   `json:"task_id,omitempty"`
-	Role        string   `json:"role"`
-	Status      string   `json:"status"`
-	ProviderID  string   `json:"-"`
-	Directory   string   `json:"-"`
-	Pending     string   `json:"-"`
-	RequestID   string   `json:"-"`
-	Step        int      `json:"-"`
-	Error       string   `json:"error,omitempty"`
-	CreatedAt   string   `json:"created_at"`
+	ForemanProfile *config.ResolvedAgent `json:"-"`
+	Reported       bool                  `json:"-"`
+	Delivery       bool                  `json:"delivery,omitempty"`
+	ReportQueue    []string              `json:"-"`
+	ID             string                `json:"id"`
+	ProjectID      string                `json:"project_id"`
+	TaskID         string                `json:"task_id,omitempty"`
+	Role           string                `json:"role"`
+	Status         string                `json:"status"`
+	ProviderID     string                `json:"-"`
+	Directory      string                `json:"-"`
+	Pending        string                `json:"-"`
+	RequestID      string                `json:"-"`
+	Step           int                   `json:"-"`
+	Error          string                `json:"error,omitempty"`
+	CreatedAt      string                `json:"created_at"`
 }
 type Check struct {
 	StepID   string `json:"step_id"`
@@ -93,7 +94,8 @@ type taskRecord struct {
 	CodeApproved string
 }
 type sessionRecord struct {
-	ReportQueue []string
+	ForemanProfile *config.ResolvedAgent
+	ReportQueue    []string
 	Session
 	ProviderID string
 	Directory  string

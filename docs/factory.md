@@ -112,12 +112,21 @@ verified GitHub delivery.
 
 ## Agents and pipelines
 
-Agents are named TOML profiles with prompt files, a Claude runtime, optional model,
-and timeout. Pipelines are ordered agent, script, and human approval steps.
-Settings shows their configuration; there is no workflow editor or agent registry.
-Editing prompts or steps affects new tasks. Existing tasks retain their resolved
-prompt and command contents. Host or repository changes cannot silently move an
-existing task to another machine.
+Agents are simple profiles: a name, purpose, prompt, Claude Code runtime, optional
+model, and timeout. TOML profiles and prompt files provide the initial settings.
+Open **Settings** to edit agents and the ordered pipeline in the browser.
+Select a step to change its name, agent, timeout, or script arguments. Stage order,
+step types, and approval gates stay fixed. Script arguments are an argument array,
+not a shell command.
+
+Settings are shared across projects. Save changes to apply them to future tasks
+and future foreman turns. Existing tasks and accepted foreman turns keep their
+original settings, including after a restart. Browser edits are saved in the
+Machinist SQLite database and take precedence over the initial TOML definitions.
+The source TOML and prompt files are not rewritten.
+
+Host or repository changes cannot silently move an existing task to another
+machine.
 
 The current release uses **human code review** in place of the configured review
 agent. Claude plan mode alone does not enforce a read-only machine boundary.

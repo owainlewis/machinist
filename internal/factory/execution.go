@@ -117,6 +117,9 @@ func (s *Service) runClaude(ctx context.Context, r RunRequest, emit func(Event),
 func (s *Service) execute(ctx context.Context, v Session, token string, runner RunFunc, url string) {
 	s.mu.Lock()
 	profile := s.cfg.Agents[s.cfg.Foreman]
+	if v.ForemanProfile != nil {
+		profile = *v.ForemanProfile
+	}
 	system := profile.Prompt
 	prompt := v.Pending
 	readOnly := false
@@ -513,6 +516,10 @@ func (s *Service) createWithRequest(project, title, brief, pipeline, requestKey 
 	if !ok {
 		return nil, errors.New("unknown pipeline")
 	}
+	agents := make(map[string]config.ResolvedAgent, len(s.cfg.Agents))
+	for key, a := range s.cfg.Agents {
+		agents[key] = a
+	}
 	count := 0
 	for _, t := range s.tasks {
 		if t.ProjectID == project && t.Status != "done" && t.Status != "cancelled" {
@@ -578,7 +585,7 @@ func (s *Service) createWithRequest(project, title, brief, pipeline, requestKey 
 	for i := range t.Steps {
 		t.Steps[i].Command = append([]string(nil), t.Steps[i].Command...)
 	}
-	for key, a := range s.cfg.Agents {
+	for key, a := range agents {
 		t.Agents[key] = a
 	}
 	writes := []recordWrite{{"task", t.ID, diskTask(t)}}

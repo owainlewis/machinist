@@ -18,6 +18,7 @@ import (
 )
 
 type Service struct {
+	configurationRevision int
 	workers               sync.WaitGroup
 	mu                    sync.Mutex
 	commandMu             sync.RWMutex
@@ -58,6 +59,8 @@ func New(db *sql.DB, cfg config.ResolvedFactory, executable string) (*Service, e
 		projects[key] = p
 	}
 	s.cfg.Projects = projects
+	var settings *factoryConfiguration
+	initialForeman := cfg.Agents[cfg.Foreman]
 	rows, err := db.Query(`SELECT kind,id,data FROM factory_records`)
 	if err != nil {
 		return nil, err
@@ -69,6 +72,14 @@ func New(db *sql.DB, cfg config.ResolvedFactory, executable string) (*Service, e
 			return nil, err
 		}
 		switch kind {
+		case "configuration":
+			if key == "settings" {
+				var in factoryConfiguration
+				if err = json.Unmarshal([]byte(raw), &in); err != nil {
+					return nil, err
+				}
+				settings = &in
+			}
 		case "project":
 			var p config.FactoryProject
 			if err = json.Unmarshal([]byte(raw), &p); err != nil {
@@ -108,6 +119,7 @@ func New(db *sql.DB, cfg config.ResolvedFactory, executable string) (*Service, e
 			v.RequestID = r.RequestID
 			v.Step = r.Step
 			v.ReportQueue = r.ReportQueue
+			v.ForemanProfile = r.ForemanProfile
 			s.sessions[key] = &v
 		case "request":
 			var value string
@@ -121,7 +133,22 @@ func New(db *sql.DB, cfg config.ResolvedFactory, executable string) (*Service, e
 		return nil, err
 	}
 	rows.Close()
+	if settings != nil {
+		next, e := settings.resolved(s.cfg, false)
+		if e != nil {
+			return nil, e
+		}
+		s.cfg = next
+		s.configurationRevision = settings.Revision
+	}
 	for _, v := range s.sessions {
+		if v.Role == "foreman" && v.ForemanProfile == nil && (v.Status == "queued" || v.Status == "running" || v.Status == "interrupted" || v.Status == "awaiting_permission" || v.Status == "failed") {
+			profile := initialForeman
+			v.ForemanProfile = &profile
+			if err = s.saveSession(v); err != nil {
+				return nil, err
+			}
+		}
 		if v.Status == "running" || v.Status == "queued" || v.Status == "awaiting_permission" {
 			v.Status = "interrupted"
 			v.Error = "Server restarted. Review saved work and resume explicitly."
@@ -186,7 +213,7 @@ func diskTask(t *Task) taskRecord {
 }
 func (s *Service) saveTask(t *Task) error { return s.save("task", t.ID, diskTask(t)) }
 func diskSession(v *Session) sessionRecord {
-	return sessionRecord{ReportQueue: v.ReportQueue, Session: *v, ProviderID: v.ProviderID, Directory: v.Directory, Pending: v.Pending, RequestID: v.RequestID, Step: v.Step}
+	return sessionRecord{ForemanProfile: v.ForemanProfile, ReportQueue: v.ReportQueue, Session: *v, ProviderID: v.ProviderID, Directory: v.Directory, Pending: v.Pending, RequestID: v.RequestID, Step: v.Step}
 }
 func (s *Service) saveSession(v *Session) error { return s.save("session", v.ID, diskSession(v)) }
 func (s *Service) event(session string, event Event) error {
@@ -271,6 +298,9 @@ func (s *Service) acceptConfirmedTurn(v *Session, prompt, request, key string, r
 		return errors.New("conversation is busy; wait or cancel its current turn")
 	}
 	previous := *v
+	if !recovery || v.ForemanProfile == nil {
+		s.captureForemanProfile(v)
+	}
 	v.Pending = prompt
 	v.RequestID = request
 	v.Reported = false

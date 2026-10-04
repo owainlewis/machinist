@@ -42,7 +42,10 @@ export function isBusy(s) {
 export async function factoryRequest(path, options = {}) {
   const r = await fetch("/api/factory" + path, options);
   const b = await r.json().catch(() => ({}));
-  if (!r.ok) throw Error(b.error || `Request failed (${r.status})`);
+  if (!r.ok)
+    throw Object.assign(Error(b.error || `Request failed (${r.status})`), {
+      status: r.status,
+    });
   return b;
 }
 

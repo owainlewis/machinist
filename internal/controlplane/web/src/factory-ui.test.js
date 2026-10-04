@@ -67,6 +67,7 @@ test("factory shows real worker permissions, transcript, and current approval ve
   globalThis.fetch = async (url, options) => {
     calls.push([url, options]);
     let body = {};
+    if (url === "/api/factory/configuration") body = {revision: 0, scope: "global_future_tasks", foreman: "foreman", default_pipeline: "default", agents: {foreman: {name: "Foreman", description: "", prompt: "Manage work", runtime: "claude", model: "", timeout: "30m"}}, pipelines: {default: {name: "Default", steps: []}}};
     if (url === "/api/factory/status")
       body = {
         enabled: true,

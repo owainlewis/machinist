@@ -45,6 +45,12 @@ Its short-lived bearer credential is scoped to the active conversation and
 project. Server policy validates task creation, step starts, feedback, reports,
 and cancellation. Human approval endpoints accept browser authority only.
 
+Browser settings use one versioned SQLite record for resolved agents and pipelines.
+A save validates the complete configuration and commits it before publishing it to
+new work. Saved definitions override TOML seeds on restart. The browser cannot
+change step order, types, or approval gates. Accepted foreman turns privately retain
+their agent profile; recovery uses that original profile.
+
 A new task snapshots profiles, prompt contents, steps, script arguments, and its
 host/project identity. Its worktree is created before planning. Design approval
 records the current content version before implementation becomes eligible.

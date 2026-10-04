@@ -1,0 +1,353 @@
+.factory-settings {
+  max-width: 1040px;
+  width: 100%;
+  margin: 0 auto;
+}
+.pipeline-settings {
+  margin: 0 0 40px !important;
+  padding: 0 0 32px !important;
+  border-top: 0 !important;
+  border-bottom: 1px solid var(--border);
+}
+.configuration-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.configuration-heading h2 {
+  margin-top: 0 !important;
+}
+.configuration-heading p {
+  font-size: 12px;
+  line-height: 1.8;
+  max-width: 70ch;
+  color: var(--muted-foreground);
+  margin: 0 0 18px;
+}
+.configuration-unsaved {
+  font-size: 11px;
+  color: var(--warning);
+  white-space: nowrap;
+  padding-top: 8px;
+}
+.configuration-fields {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.configuration-tabs {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+.configuration-tabs button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  border-bottom: 2px solid transparent;
+}
+.configuration-tabs button[aria-selected="true"] {
+  color: var(--foreground);
+  border-bottom-color: var(--primary);
+  font-weight: 650;
+}
+.configuration-pipeline-heading {
+  display: flex;
+  align-items: flex-end;
+  gap: 20px;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.configuration-pipeline-heading > div {
+  max-width: 340px;
+  flex: 1;
+}
+.configuration-default {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  padding-bottom: 10px;
+}
+.pipeline-settings ol.configuration-pipeline {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
+  list-style: none;
+  margin: 0 0 20px;
+}
+.configuration-pipeline li {
+  margin: 0;
+  min-width: 0;
+}
+.configuration-pipeline button {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 100%;
+  height: 100%;
+}
+.configuration-pipeline button:hover {
+  background: var(--muted);
+}
+.configuration-pipeline button[aria-pressed="true"] {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 5%, var(--surface));
+}
+.configuration-pipeline small {
+  font-size: 10px;
+}
+.configuration-pipeline strong {
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.configuration-pipeline span {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.configuration-step-editor {
+  margin: 20px 0 !important;
+  padding: 20px 0 0 !important;
+  border-top: 1px solid var(--border);
+}
+.configuration-step-editor header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+.configuration-step-editor h3,
+.configuration-profile h3 {
+  margin: 0 0 6px !important;
+  font-size: 15px;
+}
+.configuration-step-editor header p {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin: 0;
+}
+.pipeline-settings .field-label {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 16px 0 7px;
+}
+.pipeline-settings input,
+.pipeline-settings select,
+.pipeline-settings textarea {
+  font-size: 13px;
+}
+.pipeline-settings textarea {
+  width: 100%;
+  padding: 11px 12px;
+  line-height: 1.7;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--foreground);
+}
+.pipeline-settings textarea:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.pipeline-settings .configuration-command {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+.configuration-agent-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.configuration-agent-choice select {
+  flex: 1;
+  min-width: 0;
+}
+.configuration-agent-choice button {
+  flex-shrink: 0;
+}
+.pipeline-settings p.configuration-help {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.8;
+  margin: 12px 0;
+}
+.configuration-foreman {
+  max-width: 400px;
+  margin-bottom: 24px;
+}
+.configuration-agent-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 28px;
+}
+.configuration-agent-layout nav {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 8px;
+}
+.configuration-agent-layout nav button {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  padding: 12px;
+  border-radius: 6px;
+  gap: 5px;
+}
+.configuration-agent-layout nav button:hover {
+  background: var(--muted);
+}
+.configuration-agent-layout nav button[aria-current="true"] {
+  background: var(--muted);
+}
+.configuration-agent-layout nav strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+.configuration-agent-layout nav small {
+  font-size: 10px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.factory-settings .configuration-profile {
+  margin: 0 !important;
+  padding: 0 !important;
+  border-top: 0 !important;
+}
+.configuration-profile-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+}
+.configuration-profile-fields > div:last-child {
+  grid-column: 1/-1;
+  max-width: 220px;
+}
+.configuration-save {
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+  margin-top: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.configuration-save p {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin: 0;
+}
+.configuration-save > div {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.configuration-error {
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--danger);
+  margin: 18px 0;
+  line-height: 1.7;
+}
+.configuration-error p {
+  margin: 0 0 8px;
+}
+.configuration-error p:last-child {
+  margin-bottom: 0;
+}
+.configuration-notice {
+  color: var(--success);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 18px 0;
+}
+.pipeline-settings button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+@media (max-width: 750px) {
+  .pipeline-settings ol.configuration-pipeline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .configuration-agent-layout {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+  .configuration-agent-layout nav {
+    flex-direction: row;
+    overflow: auto;
+    padding-bottom: 8px;
+  }
+  .configuration-agent-layout nav button {
+    min-width: 140px;
+  }
+  .configuration-profile-fields {
+    grid-template-columns: 1fr;
+  }
+  .configuration-profile-fields > div:last-child {
+    max-width: none;
+  }
+  .configuration-save {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .configuration-save > div {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .configuration-heading {
+    flex-direction: column;
+    gap: 0;
+  }
+  .configuration-unsaved {
+    padding: 0 0 14px;
+  }
+  .configuration-pipeline-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .configuration-pipeline-heading > div {
+    max-width: none;
+    width: 100%;
+  }
+  .configuration-default {
+    padding-bottom: 0;
+  }
+  .configuration-agent-choice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .configuration-agent-choice button {
+    align-self: flex-start;
+  }
+  .configuration-step-editor header {
+    gap: 10px;
+  }
+  .configuration-step-editor header button {
+    font-size: 11px;
+  }
+}

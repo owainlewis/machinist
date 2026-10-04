@@ -63,6 +63,10 @@ func (s *Service) serve(w http.ResponseWriter, r *http.Request) {
 		s.stream(w, r, parts[1])
 		return
 	}
+	if path == "configuration" {
+		s.configuration(w, r)
+		return
+	}
 	if path == "folders" && r.Method == "GET" {
 		s.folders(w, r)
 		return

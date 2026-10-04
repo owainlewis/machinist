@@ -257,10 +257,43 @@ func (c Config) ResolveFactory() (ResolvedFactory, error) {
 		}
 		r.Agents[id] = ResolvedAgent{Name: a.Name, Description: a.Description, Prompt: string(body), Runtime: a.Runtime, Model: a.Model, Timeout: timeout}
 	}
-	if _, ok := r.Agents[f.Foreman]; !ok {
-		return fail("foreman agent %q is undefined", f.Foreman)
+	return ValidateFactorySettings(r, f.Pipelines)
+}
+
+// ValidateFactorySettings validates resolved prompt contents without reading files.
+// It returns fresh agent and pipeline maps for immutable task snapshots.
+func ValidateFactorySettings(r ResolvedFactory, pipelines map[string]FactoryPipeline) (ResolvedFactory, error) {
+	fail := func(message string, args ...any) (ResolvedFactory, error) {
+		return ResolvedFactory{}, fmt.Errorf("factory: "+message, args...)
 	}
-	for id, p := range f.Pipelines {
+	agents := make(map[string]ResolvedAgent, len(r.Agents))
+	for id, a := range r.Agents {
+		if strings.TrimSpace(id) == "" || strings.TrimSpace(a.Prompt) == "" || len(a.Prompt) > maxPromptBytes || strings.ContainsRune(a.Prompt, '\x00') {
+			return fail("agent %q requires a non-empty bounded prompt", id)
+		}
+		if a.Runtime == "" {
+			a.Runtime = "claude"
+		}
+		if a.Runtime != "claude" {
+			return fail("agent %q runtime %q is unsupported", id, a.Runtime)
+		}
+		if a.Timeout <= 0 {
+			return fail("agent %q timeout must be a positive duration", id)
+		}
+		if len(a.Model) > 128 || strings.ContainsAny(a.Model, "\x00\r\n") {
+			return fail("agent %q model is invalid", id)
+		}
+		if a.Name == "" {
+			a.Name = id
+		}
+		agents[id] = a
+	}
+	r.Agents = agents
+	r.Pipelines = make(map[string]FactoryPipeline, len(pipelines))
+	if _, ok := r.Agents[r.Foreman]; !ok {
+		return fail("foreman agent %q is undefined", r.Foreman)
+	}
+	for id, p := range pipelines {
 		if id == "" || len(p.Steps) == 0 {
 			return fail("pipeline ID and steps are required")
 		}
@@ -350,8 +383,8 @@ func (c Config) ResolveFactory() (ResolvedFactory, error) {
 		}
 		r.Pipelines[id] = p
 	}
-	if _, ok := r.Pipelines[f.DefaultPipeline]; !ok {
-		return fail("default_pipeline %q is undefined", f.DefaultPipeline)
+	if _, ok := r.Pipelines[r.DefaultPipeline]; !ok {
+		return fail("default_pipeline %q is undefined", r.DefaultPipeline)
 	}
 	return r, nil
 }

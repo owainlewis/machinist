@@ -12,6 +12,7 @@ import {
 } from "./factory-state.js";
 import "./factory.css";
 import { DisclosureAction } from "./components/ui/disclosure-action.jsx";
+import { PipelineSettings } from "./factory-configuration.jsx";
 import { TaskPanel } from "./factory-task-panel.jsx";
 import { ProjectSetup } from "./factory-setup.jsx";
 import { FactoryHistory } from "./factory-history.jsx";
@@ -370,7 +371,14 @@ export function FactoryApp({ status, onStatus }) {
         ) : view === "history" ? (
           <FactoryHistory />
         ) : view === "settings" ? (
-          <Settings status={status} navigate={navigate} />
+          <Settings
+            status={status}
+            navigate={navigate}
+            onSaved={async () => {
+              const next = await factoryRequest("/status");
+              onStatus(next);
+            }}
+          />
         ) : !projectID ? (
           <div className="factory-empty">
             <h2>Connect your first project</h2>
@@ -603,9 +611,10 @@ function ChatEvent({ event: e, busy, mutate }) {
     </article>
   ) : null;
 }
-function Settings({ status, navigate }) {
+function Settings({ status, navigate, onSaved }) {
   return (
     <div className="factory-settings">
+      <PipelineSettings csrfToken={status.csrf_token} onSaved={onSaved} />
       <h2>Projects</h2>
       <p>
         Each project uses one host. Workers share its checkout and get a
@@ -626,44 +635,6 @@ function Settings({ status, navigate }) {
       <Button variant="outline" onClick={() => navigate("add")}>
         Add project
       </Button>
-      <h2>Agents and pipeline</h2>
-      <p>Agents and pipelines are configuration. Changes apply to new tasks.</p>
-      <h3>Agents</h3>
-      {status.agents?.map((a) => (
-        <section key={a.id || a.name}>
-          <strong>{a.name || a.id}</strong>
-          <p>{a.description}</p>
-          <small>
-            {a.runtime} · {a.model || "Default model"}
-          </small>
-          {a.prompt && (
-            <details>
-              <summary>
-                <span>Instructions</span>
-                <DisclosureAction />
-              </summary>
-              <pre>{a.prompt}</pre>
-            </details>
-          )}
-        </section>
-      ))}
-      <h3>Pipeline</h3>
-      {status.pipelines?.map((p) => (
-        <section key={p.id || p.name}>
-          <strong>{p.name || p.id}</strong>
-          <ol>
-            {p.steps?.map((s) => (
-              <li key={s.id || s.name}>
-                {s.name || s.id}{" "}
-                <small>
-                  {s.kind || s.type}
-                  {s.agent ? " · " + s.agent : ""}
-                </small>
-              </li>
-            ))}
-          </ol>
-        </section>
-      ))}
       <h3>Runtime</h3>
       <p>
         {status.runtime_error ||
