@@ -1,56 +1,52 @@
 import { useMemo, useState } from "react";
-import { Card } from "@/components/ui/card";
-import { PageHeading, QuietState } from "@/components/ui/page-heading";
+import { ErrorBanner, QuietState, TopBar } from "@/components/ui/page-heading";
+import { Select } from "@/components/ui/select";
 import { analyticsState } from "@/analytics-state";
 import { formatDurationMillis, formatReportingCoverage, formatSuccessRate, formatTokenUsage, tokenUsageSummary } from "@/run-metrics";
 
-export function Analytics({ jobs, loaded, error }) {
+const windows = [{ value: "7", label: "Last 7 days" }, { value: "30", label: "Last 30 days" }];
+
+// UsagePage shows task outcomes, timing and executor-reported tokens.
+export function UsagePage({ jobs, loaded, error }) {
   const [days, setDays] = useState("30");
   const view = useMemo(() => analyticsState({ jobs, days, loaded, error }), [days, error, jobs, loaded]);
   const runs = view.runs || [];
   const usage = useMemo(() => tokenUsageSummary(runs), [runs]);
-
-  return <div className="mx-auto max-w-[1500px] space-y-6 p-4 sm:p-6 lg:p-8">
-    <PageHeading title="Task analytics" description="Task outcomes with measured run duration and executor-reported token usage.">
-      <label className="w-full sm:w-40"><span className="field-label">Time window</span><select className="field-control" value={days} onChange={(event) => setDays(event.target.value)}><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select></label>
-    </PageHeading>
-
-    {view.kind === "error" ? <div role="alert" className="rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">{view.message}</div> : view.kind === "loading" ? <Card><QuietState title="Measuring the work" description="Loading task outcomes and reported usage." role="status" /></Card> : <>
-      <section className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]" aria-label="Task metrics">
-        <Card className="flex min-h-48 flex-col justify-between border-primary/25 bg-primary/5 p-5 sm:p-6">
-          <div><p className="text-sm font-medium text-muted-foreground">Average task time</p><p className="mt-3 break-words text-4xl font-semibold tracking-tight tabular-nums sm:text-5xl">{formatDurationMillis(view.metrics.averageTaskDurationMillis)}</p></div>
-          <p className="mt-6 text-sm text-muted-foreground">{view.metrics.contributingTasks} contributing task{view.metrics.contributingTasks === 1 ? "" : "s"} with complete run timing</p>
-        </Card>
-        <div className="grid grid-cols-2 gap-3 sm:gap-4">
-          <Metric label="Total tasks" value={view.metrics.totalTasks} />
-          <Metric label="Success rate" value={formatSuccessRate(view.metrics.successRate)} />
-          <Metric label="Failed tasks" value={view.metrics.failedTasks} />
-          <Metric label="Active tasks" value={view.metrics.activeTasks} />
-        </div>
-      </section>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Card className="min-w-0 p-4 sm:p-5"><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total reported tokens</p><p className="mt-2 break-all text-2xl font-semibold tabular-nums">{formatTokenUsage(usage.total)}</p><p className="mt-1 text-xs text-muted-foreground">Input plus output tokens reported in this window.</p></Card>
-        <Card className="p-4 sm:p-5"><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Reporting coverage</p><p className="mt-2 text-2xl font-semibold tabular-nums">{formatReportingCoverage(usage)}</p><p className="mt-1 text-xs text-muted-foreground">{usage.unavailable ? `${usage.unavailable} completed ${usage.unavailable === 1 ? "run has" : "runs have"} unavailable usage.` : usage.completed ? "Every completed run reported usage." : "No completed runs in this window."}</p></Card>
-      </div>
-
-      <section aria-labelledby="completed-run-metrics">
-        <div className="mb-3"><h2 id="completed-run-metrics" className="text-sm font-semibold">Completed run metrics</h2><p className="mt-1 text-xs text-muted-foreground">Duration and reported token usage for runs belonging to tasks in this window.</p></div>
-        <Card className="overflow-hidden">
-          <div className="hidden grid-cols-[minmax(8rem,1fr)_minmax(8rem,1fr)_10rem_12rem] gap-4 border-b border-border bg-muted/35 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground sm:grid">
-            <span>Run</span><span>Command</span><span>Duration</span><span>Reported token usage</span>
-          </div>
-          {runs.length ? runs.map((run) => <div key={run.id} className="grid gap-2 border-b border-border px-4 py-3.5 last:border-b-0 sm:grid-cols-[minmax(8rem,1fr)_minmax(8rem,1fr)_10rem_12rem] sm:items-center sm:gap-4">
-            <p className="truncate font-mono text-xs text-muted-foreground">{shortId(run.id)}</p>
-            <p className="truncate text-sm font-medium capitalize">{run.command}</p>
-            <p className="text-sm tabular-nums"><span className="sm:hidden text-muted-foreground">Duration · </span>{formatDurationMillis(run.duration_millis)}</p>
-            <p className="min-w-0 break-all text-sm tabular-nums"><span className="sm:hidden text-muted-foreground">Reported tokens · </span>{formatTokenUsage(run.token_usage)}</p>
-          </div>) : <div className="grid place-items-center p-12 text-sm text-muted-foreground">No completed runs in this window.</div>}
-        </Card>
-      </section>
-    </>}
-  </div>;
+  return <>
+    <TopBar title="Usage"><Select label="Time window" value={days} onValueChange={setDays} items={windows} /></TopBar>
+    {error && <ErrorBanner>{error}</ErrorBanner>}
+    <div className="pane-scroll">
+      {view.kind === "loading" ? <QuietState title="Measuring the work" description="Loading task outcomes and reported usage." loading role="status" />
+        : view.kind === "error" ? null
+        : <div className="mx-auto max-w-4xl space-y-6 px-4 py-6 sm:px-6">
+          <section aria-label="Task metrics" className="grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-3">
+            <Metric label="Average task time" value={formatDurationMillis(view.metrics.averageTaskDurationMillis)} note={`${view.metrics.contributingTasks} task${view.metrics.contributingTasks === 1 ? "" : "s"} with complete timing`} wide />
+            <Metric label="Success rate" value={formatSuccessRate(view.metrics.successRate)} />
+            <Metric label="Total tasks" value={view.metrics.totalTasks} />
+            <Metric label="Active tasks" value={view.metrics.activeTasks} />
+            <Metric label="Failed tasks" value={view.metrics.failedTasks} />
+            <Metric label="Total reported tokens" value={formatTokenUsage(usage.total)} />
+            <Metric span label="Reporting coverage" value={formatReportingCoverage(usage)} note={usage.unavailable ? `${usage.unavailable} completed run${usage.unavailable === 1 ? "" : "s"} did not report usage` : "Input plus output tokens"} />
+          </section>
+          <section aria-labelledby="completed-run-metrics">
+            <h2 id="completed-run-metrics" className="mb-2 font-medium">Completed runs <span className="font-normal text-faint">{runs.length}</span></h2>
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full min-w-[32rem] text-left">
+                <thead className="bg-muted text-xs text-faint"><tr><th className="px-4 py-2 font-medium">Run</th><th className="px-4 py-2 font-medium">Command</th><th className="px-4 py-2 font-medium">Duration</th><th className="px-4 py-2 font-medium">Reported token usage</th></tr></thead>
+                <tbody>{runs.length ? runs.map((run) => <tr key={run.id} className="border-t border-border"><td className="px-4 py-2 font-mono text-xs text-faint">{run.id.split("_").at(-1).slice(0, 8)}</td><td className="px-4 py-2">{run.command}</td><td className="px-4 py-2 tabular-nums">{formatDurationMillis(run.duration_millis)}</td><td className="px-4 py-2 tabular-nums">{formatTokenUsage(run.token_usage)}</td></tr>)
+                  : <tr><td colSpan={4} className="px-4 py-8 text-center text-faint">No completed runs in this window.</td></tr>}</tbody>
+              </table>
+            </div>
+          </section>
+        </div>}
+    </div>
+  </>;
 }
 
-function Metric({ label, value }) { return <Card className="min-w-0 p-4 sm:p-5"><p className="text-xs font-medium text-muted-foreground sm:text-sm">{label}</p><p className="mt-2 text-xl font-semibold tracking-tight tabular-nums sm:text-3xl">{value}</p></Card>; }
-function shortId(id) { const [, value = id] = id.split("_", 2); return value.slice(0, 8); }
+function Metric({ label, value, note, wide = false, span = false }) {
+  return <div className={wide ? "bg-surface px-4 py-4 sm:row-span-2 sm:flex sm:flex-col sm:justify-between" : span ? "bg-surface px-4 py-3 sm:col-span-2" : "bg-surface px-4 py-3"}>
+    <p className="text-xs text-faint">{label}</p>
+    <p className={wide ? "mt-1 text-3xl font-semibold tracking-tight tabular-nums" : "mt-0.5 text-lg font-medium tabular-nums"}>{value}</p>
+    {note && <p className="mt-1 text-xs text-faint">{note}</p>}
+  </div>;
+}

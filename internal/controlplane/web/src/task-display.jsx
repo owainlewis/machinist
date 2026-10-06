@@ -1,23 +1,9 @@
 import React from "react";
-import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
+import { StatusIcon } from "@/components/ui/status-icon";
 const zeroTime = "0001-01-01T00:00:00Z";
 
 export function State({ value }) {
-  const tones = {
-    running: "border-warning/25 bg-warning/10 text-warning",
-    queued: "border-warning/25 bg-warning/10 text-warning",
-    succeeded: "border-success/25 bg-success/10 text-success",
-    failed: "border-danger/25 bg-danger/10 text-danger",
-    timed_out: "border-danger/25 bg-danger/10 text-danger",
-    cancelled: "border-danger/25 bg-danger/10 text-danger",
-  };
-  return (
-    <Badge className={cn("gap-1.5", tones[value] || tones.queued)}>
-      <span className="size-1.5 rounded-full bg-current" />
-      {stateLabel(value)}
-    </Badge>
-  );
+  return <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><StatusIcon state={value} />{stateLabel(value)}</span>;
 }
 
 export function friendlyName(name) {
@@ -46,5 +32,10 @@ export function formatTimestamp(value) {
     : new Date(value).toLocaleString();
 }
 export function stateLabel(value) {
-  return String(value || "unknown").replaceAll("_", " ");
+  const labels = { awaiting_approval: "Needs approval", timed_out: "Timed out", succeeded: "Done", blocked: "Needs you" };
+  return labels[value] || friendlyName(value || "unknown");
+}
+export function shortId(id) {
+  const [, value = id] = String(id).split("_", 2);
+  return value.slice(0, 8);
 }

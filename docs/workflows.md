@@ -111,7 +111,7 @@ no automatic cross-worker recovery. Upgrade the server and workers together;
 older workers do not receive workflow jobs.
 
 The job page shows planned steps, results, and attempts. Jobs waiting for approval,
-input, or interruption recovery appear in **Needs attention**. Workflow completion
+input, or interruption recovery appear in **Needs you**. Workflow completion
 means its commands reported completion, not that Machinist independently certified
 a PR or merged it.
 

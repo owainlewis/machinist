@@ -17,9 +17,9 @@ export function Tabs({ items, label }) {
     document.getElementById(`${id}-tab-${items[next].id}`)?.focus();
   }
   return <div>
-    <div role="tablist" aria-label={label} className="mb-6 flex gap-4 overflow-x-auto border-b border-border">
-      {items.map((item, index) => <button key={item.id} id={`${id}-tab-${item.id}`} type="button" role="tab" aria-selected={active === item.id} aria-controls={`${id}-panel-${item.id}`} tabIndex={active === item.id ? 0 : -1} onKeyDown={event => navigate(event, index)} onClick={() => setSelected(item.id)} className={cn("-mb-px border-b-2 px-0 py-3 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2", active === item.id ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>{item.label}</button>)}
+    <div role="tablist" aria-label={label} className="mb-5 flex gap-5 overflow-x-auto border-b border-border">
+      {items.map((item, index) => <button key={item.id} id={`${id}-tab-${item.id}`} type="button" role="tab" aria-selected={active === item.id} aria-controls={`${id}-panel-${item.id}`} tabIndex={active === item.id ? 0 : -1} onKeyDown={event => navigate(event, index)} onClick={() => setSelected(item.id)} className={cn("-mb-px border-b px-0 py-2 font-medium transition-colors focus-visible:outline-1 focus-visible:outline-ring", active === item.id ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>{item.label}</button>)}
     </div>
-    {items.map(item => <section key={item.id} id={`${id}-panel-${item.id}`} role="tabpanel" aria-labelledby={`${id}-tab-${item.id}`} hidden={active !== item.id} tabIndex={0} className="focus-visible:outline-2 focus-visible:outline-ring">{item.content}</section>)}
+    {items.map(item => <section key={item.id} id={`${id}-panel-${item.id}`} role="tabpanel" aria-labelledby={`${id}-tab-${item.id}`} hidden={active !== item.id} tabIndex={0} className="focus-visible:outline-1 focus-visible:outline-ring">{item.content}</section>)}
   </div>;
 }

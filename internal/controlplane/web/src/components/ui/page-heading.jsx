@@ -1,17 +1,22 @@
-export function PageHeading({ title, description, children }) {
-  return <header className="page-heading flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-    <div>
-      <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-      {description && <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{description}</p>}
-    </div>
+import { Spinner } from "@/components/ui/status-icon";
+
+// TopBar is the thin header on every page: a title on the left, at most a few actions on the right.
+export function TopBar({ title, children }) {
+  return <header className="top-bar">
+    <h1 className="top-bar-title">{title}</h1>
+    <span className="flex-1" />
     {children}
   </header>;
 }
 
-export function QuietState({ title, description, role }) {
-  return <div className="quiet-state grid place-items-center px-6 py-14 text-center" role={role}>
-    <span className="quiet-state-mark" aria-hidden="true"><i /><i /><i /></span>
-    <p className="mt-4 text-sm font-medium text-foreground">{title}</p>
-    {description && <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">{description}</p>}
+export function QuietState({ title, description, role, loading = false }) {
+  return <div className="grid place-items-center px-6 py-14 text-center" role={role}>
+    {loading && <Spinner className="mb-3" />}
+    <p className="font-medium text-foreground">{title}</p>
+    {description && <p className="mt-1 max-w-sm text-xs leading-5 text-faint">{description}</p>}
   </div>;
+}
+
+export function ErrorBanner({ children }) {
+  return <div role="alert" className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-danger">{children}</div>;
 }

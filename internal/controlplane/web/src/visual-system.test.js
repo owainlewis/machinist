@@ -2,26 +2,30 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("every top-level control plane view uses the shared editorial heading", async () => {
-  const [main, analytics, catalog, triggers] = await Promise.all([
-    readFile(new URL("./main.jsx", import.meta.url), "utf8"),
-    readFile(new URL("./analytics.jsx", import.meta.url), "utf8"),
-    readFile(new URL("./catalog.jsx", import.meta.url), "utf8"),
-    readFile(new URL("./triggers.jsx", import.meta.url), "utf8"),
-  ]);
-
-  assert.match(main, /<PageHeading title="Tasks"/);
-  assert.match(analytics, /<PageHeading title="Task analytics"/);
-  assert.match(catalog, /<Page title="Workers"/);
-  assert.match(catalog, /<Page title="Workflows"/);
-  assert.match(triggers, /<PageHeading title=\{title\}/);
-  assert.doesNotMatch([main, analytics, catalog, triggers].join("\n"), /Control plane \/|index="0[1-5]"/);
+test("every top-level page uses the shared top bar", async () => {
+  const files = ["main.jsx", "catalog.jsx", "triggers.jsx", "settings.jsx"];
+  const sources = await Promise.all(files.map((file) => readFile(new URL(`./${file}`, import.meta.url), "utf8")));
+  const all = sources.join("\n");
+  for (const title of ["Home", "Tasks", "Workers", "Automations", "Settings"]) assert.match(all, new RegExp(`<TopBar title="${title}"`));
+  assert.doesNotMatch(all, /PageHeading/);
 });
 
-test("mobile navigation has a dedicated bottom navigation treatment", async () => {
+test("mobile navigation becomes a five-item bottom bar", async () => {
   const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
 
-  assert.match(styles, /\.app-sidebar nav \{ position: fixed;[^}]*bottom: 0;/);
+  assert.match(styles, /\.app-sidebar \{ position: fixed;[^}]*bottom: 0;/);
   assert.match(styles, /grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
-  assert.match(styles, /padding-bottom: calc\(4\.15rem \+ env\(safe-area-inset-bottom\)\)/);
+  assert.match(styles, /padding: 0 0 calc\(3\.75rem \+ env\(safe-area-inset-bottom\)\)/);
+});
+
+test("running spinners respect reduced motion", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+  assert.match(styles, /\.spinner \{ animation: machinist-spin/);
+  assert.match(styles, /prefers-reduced-motion: reduce\)[\s\S]*\.spinner \{ animation: machinist-pulse/);
+});
+
+test("the build never scans its own committed output", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(styles, /@source not "\.\.\/dist";/);
 });

@@ -77,16 +77,17 @@ see [configuration](configuration.md).
 
 ## Create and follow a task
 
-1. On **Tasks**, choose **New task**.
+1. On **Home**, type in the box at the top. Press **C** anywhere to jump there.
 2. Enter what you want done, or paste an issue link. This description is the spec;
    a link on its own becomes the source URL.
-3. Choose the repository and workflow. Title, separate source link, and model are optional.
-4. Start the task. The board shows Queued, In progress, Needs attention, and Finished.
+3. Choose the repository and workflow. **Options** sets an optional title and model.
+4. Choose **Start task** or press ⌘↵. **Tasks** groups work into Needs you, Failed,
+   Running, Queued, and Done, as a list or a board. Each task shows one line saying
+   why it is in that state, such as which worker runs it or what it is waiting for.
 
-The **Workflows** page shows the steps in each configured workflow and where it
-waits for approval. Its Prompts tab shows the actual configured instructions;
-Template help explains task variables. Edit definitions in the configuration
-files; this page is a viewer, not a workflow editor.
+**Settings** lists each configured agent and workflow, the steps in each workflow,
+and where it waits for approval. Expand an agent to read its prompt. Edit
+definitions in the configuration files; Settings is a viewer, not an editor.
 
 ## Review the result
 
@@ -99,7 +100,7 @@ Click a text filename to view its raw contents in the UI. Use the download butto
 for any file. Text previews are limited to 1 MiB; HTML is displayed as text, never
 executed. Binary and larger files are download-only.
 
-With `plan_then_build`, planning finishes and the task moves to Needs attention.
+With `plan_then_build`, planning finishes and the task moves to Needs you.
 Review plan.md, then **Approve and start build**, or **Request changes** and enter
 feedback. A revision creates a new planning attempt and returns for review.
 Your approval applies to that exact attempt. There is no implicit approval gate

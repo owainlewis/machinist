@@ -1,5 +1,6 @@
 import { FileText, Download, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
+import { Markdown } from "@/components/ui/markdown";
 
 // One metadata request per task, shared by Result, Files, and History.
 export function useTaskArtifacts(job, csrfToken) {
@@ -26,6 +27,7 @@ export function Artifacts({ artifacts, runID, csrfToken }) {
   const [loading, setLoading] = useState("");
   const [error, setError] = useState("");
   const [downloading, setDownloading] = useState("");
+  const [raw, setRaw] = useState(false);
   const files = artifacts.byRun[runID] || [];
   useEffect(() => {
     setPreview(null); setLoading(""); setError("");
@@ -68,8 +70,10 @@ export function Artifacts({ artifacts, runID, csrfToken }) {
       {!file.expired_at && <button type="button" className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring" aria-label={`Download ${file.path}`} disabled={Boolean(downloading)} onClick={()=>download(file)}><Download className="size-4" /></button>}
     </li>)}</ul>
     {preview && <section aria-label={`Preview ${preview.file.path}`} className="overflow-hidden rounded-lg border border-border">
-      <div className="flex items-center justify-between gap-3 border-b border-border bg-muted/40 px-4 py-2"><h3 className="min-w-0 break-all text-sm font-medium">{preview.file.path} <span className="text-muted-foreground">· Raw</span></h3><button type="button" className="rounded-md p-2 hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring" aria-label="Close file preview" onClick={()=>setPreview(null)}><X className="size-4" /></button></div>
-      <pre tabIndex={0} className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-xs leading-6">{preview.body}</pre>
+      <div className="flex items-center justify-between gap-3 border-b border-border bg-muted/40 px-4 py-2"><h3 className="min-w-0 break-all text-sm font-medium">{preview.file.path}{!isMarkdown(preview.file) && <span className="text-muted-foreground"> · Raw</span>}</h3>{isMarkdown(preview.file) && <button type="button" className="ml-auto rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground" aria-pressed={raw} onClick={() => setRaw((value) => !value)}>{raw ? "Show rendered" : "Show raw"}</button>}<button type="button" className="rounded-md p-2 hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring" aria-label="Close file preview" onClick={()=>setPreview(null)}><X className="size-4" /></button></div>
+      {isMarkdown(preview.file) && !raw ? <div tabIndex={0} className="max-h-[60vh] overflow-auto p-4"><Markdown>{preview.body}</Markdown></div> : <pre tabIndex={0} className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-xs leading-6">{preview.body}</pre>}
     </section>}
   </section>;
 }
+
+function isMarkdown(file) { return /\.(md|markdown)$/i.test(file.path); }

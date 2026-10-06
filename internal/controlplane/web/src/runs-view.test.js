@@ -6,13 +6,14 @@ import { createServer } from "vite";
 
 const jobs = [
   { id: "job_failed", state: "failed", prompt: "Failed fixture", repository: "example/repo", command: "codex", created_at: "2026-01-01T00:00:00Z", runs: [{ id: "run_failed", state: "failed", command: "codex" }] },
+  { id: "job_running", state: "running", prompt: "Running fixture", repository: "example/repo", command: "codex", created_at: "2026-01-01T00:00:00Z", runs: [{ id: "run_running", state: "running", command: "codex", worker_name: "laptop", started_at: "2026-01-01T00:00:00Z" }] },
   { id: "job_succeeded", state: "succeeded", prompt: "Succeeded fixture", repository: "example/repo", command: "codex", created_at: "2026-01-01T00:00:00Z", runs: [{ id: "run_succeeded", state: "succeeded", command: "codex" }] },
 ];
 
-test("runs default to board view and share filters when switching views", async (context) => {
-  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/runs" });
+test("home, task list, board, search and task detail work against live status", async (context) => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/home", pretendToBeVisual: true });
   const priorGlobals = new Map();
-  for (const name of ["window", "document", "navigator", "localStorage", "Event", "MouseEvent"]) {
+  for (const name of ["window", "document", "navigator", "localStorage", "Event", "MouseEvent", "KeyboardEvent", "FocusEvent", "PointerEvent", "Node", "Element", "HTMLElement", "HTMLInputElement", "HTMLButtonElement", "ShadowRoot", "DocumentFragment", "MutationObserver", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"]) {
     priorGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
   }
@@ -24,7 +25,7 @@ test("runs default to board view and share filters when switching views", async 
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z",
     runs: [
       { id: "plan", command: "plan", state: "succeeded", outcome: "complete", summary: "Planned" },
-      { id: "build", command: "build", state: "succeeded", outcome: "complete", summary: "Built", executor: "test-executor", model: "test-model", worker_name: "test-worker", duration_millis: 1000, exit_code: 0 },
+      { id: "build", command: "build", state: "succeeded", outcome: "complete", summary: "**Built** the `feature`\n\n- tests pass\n\n<script>window.injected = true</script>", executor: "test-executor", model: "test-model", worker_name: "test-worker", duration_millis: 1000, exit_code: 0 },
     ],
   };
   const interruptedJob = { ...detailJob, id: "job_interrupted", state: "interrupted", workflow: { name: "build", steps: ["build"], current_step: 0 }, runs: [{ id: "interrupted", command: "build", state: "interrupted" }] };
@@ -62,30 +63,59 @@ test("runs default to board view and share filters when switching views", async 
   });
 
   mountedRoot = (await server.ssrLoadModule("/src/main.jsx")).appRoot;
-  await eventually(() => assert.match(document.body.textContent, /Failed fixture/));
 
-  assert.equal(button("Board").getAttribute("aria-pressed"), "true");
-  assert.ok(document.querySelector('a[href="#/runs/job_failed"]'), "board links to task");
-  assert.equal(button("List").getAttribute("aria-pressed"), "false");
+  // Home lists what needs you, with a spinner on running work.
+  await eventually(() => assert.match(document.body.textContent, /Failed fixture/));
+  const needsYou = document.querySelector('section[aria-label="Needs you"]');
+  assert.match(needsYou.textContent, /Failed fixture/);
+  assert.doesNotMatch(needsYou.textContent, /Succeeded fixture/);
+  assert.ok(document.querySelector('section[aria-label="In progress"] .spinner'), "running tasks spin");
+  assert.ok(document.querySelector('form[aria-label="New task"] textarea'), "home has the task composer");
+
+  assert.ok(document.querySelector('form[aria-label="New task"] [aria-label="Repository"]'), "composer uses the shared select");
+
+  window.location.hash = "#/settings";
+  await eventually(() => assert.ok(button("Add repository")));
+  button("Add repository").click();
+  const dialog = await eventually(() => { const found = document.querySelector('[role="dialog"]'); assert.ok(found, "repository dialog opens"); return found; });
+  assert.match(dialog.textContent, /\[repositories\.my-project\]/, "dialog shows the worker.toml block to paste");
+  assert.doesNotMatch(document.querySelector("main").textContent, /Average task time/, "settings no longer shows usage metrics");
+  assert.ok(dialog.querySelector('[aria-label="Close"]'), "dialog can be closed");
+
+  // Leaving the page unmounts the dialog (jsdom never finishes its exit transition).
+  window.location.hash = "#/usage";
+  await eventually(() => assert.match(document.querySelector("main").textContent, /Average task time/));
+  await eventually(() => assert.equal(document.querySelector('[role="dialog"]'), null));
+
+  window.location.hash = "#/tasks";
+  await eventually(() => assert.equal(button("List").getAttribute("aria-pressed"), "true"));
+  assert.ok(document.querySelector('a[href="#/tasks/job_failed"]'), "list links to task");
+  for (const group of ["Failed", "Running", "Done"]) assert.ok(document.querySelector(`section[aria-label="${group}"]`), `${group} group shown`);
 
   button("Board").click();
   await eventually(() => assert.equal(button("Board").getAttribute("aria-pressed"), "true"));
-  assert.match(document.body.textContent, /Waiting to start/);
+  assert.ok(document.querySelector("#board-needs"), "board has a Needs you column");
+  assert.match(document.querySelector('section[aria-labelledby="board-needs"]').textContent, /Failed fixture/);
 
-  button("Failed").click();
-  await eventually(() => assert.doesNotMatch(document.body.textContent, /Succeeded fixture/));
-  assert.match(document.body.textContent, /Failed fixture/);
+  const search = document.querySelector('input[aria-label="Search tasks"]');
+  setInput(search, "succeeded");
+  await eventually(() => assert.doesNotMatch(document.body.textContent, /Failed fixture/));
+  assert.match(document.body.textContent, /Succeeded fixture/);
 
   button("List").click();
   await eventually(() => assert.equal(button("List").getAttribute("aria-pressed"), "true"));
-  assert.equal(button("Failed").getAttribute("aria-pressed"), "true");
-  assert.ok(document.querySelector('a[href="#/runs/job_failed"]'), "list links to task");
-  assert.match(document.body.textContent, /Failed fixture/);
-  assert.doesNotMatch(document.body.textContent, /Succeeded fixture/);
+  assert.match(document.body.textContent, /Succeeded fixture/);
+  assert.doesNotMatch(document.body.textContent, /Failed fixture/);
 
-  window.location.hash = "#/runs/job_detail";
+  window.location.hash = "#/tasks/job_detail";
   await eventually(() => assert.match(document.body.textContent, /Task with files/));
   await eventually(() => assert.ok(document.querySelector('[aria-label="View result.md"]')));
+  const summary = document.querySelector('section[aria-label="Current result"] .markdown');
+  assert.equal(summary.querySelector("strong")?.textContent, "Built", "summary markdown is rendered");
+  assert.equal(summary.querySelector("code")?.textContent, "feature");
+  assert.equal(summary.querySelector("li")?.textContent, "tests pass");
+  assert.match(summary.textContent, /<script>window\.injected = true<\/script>/, "raw HTML stays visible as text");
+  assert.equal(document.querySelectorAll("script").length, 0, "agent HTML is never rendered as markup");
   assert.equal(artifactRequests, 1, "metadata fetched once across all panels and attempts");
   const tab = name => [...document.querySelectorAll('[role="tab"]')].find(el => el.textContent === name);
   tab("Details").click();
@@ -112,6 +142,11 @@ test("runs default to board view and share filters when switching views", async 
 
 });
 
+function setInput(input, value) {
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, value);
+  input.dispatchEvent(new window.Event("input", { bubbles: true }));
+}
+
 function button(label) {
   const match = [...document.querySelectorAll("button")].find((element) => element.textContent.includes(label));
   assert.ok(match, `button ${label} should exist`);
@@ -120,7 +155,7 @@ function button(label) {
 
 async function eventually(assertion) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    try { assertion(); return; } catch (error) {
+    try { return assertion(); } catch (error) {
       if (attempt === 49) throw error;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }

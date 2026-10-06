@@ -7,10 +7,10 @@ test("workers show connected and disconnected poll status", async () => {
   const main = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
 
   assert.match(catalog, /worker\.connected \? "Connected" : "Disconnected"/);
-  assert.match(catalog, /worker\.connected \? "[^"]*text-success"/);
+  assert.match(catalog, /state=\{worker\.connected \? "online" : "offline"\}/);
   assert.match(catalog, /Last seen \{relativeTime\(worker\.last_seen_at\)\}/);
-  assert.match(main, /status\.workers\.filter\(\(worker\) => worker\.connected\)\.length/);
-  assert.match(main, /worker\$\{connectedWorkers === 1 \? "" : "s"\} online/);
+  assert.match(main, /workers\.filter\(\(worker\) => worker\.connected\)/);
+  assert.match(main, /worker\$\{online\.length === 1 \? "" : "s"\} online/);
   assert.match(main, /truncate whitespace-nowrap/);
-  assert.match(main, /title=\{`\$\{connectedWorkers\} connected · \$\{status\.workers\.length\} registered`\}/);
+  assert.match(main, /title=\{`\$\{online\.length\} connected · \$\{workers\.length\} registered`\}/);
 });
