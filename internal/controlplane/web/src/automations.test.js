@@ -17,12 +17,33 @@ test("automations expose manual and scheduled jobs, progress and editor without 
   assert.match(html,/Resume/); assert.match(html,/href="#\/runs\/job1"/); assert.match(html,/Run now/);
   assert.match(html,/repository root/); assert.doesNotMatch(html,/<details|type="checkbox"|role="switch"/);
   const historical = renderToStaticMarkup(React.createElement(AutomationsPage,{automations:[{...a,busy:true}],jobs:[{id:"job1",state:"succeeded"}],repositories:["repo"],loaded:true}));
-  assert.match(historical,/Waiting on an active run/);
+  assert.match(historical,/An earlier run needs attention/);
   assert.match(historical,/<button[^>]*disabled=""[^>]*>[\s\S]*?Run now/);
   const stopped = renderToStaticMarkup(React.createElement(AutomationsPage,{automations:[{...a,needs_stop_confirmation:true}],jobs:[{id:"job1",state:"cancelled"}],repositories:["repo"],loaded:true}));
   assert.match(stopped,/Confirm stopped and run/);
   const editor = renderToStaticMarkup(React.createElement(AutomationEditor,{initial:a,repositories:["repo"],pending:false}));
   assert.match(editor,/Instructions/); assert.match(editor,/Timezone/); assert.match(editor,/Delete automation/);
+});
+
+test("automation waiting messages distinguish running work from pending decisions", async context => {
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
+  context.after(() => server.close());
+  const { AutomationsPage } = await server.ssrLoadModule("/src/automations.jsx");
+  const a = { id: "a", name: "Bug review", repository: "repo", prompt: "Review", cron: "", last_job: "job1" };
+  for (const [state, message] of [
+    ["queued", "Run queued."],
+    ["running", "Run in progress."],
+    ["awaiting_merge", "Merge the PR, then check its status."],
+    ["awaiting_approval", "Approve the specification to continue."],
+    ["blocked", "Resolve the blocker or cancel the task."],
+  ]) {
+    const html = renderToStaticMarkup(React.createElement(AutomationsPage, { automations: [a], jobs: [{ id: "job1", state }], repositories: ["repo"], loaded: true }));
+    assert.ok(html.includes(message), `Missing guidance for ${state}`);
+    const dom = new JSDOM(html);
+    const run = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent.includes("Run now"));
+    assert.equal(run.disabled, true, `${state} allowed another run`);
+    dom.window.close();
+  }
 });
 
 test("Run now retains its admission key after a lost response and links the resulting job", async context => {

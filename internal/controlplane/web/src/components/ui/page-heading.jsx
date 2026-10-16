@@ -1,6 +1,6 @@
 export function PageHeading({ title, description, children }) {
-  return <header className="page-heading flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-    <div>
+  return <header className="page-heading flex flex-col items-start gap-4 sm:flex-row sm:justify-between">
+    <div className="min-w-0">
       <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
       {description && <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{description}</p>}
     </div>

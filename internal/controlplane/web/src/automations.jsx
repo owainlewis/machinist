@@ -56,30 +56,49 @@ export function AutomationsPage({ automations = [], jobs = [], repositories = []
   }
   return <div className="runs-page automations-page">
     <PageHeading title="Automations" description="Saved agent jobs, on demand or on a schedule.">
-      <Button disabled={!loaded || !repositories.length || Boolean(pending) || Boolean(editor)} onClick={event => { opener.current = event.currentTarget; setFailure(""); setConflict(false); setEditor({ name: "", repository: repositories[0], prompt: "", cron: "", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", paused: false }); }}><Plus className="size-4" />New automation</Button>
+      <Button size="sm" className="shrink-0" disabled={!loaded || !repositories.length || Boolean(pending) || Boolean(editor)} onClick={event => { opener.current = event.currentTarget; setFailure(""); setConflict(false); setEditor({ name: "", repository: repositories[0], prompt: "", cron: "", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", paused: false }); }}><Plus className="size-3.5" />New automation</Button>
     </PageHeading>
     {((!editor && failure) || error) && <p role="alert" className="automation-error">{(!editor && failure) || error}</p>}
     {notice && <p role="status" className="automation-notice">{notice.text} <a href={`#/runs/${notice.id}`}>View run</a></p>}
     {editor && <AutomationEditor key={`${editor.id || "new"}:${editor.version || 0}`} initial={editor} repositories={repositories} pending={Boolean(pending)} error={failure} conflict={conflict} onReload={() => { const latest = automations.find(a => a.id === editor.id); if (latest) { setEditor(latest); setFailure(""); setConflict(false); } else { closeEditor(); } }} onSave={save} onClose={closeEditor} />}
     {!loaded ? <p role="status" className="py-8 text-sm text-muted-foreground">Loading automations…</p> : automations.length ? <div className="automation-list" aria-label="Saved automations">
-      {automations.map(a => {
-        const job = jobs.find(job => job.id === a.last_job);
-        const busy = a.busy || (job && !["succeeded", "failed", "cancelled"].includes(job.state));
-        return <article key={a.id} className="automation-row">
-          <div className="automation-info"><h2>{a.name}</h2><p>{a.repository}</p><p className="automation-schedule"><Clock3 className="size-3.5" aria-hidden="true" />{automationSchedule(a)}</p>
-            {a.next_due && <p>Next: <time dateTime={a.next_due}>{dateLabel(a.next_due)}</time></p>}
-            {a.last_error && <p className="text-warning">{a.last_error}</p>}
-          </div>
-          <div className="automation-result">{a.last_job ? <><a href={`#/runs/${a.last_job}`}>Last run<span className="sr-only"> {a.name}</span></a>{job && <State value={job.state} compact />}{busy && <span>Waiting on an active run</span>}{a.last_run && <time dateTime={a.last_run}>{dateLabel(a.last_run)}</time>}</> : <span>No runs yet</span>}</div>
-          <div className="automation-actions">{(confirmRun === a.id || a.needs_stop_confirmation) && <Button variant="outline" size="sm" disabled={Boolean(pending)} onClick={() => act(a, "run", true)}>Confirm stopped and run</Button>}<Button variant="outline" size="sm" disabled={Boolean(pending) || Boolean(editor) || Boolean(busy)} onClick={() => act(a, "run")}><Play className="size-3.5" />{pending === a.id ? "Working…" : "Run now"}<span className="sr-only"> {a.name}</span></Button>
-            {a.cron && <Button variant="ghost" size="sm" disabled={Boolean(pending) || Boolean(editor)} onClick={() => act(a, "pause")}>{a.paused ? "Resume" : "Pause"}<span className="sr-only"> {a.name}</span></Button>}
-            <Button variant="ghost" size="sm" disabled={Boolean(pending) || Boolean(editor)} onClick={event => { opener.current = event.currentTarget; setFailure(""); setConflict(false); setEditor(a); }}>Edit<span className="sr-only"> {a.name}</span></Button>
-          </div>
-        </article>;
-      })}
+      {automations.map(a => <AutomationRow key={a.id} automation={a} job={jobs.find(job => job.id === a.last_job)} pending={pending} editing={Boolean(editor)} confirmStopped={confirmRun === a.id} onAction={act} onEdit={event => { opener.current = event.currentTarget; setFailure(""); setConflict(false); setEditor(a); }} />)}
     </div> : !editor && <div className="automation-empty"><h2>No automations yet</h2><p>Save a prompt to review code, find bugs or handle recurring maintenance. Run it whenever you need it.</p>{!repositories.length && <a href="#/repositories">Connect a repository to get started</a>}</div>}
     <p className="automation-footnote">One agent runs from the repository root using your configured runner. Schedules need Machinist running. Missed occurrences are combined into one run; unresolved jobs prevent overlapping runs. Results stay in run history, and repository changes use normal PR delivery.</p>
   </div>;
+}
+
+function AutomationRow({ automation: a, job, pending, editing, confirmStopped, onAction, onEdit }) {
+  const busy = a.busy || (job && !["succeeded", "failed", "cancelled"].includes(job.state));
+  const waiting = {
+    queued: "Run queued.",
+    running: "Run in progress.",
+    awaiting_merge: "Merge the PR, then check its status.",
+    awaiting_approval: "Approve the specification to continue.",
+    blocked: "Resolve the blocker or cancel the task.",
+  }[job?.state] || "An earlier run needs attention.";
+  return <article className="automation-row" aria-label={a.name}>
+    <div className="automation-info">
+      <h2>{a.name}</h2>
+      <p>{a.repository}</p>
+      <p className="automation-schedule"><Clock3 className="size-3.5 shrink-0" aria-hidden="true" />{automationSchedule(a)}</p>
+      {a.next_due && <p>Next: <time dateTime={a.next_due}>{dateLabel(a.next_due)}</time></p>}
+      {a.last_error && <p className="text-warning">{a.last_error}</p>}
+    </div>
+    <div className="automation-result">
+      {a.last_job ? <>
+        <div className="automation-result-heading"><a href={`#/runs/${a.last_job}`}>Last run<span className="sr-only"> {a.name}</span></a>{job && <State value={job.state} compact />}</div>
+        {a.last_run && <time dateTime={a.last_run}>{dateLabel(a.last_run)}</time>}
+        {busy && <span>{waiting}</span>}
+      </> : <span>No runs yet</span>}
+    </div>
+    <div className="automation-actions">
+      {(confirmStopped || a.needs_stop_confirmation) && <Button variant="outline" size="sm" disabled={Boolean(pending) || editing} onClick={() => onAction(a, "run", true)}>Confirm stopped and run</Button>}
+      <Button variant="outline" size="sm" disabled={Boolean(pending) || editing || Boolean(busy)} onClick={() => onAction(a, "run")}><Play className="size-3.5" />{pending === a.id ? "Working…" : "Run now"}<span className="sr-only"> {a.name}</span></Button>
+      {a.cron && <Button variant="ghost" size="sm" disabled={Boolean(pending) || editing} onClick={() => onAction(a, "pause")}>{a.paused ? "Resume" : "Pause"}<span className="sr-only"> {a.name}</span></Button>}
+      <Button variant="ghost" size="sm" disabled={Boolean(pending) || editing} onClick={onEdit}>Edit<span className="sr-only"> {a.name}</span></Button>
+    </div>
+  </article>;
 }
 
 function definition(a) { return { name: a.name, repository: a.repository, prompt: a.prompt, cron: a.cron, timezone: a.timezone, paused: a.paused, version: a.version }; }
