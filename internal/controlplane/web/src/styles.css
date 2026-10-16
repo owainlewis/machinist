@@ -53,7 +53,6 @@
 html { background: var(--background); }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--background); color: var(--foreground); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 
-button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 ::selection { background: color-mix(in srgb, var(--primary) 25%, transparent); }
@@ -307,15 +306,19 @@ a { text-underline-offset: 3px; }
 
 /* Saved jobs share the compact Runs surface and existing control styles. */
 .automation-list { border-block:1px solid var(--border); }
-.automation-row { display:grid;grid-template-columns:minmax(0,1fr) minmax(10rem,.6fr) auto;gap:1.25rem;align-items:center;padding:1rem 0;border-bottom:1px solid var(--border); }
+.automation-row { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,14rem) minmax(0,14rem);gap:1rem;align-items:center;padding:1rem 0;border-bottom:1px solid var(--border); }
+.automation-row > * {min-width:0;}
 .automation-row:last-child { border-bottom:0; }
 .automation-info h2,.automation-empty h2,.automation-editor h2 {font-size:14px;font-weight:600;}
+.automation-info h2 {overflow-wrap:anywhere;}
 .automation-info p,.automation-result {font-size:12px;color:var(--muted-foreground);line-height:1.7;overflow-wrap:anywhere;}
 .automation-info p {margin-top:.15rem;}
 .automation-schedule {display:flex;align-items:center;gap:.4rem;}
 .automation-result {display:flex;align-items:flex-start;gap:.3rem;flex-direction:column;}
+.automation-result-heading {display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;}
 .automation-result a,.automation-notice a,.automation-empty a {color:var(--primary);text-decoration:underline;}
-.automation-actions {display:flex;align-items:center;gap:.35rem;}
+.automation-actions {display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:.375rem;}
+.automation-actions > button {max-width:100%;min-height:2rem;height:auto;padding-block:.375rem;white-space:normal;}
 .automation-footnote {max-width:76ch;font-size:12px;line-height:1.7;color:var(--muted-foreground);margin-top:1.25rem;}
 .automation-empty {padding:3rem 0;max-width:52ch;}
 .automation-empty p {font-size:14px;line-height:1.7;color:var(--muted-foreground);margin-top:.5rem;}
@@ -332,7 +335,8 @@ a { text-underline-offset: 3px; }
 .automation-save {display:flex;gap:.5rem;margin-left:auto;}
 .automation-error {color:var(--danger);font-size:13px;margin-bottom:1rem;}
 .automation-notice {font-size:13px;margin-bottom:1rem;}
-@media(max-width:767px){.app-sidebar nav{grid-template-columns:repeat(5,minmax(0,1fr));}.app-sidebar nav .nav-item[href="#/agents"],.app-sidebar nav .nav-item[href="#/runners"]{display:none;}.automation-row{grid-template-columns:minmax(0,1fr);gap:.75rem;}.automation-result{flex-direction:row;flex-wrap:wrap;gap:.5rem;}.automation-actions{flex-wrap:wrap;}.automation-fields{grid-template-columns:minmax(0,1fr);}}
+@media(max-width:1100px) and (min-width:768px){.automation-row{grid-template-columns:minmax(0,1fr) minmax(0,14rem);gap:.5rem 1rem;}.automation-info,.automation-result{grid-column:1;}.automation-actions{grid-column:2;grid-row:1 / span 2;}}
+@media(max-width:767px){.app-sidebar nav{grid-template-columns:repeat(5,minmax(0,1fr));}.app-sidebar nav .nav-item[href="#/agents"],.app-sidebar nav .nav-item[href="#/runners"]{display:none;}.automation-row{grid-template-columns:minmax(0,1fr);gap:.75rem;}.automation-actions{justify-content:flex-start;}.automation-fields{grid-template-columns:minmax(0,1fr);}}
 
 /* Dashboard: current decisions first, measured activity second. */
 .dashboard-page { max-width:1600px; margin-inline:auto; }
