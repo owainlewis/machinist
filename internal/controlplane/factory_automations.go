@@ -77,6 +77,9 @@ func (s *factoryLocalStore) saveAutomation(ctx context.Context, a factoryAutomat
 func (s *GitHubFactoryServer) validateAutomation(a *factoryAutomation, now time.Time) error {
 	a.Name = strings.TrimSpace(a.Name)
 	a.Prompt = strings.TrimSpace(a.Prompt)
+	if strings.ContainsAny(a.Cron, "\r\n") {
+		return errors.New("cron schedule must be on one line")
+	}
 	a.Cron = strings.Join(strings.Fields(a.Cron), " ")
 	if a.Name == "" || len(a.Name) > 120 {
 		return errors.New("name must contain 1 to 120 bytes")

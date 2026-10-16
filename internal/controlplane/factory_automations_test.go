@@ -264,3 +264,30 @@ func TestAutomationLargeCronStep(t *testing.T) {
 		t.Fatal("large cron step lost its first valid occurrence")
 	}
 }
+
+func TestAutomationRejectsMultilineCron(t *testing.T) {
+	for _, newline := range []string{"\n", "\r", "\r\n"} {
+		t.Run(strconv.Quote(newline), func(t *testing.T) {
+			s := githubFactoryTestServer(t, newMemoryFactoryGitHub())
+			a := createAutomation(t, s, "0 9 * * *")
+			a.Cron = "0 9" + newline + "* * *"
+			for _, method := range []string{"POST", "PUT"} {
+				path := "/api/v1/automations"
+				if method == "PUT" {
+					path += "/" + a.ID
+				}
+				raw := factoryHTTP(t, s, method, path, a, 400)
+				if !strings.Contains(string(raw), "one line") {
+					t.Fatalf("unexpected validation error: %s", raw)
+				}
+			}
+			list, err := s.local.automations(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list) != 1 || list[0].Cron != "0 9 * * *" || list[0].Version != a.Version || !list[0].NextDue.Equal(*a.NextDue) {
+				t.Fatalf("rejected schedule changed saved automations: %+v", list)
+			}
+		})
+	}
+}
