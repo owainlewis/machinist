@@ -14,9 +14,13 @@ test("routeFromHash falls back to runs for incomplete or malformed routes", () =
 });
 
 test("factory navigation routes remain addressable", () => {
-  for (const view of ["inbox", "agents", "automations", "settings"]) {
+  for (const view of ["agents", "automations", "settings"]) {
     assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
   }
+});
+
+test("retired inbox links open Runs needing attention", () => {
+  assert.deepEqual(routeFromHash("#/inbox"), { view: "runs", jobID: "", filter: "attention" });
 });
 
 test("removed workflow configuration routes return to runs",()=>{

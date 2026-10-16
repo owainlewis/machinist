@@ -1,11 +1,11 @@
 import { Onboarding } from "./onboarding.jsx";
 import { TaskDetail } from "./task-detail.jsx";
 import { StageProgress, stageLabel } from "./stage-progress.jsx";
-import { State, friendlyName, relativeTime } from "./task-display.jsx";
+import { State, friendlyName } from "./task-display.jsx";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/inter";
-import { Activity, LayoutDashboard, Bot, Inbox, Clock3, Settings, Search, GitBranch, Moon, Play, Plus, Server, Sun, X } from "lucide-react";
+import { Activity, LayoutDashboard, Bot, Clock3, Settings, Search, GitBranch, Moon, Play, Plus, Server, Sun, X } from "lucide-react";
 import { Dashboard } from "@/analytics";
 import { AgentsPage, WorkersPage } from "@/catalog";
 import { Badge } from "@/components/ui/badge";
@@ -37,8 +37,6 @@ function App() {
   const [submitting, setSubmitting] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [inboxID, setInboxID] = useState("");
-  const [clearingInbox,setClearingInbox]=useState("");
   const [filter, setFilter] = useState("all");
   const [recipe, setRecipe] = useState("factory");
   const submission = useRef(null);
@@ -113,9 +111,6 @@ function App() {
   const counts = useMemo(() => jobCounts(status.jobs), [status.jobs]);
   const visibleJobs = useMemo(() => filterJobs(status.jobs, filter), [filter, status.jobs]);
 
-  const attentionJobs = status.jobs.filter(job => !job.inbox_cleared && ["awaiting_approval", "awaiting_merge", "blocked", "interrupted", "failed", "timed_out"].includes(job.state));
-  const selectedInboxJob = attentionJobs.find(job => job.id === inboxID);
-  const inboxJob = selectedInboxJob || attentionJobs[0];
   const searchedJobs = visibleJobs.filter(job => `${jobDisplayTitle(job)} ${job.repository} ${currentRun(job)?.command || ""}`.toLowerCase().includes(search.toLowerCase()));
   const connectedWorkers = status.workers.filter((worker) => worker.connected).length;
   const selectedJob = route.jobID ? status.jobs.find((job) => job.id === route.jobID) : undefined;
@@ -164,12 +159,6 @@ function App() {
     } catch (error) { setTaskActionError(error.message); return false; }
   }
 
-  async function clearInbox(job) {
-    setClearingInbox(job.id);
-    try {if (await workflowAction(job,"clear_inbox")) setInboxID("");}
-    finally {setClearingInbox("");}
-  }
-
   async function deleteJob(job) {
     if (!window.confirm(`Delete task ${shortId(job.id)} and all of its stored run data?`)) return;
     setDeletingJob(job.id);
@@ -200,7 +189,7 @@ function App() {
         </div>
         <nav className="primary-nav" aria-label="Primary">
           <span className="nav-group">Work</span>
-          {[["dashboard", LayoutDashboard, "Dashboard"], ["runs", Activity, "Runs"], ["inbox", Inbox, "Inbox", attentionJobs.length], ["automations", Clock3, "Automations"]].map(([page, Icon, label, count]) => <a key={page} href={`#/${page}`} aria-current={view === page || (page === "runs" && view === "task") ? "page" : undefined} className={cn("nav-item", (view === page || (page === "runs" && view === "task")) && "nav-item-active")}><Icon className="size-4" /><span>{label}</span>{count > 0 && <span className="nav-count">{count}</span>}</a>)}
+          {[["dashboard", LayoutDashboard, "Dashboard"], ["runs", Activity, "Runs"], ["automations", Clock3, "Automations"]].map(([page, Icon, label]) => <a key={page} href={`#/${page}`} aria-current={view === page || (page === "runs" && view === "task") ? "page" : undefined} className={cn("nav-item", (view === page || (page === "runs" && view === "task")) && "nav-item-active")}><Icon className="size-4" /><span>{label}</span></a>)}
           <span className="nav-group">Infrastructure</span>
           {[["repositories", GitBranch, "Projects"], ["agents", Bot, "Agents"], ["runners", Server, "Runners"]].map(([page,Icon,label]) => <a key={page} href={`#/${page}`} aria-current={view === page ? "page" : undefined} className={cn("nav-item", view === page && "nav-item-active")}><Icon className="size-4" /><span>{label}</span></a>)}
           <a href="#/settings" className={cn("nav-item settings-nav", ["settings", "workers"].includes(view) && "nav-item-active")} aria-current={view === "settings" ? "page" : undefined}><Settings className="size-4" /><span>Settings</span></a>
@@ -218,7 +207,7 @@ function App() {
 
       <main className="workshop min-w-0 flex-1">
         <div className="runtime-bar" role="status"><span><i className={connectedWorkers ? "runtime-online" : ""} />{statusError ? "Connection lost" : connectedWorkers ? "Connected" : "No runner online"}</span><span>{status.jobs.filter(job => job.state === "running").length} running</span><span>{status.jobs.filter(job => job.state === "queued").length} queued</span><span className="runtime-location">{({remote:"VM",kubernetes:"Kubernetes",local:"Local"}[status.onboarding?.selection?.host] || "Local")}</span></div>
-        {view === "setup" ? <Onboarding csrfToken={status.csrf_token} onReady={() => statusLoader.current.refresh()} /> : view === "task" ? <TaskDetail csrfToken={status.csrf_token} job={selectedJob} loaded={statusLoaded} error={statusError || taskActionError} deleting={deletingJob === route.jobID} onDelete={deleteJob} onWorkflowAction={workflowAction} /> : view === "dashboard" ? <Dashboard jobs={status.jobs} workers={status.workers} automations={status.automations} loaded={statusLoaded} error={statusError} onNewRun={() => { setComposerOpen(true); window.location.hash = "/runs"; }} /> : ["runners", "workers"].includes(view) ? <WorkersPage workers={status.workers} loaded={statusLoaded} error={statusError} /> : view === "repositories" ? <ProjectsPage status={status} onRefresh={() => statusLoader.current.refresh()} /> : view === "settings" ? <div><div className="settings-connection-link"><h1>Settings</h1><a href="#/setup">GitHub connection and setup</a></div><div className="settings-links"><a href="#/repositories">Projects</a><a href="#/runners">Runners and connections</a><a href="#/automations">Automations</a><a href="#/agents">Agent prompts</a></div></div> : ["triggers", "automations"].includes(view) ? (status.state_backend === "local" ? <AutomationsPage automations={status.automations || []} jobs={status.jobs} repositories={status.repositories} csrfToken={status.csrf_token} loaded={statusLoaded} error={statusError} onRefresh={() => statusLoader.current.refresh()} /> : <TriggersPage stateBackend={status.state_backend} triggers={status.triggers || []} loaded={statusLoaded} error={statusError} />) : view === "agents" ? <AgentsPage csrfToken={status.csrf_token} repositories={status.repositories} stateBackend={status.state_backend} /> : view === "inbox" ? <div className="inbox-page"><PageHeading title="Inbox" description="Decisions and updates that need your attention." /><div className={cn("inbox-split", selectedInboxJob && "inbox-has-selection")}><section aria-label="Inbox tasks" className="inbox-list">{attentionJobs.length ? attentionJobs.map(job => <button key={job.id} onClick={() => setInboxID(job.id)} className={cn("inbox-row", inboxJob?.id === job.id && "inbox-row-selected")}><span className="block text-sm font-medium">{jobDisplayTitle(job)}</span><span className="mt-2 block text-xs text-muted-foreground">{job.repository} <State value={job.state} compact /></span><time className="mt-1 block text-xs text-muted-foreground">{relativeTime(job.updated_at || job.created_at)}</time></button>) : <div className="p-8 text-sm text-muted-foreground">You’re all caught up. Tasks that need a decision will appear here.</div>}</section>{inboxJob && <section className="inbox-detail" aria-label="Selected inbox task"><div className="inbox-actions"><button className="inbox-back" onClick={() => setInboxID("")}>Back to inbox</button><Button variant="outline" disabled={clearingInbox === inboxJob.id} onClick={() => clearInbox(inboxJob)}>{clearingInbox === inboxJob.id ? "Clearing…" : "Clear from inbox"}</Button></div><TaskDetail key={`${inboxJob.id}:${inboxJob.runs.at(-1)?.id}:${inboxJob.state}`} csrfToken={status.csrf_token} job={inboxJob} loaded={statusLoaded} error={taskActionError} deleting={deletingJob === inboxJob.id} onDelete={deleteJob} onWorkflowAction={workflowAction} /></section>}</div>{statusError && <p role="alert">{statusError}</p>}</div> : <div className="runs-page">
+        {view === "setup" ? <Onboarding csrfToken={status.csrf_token} onReady={() => statusLoader.current.refresh()} /> : view === "task" ? <TaskDetail csrfToken={status.csrf_token} job={selectedJob} loaded={statusLoaded} error={statusError || taskActionError} deleting={deletingJob === route.jobID} onDelete={deleteJob} onWorkflowAction={workflowAction} /> : view === "dashboard" ? <Dashboard jobs={status.jobs} workers={status.workers} automations={status.automations} loaded={statusLoaded} error={statusError} onNewRun={() => { setComposerOpen(true); window.location.hash = "/runs"; }} /> : ["runners", "workers"].includes(view) ? <WorkersPage workers={status.workers} loaded={statusLoaded} error={statusError} /> : view === "repositories" ? <ProjectsPage status={status} onRefresh={() => statusLoader.current.refresh()} /> : view === "settings" ? <div><div className="settings-connection-link"><h1>Settings</h1><a href="#/setup">GitHub connection and setup</a></div><div className="settings-links"><a href="#/repositories">Projects</a><a href="#/runners">Runners and connections</a><a href="#/automations">Automations</a><a href="#/agents">Agent prompts</a></div></div> : ["triggers", "automations"].includes(view) ? (status.state_backend === "local" ? <AutomationsPage automations={status.automations || []} jobs={status.jobs} repositories={status.repositories} csrfToken={status.csrf_token} loaded={statusLoaded} error={statusError} onRefresh={() => statusLoader.current.refresh()} /> : <TriggersPage stateBackend={status.state_backend} triggers={status.triggers || []} loaded={statusLoaded} error={statusError} />) : view === "agents" ? <AgentsPage csrfToken={status.csrf_token} repositories={status.repositories} stateBackend={status.state_backend} /> : <div className="runs-page">
           <PageHeading title="Runs" description="Agent jobs across your repositories.">
             <div className="flex items-center gap-2">
               {!composerOpen && <Button className="text-xs!" onClick={() => setComposerOpen(true)}><Plus className="size-4" />New run</Button>}

@@ -51,6 +51,7 @@ test("dashboard renders useful job links, missing usage and honest empty activit
   const {Dashboard}=await server.ssrLoadModule("/src/analytics.jsx");
   const html=renderToStaticMarkup(React.createElement(Dashboard,{jobs:[job("ready","awaiting_merge")],loaded:true,now}));
   assert.match(html,/<h1[^>]*>Dashboard/);assert.match(html,/href="#\/runs\?filter=pr_ready"/);assert.match(html,/href="#\/runs\/ready"/);
+  assert.match(html,/href="#\/runs">View runs/);assert.doesNotMatch(html,/#\/inbox|Open inbox/);
   assert.match(html,/Not reported/);assert.doesNotMatch(html,/100%|\$0|<details|role="switch"/);
   const empty=renderToStaticMarkup(React.createElement(Dashboard,{jobs:[],loaded:true,now}));
   assert.match(empty,/Create your first run/);assert.match(empty,/0 jobs at peak/);assert.doesNotMatch(empty,/1 job at peak/);

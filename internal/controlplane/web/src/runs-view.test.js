@@ -35,9 +35,7 @@ test("compact runs table filters jobs and preserves task actions", async (contex
   const githubJob = { ...detailJob, id: "github-issue", state_backend: "github", task: { title: "GitHub journal task", source_url: "https://github.com/example/repo/issues/1", spec: "Build it" }, runs: [{ id: "github-report", command: "triage", outcome: "complete", state: "succeeded", summary: "Researched the request. Read the stage on GitHub.", report: "Full researched handoff stored on GitHub", github_url: "https://github.com/example/repo/issues/1#issuecomment-2" }] };
   let cancelled = false;
   let savedPrompt;
-  let finishClear;
   globalThis.fetch = async (url, options) => {
-    if(url.endsWith("/clear_inbox")) return new Promise(resolve=>{finishClear=()=>{otherInterruptedJob.inbox_cleared=true;resolve({ok:true,json:async()=>({})});};});
     if (url.startsWith("/api/v1/definitions")) return { ok: true, json: async () => ({ commands: ["triage", "spec", "implement", "review"].map(name => ({ name, executor: "codex", prompt: `${name} original prompt`, hash: "original-hash", timeout: "20m" })) }) };
     if (url === "/api/v1/factory/agents/triage" && options?.method === "PUT") { savedPrompt = JSON.parse(options.body); return { ok: true, json: async () => ({ hash: "new-hash" }) }; }
 
@@ -116,27 +114,30 @@ test("compact runs table filters jobs and preserves task actions", async (contex
   await eventually(() => assert.equal([...document.querySelectorAll("button")].find(el => el.textContent === "Cancel task"), undefined));
 
   window.location.hash = "#/inbox";
-  await eventually(() => assert.ok(document.querySelector('[aria-label="Inbox tasks"]')));
-  assert.match(document.querySelector('[aria-label="Inbox tasks"]').textContent, /Failed fixture/);
-  assert.doesNotMatch(document.querySelector('[aria-label="Inbox tasks"]').textContent, /Succeeded fixture/);
-  // Stop confirmation and feedback belong only to the selected task attempt.
-  interruptedJob.state = "interrupted";
-  const inboxSelection = title => [...document.querySelectorAll(".inbox-row")].find(row => row.textContent.includes(title));
-  inboxSelection("Other interrupted task").click();
-  await eventually(() => assert.ok(document.querySelector('.inbox-detail input[type="checkbox"]')));
-  const confirmation = document.querySelector('.inbox-detail input[type="checkbox"]');
+  await eventually(() => assert.ok(document.querySelector('[role="table"][aria-label="Runs"]')));
+  await eventually(() => assert.equal(button("Needs attention").getAttribute("aria-pressed"), "true"));
+  assert.match(document.querySelector('[role="table"]').textContent, /Failed fixture/);
+  assert.doesNotMatch(document.querySelector('[role="table"]').textContent, /Succeeded fixture/);
+  assert.equal(document.querySelector('nav a[href="#/inbox"]'), null);
+  // Stop confirmation and feedback still belong only to the selected task attempt.
+  window.location.hash = "#/runs/job_interrupted_other";
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Other interrupted task"));
+  await eventually(() => assert.ok(document.querySelector('main input[type="checkbox"]')));
+  const confirmation = document.querySelector('main input[type="checkbox"]');
   confirmation.click();
   await eventually(() => assert.equal(confirmation.checked, true));
-  const feedbackField = document.querySelector(".inbox-detail textarea");
+  const feedbackField = document.querySelector("main textarea");
   Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(feedbackField, "Context only for task A");
   feedbackField.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await eventually(() => assert.equal(feedbackField.value, "Context only for task A"));
-  inboxSelection("Second interrupted task").click();
-  await eventually(() => assert.equal(document.querySelector(".inbox-detail textarea").value, ""));
-  assert.equal(document.querySelector('.inbox-detail input[type="checkbox"]').checked, false);
-  inboxSelection("Other interrupted task").click();
-  await eventually(() => assert.equal(document.querySelector('.inbox-detail input[type="checkbox"]').checked, false));
-  assert.equal(document.querySelector(".inbox-detail textarea").value, "");
+  window.location.hash = "#/runs/job_interrupted_second";
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Second interrupted task"));
+  await eventually(() => assert.equal(document.querySelector("main textarea").value, ""));
+  assert.equal(document.querySelector('main input[type="checkbox"]').checked, false);
+  window.location.hash = "#/runs/job_interrupted_other";
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Other interrupted task"));
+  await eventually(() => assert.equal(document.querySelector('main input[type="checkbox"]').checked, false));
+  assert.equal(document.querySelector("main textarea").value, "");
   window.location.hash = "#/runs/job_human_decision";
   await eventually(() => assert.ok([...document.querySelectorAll("button")].find(element => element.textContent === "Request changes")));
   assert.ok([...document.querySelectorAll("button")].find(element => element.textContent === "Retry review"));
@@ -173,15 +174,6 @@ test("compact runs table filters jobs and preserves task actions", async (contex
   await eventually(() => assert.deepEqual(savedPrompt, { prompt: "Updated triage prompt", expected_hash: "original-hash", repository: "example/repo" }));
   await eventually(() => assert.match(document.body.textContent, /Saved. Future stage attempts use this Markdown version/));
 
-  window.location.hash = "#/inbox";
-  await eventually(()=>assert.ok(document.querySelector(".inbox-list")));
-  [...document.querySelectorAll(".inbox-row")].find(el=>el.textContent.startsWith("Other interrupted task")).click();
-  await eventually(()=>assert.ok(document.querySelector(".inbox-has-selection")));
-  button("Clear from inbox").click();
-  await eventually(()=>assert.equal(button("Clearing…").disabled,true));
-  finishClear();
-  await eventually(()=>assert.ok(!document.querySelector(".inbox-has-selection")));
-  assert.equal([...document.querySelectorAll(".inbox-row")].some(el=>el.textContent.startsWith("Other interrupted task")),false);
   window.location.hash = "#/runs";
   await eventually(() => assert.ok([...document.querySelectorAll("button")].find(el => el.textContent === "New run")));
   // Polling adds a project without removing the selected repository or workflow.

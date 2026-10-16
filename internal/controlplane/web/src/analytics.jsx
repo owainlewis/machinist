@@ -25,7 +25,7 @@ export function Dashboard({ jobs = [], workers = [], automations, loaded, error,
 
       {jobs.length === 0 && <section className="dashboard-welcome"><h2>Start with one useful job</h2><p>Give an agent a task, connect an issue, or save a recurring automation. Its progress and results will appear here.</p><div><Button variant="outline" onClick={onNewRun}>Create your first run<ArrowRight className="size-3.5" /></Button><a href="#/automations">Set up an automation</a></div></section>}
 
-      {(view.active.length > 0 || view.ready.length > 0 || view.attention.length > 0) && <section className="dashboard-priorities" aria-labelledby="priority-heading"><header className="dashboard-section-heading"><div><h2 id="priority-heading">Keep work moving</h2><p>Current work across all dates.</p></div><a href="#/inbox">Open inbox<ArrowRight className="size-3.5" /></a></header><div className="dashboard-priority-columns">
+      {(view.active.length > 0 || view.ready.length > 0 || view.attention.length > 0) && <section className="dashboard-priorities" aria-labelledby="priority-heading"><header className="dashboard-section-heading"><div><h2 id="priority-heading">Keep work moving</h2><p>Current work across all dates.</p></div><a href="#/runs">View runs<ArrowRight className="size-3.5" /></a></header><div className="dashboard-priority-columns">
         {view.active.length > 0 && <Priority title="In progress" jobs={view.active} href="#/runs?filter=active" />}
         {view.ready.length > 0 && <Priority title="Ready to merge" jobs={view.ready} href="#/runs?filter=pr_ready" />}
         {view.attention.length > 0 && <Priority title="Needs attention" jobs={view.attention} href="#/runs?filter=attention" />}
