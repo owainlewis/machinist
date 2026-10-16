@@ -12,8 +12,10 @@ test("retired Inbox opens Runs and task actions remain available", { timeout: 15
     if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
   }
   globalThis.IS_REACT_ACT_ENVIRONMENT = false;
-  const job = { id: "last-task", repository: "owner/repo", recipe: "factory", state_backend: "local", state: "blocked", task: { title: "Task needing attention" }, workflow: { name: "factory", steps: ["triage"], current_step: 0, factory: {} }, runs: [{ id: "triage-run", command: "triage", state: "succeeded", summary: "Needs a decision" }] };
+  const job = { id: "last-task", repository: "owner/repo", recipe: "factory", state_backend: "local", state: "blocked", updated_at: "2026-10-16T12:00:00Z", task: { title: "Task needing attention" }, workflow: { name: "factory", steps: ["triage"], current_step: 0, factory: {} }, runs: [{ id: "triage-run", command: "triage", state: "succeeded", summary: "Needs a decision" }] };
+  let dismissal;
   globalThis.fetch = async (url, options) => {
+    if (url.endsWith("/clear_inbox") && options?.method === "POST") { dismissal = JSON.parse(options.body); job.inbox_cleared = true; return { ok: true, json: async () => ({}) }; }
     if (url.endsWith("/cancel") && options?.method === "POST") { job.state = "cancelled"; return { ok: true, json: async () => ({}) }; }
     if (url.endsWith("/artifacts")) return { ok: true, json: async () => [] };
     return { ok: true, json: async () => ({ jobs: [{ ...job }], workers: [], commands: [], repositories: ["owner/repo"], triggers: [], state_backend: "local", csrf_token: "test" }) };
@@ -36,6 +38,17 @@ test("retired Inbox opens Runs and task actions remain available", { timeout: 15
   assert.match(document.querySelector('[role="table"]').textContent, /Task needing attention/);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   await act(async () => document.querySelector('a[href="#/runs/last-task"]').click());
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Task needing attention"));
+  const dismiss = [...document.querySelectorAll("main button")].find(button => button.textContent === "Dismiss from attention");
+  assert.ok(dismiss);
+  await act(async () => dismiss.click());
+  await eventually(() => assert.equal([...document.querySelectorAll("main button")].some(button => button.textContent === "Dismiss from attention"), false));
+  assert.equal(dismissal.expected_updated_at, job.updated_at);
+  assert.equal(job.state, "blocked", "acknowledging does not cancel or retry the task");
+  await act(async () => { window.location.hash = "#/runs?filter=attention"; });
+  await eventually(() => assert.match(document.querySelector("main").textContent, /No matching tasks/));
+  assert.doesNotMatch(document.querySelector("main").textContent, /Task needing attention/);
+  await act(async () => { window.location.hash = "#/runs/last-task"; });
   await eventually(() => assert.equal(document.querySelector("h1").textContent, "Task needing attention"));
   const cancel = [...document.querySelectorAll("main button")].find(button => button.textContent === "Cancel task");
   assert.ok(cancel);
