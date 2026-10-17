@@ -44,6 +44,7 @@ type Store struct {
 }
 
 type Job struct {
+	Maintenance      bool              `json:"maintenance,omitempty"`
 	Recipe           string            `json:"recipe,omitempty"`
 	PublicationHold  string            `json:"publication_hold,omitempty"`
 	InboxCleared     bool              `json:"inbox_cleared,omitempty"`

@@ -278,7 +278,7 @@ func (c *GitHubConnection) API(ctx context.Context, method, path string, body []
 	defer c.mu.Unlock()
 	path = "/" + strings.TrimPrefix(path, "/")
 	u, err := url.Parse(path)
-	if err != nil || u.IsAbs() || u.Host != "" || strings.Contains(u.Path, "..") || u.RawPath != "" {
+	if err != nil || u.IsAbs() || u.Host != "" || (strings.Contains(u.Path, "..") && !(method == "GET" && maintenanceComparePath.MatchString(u.Path))) || u.RawPath != "" {
 		return nil, errors.New("invalid GitHub API path")
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
@@ -286,6 +286,20 @@ func (c *GitHubConnection) API(ctx context.Context, method, path string, body []
 		if !c.allowed[strings.ToLower(parts[1]+"/"+parts[2])] {
 			return nil, errors.New("repository is not available to this GitHub App installation")
 		}
+	} else if u.Path == "/graphql" && method == "POST" {
+		var input struct {
+			Query     string `json:"query"`
+			Variables struct {
+				Owner, Name string
+				Number      int
+			} `json:"variables"`
+		}
+		if json.Unmarshal(body, &input) != nil || input.Query != maintenancePRQuery || input.Variables.Number < 1 || !c.allowed[strings.ToLower(input.Variables.Owner+"/"+input.Variables.Name)] {
+			return nil, errors.New("unsupported or unscoped GitHub GraphQL operation")
+		}
+		// Forward only the validated, canonical fields. JSON's case-insensitive
+		// struct decoding must not authorize a different lowercase wire query.
+		body, _ = json.Marshal(map[string]any{"query": maintenancePRQuery, "variables": map[string]any{"owner": input.Variables.Owner, "name": input.Variables.Name, "number": input.Variables.Number}})
 	} else if method != "GET" || !(u.Path == "/user" || u.Path == "/user/installations" || (len(parts) == 3 && parts[0] == "user" && parts[1] == "installations")) {
 		return nil, errors.New("unsupported GitHub API path")
 	}
@@ -376,6 +390,9 @@ func (c *GitHubConnection) do(ctx context.Context, method, target string, body [
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	if strings.Contains(req.URL.Path, "/merge-async") {
+		req.Header.Set("X-GitHub-Api-Version", "2026-03-10")
+	}
 	req.Header.Set("Content-Type", contentType)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)

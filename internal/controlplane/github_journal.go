@@ -22,14 +22,15 @@ var errAgentConflict = errors.New("agent prompt changed; reload before saving")
 const GitHubJournalMarker = "<!-- machinist:v1 -->\n"
 
 type GitHubIssue struct {
-	Number      int             `json:"number"`
-	Title       string          `json:"title"`
-	Body        string          `json:"body"`
-	HTMLURL     string          `json:"html_url"`
-	State       string          `json:"state"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	CreatedAt   time.Time       `json:"created_at"`
-	PullRequest json.RawMessage `json:"pull_request,omitempty"`
+	Maintenance *maintenanceSnapshot `json:"machinist_maintenance,omitempty"`
+	Number      int                  `json:"number"`
+	Title       string               `json:"title"`
+	Body        string               `json:"body"`
+	HTMLURL     string               `json:"html_url"`
+	State       string               `json:"state"`
+	UpdatedAt   time.Time            `json:"updated_at"`
+	CreatedAt   time.Time            `json:"created_at"`
+	PullRequest json.RawMessage      `json:"pull_request,omitempty"`
 }
 type GitHubActor struct {
 	Login string `json:"login"`
@@ -61,6 +62,9 @@ func runFactoryGitHubAPI(ctx context.Context, method, path string, input []byte)
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	args := []string{"api", "--method", method, path}
+	if strings.Contains(path, "/merge-async") {
+		args = append(args, "-H", "X-GitHub-Api-Version: 2026-03-10")
+	}
 	if input != nil {
 		args = append(args, "--input", "-")
 	}

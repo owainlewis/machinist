@@ -291,6 +291,14 @@ func (s *GitHubFactoryState) queue(url, role, state string) {
 	if state == "awaiting_approval" && len(s.Job.Runs) > 0 {
 		reviewed = s.Job.Runs[len(s.Job.Runs)-1].ID
 	}
+	if role == "review" {
+		for i := len(s.Job.Runs) - 1; i >= 0; i-- {
+			if s.Job.Runs[i].Command == "implement" && s.Job.Runs[i].Outcome == "complete" {
+				reviewed = s.Job.Runs[i].ID
+				break
+			}
+		}
+	}
 	s.Job.Runs = append(s.Job.Runs, Run{ReviewedRunID: reviewed, ID: GitHubFactoryRunID(url, s.LastEventID, role, s.Job.Workflow.Factory.RepairRound), Command: role, Step: &index, State: state})
 }
 func (s *GitHubFactoryState) block(reason string) {

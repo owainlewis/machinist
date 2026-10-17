@@ -56,7 +56,7 @@ export function AutomationsPage({ automations = [], jobs = [], repositories = []
   }
   return <div className="runs-page automations-page">
     <PageHeading title="Automations" description="Saved agent jobs, on demand or on a schedule.">
-      <Button size="sm" className="shrink-0" disabled={!loaded || !repositories.length || Boolean(pending) || Boolean(editor)} onClick={event => { opener.current = event.currentTarget; setFailure(""); setConflict(false); setEditor({ name: "", repository: repositories[0], prompt: "", cron: "", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", paused: false }); }}><Plus className="size-3.5" />New automation</Button>
+      <Button size="sm" className="shrink-0" disabled={!loaded || !repositories.length || Boolean(pending) || Boolean(editor)} onClick={event => { opener.current = event.currentTarget; setFailure(""); setConflict(false); setEditor({ kind: "", name: "", repository: repositories[0], prompt: "", cron: "", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", paused: false }); }}><Plus className="size-3.5" />New automation</Button>
     </PageHeading>
     {((!editor && failure) || error) && <p role="alert" className="automation-error">{(!editor && failure) || error}</p>}
     {notice && <p role="status" className="automation-notice">{notice.text} <a href={`#/runs/${notice.id}`}>View run</a></p>}
@@ -64,7 +64,7 @@ export function AutomationsPage({ automations = [], jobs = [], repositories = []
     {!loaded ? <p role="status" className="py-8 text-sm text-muted-foreground">Loading automations…</p> : automations.length ? <div className="automation-list" aria-label="Saved automations">
       {automations.map(a => <AutomationRow key={a.id} automation={a} job={jobs.find(job => job.id === a.last_job)} pending={pending} editing={Boolean(editor)} confirmStopped={confirmRun === a.id} onAction={act} onEdit={event => { opener.current = event.currentTarget; setFailure(""); setConflict(false); setEditor(a); }} />)}
     </div> : !editor && <div className="automation-empty"><h2>No automations yet</h2><p>Save a prompt to review code, find bugs or handle recurring maintenance. Run it whenever you need it.</p>{!repositories.length && <a href="#/repositories">Connect a repository to get started</a>}</div>}
-    <p className="automation-footnote">One agent runs from the repository root using your configured runner. Schedules need Machinist running. Missed occurrences are combined into one run; unresolved jobs prevent overlapping runs. Results stay in run history, and repository changes use normal PR delivery.</p>
+    <p className="automation-footnote">Jobs run from the repository root using your configured runner. Maintenance agents are read-only; the foreman applies labels and checks every merge. Schedules need Machinist running. Missed occurrences are combined into one run; unresolved jobs prevent overlapping runs. Results stay in run history, and repository changes use normal PR delivery.</p>
   </div>;
 }
 
@@ -80,7 +80,7 @@ function AutomationRow({ automation: a, job, pending, editing, confirmStopped, o
   return <article className="automation-row" aria-label={a.name}>
     <div className="automation-info">
       <h2>{a.name}</h2>
-      <p>{a.repository}</p>
+      <p>{a.repository}{a.kind === "repository-maintenance" ? " · Repository maintenance" : ""}</p>
       <p className="automation-schedule"><Clock3 className="size-3.5 shrink-0" aria-hidden="true" />{automationSchedule(a)}</p>
       {a.next_due && <p>Next: <time dateTime={a.next_due}>{dateLabel(a.next_due)}</time></p>}
       {a.last_error && <p className="text-warning">{a.last_error}</p>}
@@ -101,7 +101,7 @@ function AutomationRow({ automation: a, job, pending, editing, confirmStopped, o
   </article>;
 }
 
-function definition(a) { return { name: a.name, repository: a.repository, prompt: a.prompt, cron: a.cron, timezone: a.timezone, paused: a.paused, version: a.version }; }
+function definition(a) { return { kind: a.kind || "", name: a.name, repository: a.repository, prompt: a.prompt, cron: a.cron, timezone: a.timezone, paused: a.paused, version: a.version }; }
 export function AutomationEditor({ initial, repositories, pending, error, conflict, onReload, onSave, onClose }) {
   const [draft, setDraft] = useState(initial);
   const [schedule, setSchedule] = useState(presets.some(([value]) => value === initial.cron) ? initial.cron : "custom");
@@ -114,8 +114,9 @@ export function AutomationEditor({ initial, repositories, pending, error, confli
     <form aria-busy={pending} onSubmit={e => { e.preventDefault(); onSave(draft); }}>
       {error && <div role="alert" tabIndex={-1} ref={errorRef} className="automation-error">{error}{conflict && <p>Your draft is kept. Reloading replaces it with the saved automation. <Button type="button" variant="outline" size="sm" disabled={pending} onClick={onReload}>Reload saved automation</Button></p>}</div>}
       {draft.paused && draft.cron && <p className="text-sm text-warning">Schedule paused. Save your changes, then choose Resume to enable scheduled runs. Run now remains available.</p>}
+      <label>Automation type<select disabled={pending} value={draft.kind || ""} onChange={e => setDraft(current => ({ ...current, kind: e.target.value, prompt: "", name: current.name || (e.target.value === "repository-maintenance" ? "Repository maintenance" : "") }))}><option value="">Agent job</option><option value="repository-maintenance">Repository maintenance</option></select></label>
       <div className="automation-fields"><label>Name<input autoFocus required maxLength={120} readOnly={pending} value={draft.name} onChange={e => field("name", e.target.value)} placeholder="Weekly bug review" /></label><label>Repository<select required disabled={pending} value={draft.repository} onChange={e => field("repository", e.target.value)}>{repositories.map(repo => <option key={repo}>{repo}</option>)}</select></label></div>
-      <label>Instructions<textarea required maxLength={32000} rows={5} readOnly={pending} value={draft.prompt} onChange={e => field("prompt", e.target.value)} placeholder="Review the code for bugs. Report findings with file references and evidence. Do not change files." /></label>
+      {draft.kind === "repository-maintenance" ? <div className="text-sm text-muted-foreground"><p>Triage open issues and PRs, add matching existing labels, and report what needs your decision. Nothing is closed automatically.</p><p className="mt-2">Auto-merge is limited to small edits to existing README and docs Markdown files from recorded Machinist runs. The current revision needs an accepted independent review, successful checks, resolved conversations, and satisfied GitHub branch protections. Everything else stays for your review.</p></div> : <label>Instructions<textarea required maxLength={32000} rows={5} readOnly={pending} value={draft.prompt} onChange={e => field("prompt", e.target.value)} placeholder="Review the code for bugs. Report findings with file references and evidence. Do not change files." /></label>}
       <div className="automation-fields"><label>Schedule<select disabled={pending} value={schedule} onChange={e => { const value = e.target.value; setSchedule(value); field("cron", value === "custom" ? "" : value); if (value) field("timezone", draft.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"); }}>{presets.map(([value,label]) => <option key={value} value={value}>{label}</option>)}<option value="custom">Custom cron</option></select></label>
         {schedule !== "" && <label>Timezone<input required disabled={pending} value={draft.timezone} onChange={e => field("timezone",e.target.value)} placeholder="Europe/London" /></label>}
       </div>

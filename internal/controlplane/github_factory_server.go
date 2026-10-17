@@ -242,6 +242,7 @@ func (s *GitHubFactoryServer) reduceLocal(issue GitHubIssue, comments []GitHubCo
 		return nil, err
 	}
 	state.Job.StateBackend = "local"
+	state.Job.Maintenance = issue.Maintenance != nil
 	for i := range state.Job.Runs {
 		state.Job.Runs[i].GitHubURL = ""
 	}
@@ -1157,6 +1158,22 @@ func (s *GitHubFactoryServer) complete(w http.ResponseWriter, r *http.Request) {
 	if step.Outcome == "complete" && step.Factory.Role != "review" && strings.TrimSpace(step.Factory.Report) == "" {
 		writeError(w, 400, errors.New("completed agent must report its GitHub handoff"))
 		return
+	}
+	if task.issue.Maintenance != nil && step.Outcome == "complete" {
+		if step.Factory.Role != "triage" || !step.Factory.Resolved || step.Factory.NeedsSpec || step.Factory.PRURL != "" || step.Factory.HeadSHA != "" || step.Factory.Branch != "" || step.Factory.SpecURL != "" {
+			writeError(w, 400, errors.New("maintenance must finish as a read-only triage answer"))
+			return
+		}
+		report, applyErr := s.completeMaintenance(r.Context(), task, step.Factory.Report)
+		if applyErr != nil {
+			step.Outcome = "blocked"
+			report = "Maintenance could not proceed: " + applyErr.Error()
+		}
+		step.Factory.Report = report
+		step.Summary = "Repository maintenance finished. See the triage report for actions and decisions."
+		if applyErr != nil {
+			step.Summary = report
+		}
 	}
 	task.receipt = &factoryReceipt{run: id, instance: p.InstanceID, token: p.LeaseToken}
 	defer func() { task.receipt = nil }()

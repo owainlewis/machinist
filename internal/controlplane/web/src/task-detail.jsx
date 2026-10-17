@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import Markdown from "react-markdown";
 import { ArrowLeft, ArrowRight, Check } from "lucide-react";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -326,6 +327,7 @@ function FactoryTaskDetail({ job, error, onWorkflowAction }) {
         {id:"activity",label:"Activity",content:<>      <section className="factory-result" aria-label="Current result">
         <h2>{resultTitle(job, result)}</h2>
         {result?.summary && <p className="factory-summary">{job.state === "failed" && /^invalid character .*looking for beginning of value/.test(result.summary) ? "The agent returned an unreadable result. Retry this stage, or request changes on the existing PR." : result.summary}</p>}
+        {job.maintenance && result?.report && <div className="markdown-prompt" aria-label="Maintenance report"><Markdown>{result.report}</Markdown></div>}
         {result?.error && result.error !== result.summary && <p role="alert" className="factory-summary text-danger">{result.error}</p>}
         {job.state === "running" ? <RunActivity run={latest} /> : !result?.summary && <p className="factory-summary">{job.state === "queued" ? "Waiting for a runner to pick up this task." : "No result was reported."}</p>}
         {progress?.spec_url && <a className="factory-spec-link" href={progress.spec_url} target="_blank" rel="noreferrer">Open spec on GitHub<ArrowRight className="size-4" aria-hidden="true" /></a>}

@@ -79,7 +79,7 @@ func (f *memoryFactoryGitHub) CurrentUser(context.Context) (string, error) {
 	return "owner", nil
 }
 
-func githubFactoryTestServer(t *testing.T, client *memoryFactoryGitHub) *GitHubFactoryServer {
+func githubFactoryTestServer(t *testing.T, client GitHubFactoryClient) *GitHubFactoryServer {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "factory.toml")
 	var config strings.Builder

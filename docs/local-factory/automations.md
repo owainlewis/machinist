@@ -23,3 +23,22 @@ All mutations require the normal CSRF/origin protection or worker bearer authori
 - `DELETE /api/v1/automations/{id}`: delete with `{version}`.
 
 Schedule cursor advancement, job creation and the admission receipt commit in one database transaction. Jobs use the existing execution leases, cancellation, recovery, result validation and PR publisher. There is no second workflow engine or external scheduling service.
+
+## Repository maintenance
+
+Choose **Repository maintenance** as the automation type, select a repository, and save. Start with **Manual only** and **Run now** to inspect its first report. The same schedules work when you are ready to run it regularly.
+
+The agent receives a read-only checkout and a snapshot of the ten most recently updated open issues and ten PRs. PR evidence includes immutable revision diffs and check results. The report says when the repository exceeds this batch. The agent classifies work, identifies missing information or likely duplicates, and suggests existing labels. The foreman adds matching non-Machinist labels through the GitHub App. It never removes human labels or changes routing labels, closes issues or PRs, or posts internal reports and prompts to GitHub.
+
+Auto-merge has a fixed, conservative policy:
+
+- A recorded Machinist factory run owns the PR, with a successful independent review bound to the implementation and current head. Single-agent deliveries and unrelated PRs are ineligible.
+- The agent inspected a complete exact-revision diff and recommended merge. Missing or truncated evidence requires your review.
+- Only edits to existing `README.md` and Markdown files under `docs/` qualify, with at most five files and 200 changed lines. Added, deleted, renamed, executable, and symlink files do not qualify. Agent instructions, prompts, security, authentication, deployment, dependency, migration, and public-interface documentation are excluded.
+- The PR targets the repository's default branch, is not a draft or fork, and has no private publication hold.
+- Checks for the current revision must succeed. Pending, failed, skipped, unknown or incomplete checks block merging. Review conversations must be resolved and no reviewer can have an outstanding change request.
+- GitHub branch rules must require passing checks, an up-to-date branch, and resolved conversations. Repositories without these rules remain triage-only. Machinist never changes protections or uses a bypass.
+
+The foreman rechecks GitHub before submitting a SHA-guarded squash merge using GitHub's asynchronous API with `bypass_rules: false`. Pending or queued merges are not reported as complete. Later maintenance runs reconcile confirmed merges, including a lost response or restart. Each run checks at most ten recorded pending deliveries for reconciliation. The detailed action report remains in run history.
+
+API definitions use `kind: "repository-maintenance"`; `prompt` is managed by Machinist for this type. Omit `kind` for an ordinary agent job. No new runner image, workflow engine, or agent credentials are required.

@@ -64,3 +64,40 @@ test("Run now retains its admission key after a lost response and links the resu
   assert.equal(requests[0].body,requests[1].body);assert.equal(requests[1].headers["X-Machinist-CSRF"],"csrf");
   assert.equal(refreshes,1);assert.equal(document.querySelector('[role="status"] a').getAttribute("href"),"#/runs/job-1");
 });
+
+test("repository maintenance saves a typed automation without an editable agent prompt", async context => {
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
+  context.after(() => server.close());
+  const { AutomationEditor } = await server.ssrLoadModule("/src/automations.jsx");
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost" });
+  const previous = { window: global.window, document: global.document, IS_REACT_ACT_ENVIRONMENT: global.IS_REACT_ACT_ENVIRONMENT };
+  Object.assign(global, { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const root = createRoot(document.getElementById("root"));
+  context.after(async () => { await act(() => root.unmount()); dom.window.close(); Object.assign(global, previous); });
+  let saved;
+  await act(() => root.render(React.createElement(AutomationEditor, { initial: { name: "", repository: "owner/repo", prompt: "", cron: "", timezone: "UTC" }, repositories: ["owner/repo"], onSave: value => { saved = value; } })));
+  const type = [...document.querySelectorAll("label")].find(label => label.textContent.startsWith("Automation type")).querySelector("select");
+  await act(() => { type.value = "repository-maintenance"; type.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+  assert.equal(document.querySelector("textarea"), null);
+  assert.match(document.body.textContent, /Nothing is closed automatically/);
+  assert.match(document.body.textContent, /accepted independent review/);
+  assert.equal(document.querySelector('input[placeholder="Weekly bug review"]').value, "Repository maintenance");
+  await act(() => document.querySelector("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })));
+  assert.equal(saved.kind, "repository-maintenance");
+  assert.equal(saved.repository, "owner/repo");
+  assert.equal(saved.cron, "");
+  assert.equal(saved.prompt, "");
+  await act(() => { type.value = ""; type.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+  assert.equal(document.querySelector("textarea").required, true);
+});
+
+test("maintenance run details render the action report as readable Markdown", async context => {
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
+  context.after(() => server.close());
+  const { TaskDetail } = await server.ssrLoadModule("/src/task-detail.jsx");
+  const job = { id: "maintenance", maintenance: true, state_backend: "local", recipe: "answer", state: "succeeded", repository: "owner/repo", task: { title: "Repository maintenance" }, workflow: { steps: ["triage"], current_step: 0, factory: {} }, runs: [{ id: "triage", command: "triage", state: "succeeded", outcome: "complete", summary: "Maintenance finished", report: "- [issue #1](https://github.com/owner/repo/issues/1): Needs a reproduction.\n- PR #2: **Merged after all policy checks passed.**" }] };
+  const html = renderToStaticMarkup(React.createElement(TaskDetail, { job, loaded: true }));
+  assert.match(html, /aria-label="Maintenance report"/);
+  assert.match(html, /href="https:\/\/github.com\/owner\/repo\/issues\/1"/);
+  assert.match(html, /<strong>Merged after all policy checks passed\.<\/strong>/);
+});
