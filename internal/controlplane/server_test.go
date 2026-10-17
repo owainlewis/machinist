@@ -80,6 +80,35 @@ func TestServerProtectsSubmissionAndWorkerAPIs(t *testing.T) {
 	}
 }
 
+func TestServerRejectsNonLoopbackRequestHosts(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+
+	for _, test := range []struct {
+		name string
+		host string
+		want int
+	}{
+		{name: "IPv4 with port", host: "127.0.0.1:7331", want: http.StatusOK},
+		{name: "IPv6 with port", host: "[::1]:7331", want: http.StatusOK},
+		{name: "localhost", host: "LOCALHOST:7331", want: http.StatusOK},
+		{name: "DNS rebinding host", host: "attacker.example:7331", want: http.StatusForbidden},
+		{name: "non-loopback IP", host: "192.0.2.1:7331", want: http.StatusForbidden},
+		{name: "invalid port", host: "localhost:not-a-port", want: http.StatusForbidden},
+		{name: "malformed host", host: "localhost:invalid:7331", want: http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+			request.Host = test.host
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d", response.Code, test.want)
+			}
+		})
+	}
+}
+
 func TestServerMarksStaleWorkerDisconnected(t *testing.T) {
 	server, webServer := newTestHTTPServer(t)
 	defer webServer.Close()
@@ -446,6 +475,7 @@ func TestSizeLimitedEndpointsRejectOversizedJSON(t *testing.T) {
 	for _, endpoint := range endpoints {
 		t.Run(endpoint.name+"/known content length", func(t *testing.T) {
 			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, endpoint.path, strings.NewReader("x"))
+			request.Host = "127.0.0.1:7331"
 			request.ContentLength = endpoint.limit + 1
 			request.Header.Set("Authorization", "Bearer secret")
 			response := httptest.NewRecorder()
@@ -460,6 +490,7 @@ func TestSizeLimitedEndpointsRejectOversizedJSON(t *testing.T) {
 			t.Run(endpoint.name+"/"+stage.name, func(t *testing.T) {
 				body := io.MultiReader(strings.NewReader(stage.prefix), io.LimitReader(repeatingByteReader(stage.fill), endpoint.limit+1))
 				request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, endpoint.path, body)
+				request.Host = "127.0.0.1:7331"
 				request.Header.Set("Authorization", "Bearer secret")
 				response := httptest.NewRecorder()
 
@@ -498,6 +529,7 @@ func TestSizeLimitedEndpointsKeepMalformedJSONAtBadRequest(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(`{`))
+			request.Host = "127.0.0.1:7331"
 			request.Header.Set("Authorization", "Bearer secret")
 			response := httptest.NewRecorder()
 
