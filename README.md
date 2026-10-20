@@ -88,6 +88,7 @@ explicit release. See [job recovery](docs/local-factory/local-jobs.md).
 | --- | --- |
 | [Documentation](docs/README.md) | Current setup, operations, and separate legacy references |
 | [Your first job](docs/task-guide.md) | Submission, spec approval, review, and delivery |
+| [GitHub follow-ups](docs/local-factory/github-followups.md) | CI failures, review feedback, and merge handling |
 | [Configuration](docs/configuration.md) | App settings, worker executors, commands, and compatibility |
 | [VM deployment](docs/vm-deployment.md) | Host the app or connect a remote worker |
 | [Kubernetes runners](docs/local-factory/kubernetes.md) | gVisor, native login, isolation, and recovery |
