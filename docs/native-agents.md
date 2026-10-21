@@ -23,6 +23,14 @@ The run overview shows only the agents that were used, their reported roles, cur
 
 Claude roles come from the selected `subagent_type` on native Agent/Task calls. Codex roles come from the child's `thread/read` metadata (`agentRole`), separately from its task name. If the harness did not record a role, the UI says so. Existing Claude roles can be recovered from retained raw calls; older Codex histories may retain only a name. The outcome preview is an excerpt, not a generated approval or success verdict. A completed reviewer may still have requested changes; its report remains the authority.
 
+### On the run detail page
+
+1. Open **Overview**. The **Agents** section lists the primary agent and each delegated agent this attempt actually started. It does not list every configured definition.
+2. Read each agent's label as its configured role, such as `Reviewer` or `Triage`. The status badge shows **Working**, **Complete**, **Failed**, **Interrupted**, **Cancelled**, or **Status unknown**. Below it is the first paragraph of the agent's report, cut to about 150 characters.
+3. Select an agent, or open the **Agent reports** tab, to read its full report. The tab lists every agent so you can switch between reports. Raw event records are on the **Details** tab under **Raw event diagnostics**.
+
+An agent labelled **Subagent** with the note **Role not reported** started, but the harness did not record which definition it used. Its role is unknown. The UI does not guess a role from the task description, so the agent may or may not have been a triage or review agent. Read its full report to see what it did. A Codex agent whose role is missing can be labelled with its recorded name and the note **Agent name recorded; role unavailable**. That name is not a role.
+
 The primary returns one JSON object:
 
 ```json
