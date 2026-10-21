@@ -19,17 +19,17 @@ Workers send bounded, lease-authenticated event batches to `POST /api/v1/runs/{i
 
 ## Reading agent activity on a run page
 
-Open a run to see its **Overview**, **Agent reports**, **Primary log** and **Details** tabs. An **Attempts** tab appears when the task has been retried.
+Open a run to see its **Overview**, **Agent reports**, **Primary log** and **Details** tabs. When the task has been retried, an **Attempts (N)** tab appears before **Details**.
 
 The **Agents** section of the overview lists only agents that ran in this attempt, not every definition in the repository. The primary agent appears on its own line above the cards. Each card shows:
 
-- The role the harness reported for that agent. Repeated roles are numbered, such as Reviewer 1 and Reviewer 2. These are agents that ran, not required pipeline stages.
-- Its status: Working, Complete, Failed, Interrupted, Cancelled or Status unknown. Status unknown usually means the run succeeded but that agent never sent a completion signal.
+- The role the harness reported for that agent, with underscores and hyphens shown as spaces and the first letter capitalised (`code_reviewer` becomes Code reviewer). Repeated roles are numbered, such as Reviewer 1 and Reviewer 2. These are agents that ran, not required pipeline stages.
+- Its status: Working, Complete, Failed, Interrupted, Cancelled or Status unknown. Status unknown means the agent never sent a completion signal before the harness output ended. It does not mean the agent or the run succeeded.
 - A short outcome: the first paragraph of the agent's own report, cut to about 150 characters. It is an excerpt, not an approval or success verdict. A completed reviewer may still have requested changes.
 
 Select a card (it ends with **Read report**) to open that agent's full report in the **Agent reports** tab. You can switch between agents there. The full report is the authority; the overview does not repeat it.
 
-Claude roles come from the `subagent_type` on native Agent/Task calls. Codex roles come from the child's `thread/read` metadata (`agentRole`), separately from its task name. When no role was recorded, the report says "The harness did not record this agent's configured role." The card is labelled "Subagent" and says "Role not reported". If Codex recorded an agent path, the card uses the last part of that path as its label and says "Agent name recorded; role unavailable"; that label is a name, not a role. An unknown role means only that the role is missing. Machinist does not guess a role, such as triage or review, from the agent's name or report. Read the full report to see what the agent did. Existing Claude roles can be recovered from retained raw calls; older Codex histories may retain only a name.
+Claude roles come from the `subagent_type` on native Agent/Task calls. Codex roles come from the child's `thread/read` metadata (`agentRole`), separately from its task name. When no role was recorded, the report says "The harness did not record this agent’s configured role." The card is labelled "Subagent" and says "Role not reported". If Codex recorded an agent path, the card uses the last part of that path as its label and says "Agent name recorded; role unavailable"; that label is a name, not a role. An unknown role means only that the role is missing. Machinist does not guess a role, such as triage or review, from the agent's name or report. Read the full report to see what the agent did. Existing Claude roles can be recovered from retained raw calls; older Codex histories may retain only a name.
 
 The primary returns one JSON object:
 
