@@ -23,7 +23,7 @@ Open a run to see its **Overview**, **Agent reports**, **Primary log** and **Det
 
 The **Agents** section of the overview lists only agents that ran in this attempt, not every definition in the repository. The primary agent appears on its own line above the cards. When no delegated agents ran, the section says so instead. Each card shows:
 
-- The role the harness reported for that agent, or a fallback label when no role was recorded (see below). Underscores and hyphens become spaces and the first letter capitalised (`code_reviewer` becomes Code reviewer). Repeated roles are numbered, such as Reviewer 1 and Reviewer 2. These are agents that ran, not required pipeline stages.
+- The role the harness reported for that agent, or a fallback label when no role was recorded (see below). Underscores and hyphens become spaces and the first letter is capitalised (`code_reviewer` becomes Code reviewer). Repeated roles are numbered, such as Reviewer 1 and Reviewer 2. These are agents that ran, not required pipeline stages.
 - Its status: Working, Complete, Failed, Interrupted, Cancelled or Status unknown. Status unknown means Machinist did not receive a final status it recognises for that agent, usually because the agent sent no completion signal before the harness output ended. It does not mean the agent or the run succeeded.
 - A short outcome: the first paragraph of the agent's own report, cut to about 150 characters. It is an excerpt, not an approval or success verdict. A completed reviewer may still have requested changes.
 
