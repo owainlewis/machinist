@@ -17,11 +17,19 @@ Each run stores `native-input.json` locally, with the rendered primary prompt, a
 
 Workers send bounded, lease-authenticated event batches to `POST /api/v1/runs/{id}/events`. Sequence IDs are contiguous; identical replay is acknowledged, and conflicting payloads or stale leases are rejected. An acknowledged cursor is saved beside the worker spool. SQLite stores activity separately from the lifecycle journal. `GET /api/v1/runs/{id}/events?after=N` returns up to 128 events and the next cursor. The UI polls this API and displays connection loss with the last observations. Completion waits for pending event delivery. Workers checkpoint both the acknowledged sequence and spool byte offset, so long runs do not repeatedly parse already-uploaded logs. Older numeric checkpoints remain readable. Timeout, cancellation, or a stale lease stops the owned process group and enumerated descendants, including tools in separate process groups. Each execution also gives tools a random inherited ownership marker so normal reparenting after the harness exits does not lose cleanup ownership. A failed descendant scan or kill is reported as cleanup failure rather than confirmed shutdown. Interrupted runs mark unfinished child observations interrupted; successful primary completion without a child completion signal leaves that child's status unknown.
 
-## Reading agent activity
+## Reading agent activity on a run page
 
-The run overview shows only the agents that were used, their reported roles, current status and a short excerpt from each agent's own report. Select an agent to open its full report in the separate **Agent reports** tab. The overview no longer repeats those reports in a feed. Repeated instances of the same role receive numbers, such as Reviewer 1 and Reviewer 2; these are observed agents, not required pipeline stages.
+Open a run to see its **Overview**, **Agent reports**, **Primary log** and **Details** tabs. An **Attempts** tab appears when the task has been retried.
 
-Claude roles come from the selected `subagent_type` on native Agent/Task calls. Codex roles come from the child's `thread/read` metadata (`agentRole`), separately from its task name. If the harness did not record a role, the UI says so. Existing Claude roles can be recovered from retained raw calls; older Codex histories may retain only a name. The outcome preview is an excerpt, not a generated approval or success verdict. A completed reviewer may still have requested changes; its report remains the authority.
+The **Agents** section of the overview lists only agents that ran in this attempt, not every definition in the repository. The primary agent appears on its own line above the cards. Each card shows:
+
+- The role the harness reported for that agent. Repeated roles are numbered, such as Reviewer 1 and Reviewer 2. These are agents that ran, not required pipeline stages.
+- Its status: Working, Complete, Failed, Interrupted, Cancelled or Status unknown. Status unknown usually means the run succeeded but that agent never sent a completion signal.
+- A short outcome: the first paragraph of the agent's own report, cut to about 150 characters. It is an excerpt, not an approval or success verdict. A completed reviewer may still have requested changes.
+
+Select a card (it ends with **Read report**) to open that agent's full report in the **Agent reports** tab. You can switch between agents there. The full report is the authority; the overview does not repeat it.
+
+Claude roles come from the `subagent_type` on native Agent/Task calls. Codex roles come from the child's `thread/read` metadata (`agentRole`), separately from its task name. When no role was recorded, the report says "The harness did not record this agent's configured role." The card is labelled "Subagent" and says "Role not reported". If Codex recorded an agent path, the card uses the last part of that path as its label and says "Agent name recorded; role unavailable"; that label is a name, not a role. An unknown role means only that the role is missing. Machinist does not guess a role, such as triage or review, from the agent's name or report. Read the full report to see what the agent did. Existing Claude roles can be recovered from retained raw calls; older Codex histories may retain only a name.
 
 The primary returns one JSON object:
 
