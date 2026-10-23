@@ -58,6 +58,13 @@ an automation named **PR risk review** for your connected repository. Start with
 up to five open PRs and returns their exact revision, risk, reasons and human
 approval requirement. It never executes PR code or changes GitHub state.
 
+The selected agent needs an authenticated, read-capable GitHub connector or a
+credentialed local/VM runner. A plain Kubernetes sandbox does not receive GitHub
+credentials or unrestricted public access. Kubernetes works only when its harness
+has a separate authenticated GitHub connector; do not copy credentials into the
+pod to make this demo work. Without that connector, use a local or authenticated
+VM runner. An access failure must produce a blocker, not a classification.
+
 The policy is zero human approvals for prose-only low-risk changes, one for
 medium-risk product changes, and two for high-risk changes. Read the root
 [review.md](../../review.md) for Machinist's failure cases and review format.
