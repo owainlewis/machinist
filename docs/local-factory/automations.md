@@ -49,3 +49,27 @@ Auto-merge has a fixed, conservative policy:
 The foreman rechecks GitHub before submitting a SHA-guarded squash merge using GitHub's asynchronous API with `bypass_rules: false`. Pending or queued merges are not reported as complete. Later maintenance runs reconcile confirmed merges, including a lost response or restart. Each run checks at most ten recorded pending deliveries for reconciliation. The detailed action report remains in run history.
 
 API definitions use `kind: "repository-maintenance"`; `prompt` is managed by Machinist for this type. Omit `kind` for an ordinary agent job. No new runner image, workflow engine, or agent credentials are required.
+
+## PR risk review demo
+
+Use [the PR risk review prompt](../../examples/automations/pr-risk-review.md) as
+an automation named **PR risk review** for your connected repository. Start with
+**Manual only**, paste the complete prompt, save, then choose **Run now**. It reads
+up to five open PRs and returns their exact revision, risk, reasons and human
+approval requirement. It never executes PR code or changes GitHub state.
+
+The policy is zero human approvals for prose-only low-risk changes, one for
+medium-risk product changes, and two for high-risk changes. Read the root
+[review.md](../../review.md) for Machinist's failure cases and review format.
+Markdown that changes commands or agent instructions does not qualify as low
+risk merely because it is documentation.
+
+For a video, compare a prose-only README correction, an ordinary UI behavior
+change, and a cancellation or permission change. Use real diffs, not labels or
+titles. A change to `review.md` itself is high risk because it changes the policy.
+
+This saved automation reports recommendations in the run UI. It does not enforce
+approval counts, run automatically on PR events, or authorize zero-human merges.
+GitHub rulesets/branch protections remain authoritative. Automated review,
+security checks and CI are still needed for low risk. Do not lower existing
+protection rules for the demo. Schedule it only after inspecting a manual run.
