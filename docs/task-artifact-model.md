@@ -26,7 +26,7 @@ When only a source is supplied, the agent reads it for requirements. Consequenti
 ambiguities require clarification. Record the task inputs used by each execution;
 editing the task must not silently change an execution already in progress.
 
-The task template context is `task.title`, `task.source_url`, and
+The task template context is `task.title`, `task.source_url`,
 `task.spec`, and `task.output_dir`. These placeholders are supported.
 
 ## Workflow: the process
