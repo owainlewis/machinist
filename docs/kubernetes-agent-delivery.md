@@ -1,7 +1,7 @@
 # Kubernetes agent delivery
 
 Machinist's control plane can run on your computer, a VM, or in the
-[GKE cluster](local-factory/cloud-control-plane.md) while Codex runs in
+[GKE cluster](local-factory/cloud-control-plane.md) while Codex or Claude Code runs in
 Kubernetes. Each stage runs as one isolated Kubernetes Job.
 
 Triage and Review receive read-only source. Agent pods receive no GitHub
