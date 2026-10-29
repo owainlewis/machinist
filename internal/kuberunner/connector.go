@@ -19,6 +19,7 @@ import (
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/runner"
+	"golang.org/x/term"
 )
 
 type Connector struct {
@@ -114,12 +115,24 @@ func (c Connector) claude() bool { return c.Config.AgentName() == "claude" }
 // The token is read from stdin, never from arguments, and is not echoed.
 func (c Connector) loginClaude(ctx context.Context, in io.Reader, out io.Writer) error {
 	fmt.Fprintln(out, "Run `claude setup-token` as the account owner, then paste the token here:")
-	line, err := bufio.NewReader(io.LimitReader(in, 8<<10)).ReadString('\n')
-	if err != nil && err != io.EOF {
-		return err
+	var line []byte
+	if file, ok := in.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+		// Read without terminal echo so the token stays out of scrollback.
+		read, err := term.ReadPassword(int(file.Fd()))
+		fmt.Fprintln(out)
+		if err != nil {
+			return err
+		}
+		line = read
+	} else {
+		read, err := bufio.NewReader(io.LimitReader(in, 8<<10)).ReadString('\n')
+		if err != nil && err != io.EOF {
+			return err
+		}
+		line = []byte(read)
 	}
-	token := []byte(strings.TrimSpace(line))
-	if err = ValidateClaudeToken(token); err != nil {
+	token := []byte(strings.TrimSpace(string(line)))
+	if err := ValidateClaudeToken(token); err != nil {
 		return err
 	}
 	return c.json(ctx, "create", map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": c.Config.AuthSecret}, "type": "Opaque", "data": map[string][]byte{ClaudeTokenFile: token}})

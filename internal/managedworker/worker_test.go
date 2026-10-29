@@ -616,3 +616,27 @@ func TestExecuteCarriesCleanupFailureEvidence(t *testing.T) {
 		t.Fatalf("lost wire evidence: %s %v", raw, err)
 	}
 }
+
+func TestManagedWorkerAcceptsExecutorsForConfiguredClusterAgent(t *testing.T) {
+	cluster := &config.Kubernetes{Context: "test", Namespace: "runners", Image: "example.test/runner@sha256:" + strings.Repeat("a", 64), AuthSecret: "claude-test", ProxyURL: "http://egress:3128", Agent: "claude"}
+	worker := func(executors ...string) error {
+		profiles := map[string]config.Executor{}
+		for _, name := range executors {
+			profiles[name] = config.Executor{}
+		}
+		_, err := New(config.Worker{
+			Name:         "machinist-kubernetes",
+			ControlPlane: config.ControlPlane{URL: "http://10.0.0.5:7331", TokenFile: "unused"},
+			Executors:    profiles,
+			Repositories: map[string]config.Repository{"machinist": {Path: "."}},
+			Kubernetes:   cluster,
+		}, os.Stdout, os.Stderr)
+		return err
+	}
+	if err := worker("claude", "claude-review"); err == nil || !strings.Contains(err.Error(), "must use https") {
+		t.Fatalf("Claude profiles rejected before connection checks: %v", err)
+	}
+	if err := worker("codex", "codex-review"); err == nil || !strings.Contains(err.Error(), "configured for claude") {
+		t.Fatalf("mismatched profiles accepted: %v", err)
+	}
+}
