@@ -6,7 +6,7 @@ one standard Kubernetes Job per attempt. The agent runs in gVisor, commits local
 and returns a bounded Git bundle. The connector checks that commit graph and
 publishes the assigned branch and PR using the existing GitHub App connection.
 The agent receives neither GitHub credentials nor a control-plane or Kubernetes
-API token. This release supports Codex subscription authentication.
+API token. This release supports Codex or Claude Code subscription authentication.
 
 ## Prepare a cluster
 
@@ -18,8 +18,8 @@ network setup and have not been tested.
 
 Build and push `deploy/kubernetes/runner.Dockerfile` to your private registry.
 Use the resulting image digest, not a mutable tag. Only your nodes need image-read
-access. The image includes Codex, Git, Node, Go and Python. It contains no login
-cache, GitHub CLI, cloud credentials or worker token.
+access. The image includes Codex, Claude Code, Git, Node, Go and Python. It contains
+no login cache, GitHub CLI, cloud credentials or worker token.
 
 Create a worker configuration containing a `[kubernetes]` section:
 
@@ -27,7 +27,7 @@ Create a worker configuration containing a `[kubernetes]` section:
 - `kubeconfig`: optional path to that context's kubeconfig.
 - `namespace`: a dedicated runner namespace.
 - `image`: your runner image pinned by `@sha256:` digest.
-- `auth_secret`: the name of this runner's dedicated Codex account Secret.
+- `auth_secret`: the name of this runner's dedicated agent account Secret.
 - `proxy_url`: `http://machinist-egress.<namespace>.svc.cluster.local:3128`.
 
 Then install the namespace and proxy:
@@ -38,17 +38,20 @@ kubectl --context YOUR_CONTEXT -n YOUR_NAMESPACE rollout status deployment/machi
 machinist kubernetes login --config worker.toml
 ```
 
-The login command runs native `codex login --device-auth` using a new private
-temporary cache. Complete the displayed device authorization yourself. It stores
+For Codex, the login command runs native `codex login --device-auth` using a new
+private temporary cache. Complete the displayed device authorization yourself. It stores
 only that login's `auth.json` in the named Kubernetes Secret, then removes the
 temporary directory. It never copies your desktop credential cache. Do not paste
 tokens into chat or put them in source control. Existing Secrets are not silently
 overwritten.
 
+For Claude Code, set `agent = "claude"` in `[kubernetes]` and use a token from
+`claude setup-token`, stored with `machinist kubernetes login`.
+
 Add the same fields under `[server.kubernetes]` in your control-plane config and
-restart it. Setup then offers **Kubernetes** as an execution host. Select Codex and
-run the real PONG check before finishing setup. Closing the local control plane
-does not move its database into the cluster.
+restart it. Setup then offers **Kubernetes** as an execution host. Select Codex or
+Claude Code and run the real PONG check before finishing setup. Closing the local
+control plane does not move its database into the cluster.
 
 ## Isolation and delivery
 
