@@ -20,6 +20,25 @@ import (
 	"github.com/owainlewis/machinist/internal/config"
 )
 
+func TestEarlierDeadline(t *testing.T) {
+	early := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	late := early.Add(time.Minute)
+	for _, tt := range []struct {
+		name          string
+		first, second time.Time
+	}{
+		{name: "first is earlier", first: early, second: late},
+		{name: "second is earlier", first: late, second: early},
+		{name: "equal deadlines", first: early, second: early},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := earlierDeadline(tt.first, tt.second); !got.Equal(early) {
+				t.Fatalf("earlierDeadline(%s, %s) = %s, want %s", tt.first, tt.second, got, early)
+			}
+		})
+	}
+}
+
 func TestEscapedDescendantHelper(t *testing.T) {
 	if os.Getenv("MACHINIST_TEST_ESCAPED") != "1" {
 		return
