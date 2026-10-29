@@ -44,9 +44,10 @@ func New(workerConfig config.Worker, stdout, stderr io.Writer) (*Worker, error) 
 		if err := workerConfig.Kubernetes.Validate(); err != nil {
 			return nil, err
 		}
+		agent := workerConfig.Kubernetes.AgentName()
 		for name := range workerConfig.Executors {
-			if name != "codex" && name != "codex-review" {
-				return nil, errors.New("Kubernetes currently supports Codex subscription profiles only")
+			if name != agent && name != agent+"-review" {
+				return nil, fmt.Errorf("the Kubernetes runner is configured for %s; executor %q does not match", agent, name)
 			}
 		}
 	}

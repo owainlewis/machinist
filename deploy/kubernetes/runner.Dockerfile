@@ -14,6 +14,8 @@ ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git curl python3 build-essential procps && rm -rf /var/lib/apt/lists/*
 ARG CODEX_VERSION=0.157.1
 RUN npm install -g "@openai/codex@${CODEX_VERSION}"
+ARG CLAUDE_CODE_VERSION=2.1.312
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 COPY --from=target-toolchain /usr/local/go /usr/local/go
 RUN test "$(/usr/local/go/bin/go env GOHOSTARCH)" = "${TARGETARCH}" \
     && ln -s /usr/local/go/bin/go /usr/local/bin/go \

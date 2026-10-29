@@ -186,8 +186,8 @@ func validateProjectDefaults(defaults projectDefaults, selection setupSelection)
 	default:
 		return errors.New("unsupported default run mode")
 	}
-	if selection.Host == "kubernetes" && (defaults.Recipe == "native-v1" || selection.Agent == "claude") {
-		return errors.New("Kubernetes requires Codex and the pipeline or single agent mode")
+	if selection.Host == "kubernetes" && defaults.Recipe == "native-v1" {
+		return errors.New("Kubernetes requires the pipeline or single agent mode")
 	}
 	if !utf8.ValidString(defaults.Instructions) || utf8.RuneCountInString(defaults.Instructions) > 2000 {
 		return errors.New("default instructions must be at most 2000 characters")

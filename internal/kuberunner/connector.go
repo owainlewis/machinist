@@ -2,6 +2,7 @@ package kuberunner
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/runner"
+	"golang.org/x/term"
 )
 
 type Connector struct {
@@ -77,9 +79,12 @@ func (c Connector) Login(ctx context.Context, in io.Reader, out, stderr io.Write
 		return err
 	}
 	if _, err := c.get(ctx, "secret", c.Config.AuthSecret); err == nil {
-		return fmt.Errorf("Codex Secret already exists; stop its Jobs before deliberately reseeding it")
+		return fmt.Errorf("account Secret already exists; stop its Jobs before deliberately reseeding it")
 	} else if !resourceMissing(err) {
-		return fmt.Errorf("could not verify the Codex cluster Secret: %w", err)
+		return fmt.Errorf("could not verify the cluster account Secret: %w", err)
+	}
+	if c.claude() {
+		return c.loginClaude(ctx, in, out)
 	}
 	directory, err := os.MkdirTemp("", "machinist-codex-login-")
 	if err != nil {
@@ -102,6 +107,35 @@ func (c Connector) Login(ctx context.Context, in io.Reader, out, stderr io.Write
 		return err
 	}
 	return c.json(ctx, "create", map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": c.Config.AuthSecret}, "type": "Opaque", "data": map[string][]byte{"auth.json": body}})
+}
+
+func (c Connector) claude() bool { return c.Config.AgentName() == "claude" }
+
+// loginClaude stores a token the operator generated with `claude setup-token`.
+// The token is read from stdin, never from arguments, and is not echoed.
+func (c Connector) loginClaude(ctx context.Context, in io.Reader, out io.Writer) error {
+	fmt.Fprintln(out, "Run `claude setup-token` as the account owner, then paste the token here:")
+	var line []byte
+	if file, ok := in.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+		// Read without terminal echo so the token stays out of scrollback.
+		read, err := term.ReadPassword(int(file.Fd()))
+		fmt.Fprintln(out)
+		if err != nil {
+			return err
+		}
+		line = read
+	} else {
+		read, err := bufio.NewReader(io.LimitReader(in, 8<<10)).ReadString('\n')
+		if err != nil && err != io.EOF {
+			return err
+		}
+		line = []byte(read)
+	}
+	token := []byte(strings.TrimSpace(string(line)))
+	if err := ValidateClaudeToken(token); err != nil {
+		return err
+	}
+	return c.json(ctx, "create", map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": c.Config.AuthSecret}, "type": "Opaque", "data": map[string][]byte{ClaudeTokenFile: token}})
 }
 
 func (c Connector) Execute(ctx context.Context, options runner.Options, readOnly bool) (result runner.Result, candidate string, resultErr error) {
@@ -139,13 +173,17 @@ func (c Connector) Execute(ctx context.Context, options runner.Options, readOnly
 	}
 	name := objectName("attempt-", options.RunID)
 	lock := objectName("codex-", c.Config.AuthSecret)
+	// Claude setup-tokens never refresh, so jobs sharing one need no stream lock.
+	locked := !c.claude()
 	// No expiry or lock stealing: a lost connector must not race a live pod's
 	// native token refresh. An operator must stop it before clearing the lock.
-	if err := c.json(ctx, "create", map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": lock, "labels": map[string]string{"app.kubernetes.io/managed-by": "machinist"}}, "data": map[string]string{"job": name}}); err != nil {
-		return runner.Result{}, "", fmt.Errorf("Codex account stream is locked or cluster unavailable; confirm the prior Job stopped before recovery: %w", err)
+	if locked {
+		if err := c.json(ctx, "create", map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": lock, "labels": map[string]string{"app.kubernetes.io/managed-by": "machinist"}}, "data": map[string]string{"job": name}}); err != nil {
+			return runner.Result{}, "", fmt.Errorf("Codex account stream is locked or cluster unavailable; confirm the prior Job stopped before recovery: %w", err)
+		}
 	}
 	pod := ""
-	authSaved := false
+	authSaved := !locked
 	defer func() {
 		cleanup, done := context.WithTimeout(context.Background(), 45*time.Second)
 		defer done()
@@ -168,7 +206,7 @@ func (c Connector) Execute(ctx context.Context, options runner.Options, readOnly
 				stopped = e == nil && json.Unmarshal(body, &list) == nil && len(list.Items) == 0
 			}
 		}
-		if !created || (stopped && authSaved) {
+		if locked && (!created || (stopped && authSaved)) {
 			_, _ = c.command(cleanup, nil, 1<<20, "delete", "configmap", lock, "--wait=true")
 		}
 	}()
@@ -180,7 +218,7 @@ func (c Connector) Execute(ctx context.Context, options runner.Options, readOnly
 	if err != nil {
 		branch = []byte("sandbox-review")
 	}
-	r := Request{RunID: options.RunID, JobID: options.JobID, Base: strings.TrimSpace(string(base)), Branch: strings.TrimSpace(string(branch)), ReadOnly: readOnly, Command: options.Command, Factory: options.Factory, Task: options.Task, Revision: options.Revision, ReviewEvidence: options.ReviewEvidence}
+	r := Request{RunID: options.RunID, JobID: options.JobID, Base: strings.TrimSpace(string(base)), Branch: strings.TrimSpace(string(branch)), ReadOnly: readOnly, Command: options.Command, Factory: options.Factory, Task: options.Task, Revision: options.Revision, ReviewEvidence: options.ReviewEvidence, Agent: c.Config.AgentName()}
 	bundle := filepath.Join(directory, "input.bundle")
 	if _, err = git(ctx, options.Repository, "bundle", "create", bundle, "HEAD"); err != nil {
 		return runner.Result{}, "", err
@@ -199,8 +237,12 @@ func (c Connector) Execute(ctx context.Context, options runner.Options, readOnly
 		}
 	}
 	created = true
-	assignment, _ := json.Marshal(map[string]string{"job": name, "context": c.Config.Context, "namespace": c.Config.Namespace, "credential_lock": lock})
-	if err = os.WriteFile(filepath.Join(directory, "kubernetes.json"), assignment, 0600); err != nil {
+	assignment := map[string]string{"job": name, "context": c.Config.Context, "namespace": c.Config.Namespace, "agent": c.Config.AgentName()}
+	if locked {
+		assignment["credential_lock"] = lock
+	}
+	assignmentBody, _ := json.Marshal(assignment)
+	if err = os.WriteFile(filepath.Join(directory, "kubernetes.json"), assignmentBody, 0600); err != nil {
 		return runner.Result{}, "", err
 	}
 	pod, err = c.awaitPod(ctx, name)
@@ -241,10 +283,12 @@ func (c Connector) Execute(ctx context.Context, options runner.Options, readOnly
 	}
 	// Retrieve auth separately, never in result.json, event logs or public files.
 	c.progress("collecting_result")
-	if err = c.retainAuth(ctx, pod); err != nil {
-		return runner.Result{}, "", err
+	if locked {
+		if err = c.retainAuth(ctx, pod); err != nil {
+			return runner.Result{}, "", err
+		}
+		authSaved = true
 	}
-	authSaved = true
 	body, err := c.command(ctx, nil, 1<<20, "exec", pod, "-c", "agent", "--", "cat", "/exchange/result.json")
 	if err != nil {
 		return runner.Result{}, "", err
@@ -317,9 +361,9 @@ func (c Connector) ready(ctx context.Context) error {
 	}
 	if _, err := c.get(ctx, "secret", c.Config.AuthSecret); err != nil {
 		if resourceMissing(err) {
-			return fmt.Errorf("Codex cluster login is missing; run machinist kubernetes login: %w", err)
+			return fmt.Errorf("cluster account login is missing; run machinist kubernetes login: %w", err)
 		}
-		return fmt.Errorf("could not verify the Codex cluster Secret: %w", err)
+		return fmt.Errorf("could not verify the cluster account Secret: %w", err)
 	}
 	proxy, err := c.get(ctx, "deployment", "machinist-egress")
 	if err != nil {
@@ -426,7 +470,13 @@ func (c Connector) manifest(name string, readOnly bool, deadline int64) map[stri
 	agent := container("agent", "run")
 	agent["workingDir"] = SourceDirectory
 	agent["volumeMounts"] = append(agent["volumeMounts"].([]any), map[string]any{"name": "codex-auth", "mountPath": "/credentials", "readOnly": true})
-	agent["env"] = []any{map[string]string{"name": "HTTPS_PROXY", "value": c.Config.ProxyURL}, map[string]string{"name": "HTTP_PROXY", "value": c.Config.ProxyURL}, map[string]string{"name": "HOME", "value": "/home/agent"}, map[string]string{"name": "CODEX_HOME", "value": "/home/agent/.codex"}, map[string]string{"name": "GIT_CONFIG_GLOBAL", "value": "/dev/null"}, map[string]string{"name": "GIT_CONFIG_NOSYSTEM", "value": "1"}}
+	env := []any{map[string]string{"name": "HTTPS_PROXY", "value": c.Config.ProxyURL}, map[string]string{"name": "HTTP_PROXY", "value": c.Config.ProxyURL}, map[string]string{"name": "HOME", "value": "/home/agent"}, map[string]string{"name": "CODEX_HOME", "value": "/home/agent/.codex"}, map[string]string{"name": "GIT_CONFIG_GLOBAL", "value": "/dev/null"}, map[string]string{"name": "GIT_CONFIG_NOSYSTEM", "value": "1"}}
+	if c.claude() {
+		// Only the model API is on the proxy allowlist; keep Claude Code from
+		// reaching telemetry, error reporting or auto-update hosts.
+		env = append(env, map[string]string{"name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "value": "1"}, map[string]string{"name": "DISABLE_AUTOUPDATER", "value": "1"})
+	}
+	agent["env"] = env
 	prepare["env"] = agent["env"]
 	volumes := []any{}
 	for _, v := range []string{"exchange", "source", "home", "tmp"} {

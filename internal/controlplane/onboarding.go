@@ -190,11 +190,11 @@ func (o *onboarding) status(ctx context.Context) (map[string]any, error) {
 		worker["tunnel"] = "ssh -N -L 17341:127.0.0.1:" + u + " " + target
 	}
 	ready := github.Connected && state.Selection.Repository != "" && state.Selection.Agent != "" && state.Check.State == "passed"
-	kubernetes := false
-	if definition, err := config.LoadConfig(o.server.definitionPath); err == nil {
-		kubernetes = definition.Server.Kubernetes != nil
+	kubernetes, kubernetesAgent := false, ""
+	if definition, err := config.LoadConfig(o.server.definitionPath); err == nil && definition.Server.Kubernetes != nil {
+		kubernetes, kubernetesAgent = true, definition.Server.Kubernetes.AgentName()
 	}
-	return map[string]any{"project_defaults": state.ProjectDefaults, "kubernetes": kubernetes, "required": !state.Finished || !ready, "github": github, "repositories": repos, "selection": state.Selection, "agents": agents, "worker": worker, "ready": ready, "check": state.Check}, nil
+	return map[string]any{"project_defaults": state.ProjectDefaults, "kubernetes": kubernetes, "kubernetes_agent": kubernetesAgent, "required": !state.Finished || !ready, "github": github, "repositories": repos, "selection": state.Selection, "agents": agents, "worker": worker, "ready": ready, "check": state.Check}, nil
 }
 func urlForLocal(base string) (string, error) {
 	_, port, err := net.SplitHostPort(strings.TrimPrefix(base, "http://"))
@@ -477,8 +477,8 @@ func (o *onboarding) selectAgent(agent, host string) error {
 		if err = definition.Server.Kubernetes.Validate(); err != nil {
 			return err
 		}
-		if agent != "codex" {
-			return errors.New("the Kubernetes runner currently uses Codex subscription authentication")
+		if want := definition.Server.Kubernetes.AgentName(); agent != want {
+			return fmt.Errorf("the Kubernetes runner is configured for %s; set server.kubernetes.agent to change it", want)
 		}
 	}
 	if host == "local" {

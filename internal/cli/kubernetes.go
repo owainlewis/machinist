@@ -18,7 +18,7 @@ func newKubernetesCommand(options *commandOptions) *cobra.Command {
 		}
 		return (kuberunner.Connector{Config: *cfg.Kubernetes}).Install(cmd.Context())
 	}})
-	root.AddCommand(&cobra.Command{Use: "login", Short: "Create a dedicated Codex subscription login for the cluster", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	root.AddCommand(&cobra.Command{Use: "login", Short: "Store a dedicated Codex login or Claude setup-token for the cluster", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg, err := config.LoadWorker(options.configPath)
 		if err != nil {
 			return err
