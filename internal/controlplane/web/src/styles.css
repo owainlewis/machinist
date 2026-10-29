@@ -570,3 +570,5 @@ a { text-underline-offset: 3px; }
 .project-default-panel header p { color: var(--muted-foreground); font-size: 12px; overflow-wrap: anywhere; }
 .project-row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 @media(max-width:640px) { .project-work { flex-wrap: wrap; } .project-work > a { flex-basis: 100%; } }
+
+.work-queue-row.activity-cost-row { grid-template-columns: minmax(0, 1fr) auto; }

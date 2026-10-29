@@ -130,3 +130,40 @@ export function runDetails(run) {
 function validTokenUsage(value) { return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value); }
 function validDate(value) { return Boolean(value && value !== zeroTime && Number.isFinite(Date.parse(value))); }
 function validDuration(value) { return Number.isSafeInteger(value) && value >= 0; }
+
+// Estimated blended USD per million total tokens, not provider billing rates.
+// These budgeting assumptions cover the models in examples/worker.toml. Update
+// this table when model choices or desired blended estimates change; token
+// recording does not distinguish input, output, or cached tokens.
+const estimatedUSDPerMillionTokens = Object.freeze({
+  "gpt-5.6-luna": 1,
+  "gpt-5.6-terra": 3,
+  "gpt-5.6-sol": 5,
+  haiku: 1,
+  sonnet: 5,
+  opus: 10,
+});
+
+export function estimatedRunCost(run) {
+  if (!Object.hasOwn(estimatedUSDPerMillionTokens, run.model) || !validTokenUsage(run.token_usage)) return null;
+  const cost = Number(run.token_usage) / 1_000_000 * estimatedUSDPerMillionTokens[run.model];
+  return Number.isFinite(cost) ? cost : null;
+}
+
+export function estimatedJobCost(job) {
+  if (!job.runs?.length) return null;
+  const costs = job.runs.map(estimatedRunCost);
+  // Never present a partial attempt subtotal as the full job's estimate.
+  return costs.includes(null) ? null : costs.reduce((total, cost) => total + cost, 0);
+}
+
+export function estimatedCostSummary(jobs) {
+  const costs = jobs.map(estimatedJobCost).filter(cost => cost !== null);
+  return { total: costs.length ? costs.reduce((total, cost) => total + cost, 0) : null, estimated: costs.length };
+}
+
+export function formatEstimatedCost(cost) {
+  if (cost === null) return "Unavailable";
+  if (cost > 0 && cost < 0.01) return "< $0.01";
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cost);
+}

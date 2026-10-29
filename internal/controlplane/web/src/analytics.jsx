@@ -5,7 +5,7 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { dashboardState, workQueueState, queueSummary } from "./dashboard-state.js";
 import { jobDisplayTitle } from "./runs-board.js";
 import { State } from "./task-display.jsx";
-import { formatDurationMillis, formatTokenUsage } from "./run-metrics.js";
+import { formatDurationMillis, formatTokenUsage, estimatedJobCost, formatEstimatedCost } from "./run-metrics.js";
 
 const jobURL = job => `#/runs/${encodeURIComponent(job.id)}`;
 export function Dashboard({ jobs = [], repositories = [], capacity, kubernetes, connected, loaded, error, onNewRun }) {
@@ -58,10 +58,15 @@ export function ActivityPage({ jobs = [], workers = [], automations, loaded, err
         <section className="dashboard-runtime" aria-labelledby="runtime-heading"><header className="dashboard-section-heading"><div><h2 id="runtime-heading">Workspace</h2><p>Runners and recurring work.</p></div></header>
           <a className="dashboard-runtime-link" href="#/runners"><Server className="size-4" /><span><strong>{view.onlineWorkers} runner{view.onlineWorkers === 1 ? "" : "s"} online</strong><small>{view.totalWorkers ? `${view.totalWorkers} registered` : "Connect a runner to start work"}</small></span><ArrowRight className="size-3.5" /></a>
           <a className="dashboard-runtime-link" href="#/automations"><Clock3 className="size-4" /><span><strong>{view.scheduled === null ? "Automations" : `${view.scheduled} active schedule${view.scheduled === 1 ? "" : "s"}`}</strong><small>{view.automationCount === null ? "View configured triggers" : `${view.automationCount} saved automation${view.automationCount === 1 ? "" : "s"}`}</small></span><ArrowRight className="size-3.5" /></a>
-          <div className="dashboard-usage"><dl><div><dt>Timed agent execution</dt><dd>{view.timedMillis === null ? "Not recorded" : formatDurationMillis(Math.round(view.timedMillis / 1000) * 1000)}</dd></div><div><dt>Reported tokens</dt><dd>{view.usage.total === undefined ? "Not reported" : formatTokenUsage(view.usage.total)}</dd></div></dl><p>For jobs created in this window. Timing: {view.timedRuns}/{view.runs.length} completed attempts. Usage: {view.usage.reported}/{view.usage.completed}. No cost estimates.</p></div>
+          <div className="dashboard-usage"><dl><div><dt>Timed agent execution</dt><dd>{view.timedMillis === null ? "Not recorded" : formatDurationMillis(Math.round(view.timedMillis / 1000) * 1000)}</dd></div><div><dt>Reported tokens</dt><dd>{view.usage.total === undefined ? "Not reported" : formatTokenUsage(view.usage.total)}</dd></div><div><dt>Estimated cost</dt><dd>{formatEstimatedCost(view.cost.total)}</dd></div></dl><p>For jobs created in this window. Timing: {view.timedRuns}/{view.runs.length} completed attempts. Usage: {view.usage.reported}/{view.usage.completed}. Estimated cost (USD): {view.cost.estimated}/{view.metrics.totalTasks} jobs. Blended token estimates, not billed charges. Jobs with unknown models or missing usage are excluded.</p></div>
         </section>
       </div>
-
+      <section className="work-queue" aria-label="Estimated cost per job"><h2>Estimated cost per job</h2>
+        {view.metrics.tasks.length ? <ul>{view.metrics.tasks.map(job => <li key={job.id} className="work-queue-row activity-cost-row">
+          <div className="work-queue-task"><small>{job.repository || "No project recorded"}</small><a href={jobURL(job)}>{jobDisplayTitle(job)}</a></div>
+          <span>{formatEstimatedCost(estimatedJobCost(job))}</span>
+        </li>)}</ul> : <p className="dashboard-empty">No jobs created in this window.</p>}
+      </section>
     </>}
   </div>;
 }
