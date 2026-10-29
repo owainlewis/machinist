@@ -90,6 +90,14 @@ consistent SQLite snapshot and worker outputs. Do not run a stale laptop copy
 alongside the cloud dispatcher. Publication holds survive restarts and require an
 explicit release. See [job recovery](docs/local-factory/local-jobs.md).
 
+## Running the tests
+
+With Go 1.26.6 installed, run the Go test suite from the repository root:
+
+```sh
+go test ./...
+```
+
 ## Go deeper
 
 | Guide | What it covers |
