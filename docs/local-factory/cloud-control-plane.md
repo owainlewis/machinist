@@ -84,21 +84,35 @@ Update the overlay's digest after building and verifying a replacement image.
    projects, automations and holds survived. Restart the Deployment and repeat
    the check to verify persistence and service-account access.
 
-The default deployment creates no Service, public IP, ingress or load balancer.
-It retains Machinist's loopback listener and denies Pod ingress. Authorized
-operators access it through the Kubernetes API:
+For CI-gated main-branch deployments, see [continuous deployment](continuous-deployment.md).
+
+## Watch it live
+
+View the dashboard and jobs from any machine with gcloud and kubectl installed
+and an account with access to the cluster:
 
 ```sh
-kubectl --context "$CLUSTER_CONTEXT" -n machinist-system \
-  port-forward deployment/machinist-control-plane 7341:7341
+gcloud auth login
+gcloud container clusters get-credentials machinist-runners --region europe-west2 --project machinist-prod
+kubectl -n machinist-system port-forward deploy/machinist-control-plane 7341:7341
 ```
 
-Open `http://127.0.0.1:7341`. This operator tunnel uses your Kubernetes identity;
-the running dispatcher does not. Reconnect the tunnel after replacing the Pod.
-For a public browser endpoint, add HTTPS and identity protection first. Do not
-expose the existing unauthenticated loopback API directly.
+Keep the port-forward running and open http://127.0.0.1:7341.
 
-For CI-gated main-branch deployments, see [continuous deployment](continuous-deployment.md).
+The default deployment creates no Service, public IP, ingress or load balancer.
+It retains Machinist's loopback listener and denies Pod ingress. Authorized
+operators access it through the Kubernetes API. This operator tunnel uses your
+Kubernetes identity; the running dispatcher does not. Reconnect the tunnel after
+replacing the Pod. The dashboard has no login of its own, so keep it behind
+port-forward and never expose it publicly.
+
+In another terminal, watch agent pods with k9s or kubectl:
+
+```sh
+k9s -n machinist-runners
+# Or:
+kubectl -n machinist-runners get pods -w
+```
 
 ## Recovery and updates
 
