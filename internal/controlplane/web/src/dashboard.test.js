@@ -53,10 +53,15 @@ test("the Activity window control updates recorded activity",async context=>{
   const previous={window:global.window,document:global.document,IS_REACT_ACT_ENVIRONMENT:global.IS_REACT_ACT_ENVIRONMENT};
   Object.assign(global,{window:dom.window,document:dom.window.document,IS_REACT_ACT_ENVIRONMENT:true});
   const root=createRoot(document.getElementById("root"));context.after(async()=>{await act(()=>root.unmount());dom.window.close();Object.assign(global,previous);});
-  await act(()=>root.render(React.createElement(ActivityPage,{jobs:[job("older","running",20)],loaded:true,now})));
-  assert.equal(document.querySelector('.dashboard-activity-total strong').textContent,"0");
-  await act(()=>{const select=document.querySelector('select');select.value="30";select.dispatchEvent(new dom.window.Event("change",{bubbles:true}));});
+  await act(()=>root.render(React.createElement(ActivityPage,{jobs:[{...job("older","running",20),runs:[{model:"sonnet",token_usage:"1000000"}]}, {...job("unknown","succeeded"),runs:[{model:"unknown",token_usage:"1000000"}]}],loaded:true,now})));
   assert.equal(document.querySelector('.dashboard-activity-total strong').textContent,"1");
+  assert.match(document.querySelector(".dashboard-usage").textContent, /Estimated costUnavailable/);
+  assert.match(document.querySelector('[aria-label="Estimated cost per job"]').textContent, /Task unknownUnavailable/);
+  await act(()=>{const select=document.querySelector('select');select.value="30";select.dispatchEvent(new dom.window.Event("change",{bubbles:true}));});
+  assert.equal(document.querySelector('.dashboard-activity-total strong').textContent,"2");
+  assert.match(document.querySelector(".dashboard-usage").textContent, /Estimated cost\$5.00/);
+  assert.match(document.querySelector(".dashboard-usage").textContent, /1\/2 jobs/);
+  assert.match(document.querySelector('[aria-label="Estimated cost per job"]').textContent, /Task older\$5.00/);
 });
 
 test("legacy servers without saved automation data never claim zero configured schedules", async context=>{
@@ -67,4 +72,10 @@ test("legacy servers without saved automation data never claim zero configured s
   assert.match(html,/View configured triggers/);assert.doesNotMatch(html,/0 active schedule|0 saved automation/);
   const known=renderToStaticMarkup(React.createElement(ActivityPage,{jobs:[],automations:[],loaded:true,now}));
   assert.match(known,/0 active schedules/);
+});
+
+
+test("weekly cost totals follow the job creation window", () => {
+  const measured = age => ({...job(`age-${age}`, "succeeded", age), runs:[{model:"sonnet",token_usage:"1000000"}]});
+  assert.deepEqual(view([measured(0), measured(6), measured(7), measured(-1)]).cost, {total:10,estimated:2});
 });

@@ -1,6 +1,6 @@
 import { taskPresentation } from "./task-presentation.js";
 import { analyticsState } from "./analytics-state.js";
-import { tokenUsageSummary } from "./run-metrics.js";
+import { tokenUsageSummary, estimatedCostSummary } from "./run-metrics.js";
 
 import { dashboardAttention } from "./runs-board.js";
 const stamp = job => Date.parse(job.updated_at || job.created_at) || 0;
@@ -43,6 +43,7 @@ export function dashboardState({ jobs = [], workers = [], automations, days = "7
     timedMillis: timedRuns.length ? timedRuns.reduce((total, run) => total + run.duration_millis, 0) : null,
     timedRuns: timedRuns.length,
     usage: tokenUsageSummary(base.runs),
+    cost: estimatedCostSummary(periodJobs),
     onlineWorkers: workers.filter(worker => worker.connected).length,
     totalWorkers: workers.length,
     scheduled: Array.isArray(automations) ? automations.filter(a => a.cron && !a.paused).length : null,
