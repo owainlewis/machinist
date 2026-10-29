@@ -237,7 +237,7 @@ func TestProjectDefaultsPersistenceValidationAndSubmission(t *testing.T) {
 	o.settings.Selection.Host = "kubernetes"
 	save("native-v1", "", 400)
 	o.settings.Selection.Agent = "claude"
-	save("single", "", 400)
+	save("single", "Run focused tests.", 200)
 	o.settings.Selection.Agent = "codex"
 	o.settings.Selection.Host = "local"
 	submit := func(key, recipe string, instructions *string, want int) string {

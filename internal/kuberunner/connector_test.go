@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http/httptest"
@@ -224,5 +225,145 @@ func TestConnectorBeforeJobFailureHasNoOutstandingProcess(t *testing.T) {
 	result, _, err := (Connector{}).Execute(t.Context(), runner.Options{RunID: "not-started"}, true)
 	if err == nil || result.CleanupUnconfirmed || !result.ProcessStopped || result.ID != "" {
 		t.Fatal("preflight failure must not invent an active attempt")
+	}
+}
+
+func claudeConfiguration() config.Kubernetes {
+	c := configuration()
+	c.AuthSecret, c.Agent = "claude-test", "claude"
+	return c
+}
+
+func TestClaudeTokenValidation(t *testing.T) {
+	if err := ValidateClaudeToken([]byte("fictional-oauth-token\n")); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"", "  \n", "two words", strings.Repeat("x", 4097)} {
+		if ValidateClaudeToken([]byte(body)) == nil {
+			t.Fatalf("accepted invalid token %q", body)
+		}
+	}
+}
+
+func TestClaudeJobKeepsTokenOutOfManifestAndDisablesExtraTraffic(t *testing.T) {
+	object := (Connector{Config: claudeConfiguration()}).manifest("test-job", false, 300)
+	b, _ := json.Marshal(object)
+	text := string(b)
+	for _, forbidden := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GH_TOKEN", "hostPath", "privileged"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("unexpected authority: %s", forbidden)
+		}
+	}
+	for _, required := range []string{`"runtimeClassName":"gvisor"`, `"secretName":"claude-test"`, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_AUTOUPDATER"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("missing %s", required)
+		}
+	}
+}
+
+func TestInstallAllowsAnthropicAPI(t *testing.T) {
+	data, _ := json.Marshal((Connector{}).InstallObjects())
+	if !strings.Contains(string(data), "api.anthropic.com") {
+		t.Fatal("Claude model API is blocked")
+	}
+}
+
+func TestClaudeLoginStoresPastedToken(t *testing.T) {
+	var stored []byte
+	c := Connector{Config: claudeConfiguration()}
+	c.run = func(_ context.Context, input io.Reader, _ int, args ...string) ([]byte, error) {
+		if args[0] == "get" {
+			return nil, &commandFailure{cause: errors.New("exit failure"), missing: true}
+		}
+		if args[0] == "create" {
+			stored, _ = io.ReadAll(input)
+			return []byte("created"), nil
+		}
+		return nil, fmt.Errorf("unexpected command %v", args)
+	}
+	var out bytes.Buffer
+	if err := c.Login(t.Context(), strings.NewReader("fictional-oauth-token\n"), &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var secret struct {
+		Data map[string][]byte `json:"data"`
+	}
+	if err := json.Unmarshal(stored, &secret); err != nil || string(secret.Data[ClaudeTokenFile]) != "fictional-oauth-token" {
+		t.Fatalf("token not stored: %v %s", err, stored)
+	}
+	if strings.Contains(out.String(), "fictional-oauth-token") {
+		t.Fatal("token echoed")
+	}
+}
+
+func TestClaudeSandboxUsesTokenAndClaudeCommand(t *testing.T) {
+	credentials, home := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(credentials, ClaudeTokenFile), []byte("fictional-oauth-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	t.Setenv("HOME", os.Getenv("HOME"))
+	r := Request{Agent: "claude", Command: config.ResolvedCommand{Model: "opus"}}
+	if err := prepareClaude(&r, home, credentials); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "fictional-oauth-token" || r.Command.Executor != "claude" || r.Command.Command[0] != "claude" || !strings.Contains(strings.Join(r.Command.Command, " "), "--model opus") {
+		t.Fatalf("unexpected command %v", r.Command.Command)
+	}
+	if err := prepareClaude(&r, home, t.TempDir()); err == nil {
+		t.Fatal("ran without a Claude credential")
+	}
+}
+
+func TestClaudeExecutionSkipsCodexStreamLock(t *testing.T) {
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init"}, {"-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if b, e := cmd.CombinedOutput(); e != nil {
+			t.Fatalf("git: %v %s", e, b)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deleted := false
+	c := Connector{Config: claudeConfiguration()}
+	c.run = func(callContext context.Context, input io.Reader, limit int, args ...string) ([]byte, error) {
+		if callContext.Err() != nil {
+			return nil, callContext.Err()
+		}
+		line := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(line, "get runtimeclass "), strings.HasPrefix(line, "get networkpolicy "), strings.HasPrefix(line, "get secret "):
+			return []byte(`{}`), nil
+		case strings.HasPrefix(line, "get deployment "):
+			return []byte(`{"status":{"availableReplicas":1}}`), nil
+		case args[0] == "create":
+			body, _ := io.ReadAll(input)
+			if bytes.Contains(body, []byte(`"kind":"ConfigMap"`)) {
+				t.Fatal("Claude run took a Codex credential stream lock")
+			}
+			return []byte("created"), nil
+		case strings.HasPrefix(line, "get pods "):
+			if deleted {
+				return []byte(`{"items":[]}`), nil
+			}
+			return []byte(`{"items":[{"metadata":{"name":"test-pod"},"status":{"initContainerStatuses":[{"state":{"running":{}}}]}}]}`), nil
+		case strings.Contains(line, "test -f /exchange/done"):
+			cancel()
+			return nil, context.Canceled
+		case strings.Contains(line, ".codex/auth.json"), args[0] == "replace", strings.HasPrefix(line, "delete configmap "):
+			t.Fatalf("Claude run touched Codex auth: %s", line)
+		case strings.HasPrefix(line, "delete job "):
+			deleted = true
+			return nil, nil
+		case args[0] == "exec":
+			return nil, nil
+		}
+		return nil, fmt.Errorf("unexpected command %s", line)
+	}
+	result, _, err := c.Execute(ctx, runner.Options{Repository: repo, RunID: "run_0123456789abcdef01234567", ArtifactKey: "lease_test", DataDirectory: t.TempDir(), Command: config.ResolvedCommand{Timeout: time.Minute}}, true)
+	if err == nil || !deleted || !result.ProcessStopped || result.State != runner.StateCancelled {
+		t.Fatalf("err=%v deleted=%v stopped=%v state=%s", err, deleted, result.ProcessStopped, result.State)
 	}
 }

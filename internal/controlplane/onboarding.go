@@ -477,8 +477,8 @@ func (o *onboarding) selectAgent(agent, host string) error {
 		if err = definition.Server.Kubernetes.Validate(); err != nil {
 			return err
 		}
-		if agent != "codex" {
-			return errors.New("the Kubernetes runner currently uses Codex subscription authentication")
+		if want := definition.Server.Kubernetes.AgentName(); agent != want {
+			return fmt.Errorf("the Kubernetes runner is configured for %s; set server.kubernetes.agent to change it", want)
 		}
 	}
 	if host == "local" {

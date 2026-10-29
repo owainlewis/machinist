@@ -37,6 +37,18 @@ type Request struct {
 	Task           *protocol.Task           `json:"task,omitempty"`
 	Revision       *protocol.Revision       `json:"revision,omitempty"`
 	ReviewEvidence string                   `json:"review_evidence,omitempty"`
+	Agent          string                   `json:"agent,omitempty"`
+}
+
+// ClaudeTokenFile is the Secret key holding a `claude setup-token` OAuth token.
+const ClaudeTokenFile = "oauth-token"
+
+// providerHost is the model endpoint the init container proves reachable.
+func providerHost(agent string) string {
+	if agent == "claude" {
+		return "api.anthropic.com"
+	}
+	return "chatgpt.com"
 }
 
 type Output struct {
@@ -128,7 +140,7 @@ func Prepare(ctx context.Context, exchange, source string) error {
 	if err != nil {
 		return err
 	}
-	if err = ProbeNetwork(ctx); err != nil {
+	if err = ProbeNetwork(ctx, providerHost(r.Agent)); err != nil {
 		return err
 	}
 	if _, err = git(ctx, exchange, "clone", "--no-checkout", filepath.Join(exchange, "input.bundle"), source); err != nil {
@@ -146,14 +158,54 @@ func Prepare(ctx context.Context, exchange, source string) error {
 }
 
 // Sandbox runs inside the unprivileged container. Authentication is native
-// Codex managed-account auth; there is deliberately no API-key fallback.
+// subscription auth: a Codex managed account or a Claude setup-token. There is
+// deliberately no API-key fallback.
 func Sandbox(ctx context.Context, exchange, source, home, credentials string) error {
 	r, err := readRequest(exchange)
 	if err != nil {
 		return err
 	}
+	if r.Agent == "claude" {
+		err = prepareClaude(&r, home, credentials)
+	} else {
+		err = prepareCodex(&r, home, credentials)
+	}
+	if err != nil {
+		return err
+	}
+	return execute(ctx, r, exchange, source)
+}
+
+// prepareClaude uses the long-lived token from `claude setup-token`. It does
+// not refresh, so nothing is written back to the cluster Secret.
+func prepareClaude(r *Request, home, credentials string) error {
+	token, err := os.ReadFile(filepath.Join(credentials, ClaudeTokenFile))
+	if err != nil {
+		return fmt.Errorf("Claude account credential missing")
+	}
+	if err = ValidateClaudeToken(token); err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
+		return err
+	}
+	if err = os.Setenv("HOME", home); err != nil {
+		return err
+	}
+	if err = os.Setenv("CLAUDE_CODE_OAUTH_TOKEN", strings.TrimSpace(string(token))); err != nil {
+		return err
+	}
+	r.Command.Command = []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"}
+	r.Command.Executor = "claude"
+	if r.Command.Model != "" {
+		r.Command.Command = append(r.Command.Command, "--model", r.Command.Model)
+	}
+	return nil
+}
+
+func prepareCodex(r *Request, home, credentials string) error {
 	cache := filepath.Join(home, ".codex")
-	if err = os.MkdirAll(cache, 0700); err != nil {
+	if err := os.MkdirAll(cache, 0700); err != nil {
 		return err
 	}
 	auth, err := os.ReadFile(filepath.Join(credentials, "auth.json"))
@@ -180,6 +232,10 @@ func Sandbox(ctx context.Context, exchange, source, home, credentials string) er
 	if r.Command.Model != "" {
 		r.Command.Command = append(r.Command.Command[:len(r.Command.Command)-1], "--model", r.Command.Model, "-")
 	}
+	return nil
+}
+
+func execute(ctx context.Context, r Request, exchange, source string) error {
 	stdout, err := os.OpenFile(filepath.Join(exchange, "stdout.log"), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 	if err != nil {
 		return err
@@ -239,6 +295,15 @@ func ValidateAuth(body []byte) error {
 	}
 	if len(body) > 64<<10 || json.Unmarshal(body, &auth) != nil || auth.Mode != "chatgpt" || auth.Tokens.Access == "" || auth.Tokens.Refresh == "" {
 		return fmt.Errorf("a dedicated Codex ChatGPT login with refresh credentials is required")
+	}
+	return nil
+}
+
+// ValidateClaudeToken accepts one bounded token line without whitespace.
+func ValidateClaudeToken(body []byte) error {
+	token := strings.TrimSpace(string(body))
+	if token == "" || len(token) > 4<<10 || strings.ContainsAny(token, " \t\r\n") {
+		return fmt.Errorf("a Claude token from `claude setup-token` is required")
 	}
 	return nil
 }
