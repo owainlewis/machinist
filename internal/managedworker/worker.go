@@ -227,7 +227,7 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 			}
 			token, tokenErr := w.githubTokenProvider(ctx, spec.Repository)
 			if tokenErr != nil {
-				completion.Error = "GitHub App connection unavailable"
+				completion.Error = "GitHub App connection unavailable: " + tokenErr.Error()
 				return completion
 			}
 			environment, environmentErr := GitHubEnvironment(token, remoteRepository)
