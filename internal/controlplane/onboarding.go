@@ -577,7 +577,7 @@ func (o *onboarding) startWorker() error {
 			return "", err
 		}
 		if !slices.ContainsFunc(repos, func(r GitHubConnectedRepository) bool { return r.FullName == alias && r.CanWrite }) {
-			return "", errors.New("GitHub App repository access was revoked")
+			return "", fmt.Errorf("the GitHub App cannot write to %s; add it to the App installation's repository access", alias)
 		}
 		return o.connection.Token(ctx)
 	})
