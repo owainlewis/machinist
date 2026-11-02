@@ -158,7 +158,7 @@ func (s *Server) Serve(ctx context.Context, listen string, onListening func(net.
 		onListening(listener.Addr())
 	}
 	httpServer := &http.Server{
-		Handler:           s.handler,
+		Handler:           loopbackOnly(s.handler),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
@@ -619,6 +619,19 @@ func (s *Server) validBrowserRequest(request *http.Request) bool {
 	return hostname == "localhost" || net.ParseIP(hostname) != nil && net.ParseIP(hostname).IsLoopback()
 }
 
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func validateLoopbackListen(listen string) error {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -675,6 +688,18 @@ func writeDecodeError(response http.ResponseWriter, err error) {
 		return
 	}
 	writeError(response, http.StatusBadRequest, err)
+}
+
+// loopbackOnly rejects non-loopback Host headers. The listener is loopback-only,
+// so any other name means a DNS-rebinding page is reading the API.
+func loopbackOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !loopbackHost(request.Host) {
+			writeError(response, http.StatusMisdirectedRequest, errors.New("requests must address a loopback host"))
+			return
+		}
+		next.ServeHTTP(response, request)
+	})
 }
 
 func securityHeaders(next http.Handler) http.Handler {

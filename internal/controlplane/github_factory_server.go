@@ -147,7 +147,7 @@ func (s *GitHubFactoryServer) Serve(ctx context.Context, listen string, onListen
 	go func() { defer close(followupsDone); s.serveGitHubFollowups(scheduleCtx) }()
 	defer func() { stopSchedules(); <-followupsDone }()
 	defer func() { stopSchedules(); <-schedulesDone }()
-	server := &http.Server{Handler: s.handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	server := &http.Server{Handler: loopbackOnly(s.handler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	select {
@@ -196,7 +196,6 @@ func (s *GitHubFactoryServer) routes() (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/runs/{id}/events", s.auth.authorizeWorker(s.ingestEvents))
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.runEvents)
 	mux.HandleFunc("GET /api/v1/runs/{id}/events/search", s.searchRunEvents)
-	mux.HandleFunc("GET /api/v1/runs/{id}/log", s.runLog)
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.auth.authorizeWorker(s.complete))
 	mux.HandleFunc("GET /api/v1/jobs/{id}/artifacts", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, []any{}) })
 	mux.Handle("/", http.FileServer(http.FS(dist)))
