@@ -19,7 +19,11 @@ Workers send bounded, lease-authenticated event batches to `POST /api/v1/runs/{i
 
 ## Reading agent activity
 
-The run overview shows only the agents that were used, their reported roles, current status and a short excerpt from each agent's own report. Select an agent to open its full report in the separate **Agent reports** tab. The overview no longer repeats those reports in a feed. Repeated instances of the same role receive numbers, such as Reviewer 1 and Reviewer 2; these are observed agents, not required pipeline stages.
+### On the run detail page
+
+In **Overview**, the **Agents** section shows the agents used in this attempt, labeled by their actual configured roles when recorded, with current status and a short outcome excerpt from each agent's own report. Select an agent's **Read report** card to open its full report in the **Agent reports** panel, or open that tab and choose an agent. Repeated instances of the same role receive numbers, such as Reviewer 1 and Reviewer 2; these are observed agents, not required pipeline stages.
+
+If a role is unknown, the harness did not record the agent's configured role. The UI uses a recorded agent name or **Subagent** as the label and shows **Agent name recorded; role unavailable** or **Role not reported**. This does not establish that the agent performed triage or review; read its report to understand what it did.
 
 Claude roles come from the selected `subagent_type` on native Agent/Task calls. Codex roles come from the child's `thread/read` metadata (`agentRole`), separately from its task name. If the harness did not record a role, the UI says so. Existing Claude roles can be recovered from retained raw calls; older Codex histories may retain only a name. The outcome preview is an excerpt, not a generated approval or success verdict. A completed reviewer may still have requested changes; its report remains the authority.
 
