@@ -478,7 +478,8 @@ permission checks and sandbox. The limits on an agent are its OS user or gVisor 
 GitHub login and, on Kubernetes, the egress proxy. Each Codex run writes its clone's real
 path (symlinks resolved) as trusted in its private `config.toml` before starting Codex
 (Q4). Without that entry Codex trusts the folder itself but still sends the
-`configWarning` that fails the run.
+`configWarning` that fails the run. A `login = true` run has no private home, so the entry
+is appended to the user's own `config.toml`, which is what Codex does itself.
 
 ### Credentials
 
@@ -842,7 +843,7 @@ Tracked files that are not listed below do not change.
 | `internal/mcpserver/server.go`, `server_test.go` | Five MCP tools on `github.com/modelcontextprotocol/go-sdk`, CUJ 9 |
 | `internal/protocol/report.go`, `report_test.go` | Report type and validation |
 | `internal/agentrunner/daemon.go`, `daemon_test.go` | Poll, heartbeat, stop on lost lease, complete. Adapted from `managedworker/worker.go` |
-| `internal/agentrunner/client.go`, `events.go`, `events_test.go`, `progress.go` | Moved from `managedworker/client.go`, `run_events.go`, `run_events_test.go`, `progress.go`. The client drops its refusal of `http://` for non-loopback hosts, and lease fields go |
+| `internal/agentrunner/client.go`, `events.go`, `events_test.go` | Moved from `managedworker/client.go`, `run_events.go`, `run_events_test.go`. The client drops its refusal of `http://` for non-loopback hosts, and lease fields go |
 | `internal/agentrunner/execute.go` | The `Execute` interface |
 | `internal/agentrunner/local.go`, `local_test.go` | Private home, allowlisted environment, login mode, process start and stop |
 | `internal/agentrunner/kubernetes.go`, `kubernetes_test.go` | Adapter over `kuberunner.Connector`, tested with a fake `kubectl` |

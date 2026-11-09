@@ -95,9 +95,14 @@ func decodeFile(path string, target any) error {
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", path, err)
 	}
+	return DecodeStrict(path, body, target)
+}
+
+// DecodeStrict decodes TOML and names any key the target does not define.
+func DecodeStrict(path string, body []byte, target any) error {
 	decoder := toml.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
-	err = decoder.Decode(target)
+	err := decoder.Decode(target)
 	var missing *toml.StrictMissingError
 	if errors.As(err, &missing) {
 		keys := make([]string, 0, len(missing.Errors))

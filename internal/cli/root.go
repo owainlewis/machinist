@@ -53,6 +53,8 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&options.configPath, "config", "", "configuration file")
 	root.AddCommand(newInitCommand(options))
+	root.AddCommand(newStartCommand(options))
+	root.AddCommand(newRunnerCommand(options))
 	root.AddCommand(newUpdateCommand(options))
 	root.AddCommand(newKubernetesCommand(options))
 	root.AddCommand(newSandboxCommand(options))
