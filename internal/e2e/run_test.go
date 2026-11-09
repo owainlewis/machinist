@@ -2,6 +2,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/controlplane"
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/fakegh"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -25,6 +28,33 @@ type system struct {
 	remote string
 	output string
 	data   string
+	github *fakegh.GitHub
+	log    *lockedBuffer
+}
+
+// lockedBuffer collects the control plane's log while it runs.
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+// options changes what start builds.
+type options struct {
+	claude    func(output string) string
+	maxTurns  int
+	reviewers bool
 }
 
 func git(t *testing.T, directory string, args ...string) string {
@@ -108,10 +138,16 @@ done
 // start runs a real control plane and a real local runner against fake harnesses.
 func start(t *testing.T, harness string) *system {
 	t.Helper()
+	return startWith(t, harness, options{claude: claudeScript, maxTurns: 5})
+}
+
+func startWith(t *testing.T, harness string, chosen options) *system {
+	t.Helper()
 	root := t.TempDir()
 	output := t.TempDir()
+	github := fakegh.Install(t, "machinist-bot")
 	bin := filepath.Join(root, "bin")
-	writeFile(t, filepath.Join(bin, "claude"), claudeScript(output), 0o700)
+	writeFile(t, filepath.Join(bin, "claude"), chosen.claude(output), 0o700)
 	writeFile(t, filepath.Join(bin, "codex"), codexScript(output), 0o700)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GH_TOKEN", "fixture-github")
@@ -123,8 +159,11 @@ func start(t *testing.T, harness string) *system {
 	writeFile(t, filepath.Join(factoryDirectory, "agents/default/agent.toml"), fmt.Sprintf("harness = %q\n", harness), 0o600)
 	writeFile(t, filepath.Join(factoryDirectory, "agents/default/playbook.md"), "THE PLAYBOOK\n", 0o600)
 	writeFile(t, filepath.Join(factoryDirectory, "agents/default/.claude/agents/machinist-helper.md"), "helper\n", 0o600)
+	if chosen.reviewers {
+		writeFile(t, filepath.Join(factoryDirectory, "reviewers/review.md"), "THE REVIEWER PROMPT\n", 0o600)
+	}
 	configPath := filepath.Join(root, "config.toml")
-	writeFile(t, configPath, "[server]\nlisten = \"127.0.0.1:0\"\ndatabase = \"tickets.db\"\nfactory = \"factory\"\n\n[github]\nhandle = \"machinist-bot\"\nrepositories = [\"owner/repo\"]\n", 0o600)
+	writeFile(t, configPath, fmt.Sprintf("[server]\nmax_turns_without_human = %d\n", chosen.maxTurns)+"listen = \"127.0.0.1:0\"\ndatabase = \"tickets.db\"\nfactory = \"factory\"\n\n[github]\nhandle = \"machinist-bot\"\nrepositories = [\"owner/repo\"]\n", 0o600)
 	machinistConfig, err := config.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -137,10 +176,12 @@ func start(t *testing.T, harness string) *system {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := controlplane.New(machinistConfig, store, loaded, "test", io.Discard)
+	log := &lockedBuffer{}
+	server, err := controlplane.New(machinistConfig, store, loaded, "test", log)
 	if err != nil {
 		t.Fatal(err)
 	}
+	server.SetPollInterval(20 * time.Millisecond)
 	ctx, cancel := context.WithCancel(t.Context())
 	listening := make(chan net.Addr, 1)
 	serverDone := make(chan error, 1)
@@ -180,7 +221,7 @@ func start(t *testing.T, harness string) *system {
 		}
 		_ = store.Close()
 	})
-	return &system{store: store, remote: remote, output: output, data: runnerConfig.DataDirectory}
+	return &system{store: store, remote: remote, output: output, data: runnerConfig.DataDirectory, github: github, log: log}
 }
 
 func (s *system) createTicket(t *testing.T) tickets.Ticket {

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/owainlewis/machinist/internal/fakegh"
 )
 
 func writeConfigFile(t *testing.T, directory, name, body string) string {
@@ -48,6 +50,7 @@ func (w *cancelOnListen) Write(body []byte) (int, error) {
 }
 
 func TestStartReportsListeningAfterBindAndStopsOnCancellation(t *testing.T) {
+	fakegh.Install(t, "machinist-bot")
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	stderr := &cancelOnListen{cancel: cancel}

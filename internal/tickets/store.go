@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS ticket_entries (
   body TEXT NOT NULL, source_key TEXT UNIQUE, created_at TEXT NOT NULL, consumed_by_run TEXT, posted_at TEXT);
 CREATE INDEX IF NOT EXISTS ticket_entries_ticket ON ticket_entries(ticket_id, id);
 CREATE TABLE IF NOT EXISTS runs (
-  id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, kind TEXT NOT NULL, harness TEXT NOT NULL, runner TEXT NOT NULL DEFAULT '',
+  id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, kind TEXT NOT NULL, reviewer TEXT NOT NULL DEFAULT '', harness TEXT NOT NULL, runner TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL, lease_expires_at TEXT, tokens INTEGER, cost REAL, report TEXT, started_at TEXT, ended_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_agent_run ON runs(ticket_id) WHERE kind='agent' AND status IN ('queued','running');
 CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
@@ -118,6 +118,7 @@ type Run struct {
 	ID        string           `json:"id"`
 	TicketID  string           `json:"ticket_id"`
 	Kind      string           `json:"kind"`
+	Reviewer  string           `json:"reviewer,omitempty"`
 	Harness   string           `json:"harness"`
 	Runner    string           `json:"runner,omitempty"`
 	Status    string           `json:"status"`
@@ -148,12 +149,20 @@ type Input struct {
 	SourceKey string
 }
 
+// FirstPR is what happens the first time a ticket has a PR.
+type FirstPR struct {
+	Link      string
+	Harness   string
+	Reviewers []string
+}
+
 // Transition is the result of one row of the ticket state table.
 type Transition struct {
 	State    string
 	Message  string
 	Report   string
 	PRNumber int
+	FirstPR  *FirstPR
 }
 
 // RunCompletion is what a runner reported when a run ended.
@@ -220,7 +229,8 @@ func randomHex(bytes int) (string, error) {
 	return hex.EncodeToString(buffer), nil
 }
 
-func stamp(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+// stamp has a fixed width, so stored times compare correctly as text.
+func stamp(value time.Time) string { return value.UTC().Format("2006-01-02T15:04:05.000000000Z") }
 
 func parseTime(value sql.NullString) *time.Time {
 	if !value.Valid {
@@ -281,14 +291,14 @@ func (s *Store) Ticket(ctx context.Context, id string) (Ticket, error) {
 	return loadTicket(ctx, s.db, id)
 }
 
-const runColumns = `id,ticket_id,kind,harness,runner,status,tokens,cost,report,started_at,ended_at`
+const runColumns = `id,ticket_id,kind,reviewer,harness,runner,status,tokens,cost,report,started_at,ended_at`
 
 func scanRun(row scanner) (Run, error) {
 	var run Run
 	var tokens sql.NullInt64
 	var cost sql.NullFloat64
 	var report, started, ended sql.NullString
-	if err := row.Scan(&run.ID, &run.TicketID, &run.Kind, &run.Harness, &run.Runner, &run.Status, &tokens, &cost, &report, &started, &ended); err != nil {
+	if err := row.Scan(&run.ID, &run.TicketID, &run.Kind, &run.Reviewer, &run.Harness, &run.Runner, &run.Status, &tokens, &cost, &report, &started, &ended); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Run{}, ErrNotFound
 		}
@@ -363,6 +373,17 @@ func (s *Store) Entries(ctx context.Context, ticketID string) ([]Entry, error) {
 
 func insertEntry(ctx context.Context, q querier, ticketID, kind, author, body string, sourceKey any, now time.Time) error {
 	_, err := q.ExecContext(ctx, `INSERT INTO ticket_entries(ticket_id,kind,author,body,source_key,created_at) VALUES(?,?,?,?,?,?)`, ticketID, kind, author, body, sourceKey, stamp(now))
+	return err
+}
+
+// insertMessage adds an outbound message. With no issue or PR there is nowhere
+// to post it, so it is marked handled and shows only in Machinist.
+func insertMessage(ctx context.Context, q querier, ticket Ticket, prNumber int, body string, sourceKey any, now time.Time) error {
+	var posted any
+	if ticket.IssueNumber == 0 && ticket.PRNumber == 0 && prNumber == 0 {
+		posted = stamp(now)
+	}
+	_, err := q.ExecContext(ctx, `INSERT INTO ticket_entries(ticket_id,kind,author,body,source_key,created_at,posted_at) VALUES(?,?,?,?,?,?,?)`, ticket.ID, EntryMessage, authorMachinist, body, sourceKey, stamp(now), posted)
 	return err
 }
 
@@ -483,7 +504,7 @@ func (s *Store) Cancel(ctx context.Context, ticketID, by string) (Ticket, error)
 			return ErrTicketEnded
 		}
 		now := s.now()
-		if _, err = tx.ExecContext(ctx, `UPDATE runs SET status=?,ended_at=? WHERE ticket_id=? AND status=?`, RunCancelled, stamp(now), ticketID, RunQueued); err != nil {
+		if err = cancelQueuedRuns(ctx, tx, ticketID, now); err != nil {
 			return err
 		}
 		if err = applyTransition(ctx, tx, ticket, Transition{State: StateCancelled, Message: "Cancelled by " + by}, now); err != nil {
@@ -493,6 +514,62 @@ func (s *Store) Cancel(ctx context.Context, ticketID, by string) (Ticket, error)
 		return err
 	})
 	return ticket, err
+}
+
+func cancelQueuedRuns(ctx context.Context, q querier, ticketID string, now time.Time) error {
+	_, err := q.ExecContext(ctx, `UPDATE runs SET status=?,ended_at=? WHERE ticket_id=? AND status=?`, RunCancelled, stamp(now), ticketID, RunQueued)
+	return err
+}
+
+// PRMerged ends a ticket whose PR merged. A queued run stops here. A running run
+// is told to stop by its next heartbeat.
+func (s *Store) PRMerged(ctx context.Context, ticketID string, humanCommits int, mergedAt time.Time) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		ticket, err := loadTicket(ctx, tx, ticketID)
+		if err != nil || !activeState(ticket.State) {
+			return err
+		}
+		now := s.now()
+		if err = cancelQueuedRuns(ctx, tx, ticketID, now); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,human_commits=?,merged_at=?,updated_at=? WHERE id=?`, StateDone, humanCommits, stamp(mergedAt), stamp(now), ticketID)
+		return err
+	})
+}
+
+// PRClosed records a PR closed without merging. The key makes each close count
+// once, so a reply to the message can continue the ticket on the closed PR.
+func (s *Store) PRClosed(ctx context.Context, ticketID, key, next, message string) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		ticket, err := loadTicket(ctx, tx, ticketID)
+		if err != nil || !activeState(ticket.State) {
+			return err
+		}
+		if _, err = ticketForSourceKey(ctx, tx, key); err == nil {
+			return nil
+		} else if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		now := s.now()
+		if err = cancelQueuedRuns(ctx, tx, ticketID, now); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,updated_at=? WHERE id=?`, next, stamp(now), ticketID); err != nil {
+			return err
+		}
+		return insertMessage(ctx, tx, ticket, 0, message, key, now)
+	})
+}
+
+func queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness string) (string, error) {
+	id, err := randomHex(12)
+	if err != nil {
+		return "", err
+	}
+	id = "run_" + id
+	_, err = q.ExecContext(ctx, `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status) VALUES(?,?,?,?,?,?)`, id, ticketID, kind, reviewer, harness, RunQueued)
+	return id, err
 }
 
 func applyTransition(ctx context.Context, q querier, ticket Ticket, transition Transition, now time.Time) error {
@@ -505,7 +582,22 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 		}
 	}
 	if transition.Message != "" {
-		return insertEntry(ctx, q, ticket.ID, EntryMessage, authorMachinist, transition.Message, nil, now)
+		if err := insertMessage(ctx, q, ticket, transition.PRNumber, transition.Message, nil, now); err != nil {
+			return err
+		}
+	}
+	if transition.FirstPR == nil {
+		return nil
+	}
+	if transition.FirstPR.Link != "" {
+		if err := insertMessage(ctx, q, ticket, transition.PRNumber, transition.FirstPR.Link, nil, now); err != nil {
+			return err
+		}
+	}
+	for _, reviewer := range transition.FirstPR.Reviewers {
+		if _, err := queueRun(ctx, q, ticket.ID, RunKindReviewer, reviewer, transition.FirstPR.Harness); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -560,6 +652,16 @@ func (s *Store) TurnsSinceHuman(ctx context.Context, ticketID string) (int, erro
 	return turnsSinceHuman(ctx, s.db, ticketID)
 }
 
+// WaitingCI returns the newest CI signal no run has read yet.
+func (s *Store) WaitingCI(ctx context.Context, ticketID string) (string, error) {
+	var body string
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM ticket_entries WHERE ticket_id=? AND kind=? AND consumed_by_run IS NULL ORDER BY id DESC LIMIT 1`, ticketID, EntryCI).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return body, err
+}
+
 // LastReport returns the text of the ticket's newest agent report.
 func (s *Store) LastReport(ctx context.Context, ticketID string) (string, error) {
 	var body string
@@ -570,19 +672,14 @@ func (s *Store) LastReport(ctx context.Context, ticketID string) (string, error)
 	return body, err
 }
 
-// QueueRun adds a run for a working ticket.
-func (s *Store) QueueRun(ctx context.Context, ticketID, kind, harness string) (Run, error) {
-	id, err := randomHex(12)
-	if err != nil {
-		return Run{}, err
-	}
-	id = "run_" + id
+// QueueRun adds an agent run for a working ticket.
+func (s *Store) QueueRun(ctx context.Context, ticketID, harness string) (Run, error) {
 	var run Run
-	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,ticket_id,kind,harness,status) VALUES(?,?,?,?,?)`, id, ticketID, kind, harness, RunQueued); err != nil {
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		id, err := queueRun(ctx, tx, ticketID, RunKindAgent, "", harness)
+		if err != nil {
 			return err
 		}
-		var err error
 		run, err = loadRun(ctx, tx, id)
 		return err
 	})
@@ -714,7 +811,8 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, maxTu
 			if err != nil {
 				return err
 			}
-			if waiting > 0 && turns < maxTurns {
+			// From pr_ready the engine applies the turn limit and writes its message.
+			if waiting > 0 && (turns < maxTurns || transition.State == StatePRReady) {
 				transition.State = StateWorking
 			}
 		}
@@ -789,6 +887,92 @@ func (s *Store) RunEvents(ctx context.Context, runID string, after int64) (proto
 		page.Events = append(page.Events, json.RawMessage(body))
 	}
 	return page, rows.Err()
+}
+
+// ActiveTicketFor finds the active ticket on an issue or PR number.
+func (s *Store) ActiveTicketFor(ctx context.Context, repo string, number int) (Ticket, error) {
+	return scanTicket(s.db.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND (issue_number=? OR pr_number=?) AND state IN (?,?,?) ORDER BY created_at DESC LIMIT 1`, repo, number, number, StateWorking, StateNeedsYou, StatePRReady))
+}
+
+// ActiveWithPR lists the active tickets that have a PR.
+func (s *Store) ActiveWithPR(ctx context.Context) ([]Ticket, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE pr_number IS NOT NULL AND state IN (?,?,?) ORDER BY created_at`, StateWorking, StateNeedsYou, StatePRReady)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tickets := []Ticket{}
+	for rows.Next() {
+		ticket, err := scanTicket(rows)
+		if err != nil {
+			return nil, err
+		}
+		tickets = append(tickets, ticket)
+	}
+	return tickets, rows.Err()
+}
+
+// HasSourceKey reports whether a piece of intake was already recorded.
+func (s *Store) HasSourceKey(ctx context.Context, key string) (bool, error) {
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM ticket_entries WHERE source_key=?`, key).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// Cursor returns a source's stored position. The bool is false on first use.
+func (s *Store) Cursor(ctx context.Context, source, repo string) (time.Time, bool, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT cursor FROM source_cursors WHERE source=? AND repo=?`, source, repo).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	return parsed, err == nil, err
+}
+
+// SetCursor stores a source's position.
+func (s *Store) SetCursor(ctx context.Context, source, repo string, value time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO source_cursors(source,repo,cursor) VALUES(?,?,?) ON CONFLICT(source,repo) DO UPDATE SET cursor=excluded.cursor`, source, repo, stamp(value))
+	return err
+}
+
+// Outbound is one message waiting to be posted.
+type Outbound struct {
+	EntryID int64
+	Repo    string
+	Number  int
+	Body    string
+}
+
+// UnpostedMessages lists messages to post, oldest first, on the issue or
+// otherwise the PR.
+func (s *Store) UnpostedMessages(ctx context.Context) ([]Outbound, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id,t.repo,COALESCE(t.issue_number,t.pr_number),e.body FROM ticket_entries e JOIN tickets t ON t.id=e.ticket_id WHERE e.kind=? AND e.posted_at IS NULL AND COALESCE(t.issue_number,t.pr_number) IS NOT NULL ORDER BY e.id`, EntryMessage)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := []Outbound{}
+	for rows.Next() {
+		var message Outbound
+		if err := rows.Scan(&message.EntryID, &message.Repo, &message.Number, &message.Body); err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
+}
+
+// MarkPosted records that a message reached GitHub.
+func (s *Store) MarkPosted(ctx context.Context, entryID int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE ticket_entries SET posted_at=? WHERE id=?`, stamp(s.now()), entryID)
+	return err
 }
 
 func hashToken(token string) string {

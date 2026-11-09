@@ -137,7 +137,8 @@ func TestReportRows(t *testing.T) {
 		message    string
 	}{
 		{"pr ready with PR", succeed("pr_ready", "Opened", ""), found, tickets.StatePRReady, ""},
-		{"pr ready without PR", succeed("pr_ready", "Opened", ""), nil, tickets.StateNeedsYou, "Reported a PR but none exists for this branch."},
+		{"pr ready without PR", succeed("pr_ready", "Opened", ""), nil, tickets.StateNeedsYou, "Reported a PR but none is open for this branch."},
+		{"pr ready with only a closed PR", succeed("pr_ready", "Opened", ""), &PR{Number: 42, Closed: true}, tickets.StateNeedsYou, "Reported a PR but none is open for this branch."},
 		{"needs input", succeed("needs_input", "Stuck", "Which API?"), nil, tickets.StateNeedsYou, "Which API?"},
 		{"no change", succeed("no_change", "Nothing to do", ""), nil, tickets.StateDone, "Nothing to do"},
 		{"failed report", succeed("failed", "Tests cannot run", ""), nil, tickets.StateNeedsYou, "Tests cannot run"},
@@ -292,8 +293,11 @@ func TestTurnLimitMessageIsTheLastReport(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if message := lastMessage(t, e, ticket.ID); message != "failed: Could not build" {
-		t.Fatalf("message = %q", message)
+	message := lastMessage(t, e, ticket.ID)
+	for _, want := range []string{"limit of 1 runs", "failed: Could not build", "CI failed"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("missing %q in %q", want, message)
+		}
 	}
 }
 

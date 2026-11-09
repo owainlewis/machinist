@@ -9,12 +9,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/ghclient"
+	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -28,6 +31,8 @@ type Server struct {
 	config  config.Config
 	store   *tickets.Store
 	engine  *engine.Engine
+	client  *ghclient.Client
+	github  *sources.GitHub
 	version string
 	log     io.Writer
 
@@ -42,21 +47,74 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if err := loaded.Validate(machinistConfig.Server.DefaultAgent, machinistConfig.GitHub.Repositories); err != nil {
 		return nil, err
 	}
+	client := ghclient.New()
+	ticketEngine := engine.New(engine.Options{
+		Store:      store,
+		Factory:    loaded,
+		MaxTurns:   machinistConfig.Server.MaxTurnsWithoutHuman,
+		RunTimeout: machinistConfig.Server.RunDeadline(),
+		Handle:     machinistConfig.GitHub.Handle,
+		FindPR:     findPR(client),
+		Post:       client.PostComment,
+		Log:        log,
+	})
 	return &Server{
 		config:  machinistConfig,
 		store:   store,
+		engine:  ticketEngine,
+		client:  client,
 		version: version,
 		log:     log,
 		runners: map[string]runnerStatus{},
-		engine: engine.New(engine.Options{
-			Store:      store,
-			Factory:    loaded,
-			MaxTurns:   machinistConfig.Server.MaxTurnsWithoutHuman,
-			RunTimeout: machinistConfig.Server.RunDeadline(),
-			Handle:     machinistConfig.GitHub.Handle,
-			Log:        log,
+		github: sources.NewGitHub(sources.Options{
+			Client:       client,
+			Store:        store,
+			Engine:       ticketEngine,
+			Handle:       machinistConfig.GitHub.Handle,
+			Repositories: machinistConfig.GitHub.Repositories,
+			DefaultAgent: machinistConfig.Server.DefaultAgent,
+			Log:          log,
 		}),
 	}, nil
+}
+
+func findPR(client *ghclient.Client) engine.PRFinder {
+	return func(ctx context.Context, repository, branch string) (*engine.PR, error) {
+		found, err := client.FindPR(ctx, repository, branch)
+		if err != nil || found == nil {
+			return nil, err
+		}
+		return &engine.PR{Number: found.Number, Closed: found.State == ghclient.StateClosed}, nil
+	}
+}
+
+// SetPollInterval changes how often GitHub is polled. Tests use it.
+func (s *Server) SetPollInterval(interval time.Duration) { s.github.Interval = interval }
+
+// checkGitHub refuses a token that is not the bot's, because Machinist would
+// then read its own messages as human replies and start runs on them. Other
+// findings only warn, so that a GitHub outage cannot stop a restart.
+func (s *Server) checkGitHub(ctx context.Context) error {
+	login, err := s.client.CurrentUser(ctx)
+	if err != nil {
+		fmt.Fprintf(s.log, "machinist: warning: could not check the GitHub login: %v\n", err)
+	} else if !strings.EqualFold(login, s.config.GitHub.Handle) {
+		return fmt.Errorf("the GitHub token belongs to %s, but github.handle is %s; set GH_TOKEN to a token for the bot account", login, s.config.GitHub.Handle)
+	}
+	for _, repository := range s.config.GitHub.Repositories {
+		access, err := s.client.RepositoryAccess(ctx, repository)
+		if err != nil {
+			fmt.Fprintf(s.log, "machinist: warning: could not check %s: %v\n", repository, err)
+			continue
+		}
+		if !access.Protected {
+			fmt.Fprintf(s.log, "machinist: warning: %s branch %s has no protection\n", repository, access.DefaultBranch)
+		}
+		if access.Admin {
+			fmt.Fprintf(s.log, "machinist: warning: the GitHub login has admin rights on %s\n", repository)
+		}
+	}
+	return nil
 }
 
 // Handler returns the routes of the control plane.
@@ -77,6 +135,9 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 // Serve runs the API and the engine until ctx ends.
 func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
+	if err := s.checkGitHub(ctx); err != nil {
+		return err
+	}
 	listener, err := net.Listen("tcp", s.config.Server.Listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.config.Server.Listen, err)
@@ -98,6 +159,8 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	defer stopEngine()
 	engineDone := make(chan struct{})
 	go func() { s.engine.Run(engineContext); close(engineDone) }()
+	githubDone := make(chan struct{})
+	go func() { s.github.Run(engineContext); close(githubDone) }()
 
 	select {
 	case err = <-served:
@@ -108,6 +171,7 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	}
 	stopEngine()
 	<-engineDone
+	<-githubDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

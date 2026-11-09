@@ -37,7 +37,7 @@ func createTicket(t *testing.T, store *Store, key string) Ticket {
 
 func claimRun(t *testing.T, store *Store, ticket Ticket) *Claim {
 	t.Helper()
-	if _, err := store.QueueRun(t.Context(), ticket.ID, RunKindAgent, "claude"); err != nil {
+	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); err != nil {
 		t.Fatal(err)
 	}
 	claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now().Add(time.Minute))
@@ -118,13 +118,13 @@ func TestOneActiveTicketPerIssueAndAcknowledgement(t *testing.T) {
 func TestOneActiveAgentRunPerTicket(t *testing.T) {
 	store := openStore(t)
 	ticket := createTicket(t, store, "api:1")
-	if _, err := store.QueueRun(t.Context(), ticket.ID, RunKindAgent, "claude"); err != nil {
+	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.QueueRun(t.Context(), ticket.ID, RunKindAgent, "claude"); err == nil {
+	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); err == nil {
 		t.Fatal("second active agent run accepted")
 	}
-	if _, err := store.QueueRun(t.Context(), ticket.ID, RunKindReviewer, "claude"); err != nil {
+	if _, err := queueRun(t.Context(), store.db, ticket.ID, RunKindReviewer, "review", "claude"); err != nil {
 		t.Fatalf("reviewer run blocked: %v", err)
 	}
 }
@@ -133,10 +133,10 @@ func TestClaimRunGivesOldestMatchingHarnessAndConsumesInput(t *testing.T) {
 	store := openStore(t)
 	first := createTicket(t, store, "api:1")
 	second := createTicket(t, store, "api:2")
-	if _, err := store.QueueRun(t.Context(), first.ID, RunKindAgent, "codex"); err != nil {
+	if _, err := store.QueueRun(t.Context(), first.ID, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.QueueRun(t.Context(), second.ID, RunKindAgent, "claude"); err != nil {
+	if _, err := store.QueueRun(t.Context(), second.ID, "claude"); err != nil {
 		t.Fatal(err)
 	}
 	claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now().Add(time.Minute))
@@ -337,7 +337,7 @@ func TestHeartbeatTellsRunnerToStopAfterCancel(t *testing.T) {
 func TestCancelStopsQueuedRun(t *testing.T) {
 	store := openStore(t)
 	ticket := createTicket(t, store, "api:1")
-	run, err := store.QueueRun(t.Context(), ticket.ID, RunKindAgent, "claude")
+	run, err := store.QueueRun(t.Context(), ticket.ID, "claude")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestTicketsAwaitingRunSkipsActiveRunsAndOtherStates(t *testing.T) {
 	waiting := createTicket(t, store, "api:1")
 	busy := createTicket(t, store, "api:2")
 	paused := createTicket(t, store, "api:3")
-	if _, err := store.QueueRun(t.Context(), busy.ID, RunKindAgent, "claude"); err != nil {
+	if _, err := store.QueueRun(t.Context(), busy.ID, "claude"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Apply(t.Context(), paused.ID, StateWorking, Transition{State: StateNeedsYou}); err != nil {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/fakegh"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -28,6 +29,7 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	fakegh.Install(t, testConfig().GitHub.Handle)
 	t.Helper()
 	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
 	if err != nil {
@@ -122,7 +124,49 @@ func TestNewRejectsMissingHandleAndUnknownDefaultAgent(t *testing.T) {
 	}
 }
 
+func TestServeRefusesATokenThatIsNotTheBot(t *testing.T) {
+	fakegh.Install(t, "alice")
+	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server, err := New(testConfig(), store, testFactory(), "v", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Serve(t.Context(), nil); err == nil || !strings.Contains(err.Error(), "alice") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestServeWarnsAboutUnprotectedBranchAndAdminRights(t *testing.T) {
+	github := fakegh.Install(t, testConfig().GitHub.Handle)
+	github.SetAccess(false, true)
+	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var log bytes.Buffer
+	withRepository := testConfig()
+	withRepository.GitHub.Repositories = []string{"owner/repo"}
+	server, err := New(withRepository, store, testFactory(), "v", &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.checkGitHub(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"no protection", "admin rights"} {
+		if !strings.Contains(log.String(), want) {
+			t.Fatalf("missing %q in %q", want, log.String())
+		}
+	}
+}
+
 func TestServeStopsOnCancellation(t *testing.T) {
+	fakegh.Install(t, testConfig().GitHub.Handle)
 	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
 	if err != nil {
 		t.Fatal(err)

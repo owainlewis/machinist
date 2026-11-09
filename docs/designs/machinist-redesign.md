@@ -286,7 +286,7 @@ and `cancelled`. "Message" is what Machinist posts (see Sources for where).
 | --- | --- | --- | --- |
 | (new) | Ticket created | `working` | Acknowledgement, if the ticket has an issue |
 | `working` | Report `pr_ready`, PR found | `pr_ready` | None here. See the first-PR rule below |
-| `working` | Report `pr_ready`, no PR found | `needs_you` | "Reported a PR but none exists for this branch" |
+| `working` | Report `pr_ready`, no open or merged PR found | `needs_you` | "Reported a PR but none is open for this branch" |
 | `working` | Report `needs_input` | `needs_you` | The question |
 | `working` | Report `no_change` | `done` | The summary |
 | `working` | Report `failed` | `needs_you` | The summary |
@@ -302,11 +302,16 @@ and `cancelled`. "Message" is what Machinist posts (see Sources for where).
 | `pr_ready` | A signal listed under Sources | `working`, or `needs_you` at the turn limit | As above |
 | `pr_ready` | PR merged | `done` | None |
 | `pr_ready` | PR closed unmerged | `needs_you` | "The PR was closed. Reply to continue or cancel" |
+| `needs_you` | PR closed unmerged | `needs_you` | "The PR was closed. Reply to continue or cancel" |
 | Any active | Cancel | `cancelled` | "Cancelled by <name>". Any run is stopped. The PR stays open |
 | Ended | Any event | No change | None |
 
 **First PR.** The first time a PR is found for a ticket, whatever the state, Machinist
 posts its link on the issue and starts the reviewers.
+
+**Closing a PR counts once.** Each close is recorded with the key
+`github:closed:<number>:<closed at>`, so a reply can continue the ticket while the PR
+stays closed. The agent can reopen it or open another on the same branch.
 
 **Waiting input.** If a run ends with its report handled and unconsumed input is waiting,
 the next run starts at once and the state returns to `working`, unless the ticket has
@@ -328,7 +333,8 @@ A ticket has at most one active agent run. Reviewer runs do not count toward thi
 
 A reviewer is a prompt file. On a ticket's first PR, the engine queues one run per file
 in `reviewers/`, using the ticket's harness and model. The prompt is the file, then the
-repository and PR number. The clone is on the ticket's branch and gets no subagent files.
+repository and PR number, then the report format, because the harness needs a report to
+finish. The clone is on the ticket's branch and gets no subagent files.
 The reviewer uses `gh` to read the PR and post findings as a comment. It is a `runs` row
 with `kind = reviewer`. Its report is ignored, and its success or failure changes no
 ticket state. A failed reviewer shows on the ticket and is not retried, including after a
@@ -357,7 +363,7 @@ tickets(id, source, repo, issue_number, title, state, agent, pr_number, created_
         human_commits, merged_at, created_at, updated_at)
 ticket_entries(id, ticket_id, kind, author, body, source_key UNIQUE, created_at,
                consumed_by_run, posted_at)
-runs(id, ticket_id, kind, harness, runner, status, lease_expires_at, tokens, cost, report,
+runs(id, ticket_id, kind, reviewer, harness, runner, status, lease_expires_at, tokens, cost, report,
      started_at, ended_at)
 tokens(id, name, token_hash UNIQUE, created_at, last_used_at, revoked_at)
 source_cursors(source, repo, cursor)
@@ -371,7 +377,7 @@ A ticket's text, whether it came from a mention, the API or a schedule, is its f
 entry, created in the same transaction as the ticket. `source_key` exists only on entries,
 so one unique column makes all intake idempotent and a repeated comment can never create
 a second ticket. Keys are `github:comment:<id>`, `github:review:<id>`,
-`github:ci:<head sha>`, `api:<request_id>` (Assign box and MCP) and
+`github:ci:<head sha>`, `github:closed:<number>:<closed at>`, `api:<request_id>` (Assign box and MCP) and
 `schedule:<name>:<occurrence>`. `source` is `github`, `api` or `schedule:<name>`.
 
 The new database is a new file. Old databases stay on disk unopened and are not imported.
@@ -394,8 +400,11 @@ reach.
     on a PR with no ticket is logged and ignored.
 *   **PR signals.** For each ticket with a PR, once a minute: PR state, reviews requesting
     changes by permitted authors, and one CI failure per commit once all checks on it have
-    finished. The log entry only points at the signal, such as "CI failed on abc123". The
-    agent reads the detail with `gh`. Human pushes to the branch are allowed and counted.
+    finished. A CI failure is not recorded while the ticket is `working`, because that
+    commit is about to be replaced. If it is still the head when the run ends, the next
+    poll records it. The log entry only points at the signal, such as "CI failed on
+    abc123". The agent reads the detail with `gh`. Human pushes to the branch are allowed
+    and counted.
 *   **Assign box and MCP.** Both call the same intake with a caller-supplied `request_id`.
     A request for an issue with an active ticket returns that ticket.
 *   **Schedule.** Automation files use `internal/triggers` cron. The next occurrence comes
@@ -408,7 +417,8 @@ posting and recording can post a message twice. Tickets with no issue or PR show
 in the Work list and MCP status only.
 
 The control plane's login must be a dedicated bot account. Otherwise that person's own
-mentions are ignored as the bot's.
+mentions are ignored as the bot's. Startup refuses a `GH_TOKEN` whose login is not
+`github.handle`, because Machinist would read its own messages as human replies.
 
 ### Runners
 
@@ -839,6 +849,7 @@ Tracked files that are not listed below do not change.
 | `internal/sources/followups.go`, `followups_test.go` | PR state, reviews and CI signals, adapted from `github_followups.go` without the head-change block or author-association trust |
 | `internal/sources/schedule.go`, `schedule_test.go` | Cron occurrences to tickets; coalescing moved from `factory_automations.go` |
 | `internal/factory/factory.go`, `factory_test.go` | Load and validate the factory directory |
+| `internal/fakegh/fakegh.go` | Test helper: a fake `gh` executable whose state lives in files, shared by the control plane and agent processes |
 | `internal/ghclient/client.go`, `client_test.go` | Moved from `github_cli.go`, `github_journal.go` and `github_followups.go`, with their tests: no-shell execution, error classification, redaction, permission, comments, PR lookup, branch protection flag |
 | `internal/mcpserver/server.go`, `server_test.go` | Five MCP tools on `github.com/modelcontextprotocol/go-sdk`, CUJ 9 |
 | `internal/protocol/report.go`, `report_test.go` | Report type and validation |
