@@ -621,6 +621,8 @@ Developer routes, all JSON. Errors are `{"error": "..."}` with 400, 401, 404 or 
 MCP tools mirror these: `assign_ticket(request_id, repo, issue_number | title+body)`,
 `get_ticket(id)`, `list_tickets(state, repo)`, `answer_ticket(id, text)` and
 `cancel_ticket(id)`. Each returns the ticket: ID, state, link, PR, and any waiting question.
+The MCP route is stateless, so a control plane restart does not break a connected session.
+The link is `/#/work/<id>` on the address the caller used.
 
 `machinist token create <name>`, `list` and `revoke` open the database directly. That is
 how the first token is made, and tokens are managed only there.
@@ -851,6 +853,7 @@ Tracked files that are not listed below do not change.
 | `internal/factory/factory.go`, `factory_test.go` | Load and validate the factory directory |
 | `internal/fakegh/fakegh.go` | Test helper: a fake `gh` executable whose state lives in files, shared by the control plane and agent processes |
 | `internal/ghclient/client.go`, `client_test.go` | Moved from `github_cli.go`, `github_journal.go` and `github_followups.go`, with their tests: no-shell execution, error classification, redaction, permission, comments, PR lookup, branch protection flag |
+| `internal/sources/intake.go`, `intake_test.go` | The one intake for the Assign box and MCP: validate, read the issue, idempotent ticket creation |
 | `internal/mcpserver/server.go`, `server_test.go` | Five MCP tools on `github.com/modelcontextprotocol/go-sdk`, CUJ 9 |
 | `internal/protocol/report.go`, `report_test.go` | Report type and validation |
 | `internal/agentrunner/daemon.go`, `daemon_test.go` | Poll, heartbeat, stop on lost lease, complete. Adapted from `managedworker/worker.go` |

@@ -17,6 +17,7 @@ import (
 	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/ghclient"
+	"github.com/owainlewis/machinist/internal/mcpserver"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -33,6 +34,8 @@ type Server struct {
 	engine  *engine.Engine
 	client  *ghclient.Client
 	github  *sources.GitHub
+	intake  *sources.Intake
+	mcp     http.Handler
 	version string
 	log     io.Writer
 
@@ -58,11 +61,19 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		Post:       client.PostComment,
 		Log:        log,
 	})
+	intake := &sources.Intake{
+		Client:       client,
+		Store:        store,
+		DefaultAgent: machinistConfig.Server.DefaultAgent,
+		Repositories: machinistConfig.GitHub.Repositories,
+	}
 	return &Server{
 		config:  machinistConfig,
 		store:   store,
 		engine:  ticketEngine,
 		client:  client,
+		intake:  intake,
+		mcp:     mcpserver.New(store, intake, version),
 		version: version,
 		log:     log,
 		runners: map[string]runnerStatus{},
@@ -121,6 +132,16 @@ func (s *Server) checkGitHub(ctx context.Context) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
+	mux.HandleFunc("POST /api/v1/session", s.signIn)
+	mux.HandleFunc("DELETE /api/v1/session", s.requireToken(s.signOut))
+	mux.HandleFunc("POST /api/v1/tickets", s.requireToken(s.createTicket))
+	mux.HandleFunc("GET /api/v1/tickets", s.requireToken(s.listTickets))
+	mux.HandleFunc("GET /api/v1/tickets/{id}", s.requireToken(s.getTicket))
+	mux.HandleFunc("POST /api/v1/tickets/{id}/answer", s.requireToken(s.answerTicket))
+	mux.HandleFunc("POST /api/v1/tickets/{id}/cancel", s.requireToken(s.cancelTicket))
+	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.requireToken(s.runEvents))
+	mux.HandleFunc("GET /api/v1/ledger", s.requireToken(s.ledger))
+	mux.HandleFunc("/mcp", s.requireToken(s.serveMCP))
 	mux.HandleFunc("POST /api/v1/runners/poll", s.requireToken(s.poll))
 	mux.HandleFunc("GET /api/v1/runners", s.requireToken(s.listRunners))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.requireToken(s.heartbeat))

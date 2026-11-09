@@ -72,6 +72,7 @@ case "$method $endpoint" in
 "GET repos/"*"/branches/"*) show "$dir/branch" '{"protected":true}';;
 "GET repos/"*"/issues/"*)
   number=${endpoint##*/}
+  if [ "$(cat "$dir/issue-$number" 2>/dev/null)" = missing ]; then echo 'gh: Not Found (HTTP 404)' >&2; exit 1; fi
   show "$dir/issue-$number" '{"title":"An issue","body":"The issue text"}';;
 "GET repos/"*) show "$dir/repository" '{"default_branch":"main","permissions":{"admin":false}}';;
 *) echo "fake gh: unknown call: $method $endpoint" >&2; exit 1;;
@@ -196,6 +197,18 @@ func (g *GitHub) SetPermission(login, permission string) {
 func (g *GitHub) SetIssue(number int, title, body string) {
 	g.t.Helper()
 	g.write("issue-"+strconv.Itoa(number), map[string]string{"title": title, "body": body})
+}
+
+// SetIssuePR makes an issue number belong to a PR.
+func (g *GitHub) SetIssuePR(number int) {
+	g.t.Helper()
+	g.write("issue-"+strconv.Itoa(number), map[string]any{"title": "A PR", "body": "PR text", "pull_request": map[string]string{"url": "x"}})
+}
+
+// RemoveIssue makes an issue number not exist.
+func (g *GitHub) RemoveIssue(number int) {
+	g.t.Helper()
+	g.writeText("issue-"+strconv.Itoa(number), "missing")
 }
 
 // SetBranchPR makes number the PR for a branch.

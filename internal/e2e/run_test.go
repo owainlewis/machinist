@@ -30,6 +30,8 @@ type system struct {
 	data   string
 	github *fakegh.GitHub
 	log    *lockedBuffer
+	// address is where the control plane listens.
+	address string
 }
 
 // lockedBuffer collects the control plane's log while it runs.
@@ -221,7 +223,7 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 		}
 		_ = store.Close()
 	})
-	return &system{store: store, remote: remote, output: output, data: runnerConfig.DataDirectory, github: github, log: log}
+	return &system{store: store, remote: remote, output: output, data: runnerConfig.DataDirectory, github: github, log: log, address: address.String()}
 }
 
 func (s *system) createTicket(t *testing.T) tickets.Ticket {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -440,5 +441,68 @@ func TestOpenRestoresDataAfterRestart(t *testing.T) {
 	defer reopened.Close()
 	if run, err := reopened.Run(t.Context(), claim.Run.ID); err != nil || run.Status != RunRunning {
 		t.Fatalf("run = %+v, err = %v", run, err)
+	}
+}
+
+func TestAnswerOnlyWhenWaiting(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:answer")
+	if _, err := store.Answer(t.Context(), ticket.ID, "alice", "Too soon"); !errors.Is(err, ErrNotWaiting) {
+		t.Fatalf("error = %v", err)
+	}
+	if err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: StateNeedsYou, Message: "Which?"}); err != nil {
+		t.Fatal(err)
+	}
+	waiting := reload(t, store, ticket.ID)
+	if question, err := store.WaitingQuestion(t.Context(), waiting); err != nil || question != "Which?" {
+		t.Fatalf("question = %q, err = %v", question, err)
+	}
+	answered, err := store.Answer(t.Context(), ticket.ID, "alice", "Postgres")
+	if err != nil || answered.State != StateWorking {
+		t.Fatalf("ticket = %+v, err = %v", answered, err)
+	}
+	if question, err := store.WaitingQuestion(t.Context(), answered); err != nil || question != "" {
+		t.Fatalf("question = %q, err = %v", question, err)
+	}
+	if _, err := store.Answer(t.Context(), "t_missing", "alice", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestListTicketsLimitsToTheNewest(t *testing.T) {
+	store := openStore(t)
+	for index := range maxListedTickets + 2 {
+		createTicket(t, store, fmt.Sprintf("api:%d", index))
+	}
+	listed, err := store.ListTickets(t.Context(), "", "")
+	if err != nil || len(listed) != maxListedTickets {
+		t.Fatalf("count = %d, err = %v", len(listed), err)
+	}
+}
+
+func TestTokenNamesAreUniqueWhileActive(t *testing.T) {
+	store := openStore(t)
+	token, err := store.CreateToken(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateToken(t.Context(), "alice"); !errors.Is(err, ErrTokenExists) {
+		t.Fatalf("error = %v", err)
+	}
+	if err := store.RevokeToken(t.Context(), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TokenName(t.Context(), token); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v", err)
+	}
+	if err := store.RevokeToken(t.Context(), "alice"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v", err)
+	}
+	if _, err := store.CreateToken(t.Context(), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := store.ListTokens(t.Context())
+	if err != nil || len(tokens) != 2 || tokens[0].RevokedAt == nil || tokens[1].RevokedAt != nil {
+		t.Fatalf("tokens = %+v, err = %v", tokens, err)
 	}
 }

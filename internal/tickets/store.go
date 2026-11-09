@@ -52,6 +52,8 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrRunNotActive = errors.New("run is not active")
 	ErrTicketEnded  = errors.New("ticket has ended")
+	ErrNotWaiting   = errors.New("ticket is not waiting for an answer")
+	ErrTokenExists  = errors.New("an active token with this name exists")
 )
 
 const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
@@ -72,6 +74,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_active_agent_run ON runs(ticket_id) WHERE 
 CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
 CREATE TABLE IF NOT EXISTS tokens (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_token_per_name ON tokens(name) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS source_cursors (source TEXT NOT NULL, repo TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(source, repo));
 CREATE TABLE IF NOT EXISTS run_activity_events (run TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(run, sequence));`
 
@@ -98,6 +101,9 @@ type Ticket struct {
 
 // Branch is the one branch every run of this ticket works on.
 func (t Ticket) Branch() string { return "machinist/" + t.ID }
+
+// maxListedTickets limits one ticket list.
+const maxListedTickets = 200
 
 // Automation reports whether the ticket came from a schedule. Such a ticket
 // never waits for a person.
@@ -485,6 +491,66 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 		return err
 	})
 	return ticket, added, err
+}
+
+// Answer gives a waiting ticket a person's reply.
+func (s *Store) Answer(ctx context.Context, ticketID, author, text string) (Ticket, error) {
+	var ticket Ticket
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		if ticket, err = loadTicket(ctx, tx, ticketID); err != nil {
+			return err
+		}
+		if ticket.State != StateNeedsYou {
+			return ErrNotWaiting
+		}
+		now := s.now()
+		if err = insertEntry(ctx, tx, ticketID, EntryComment, author, text, nil, now); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+			return err
+		}
+		ticket, err = loadTicket(ctx, tx, ticketID)
+		return err
+	})
+	return ticket, err
+}
+
+// TicketBySourceKey finds the ticket that a piece of intake went to.
+func (s *Store) TicketBySourceKey(ctx context.Context, key string) (Ticket, error) {
+	return ticketForSourceKey(ctx, s.db, key)
+}
+
+// ListTickets returns the newest tickets. Empty filters match every ticket.
+func (s *Store) ListTickets(ctx context.Context, state, repo string) ([]Ticket, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR state=?) AND (?='' OR repo=?) ORDER BY created_at DESC, id DESC LIMIT ?`, state, state, repo, repo, maxListedTickets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tickets := []Ticket{}
+	for rows.Next() {
+		ticket, err := scanTicket(rows)
+		if err != nil {
+			return nil, err
+		}
+		tickets = append(tickets, ticket)
+	}
+	return tickets, rows.Err()
+}
+
+// WaitingQuestion is what a needs_you ticket is asking, and is empty otherwise.
+func (s *Store) WaitingQuestion(ctx context.Context, ticket Ticket) (string, error) {
+	if ticket.State != StateNeedsYou {
+		return "", nil
+	}
+	var body string
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM ticket_entries WHERE ticket_id=? AND kind=? ORDER BY id DESC LIMIT 1`, ticket.ID, EntryMessage).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return body, err
 }
 
 func activeState(state string) bool {
@@ -993,8 +1059,68 @@ func (s *Store) CreateToken(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at) VALUES(?,?,?,?)`, id, name, hashToken(token), stamp(s.now()))
-	return token, err
+	err = s.inTx(ctx, func(tx *sql.Tx) error {
+		var taken int
+		err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&taken)
+		if err != nil {
+			return err
+		}
+		if taken > 0 {
+			return ErrTokenExists
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at) VALUES(?,?,?,?)`, id, name, hashToken(token), stamp(s.now()))
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// TokenInfo describes a token without revealing it.
+type TokenInfo struct {
+	Name       string
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+}
+
+// ListTokens returns every token, oldest first.
+func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name,created_at,last_used_at,revoked_at FROM tokens ORDER BY created_at,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tokens := []TokenInfo{}
+	for rows.Next() {
+		var info TokenInfo
+		var created string
+		var used, revoked sql.NullString
+		if err := rows.Scan(&info.Name, &created, &used, &revoked); err != nil {
+			return nil, err
+		}
+		info.CreatedAt = *parseTime(sql.NullString{String: created, Valid: true})
+		info.LastUsedAt, info.RevokedAt = parseTime(used), parseTime(revoked)
+		tokens = append(tokens, info)
+	}
+	return tokens, rows.Err()
+}
+
+// RevokeToken ends an active token. Its sign-ins end with it.
+func (s *Store) RevokeToken(ctx context.Context, name string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE tokens SET revoked_at=? WHERE name=? AND revoked_at IS NULL`, stamp(s.now()), name)
+	if err != nil {
+		return err
+	}
+	revoked, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if revoked == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // TokenName returns the name of a valid token and records its use.

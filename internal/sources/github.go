@@ -183,7 +183,7 @@ func (p *poll) route(ctx context.Context, repository string, comment ghclient.Co
 		Repo:        repository,
 		IssueNumber: comment.Number,
 		Title:       issue.Title,
-		Body:        fmt.Sprintf("%s\n\n%s\n\nRequest from %s:\n%s", issue.Title, issue.Body, comment.Author, comment.Body),
+		Body:        issueText(issue, comment.Author, comment.Body),
 		Agent:       p.DefaultAgent,
 		CreatedBy:   comment.Author,
 		SourceKey:   key,

@@ -55,6 +55,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newInitCommand(options))
 	root.AddCommand(newStartCommand(options))
 	root.AddCommand(newRunnerCommand(options))
+	root.AddCommand(newTokenCommand(options))
 	root.AddCommand(newUpdateCommand(options))
 	root.AddCommand(newKubernetesCommand(options))
 	root.AddCommand(newSandboxCommand(options))

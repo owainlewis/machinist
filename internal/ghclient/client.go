@@ -139,6 +139,12 @@ func validRepository(repository string) error {
 	return nil
 }
 
+// IsNotFound reports whether GitHub said the thing does not exist.
+func IsNotFound(err error) bool {
+	var failure *Error
+	return errors.As(err, &failure) && failure.Kind == ErrorCommand && strings.Contains(strings.ToLower(failure.Detail), "http 404")
+}
+
 // Comment is one issue or PR conversation comment.
 type Comment struct {
 	ID     int64
@@ -207,9 +213,13 @@ func (c *Client) Comments(ctx context.Context, repository string, since time.Tim
 }
 
 type Issue struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
+	Title       string          `json:"title"`
+	Body        string          `json:"body"`
+	PullRequest json.RawMessage `json:"pull_request"`
 }
+
+// IsPR reports whether the number belongs to a PR. GitHub lists PRs as issues.
+func (i Issue) IsPR() bool { return len(i.PullRequest) > 0 && string(i.PullRequest) != "null" }
 
 // Issue reads the title and text of an issue.
 func (c *Client) Issue(ctx context.Context, repository string, number int) (Issue, error) {
@@ -234,8 +244,7 @@ func (c *Client) Permission(ctx context.Context, repository, login string) (stri
 	}
 	output, err := c.run(ctx, "read permission", nil, "api", "--method", "GET", "repos/"+repository+"/collaborators/"+url.PathEscape(login)+"/permission")
 	if err != nil {
-		var failure *Error
-		if errors.As(err, &failure) && failure.Kind == ErrorCommand && strings.Contains(strings.ToLower(failure.Detail), "http 404") {
+		if IsNotFound(err) {
 			return "none", nil
 		}
 		return "", err
