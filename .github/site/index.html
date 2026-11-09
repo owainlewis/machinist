@@ -35,12 +35,12 @@
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
           <h1 id="hero-title">A better way to put coding agents to work.</h1>
-          <p class="lede">Give agents a task. Review the result.</p>
+          <p class="lede">Assign the work. Get a pull request.</p>
           <div class="hero-actions">
             <a class="button button-primary" href="https://github.com/owainlewis/machinist/tree/main/docs">Read the documentation</a>
             <a class="button button-secondary" href="https://github.com/owainlewis/machinist">View on GitHub <span aria-hidden="true">↗</span></a>
           </div>
-          <p class="hero-note">Start with an issue link or a description. Choose the Standard pipeline or a Single-agent job, track progress, and review the pull request on GitHub.</p>
+          <p class="hero-note">Mention the bot on an issue, type the work into a box, or send it from a coding session. Review the pull request on GitHub.</p>
         </div>
         <figure class="technical-drawing drawing-machine" id="workflow">
           <img src="technical-drawings.webp" width="1693" height="929" fetchpriority="high" alt="Hand-drawn sectional elevation of a compact CNC milling machine with dimensions and numbered parts">
@@ -49,9 +49,9 @@
       </section>
 
       <section class="proof-strip" aria-label="Machinist product principles">
-        <div><span>⊕</span><strong>Local first</strong><small>Workers use your repositories</small></div>
-        <div><span>□</span><strong>Supervised by design</strong><small>Agents act under policies</small></div>
-        <div><span>＋</span><strong>Open and extensible</strong><small>Bring your own harness</small></div>
+        <div><span>⊕</span><strong>Local first</strong><small>Runners on your own machines</small></div>
+        <div><span>□</span><strong>Supervised by design</strong><small>Agents stop and ask</small></div>
+        <div><span>＋</span><strong>Open and plain</strong><small>Your factory is files</small></div>
         <div><span>○</span><strong>Precision tools</strong><small>Reliable, repeatable work</small></div>
       </section>
 
@@ -65,17 +65,17 @@
           <article>
             <span class="card-number">01 / PROOF</span>
             <h3>Require proof</h3>
-            <p>Keep private execution history and published work connected. Standard jobs include independent review, and GitHub follow-ups repair qualifying CI failures and review feedback.</p>
+            <p>A fresh reviewer reads every first pull request. When a person asks for changes or CI fails, the same ticket continues on the same pull request.</p>
           </article>
           <article>
             <span class="card-number">02 / FREEDOM</span>
-            <h3>Change models without changing the workflow</h3>
-            <p>Configure Codex, Claude Code, or another command-line harness on the worker. Keep agent configuration independent of the projects where jobs run.</p>
+            <h3>Use the harness you already trust</h3>
+            <p>Claude Code and Codex run with their own subagents, in their own formats. Machinist does not route or translate them.</p>
           </article>
           <article>
             <span class="card-number">03 / LEARNING</span>
             <h3>Improve the process</h3>
-            <p>Shared role prompts are edited in Agents and snapshotted per attempt. Lower-level command and executor definitions remain in operator-owned TOML files.</p>
+            <p>Every ticket records questions asked, feedback rounds, human commits, tokens and cost, so you can see how much help the work needed.</p>
           </article>
         </div>
       </section>
@@ -83,45 +83,45 @@
       <section class="section factory-section" aria-labelledby="factory-title">
         <div class="section-kicker">HOW IT WORKS</div>
         <div class="section-heading">
-          <h2 id="factory-title">One task. Clear steps. Saved results.</h2>
-          <p>Standard jobs run Triage, optional Spec and approval, Build, then independent Review. Findings return to the same branch and PR for up to three repair rounds. Single-agent jobs run a task end to end.</p>
+          <h2 id="factory-title">One ticket. One branch. One pull request.</h2>
+          <p>The agent decides how to do the work. Machinist keeps the record, starts the next run when something changes, and stops to ask when a person is needed.</p>
         </div>
         <figure class="technical-drawing drawing-system">
           <img src="technical-drawings.webp" width="1693" height="929" loading="lazy" decoding="async" alt="Architectural plan of a supervised coding-agent system with orchestration, execution, governance, and review layers">
           <figcaption><span>SUPERVISED AGENT SYSTEM</span><span>CONTROL / REQUEST / REVIEW</span></figcaption>
         </figure>
         <div class="factory-values">
-          <article><span>DEFINED</span><h3>Shared agents</h3><p>Edit Markdown role prompts in Agents. Choose a project when submitting work; the agent configuration is reusable across repositories.</p></article>
-          <article><span>REVIEWABLE</span><h3>Approve or request changes</h3><p>Review a stage’s saved result. Approve the next step or send feedback and review a revised version.</p></article>
-          <article><span>PERSISTENT</span><h3>Private state, GitHub delivery</h3><p>Execution state and internal handoffs stay private. Requested files, specifications, and code are delivered through the task’s GitHub pull request.</p></article>
+          <article><span>DEFINED</span><h3>A factory in files</h3><p>Agents, reviewers and automations are plain files. Change the process by changing a playbook.</p></article>
+          <article><span>REVIEWABLE</span><h3>Ask when it matters</h3><p>An agent that needs a decision asks where the work started. Your reply continues the same ticket.</p></article>
+          <article><span>PERSISTENT</span><h3>Survives failure</h3><p>Every run starts from a fresh clone of the ticket’s branch. A lost runner’s ticket continues on any other.</p></article>
         </div>
       </section>
 
       <section class="section" aria-labelledby="task-workflow-title">
-        <div class="section-kicker">A WORKFLOW YOU CAN START WITH</div>
-        <div class="section-heading"><h2 id="task-workflow-title">From request to reviewed PR.</h2><p>Triage skips a specification for clear, small tasks. Consequential decisions pause for your approval. Build and repairs reuse one branch and pull request.</p></div>
+        <div class="section-kicker">WHAT A TICKET DOES</div>
+        <div class="section-heading"><h2 id="task-workflow-title">From request to reviewed PR.</h2><p>One agent run does the work, using subagents if you give it some. A fresh reviewer then comments on the pull request.</p></div>
         <ol class="workflow-example" aria-label="Example workflow">
-          <li><span>01</span><h3>Triage</h3><p>Inspect the request; add Spec when needed</p></li>
-          <li><span>02</span><h3>Build</h3><p>Implement and verify the requested change</p></li>
-          <li><span>03</span><h3>Review</h3><p>Check independently and repair findings</p></li>
+          <li><span>01</span><h3>Assign</h3><p>From an issue, the Assign box or MCP</p></li>
+          <li><span>02</span><h3>Build</h3><p>An agent pushes a branch and opens one pull request</p></li>
+          <li><span>03</span><h3>Follow up</h3><p>Reviews and CI failures continue the same ticket</p></li>
         </ol>
-        <div class="code-window"><div class="console-bar"><span>New run · Standard pipeline</span></div><pre><code>Triage → optional Spec and approval → Build → independent Review</code></pre></div>
-        <p class="workflow-note">Prefer one agent? Choose Single agent. Save operational jobs in Automations and run them manually or on a schedule. Repository maintenance triages issues and PRs and can auto-merge only qualifying independently reviewed Machinist documentation PRs under enforced branch protections.</p>
-        <a class="text-link" href="https://github.com/owainlewis/machinist/blob/main/docs/task-guide.md">Run your first job <span aria-hidden="true">→</span></a>
+        <div class="code-window"><div class="console-bar"><span>On a GitHub issue</span></div><pre><code>@machinist-bot please fix this</code></pre></div>
+        <p class="workflow-note">Add an automation file to run an agent on a schedule. The default agent never merges. A merge automation is opt-in, and GitHub refuses any merge that branch protection does not allow.</p>
+        <a class="text-link" href="https://github.com/owainlewis/machinist#quick-start">Assign your first ticket <span aria-hidden="true">→</span></a>
       </section>
 
       <section class="section evaluation-section" id="evaluation">
         <div class="evaluation-copy">
-          <div class="section-kicker">EVALUATION AND IMPROVEMENT</div>
-          <h2>Measure the workflow before you change it.</h2>
-          <p>Machinist stores ordered events, terminal outcomes, duration, and reported token use. It also includes a focused evaluation for the GitHub issue lifecycle. Broader outcome scoring and configuration comparison are planned, but are not part of the product yet.</p>
+          <div class="section-kicker">THE LEDGER</div>
+          <h2>See how much help the work needed.</h2>
+          <p>Every merged pull request has a record. Change a playbook, then see whether the numbers move.</p>
           <ul class="check-list">
-            <li><span>✓</span> Capture ordered events, outcomes, duration, and token use</li>
-            <li><span>✓</span> Run a deterministic issue-lifecycle evaluation today</li>
-            <li><span>✓</span> Snapshot shared prompt edits for each attempt</li>
-            <li><span>→</span> Build toward outcome scoring without auto-applying changes</li>
+            <li><span>✓</span> Questions the agent asked</li>
+            <li><span>✓</span> Rounds of human feedback</li>
+            <li><span>✓</span> Commits people had to add</li>
+            <li><span>✓</span> Tokens, and cost where the harness reports it</li>
           </ul>
-          <a class="text-link" href="https://github.com/owainlewis/machinist/tree/main/evals">Explore the evaluation suite <span aria-hidden="true">→</span></a>
+          <a class="text-link" href="https://github.com/owainlewis/machinist/blob/main/docs/factory.md">Read about factory files <span aria-hidden="true">→</span></a>
         </div>
         <figure class="technical-drawing drawing-assembly">
           <img src="technical-drawings.webp" width="1693" height="929" loading="lazy" decoding="async" alt="Exploded hand-drawn isometric of a precision linear rail and carriage assembly">
@@ -132,23 +132,22 @@
       <section class="section freedom-section">
         <div class="section-kicker">MODELS AND HARNESSES</div>
         <div class="section-heading">
-          <h2>Use Codex, Claude Code, or another CLI.</h2>
-          <p>Local and VM workers run Codex or Claude Code. Kubernetes runs native Codex in gVisor Jobs, with GitHub publication outside agent Pods. Direct commands can also invoke another configured executable.</p>
+          <h2>Claude Code or Codex, anywhere.</h2>
+          <p>One control plane and any number of runners. A runner is a Mac, a VM, or a Kubernetes cluster that starts one gVisor Job per run. Runners dial out, so none needs an inbound route.</p>
         </div>
         <div class="harness-grid">
-          <article class="harness-card"><span class="harness-mark">C</span><div><strong>Codex</strong><small>Included configuration</small></div><span>READY</span></article>
-          <article class="harness-card"><span class="harness-mark">CL</span><div><strong>Claude Code</strong><small>Included configuration</small></div><span>READY</span></article>
-          <article class="harness-card harness-custom"><span class="harness-mark">$</span><div><strong>Your CLI harness</strong><small>Configure any executable</small></div><span>OPEN</span></article>
+          <article class="harness-card"><span class="harness-mark">C</span><div><strong>Codex</strong><small>API key or your login</small></div><span>READY</span></article>
+          <article class="harness-card"><span class="harness-mark">CL</span><div><strong>Claude Code</strong><small>API key, cloud or your login</small></div><span>READY</span></article>
+          <article class="harness-card harness-custom"><span class="harness-mark">K</span><div><strong>Kubernetes</strong><small>A gVisor Job per run</small></div><span>READY</span></article>
         </div>
         <div class="code-window">
-          <div class="console-bar"><span>~/.machinist/worker.toml · direct command example</span><span>HOST OWNED</span></div>
-          <pre><code><span class="code-comment"># Bring your own harness and model aliases</span>
-[executors.codex]
-command = [<span class="code-string">"codex"</span>, <span class="code-string">"exec"</span>, <span class="code-string">"--json"</span>, <span class="code-string">"--model={{machinist.model}}"</span>, <span class="code-string">"--sandbox"</span>, <span class="code-string">"danger-full-access"</span>, <span class="code-string">"-"</span>]
-models = { fast = <span class="code-string">"gpt-5.6-luna"</span>, deep = <span class="code-string">"gpt-5.6-sol"</span> }
+          <div class="console-bar"><span>~/.machinist/runner.toml</span><span>HOST OWNED</span></div>
+          <pre><code><span class="code-comment"># A credential is the variables the harness already reads</span>
+control_plane = <span class="code-string">"http://10.0.0.5:7331"</span>
+slots = 2
 
-[executors.your_agent]
-command = [<span class="code-string">"your-agent"</span>, <span class="code-string">"run"</span>, <span class="code-string">"--model={{machinist.model}}"</span>]</code></pre>
+[credentials.claude]
+env = [<span class="code-string">"ANTHROPIC_API_KEY"</span>]</code></pre>
         </div>
       </section>
 
@@ -156,7 +155,7 @@ command = [<span class="code-string">"your-agent"</span>, <span class="code-stri
         <div class="setup-intro">
           <div class="section-kicker">SETUP</div>
           <h2>Build Machinist. Start with one issue.</h2>
-          <p>One Go binary contains the CLI, control plane, managed worker, private SQLite history, and browser interface. Run the control plane locally, on a VM, or in GKE. No Machinist cloud account is required.</p>
+          <p>One Go binary contains the CLI, control plane, runner, SQLite history and browser interface. No Machinist cloud account is required.</p>
         </div>
         <ol class="setup-steps">
           <li>
@@ -166,12 +165,12 @@ command = [<span class="code-string">"your-agent"</span>, <span class="code-stri
           </li>
           <li>
             <span class="step-number">02</span>
-            <div><h3>Initialize</h3><p>Create defaults and a private runtime. Keep credentials and execution history outside the repository.</p></div>
+            <div><h3>Initialize</h3><p>Create the configuration, a starter factory and a runner token.</p></div>
             <button class="copy-command" type="button" data-copy="./bin/machinist init" aria-label="Copy initialize command"><code>./bin/machinist init</code><span aria-live="polite">COPY</span></button>
           </li>
           <li>
             <span class="step-number">03</span>
-            <div><h3>Connect and verify</h3><p>Open the printed URL, connect GitHub, select a project and agent, and verify PONG.</p></div>
+            <div><h3>Start</h3><p>Set the bot and your repositories in config.toml, then start the control plane and a runner.</p></div>
             <button class="copy-command" type="button" data-copy="./bin/machinist start" aria-label="Copy run command"><code>./bin/machinist start</code><span aria-live="polite">COPY</span></button>
           </li>
         </ol>
@@ -182,7 +181,7 @@ command = [<span class="code-string">"your-agent"</span>, <span class="code-stri
         <div>
           <span class="section-kicker">OPEN SOURCE · MIT LICENSE</span>
           <h2>Run Machinist on a real issue.</h2>
-          <p>Start with a small issue that has a clear result. Machinist will plan it, build it, review it, wait for checks, and hand the pull request back to you.</p>
+          <p>Start with a small issue that has a clear result. Mention the bot and wait for the pull request.</p>
           <div class="hero-actions">
             <a class="button button-primary" href="https://github.com/owainlewis/machinist#quick-start">Read the setup guide <span aria-hidden="true">→</span></a>
             <a class="button button-secondary" href="https://github.com/owainlewis/machinist/tree/main/docs">Read the docs <span aria-hidden="true">↗</span></a>
@@ -192,7 +191,7 @@ command = [<span class="code-string">"your-agent"</span>, <span class="code-stri
     </main>
     <footer>
       <a class="brand" href="#top" aria-label="Machinist home"><img src="machinist-mark.svg" alt="" width="38"><span>machinist</span></a>
-      <p>The open-source software factory for supervised coding agents.</p>
+      <p>Assign work to coding agents and get pull requests back.</p>
       <div><a href="https://github.com/owainlewis/machinist">GitHub</a><a href="https://github.com/owainlewis/machinist/tree/main/docs">Docs</a><span>MIT License · 2026</span></div>
     </footer>
     <script type="module" src="site.js"></script>

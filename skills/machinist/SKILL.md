@@ -1,75 +1,45 @@
 ---
 name: machinist
-description: Use Machinist to create, assign, and monitor software tasks. Use when a coding agent needs to work with Machinist, its GitHub issue workflow, intake labels, direct runs, or managed queue.
+description: Assign work to Machinist and follow it. Use when a coding session should hand a GitHub issue or a piece of work to a Machinist agent, check a ticket, or answer its question.
 ---
 
 # Machinist
 
-Machinist turns a task or GitHub issue into an implemented, independently reviewed, and
-checked pull request. It never merges the pull request.
+Machinist takes a piece of work and returns a pull request. It runs the agent elsewhere, so
+closing this session does not affect the work. It uses the `machinist` MCP server. See
+`docs/mcp.md` to connect one.
 
-## Core model
+## Assign work
 
-- A task is one GitHub issue in the target repository, or a plain description.
-- Assigning a task means starting `machinist run` or queuing `machinist submit`.
-- Assign the same issue again to continue interrupted work. The `task-to-pr` command
-  reuses an existing branch, worktree, and pull request for the task.
-- When `MACHINIST_RUN_ID` is set, the agent is already inside a Machinist run. Follow the
-  assigned task and do not start or submit another run.
+Reuse an issue when the user gave one. Otherwise send the work as text, with the problem,
+the outcome wanted and how to check it. Do not invent details the user did not decide.
 
-## Create a task
+Call `assign_ticket` with:
 
-Reuse a supplied issue when it is open and belongs to the current repository. Otherwise
-create one issue with `gh issue create`. Keep it focused on one observable outcome and
-preserve the user's constraints. Do not invent implementation details that the request
-does not decide.
+- `request_id`: a new unique value. Reuse it only when retrying the same request.
+- `repo`: `owner/name`.
+- `issue_number`, or both `title` and `body`.
 
-```sh
-gh issue create --title "<short outcome>" --body "<problem, outcome, constraints, and acceptance evidence>"
-```
+It returns at once with a ticket ID and a link. Give both to the user.
 
-Use the issue URL returned by GitHub for every later command.
+## Check on it
 
-## Assign a task
+Call `get_ticket` with the ID. States:
 
-Use direct mode for immediate local work. Pass an absolute Git worktree path:
+| State | Meaning |
+| --- | --- |
+| `working` | An agent is on it |
+| `needs_you` | The `question` field says what it needs |
+| `pr_ready` | A pull request is open. `pr_link` has it |
+| `done` | Merged, or finished with no pull request needed |
+| `failed` | An automation's run failed |
+| `cancelled` | Someone cancelled it |
 
-```sh
-machinist run \
-  --command=task-to-pr \
-  --repo=/absolute/path/to/repository \
-  --prompt="Complete https://github.com/owner/repository/issues/123"
-```
+## Answer a question
 
-Use managed mode when the control plane and worker are already running. Pass the logical
-repository name from `worker.toml`:
+Pass the user's decision to `answer_ticket`. Do not answer for the user unless they told you
+how to decide. The ticket then continues on the same branch.
 
-```sh
-machinist submit \
-  --command=task-to-pr \
-  --repo=repository-name \
-  --prompt="Complete https://github.com/owner/repository/issues/123"
-```
+## Merging
 
-`submit` prints a job ID. Follow managed work in the local control-plane UI.
-
-When the shared configuration defines a `[triggers.github.<name>]` trigger, adding its
-configured input label, normally `machinist:requested`, delegates that issue through the
-managed queue. Machinist verifies the label event and actor, admits the job durably, then
-replaces the input label with `machinist:queued`. The label has no effect when that GitHub
-trigger or its repository is not configured. `machinist:requested` and
-`machinist:queued` are intake labels; they do not report progress after the job starts.
-
-## Report status
-
-Check the run in the control-plane UI or the `machinist run` output, then the linked pull
-request and its checks. The command finishes as completed, blocked, or failed with a short
-summary.
-
-- For blocked work, fix the reported cause or answer the question, then assign the same
-  issue again.
-- For completed work, hand the pull request to a person. Never merge unless that person
-  explicitly decides to do so.
-
-When reporting status, include the issue URL, job ID when managed, pull request URL when
-created, checks, and blocker or next human action.
+Machinist's default agent never merges. Hand the pull request to a person.

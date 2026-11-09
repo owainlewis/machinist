@@ -1,6 +1,7 @@
 package agentrunner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -364,6 +365,18 @@ func TestConformance(t *testing.T) {
 		}
 		if subject := remoteLog(t, remote, request.Branch, "%s"); subject != "codex conformance" {
 			t.Fatalf("pushed commit = %q", subject)
+		}
+	})
+
+	// CUJ 7: one real run through this runner type, printing the credential source.
+	eachRunner(t, "runner check", func(t *testing.T, executor Executor, _, data, _ string) {
+		var printed bytes.Buffer
+		settings := config.Runner{DataDirectory: data, Credentials: map[string]config.Credential{"claude": {Env: []string{"ANTHROPIC_API_KEY"}}}}
+		if err := Check(t.Context(), executor, settings, "owner/repo", &printed); err != nil {
+			t.Fatalf("%v: %s", err, printed.String())
+		}
+		if got := printed.String(); got != "claude: ok, credential source: ANTHROPIC_API_KEY\n" {
+			t.Fatalf("printed = %q", got)
 		}
 	})
 

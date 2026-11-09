@@ -32,6 +32,8 @@ type system struct {
 	log    *lockedBuffer
 	// address is where the control plane listens.
 	address string
+	// restart stops the control plane and starts a new one on the same database.
+	restart func(t *testing.T)
 	token   string
 }
 
@@ -193,7 +195,8 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 	ctx, cancel := context.WithCancel(t.Context())
 	listening := make(chan net.Addr, 1)
 	serverDone := make(chan error, 1)
-	go func() { serverDone <- server.Serve(ctx, func(address net.Addr) { listening <- address }) }()
+	serverContext, stopServer := context.WithCancel(ctx)
+	go func() { serverDone <- server.Serve(serverContext, func(address net.Addr) { listening <- address }) }()
 	address := <-listening
 
 	token, err := store.CreateToken(t.Context(), "runner-1")
@@ -213,6 +216,7 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 	}
 	remote := newRemote(t)
 	local.CloneURL = func(string) string { return remote }
+	s := &system{}
 	daemon, err := agentrunner.NewDaemon(runnerConfig, local, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -227,9 +231,33 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 		if err := <-serverDone; err != nil {
 			t.Error(err)
 		}
-		_ = store.Close()
+		_ = s.store.Close()
 	})
-	return &system{token: token, store: store, remote: remote, output: output, data: runnerConfig.DataDirectory, github: github, log: log, address: address.String()}
+	s.store, s.remote, s.output, s.data, s.github, s.log, s.address, s.token = store, remote, output, runnerConfig.DataDirectory, github, log, address.String(), token
+	s.restart = func(t *testing.T) {
+		t.Helper()
+		stopServer()
+		if err := <-serverDone; err != nil {
+			t.Fatal(err)
+		}
+		if err := s.store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := tickets.Open(machinistConfig.Server.Database)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.store = reopened
+		machinistConfig.Server.Listen = s.address
+		next, err := controlplane.New(machinistConfig, reopened, loaded, "test", log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next.SetPollInterval(20 * time.Millisecond)
+		serverContext, stopServer = context.WithCancel(ctx)
+		go func() { serverDone <- next.Serve(serverContext, nil) }()
+	}
+	return s
 }
 
 func (s *system) createTicket(t *testing.T) tickets.Ticket {

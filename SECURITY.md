@@ -19,30 +19,40 @@ requires it.
 
 ## Trust model
 
-Machinist runs configured coding commands with the operating-system permissions,
-tools, environment, and credentials of the worker host user. Command prompts,
-executor commands, repository mappings, and worker configuration are trusted
-operator policy. A submitted work prompt is untrusted input, but the selected
-command can still act on it using every capability available to its process.
+**An agent can do whatever the GitHub login allows.** Issue text, PR comments and repository
+files can be written by outsiders, and that text can steer an agent. A mention requires
+write access, but that limits who starts work, not what an issue says. The real limits are
+the login's permissions and branch protection. On a repository that accepts outside pull
+requests, automatic merging needs branch protection with human review.
 
-The control plane binds only to loopback. Browser requests use a random CSRF
-token, while CLI and worker requests use a shared bearer token. A managed worker
-may connect to a non-loopback control plane only over HTTPS. Do not expose the
-control plane through an untrusted proxy or network boundary.
+**Agents can read their credentials.** An agent can read its model credential and GitHub
+token. Use dedicated service accounts with narrow scopes and provider spend limits. Every
+`GH_TOKEN` should be fine-grained, limited to connected repositories, without admin rights,
+and belong to the bot.
 
-Repository mappings constrain Machinist assignment and path resolution. They do
-not sandbox a command from other files or tools available to the worker OS user.
-Use OS permissions, repository permissions, and narrowly scoped credentials to
-enforce capability boundaries.
+**One token reaches many repositories.** A prompt injection in one repository can reach any
+other repository the token covers. Run one deployment per trust domain.
+
+**Machinist tokens are powerful.** Any token holder can read run history, claim runs, and
+assign work that tells an agent to reveal its credentials. Treat a token as equal to the
+GitHub login and the model credential. Give each person and runner their own, so it can be
+revoked with `machinist token revoke`. Tokens are stored as hashes.
+
+**Keep the control plane private.** Every route needs a token, except `/healthz`, sign-in
+and static assets. Tokens are sent in the clear unless the network or TLS protects them, and
+nothing stops an operator exposing the address publicly. Keep it on a private network, or
+set `tls_cert` and `tls_key`.
+
+**Local runners.** Concurrent runs under one OS user can read each other's files and
+environments, and the agent has open network access. Use a dedicated OS account. If a runner
+shares an OS user with the control plane, an agent can read and change its database.
+
+**Kubernetes runners.** Each run is a gVisor Job with no service account token. An init
+container with no credentials proves the network is locked down before the Secret enters
+the Pod. The egress proxy blocks all but listed hosts. It does not stop data leaving through
+an allowed service, such as a push to another repository on `github.com`.
 
 ## Local data
 
-Machinist state defaults to `~/.machinist`. Protect this directory because it
-may contain task prompts, command output, control-plane state, bearer tokens,
-repository paths, and unpublished work. Configuration and token files should
-remain readable only by the worker host user.
-
-Provider CLIs own their credentials. Machinist does not request or persist
-provider API tokens.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the implemented security boundaries.
+Machinist state defaults to `~/.machinist`. Protect this directory. It holds the ticket
+database, run history and the runner token.

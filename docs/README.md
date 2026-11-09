@@ -1,46 +1,38 @@
 # Documentation
 
-Machinist runs coding-agent jobs on infrastructure you control. Start with the
-[setup guide](local-factory/README.md), then [run your first job](task-guide.md).
-The app offers a Standard pipeline and a Single-agent task runner.
+Start with the [quick start](../README.md#quick-start).
 
-## Set up and use Machinist
+## Use Machinist
 
 | Guide | Use it to |
 | --- | --- |
-| [Setup](local-factory/README.md) | Connect the GitHub App, choose an agent and runner, verify PONG, and add projects |
-| [Your first job](task-guide.md) | Submit work, approve a spec, inspect review, and confirm delivery |
-| [Automations](local-factory/automations.md) | Save manual or scheduled jobs and configure repository maintenance |
-| [GitHub follow-ups](local-factory/github-followups.md) | Understand CI repairs, review feedback, and merge confirmation |
-| [Job state and recovery](local-factory/local-jobs.md) | Use the API safely, back up state, and manage publication holds |
+| [Factory files](factory.md) | Change agents and reviewers, and add automations |
+| [MCP](mcp.md) | Assign work from Claude Code or Codex |
+| [Native agents](native-agents.md) | Understand subagents and the activity view |
 
-## Run the infrastructure
+## Run it
 
 | Guide | Use it to |
 | --- | --- |
-| [VM deployment](vm-deployment.md) | Host the control plane or connect a separate VM worker |
-| [Kubernetes runners](local-factory/kubernetes.md) | Configure gVisor Jobs, native Codex login, isolation, and recovery |
-| [GKE control plane](local-factory/cloud-control-plane.md) | Deploy the dispatcher and private SQLite state to an existing cluster |
-| [Architecture](../ARCHITECTURE.md) | Understand ownership, execution boundaries, and failure handling |
-| [Configuration](configuration.md) | Distinguish app setup from lower-level command and worker configuration |
-| [Development](development.md) | Build, test, and contribute |
+| [Configuration](configuration.md) | Look up every setting |
+| [Runners](runners.md) | Add local and Kubernetes runners |
+| [Credentials](credentials.md) | Choose a credential for each harness |
+| [VM deployment](vm-deployment.md) | Run the control plane and a runner on a VM |
+| [Continuous deployment](local-factory/continuous-deployment.md) | Release to GKE |
+| [Architecture](../ARCHITECTURE.md) | See how the pieces fit |
+| [Security](../SECURITY.md) | Understand what an agent can do |
 
-## Lower-level interfaces and examples
+## Build it
 
-These are separate from the app's two built-in modes. Custom commands run through
-`machinist run`; sequence workflows require the legacy SQLite control plane.
-Their artifact contracts do not describe factory PR delivery.
+| Guide | Use it to |
+| --- | --- |
+| [Development](development.md) | Build, test and contribute |
+| [Design](designs/machinist-redesign.md) | Read the full design, including the state table |
+| [Examples](../examples/README.md) | See the files `machinist init` installs |
+| [Issue triage demo](issue-triage-demo.md) | See a standalone GitHub Actions demo |
 
-- [Command and sequence reference](workflows.md)
-- [Legacy artifact workflows](artifacts.md)
-- [Runnable examples](../examples/README.md)
-- [Optional Python issue-delivery adapter](agent-workflow.md)
-- [Python workflow article](coding-workflows-in-code.md)
-- [Standalone GitHub Actions triage demo](issue-triage-demo.md)
+## History
 
-## Historical design notes
-
-These record earlier decisions and proposals, not current setup instructions:
-[task/artifact model](task-artifact-model.md), [workflow roadmap](workflow-roadmap.md),
-[original factory spec](local-factory/spec.md), and
+These record earlier decisions, not current setup: [workflow roadmap](workflow-roadmap.md),
+[original factory spec](local-factory/spec.md) and
 [Warp observations](local-factory/warp-evidence.md).

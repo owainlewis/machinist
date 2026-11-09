@@ -2,6 +2,14 @@
 
 Credentials live on runners. The control plane never holds an agent credential.
 
+A credential is the list of environment variable names the harness already reads, passed
+through unchanged. So keys, service accounts, federation and cloud providers need no special
+handling. On a Kubernetes runner the same variables live in one Secret. A runner offers only
+the harnesses it has a credential for.
+
+Run `machinist runner check --repo owner/name` to see which credential source a harness
+actually used.
+
 ## Which credential to use
 
 | Credential | Team runner | Own machine, own work | Notes |

@@ -10,6 +10,7 @@ import (
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
+// CUJ 10: another runner takes over after the lost runner's lease expires.
 func TestLostLeaseInterruptsRunAndQueuesANewOne(t *testing.T) {
 	e := newEngine(t)
 	now := time.Now()

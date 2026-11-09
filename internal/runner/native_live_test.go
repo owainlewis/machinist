@@ -15,6 +15,7 @@ import (
 )
 
 // Explicit opt-in: these smoke tests spend real provider credits on key credentials.
+// They run the fixed harness commands and prove subagents load from the clone.
 func TestNativeLiveRepositoryAgents(t *testing.T) {
 	if os.Getenv("MACHINIST_NATIVE_LIVE") != "1" {
 		t.Skip("key-credential smoke test is opt-in")
@@ -59,15 +60,17 @@ func TestNativeLiveRepositoryAgents(t *testing.T) {
 				t.Fatal(err)
 			}
 			environment := []string{"HOME=" + home, "CODEX_HOME=" + codexHome, "PATH=" + os.Getenv("PATH")}
-			command := config.ResolvedCommand{Name: "probe", Executor: "claude", Adapter: adapter, Timeout: 2 * time.Minute}
+			var command config.ResolvedCommand
 			if adapter == "claude-stream" {
 				key := os.Getenv("ANTHROPIC_API_KEY")
 				if key == "" {
 					t.Skip("ANTHROPIC_API_KEY is required")
 				}
 				environment = append(environment, "ANTHROPIC_API_KEY="+key)
-				command.Model = os.Getenv("MACHINIST_CLAUDE_LIVE_MODEL")
-				command.Command = []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--dangerously-skip-permissions"}
+				var err error
+				if command, err = HarnessCommand(HarnessClaude, os.Getenv("MACHINIST_CLAUDE_LIVE_MODEL"), 2*time.Minute); err != nil {
+					t.Fatal(err)
+				}
 			} else {
 				key := os.Getenv("OPENAI_API_KEY")
 				if key == "" {
@@ -83,9 +86,10 @@ func TestNativeLiveRepositoryAgents(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(trust), 0600); err != nil {
 					t.Fatal(err)
 				}
-				command.Executor = "codex"
-				command.Model = os.Getenv("MACHINIST_CODEX_LIVE_MODEL")
-				command.Command = []string{"codex", "app-server", "--stdio", "-c", "features.multi_agent=true", "-c", `sandbox_mode="danger-full-access"`}
+				var err error
+				if command, err = HarnessCommand(HarnessCodex, os.Getenv("MACHINIST_CODEX_LIVE_MODEL"), 2*time.Minute); err != nil {
+					t.Fatal(err)
+				}
 			}
 			result, e := Execute(context.Background(), Options{Environment: environment, Prompt: prompt, Command: command, Repository: repo, DataDirectory: filepath.Join(root, "data"), Stdout: io.Discard, Stderr: io.Discard})
 			if e != nil {

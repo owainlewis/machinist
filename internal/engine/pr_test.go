@@ -397,6 +397,45 @@ func TestInputDuringRunStartsTheNextRunAtOnce(t *testing.T) {
 	}
 }
 
+func TestCancelFromEveryActiveStateStopsWorkAndKeepsThePR(t *testing.T) {
+	for name, setup := range map[string]func(*testing.T, *Engine, tickets.Ticket) string{
+		"working": func(t *testing.T, e *Engine, _ tickets.Ticket) string { return assignRun(t, e).RunID },
+		"needs you": func(t *testing.T, e *Engine, ticket tickets.Ticket) string {
+			request := assignRun(t, e)
+			if err := e.Complete(t.Context(), request.RunID, succeed("needs_input", "Stuck", "Which?")); err != nil {
+				t.Fatal(err)
+			}
+			return ""
+		},
+		"pr ready": func(t *testing.T, e *Engine, ticket tickets.Ticket) string {
+			prReady(t, e, ticket)
+			return ""
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEngine(t)
+			withPR(e)
+			ticket := newTicket(t, e, "api")
+			running := setup(t, e, ticket)
+			if _, err := e.Store.Cancel(t.Context(), ticket.ID, "alice"); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := e.Store.Ticket(t.Context(), ticket.ID)
+			if got.State != tickets.StateCancelled || lastMessage(t, e, ticket.ID) != "Cancelled by alice" {
+				t.Fatalf("ticket = %+v, message = %q", got, lastMessage(t, e, ticket.ID))
+			}
+			if running != "" {
+				if cancel, err := e.Heartbeat(t.Context(), running); err != nil || !cancel {
+					t.Fatalf("cancel = %v, err = %v", cancel, err)
+				}
+			}
+			if _, err := e.Store.Cancel(t.Context(), ticket.ID, "alice"); err != tickets.ErrTicketEnded {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
 func TestEndedTicketIgnoresEveryEvent(t *testing.T) {
 	e := newEngine(t)
 	withPR(e)
