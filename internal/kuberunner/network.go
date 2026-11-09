@@ -13,7 +13,7 @@ import (
 
 // ProbeNetwork runs in the credential-free init container. Missing enforcement
 // fails before the agent container starts or receives its model credential.
-func ProbeNetwork(ctx context.Context, provider string) error {
+func ProbeNetwork(ctx context.Context) error {
 	api := net.JoinHostPort(os.Getenv("KUBERNETES_SERVICE_HOST"), "443")
 	if os.Getenv("KUBERNETES_SERVICE_HOST") == "" {
 		return fmt.Errorf("Kubernetes API address is unavailable for isolation verification")
@@ -29,7 +29,8 @@ func ProbeNetwork(ctx context.Context, provider string) error {
 	if err != nil || proxy.Host == "" {
 		return fmt.Errorf("sandbox proxy configuration is missing")
 	}
-	for _, host := range []string{"example.com", provider} {
+	const allowed = "github.com"
+	for _, host := range []string{"example.com", allowed} {
 		connection, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", proxy.Host)
 		if err != nil {
 			return fmt.Errorf("sandbox proxy is unreachable")
@@ -42,8 +43,8 @@ func ProbeNetwork(ctx context.Context, provider string) error {
 		}
 		response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: "CONNECT"})
 		connection.Close()
-		if err != nil || (host == "example.com" && response.StatusCode != 403) || (host == provider && response.StatusCode != 200) {
-			return fmt.Errorf("sandbox proxy allowlist is not enforced or provider is unavailable")
+		if err != nil || (host == "example.com" && response.StatusCode != 403) || (host == allowed && response.StatusCode != 200) {
+			return fmt.Errorf("sandbox proxy allowlist is not enforced or GitHub is unavailable")
 		}
 	}
 	return nil

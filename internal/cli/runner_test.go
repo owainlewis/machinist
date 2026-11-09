@@ -71,10 +71,10 @@ func TestStartRejectsInvalidFactory(t *testing.T) {
 
 const runnerConfigBody = "control_plane = \"http://127.0.0.1:1\"\ntoken_file = \"runner.token\"\n\n[credentials.claude]\nlogin = true\n"
 
-func TestRunnerRefusesKubernetesForNow(t *testing.T) {
+func TestKubernetesRunnerValidatesItsConfiguration(t *testing.T) {
 	path := writeConfigFile(t, t.TempDir(), "runner.toml", "control_plane = \"http://127.0.0.1:1\"\ntoken_file = \"runner.token\"\n\n[credentials.claude]\nenv = [\"ANTHROPIC_API_KEY\"]\n\n[kubernetes]\nsecret = \"s\"\n")
 	var stderr bytes.Buffer
-	if exitCode := Execute(t.Context(), []string{"runner", "start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "Kubernetes runners") {
+	if exitCode := Execute(t.Context(), []string{"runner", "start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "explicit context") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 }

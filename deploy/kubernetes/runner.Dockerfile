@@ -14,8 +14,16 @@ ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git curl python3 build-essential procps && rm -rf /var/lib/apt/lists/*
 ARG CODEX_VERSION=0.157.1
 RUN npm install -g "@openai/codex@${CODEX_VERSION}"
-ARG CLAUDE_CODE_VERSION=2.1.312
+ARG CLAUDE_CODE_VERSION=2.1.319
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+ARG GH_VERSION=2.102.0
+RUN cd /tmp \
+    && curl -fsSLO "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+    && curl -fsSLo gh_checksums.txt "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_checksums.txt" \
+    && grep "  gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz$" gh_checksums.txt | sha256sum --check \
+    && tar -xzf "gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+    && install -m 0755 "gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
+    && rm -rf gh_*
 COPY --from=target-toolchain /usr/local/go /usr/local/go
 RUN test "$(/usr/local/go/bin/go env GOHOSTARCH)" = "${TARGETARCH}" \
     && ln -s /usr/local/go/bin/go /usr/local/bin/go \

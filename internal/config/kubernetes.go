@@ -14,16 +14,6 @@ type Kubernetes struct {
 	Secret       string   `toml:"secret"`
 	ProxyURL     string   `toml:"proxy_url"`
 	AllowedHosts []string `toml:"allowed_hosts"`
-	// Agent selects the native CLI the cluster runs: "codex" (default) or "claude".
-	Agent string `toml:"agent"`
-}
-
-// AgentName returns the configured cluster agent, defaulting to Codex.
-func (k Kubernetes) AgentName() string {
-	if k.Agent == "" {
-		return "codex"
-	}
-	return k.Agent
 }
 
 func (k Kubernetes) Validate() error {
@@ -31,8 +21,11 @@ func (k Kubernetes) Validate() error {
 	if k.Context == "" || !name.MatchString(k.Namespace) || len(k.Namespace) > 63 || !name.MatchString(k.Secret) || len(k.Secret) > 63 {
 		return fmt.Errorf("Kubernetes requires an explicit context, namespace and secret")
 	}
-	if k.Agent != "" && k.Agent != "codex" && k.Agent != "claude" {
-		return fmt.Errorf("Kubernetes agent must be codex or claude")
+	host := regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+	for _, allowed := range k.AllowedHosts {
+		if !host.MatchString(allowed) {
+			return fmt.Errorf("Kubernetes allowed_hosts entry %q is not a host name", allowed)
+		}
 	}
 	if !regexp.MustCompile(`^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$`).MatchString(k.Image) {
 		return fmt.Errorf("Kubernetes runner image must be pinned by sha256 digest")

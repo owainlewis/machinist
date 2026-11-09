@@ -9,6 +9,7 @@ User=machinist
 Group=machinist
 Environment=HOME=/home/machinist
 WorkingDirectory=/home/machinist
+EnvironmentFile=-/etc/machinist/control-plane.env
 ExecStart=/usr/local/bin/machinist start
 Restart=on-failure
 RestartSec=5s

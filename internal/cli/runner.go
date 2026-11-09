@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"net"
 
@@ -50,7 +49,7 @@ func newRunnerCommand(options *commandOptions) *cobra.Command {
 		Short: "Start taking work from the control plane",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			runnerConfig, executor, err := loadLocalRunner(options)
+			runnerConfig, executor, err := loadRunner(options)
 			if err != nil {
 				return err
 			}
@@ -68,7 +67,7 @@ func newRunnerCommand(options *commandOptions) *cobra.Command {
 		Short: "Make one real run per harness to prove this runner works",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			runnerConfig, executor, err := loadLocalRunner(options)
+			runnerConfig, executor, err := loadRunner(options)
 			if err != nil {
 				return err
 			}
@@ -81,13 +80,14 @@ func newRunnerCommand(options *commandOptions) *cobra.Command {
 	return root
 }
 
-func loadLocalRunner(options *commandOptions) (config.Runner, *agentrunner.Local, error) {
+func loadRunner(options *commandOptions) (config.Runner, agentrunner.Executor, error) {
 	runnerConfig, err := config.LoadRunner(options.configPath)
 	if err != nil {
 		return config.Runner{}, nil, err
 	}
 	if runnerConfig.Kubernetes != nil {
-		return config.Runner{}, nil, errors.New("Kubernetes runners are not available yet")
+		executor, err := agentrunner.NewKubernetes(runnerConfig)
+		return runnerConfig, executor, err
 	}
 	executor, err := agentrunner.NewLocal(runnerConfig)
 	return runnerConfig, executor, err

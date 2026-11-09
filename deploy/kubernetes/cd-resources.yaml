@@ -13,8 +13,12 @@ metadata:
 rules:
   - apiGroups: [apps]
     resources: [deployments, deployments/scale]
-    resourceNames: [machinist-control-plane]
+    resourceNames: [machinist-control-plane, machinist-runner]
     verbs: [get, patch, update, watch]
+  - apiGroups: ['']
+    resources: [configmaps]
+    resourceNames: [machinist-runner-config]
+    verbs: [get, patch]
   - apiGroups: ['']
     resources: [pods]
     verbs: [get, list, watch, create, delete]
@@ -39,7 +43,7 @@ rules:
     resources: [jobs]
     verbs: [get, list]
   - apiGroups: ['']
-    resources: [pods, configmaps]
+    resources: [pods]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

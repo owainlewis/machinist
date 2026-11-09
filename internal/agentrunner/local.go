@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
-	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/runner"
@@ -115,26 +113,5 @@ func (l *Local) Execute(ctx context.Context, request runner.RunRequest) runner.R
 	if err != nil {
 		return failure(err)
 	}
-	command, err := runner.HarnessCommand(request.Harness, request.Model, time.Duration(request.TimeoutMillis)*time.Millisecond)
-	if err != nil {
-		return failure(err)
-	}
-	result, err := runner.Execute(ctx, runner.Options{
-		Environment:   workspace.Environment,
-		Prompt:        request.Prompt,
-		RunID:         request.RunID,
-		Command:       command,
-		Repository:    workspace.Repository,
-		DataDirectory: l.config.DataDirectory,
-		Stdout:        io.Discard,
-		Stderr:        io.Discard,
-	})
-	output := runner.RunResult{State: result.State, Report: result.Report, Tokens: result.TokenUsage, Cost: result.Cost, CredentialSource: result.CredentialSource}
-	if err != nil {
-		output.Error = err.Error()
-	}
-	if output.State == "" {
-		output.State = runner.StateFailed
-	}
-	return output
+	return runner.RunInWorkspace(ctx, request, workspace, l.config.DataDirectory)
 }

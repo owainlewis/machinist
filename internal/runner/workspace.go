@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/owainlewis/machinist/internal/githubauth"
 )
@@ -84,6 +86,32 @@ func PrepareWorkspace(ctx context.Context, options WorkspaceOptions) (Workspace,
 		}
 	}
 	return Workspace{Repository: canonical, Environment: environment}, nil
+}
+
+// RunInWorkspace launches the fixed harness command in a prepared workspace.
+func RunInWorkspace(ctx context.Context, request RunRequest, workspace Workspace, dataDirectory string) RunResult {
+	command, err := HarnessCommand(request.Harness, request.Model, time.Duration(request.TimeoutMillis)*time.Millisecond)
+	if err != nil {
+		return RunResult{State: StateFailed, Error: err.Error()}
+	}
+	result, err := Execute(ctx, Options{
+		Environment:   workspace.Environment,
+		Prompt:        request.Prompt,
+		RunID:         request.RunID,
+		Command:       command,
+		Repository:    workspace.Repository,
+		DataDirectory: dataDirectory,
+		Stdout:        io.Discard,
+		Stderr:        io.Discard,
+	})
+	output := RunResult{State: result.State, Report: result.Report, Tokens: result.TokenUsage, Cost: result.Cost, CredentialSource: result.CredentialSource}
+	if err != nil {
+		output.Error = err.Error()
+	}
+	if output.State == "" {
+		output.State = StateFailed
+	}
+	return output
 }
 
 func runGit(ctx context.Context, directory string, environment []string, args ...string) error {

@@ -87,22 +87,12 @@ func TestReadinessReportsMissingResourcesOnlyWhenNotFound(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected prerequisite failure")
 				}
-				recovery := strings.Contains(err.Error(), "configure gVisor") || strings.Contains(err.Error(), "run machinist kubernetes")
+				recovery := strings.Contains(err.Error(), "configure gVisor") || strings.Contains(err.Error(), "run machinist kubernetes") || strings.Contains(err.Error(), "create it with GH_TOKEN")
 				if recovery != missing {
 					t.Fatalf("incorrect recovery: %v", err)
 				}
 			})
 		}
-	}
-}
-
-func TestLoginDoesNotReseedWhenClusterAccessFails(t *testing.T) {
-	c := Connector{Config: configuration()}
-	cause := errors.New("cluster access unavailable")
-	c.run = func(_ context.Context, _ io.Reader, _ int, _ ...string) ([]byte, error) { return nil, cause }
-	err := c.Login(t.Context(), nil, io.Discard, io.Discard)
-	if !errors.Is(err, cause) {
-		t.Fatalf("did not stop before device login: %v", err)
 	}
 }
 
@@ -115,7 +105,7 @@ func TestCommandPreservesCancellation(t *testing.T) {
 	}
 }
 
-func TestLoginDoesNotReseedWhenNamespaceIsMissing(t *testing.T) {
+func TestMissingNamespaceIsNotReportedAsAMissingResource(t *testing.T) {
 	bin := t.TempDir()
 	script := "#!/bin/sh\nprintf '%s' 'Error from server (NotFound): namespaces \"runners\" not found' >&2\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0700); err != nil {
@@ -123,8 +113,8 @@ func TestLoginDoesNotReseedWhenNamespaceIsMissing(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	c := Connector{Config: configuration()}
-	err := c.Login(t.Context(), nil, io.Discard, io.Discard)
+	err := c.ready(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "namespace does not exist") {
-		t.Fatalf("did not stop before device login: %v", err)
+		t.Fatalf("error = %v", err)
 	}
 }

@@ -6,110 +6,6 @@ metadata:
     pod-security.kubernetes.io/enforce: restricted
 ---
 apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: machinist-dispatcher
-  namespace: machinist-system
-automountServiceAccountToken: true
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: machinist-dispatcher
-  namespace: machinist-runners
-rules:
-  - apiGroups: [batch]
-    resources: [jobs]
-    verbs: [create, get, list, watch, delete]
-  - apiGroups: [""]
-    resources: [pods]
-    verbs: [get, list]
-  - apiGroups: [""]
-    resources: [pods/exec]
-    verbs: [create, get]
-  - apiGroups: [""]
-    resources: [pods/log]
-    verbs: [get]
-  - apiGroups: [""]
-    resources: [configmaps]
-    verbs: [create, get, list, watch, delete]
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [codex-account]
-    verbs: [get, update]
-  - apiGroups: [apps]
-    resources: [deployments]
-    resourceNames: [machinist-egress]
-    verbs: [get]
-  - apiGroups: [networking.k8s.io]
-    resources: [networkpolicies]
-    resourceNames: [agent-isolation, proxy-isolation]
-    verbs: [get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: machinist-dispatcher
-  namespace: machinist-runners
-subjects:
-  - kind: ServiceAccount
-    name: machinist-dispatcher
-    namespace: machinist-system
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: machinist-dispatcher
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: machinist-runtime-reader
-rules:
-  - apiGroups: [node.k8s.io]
-    resources: [runtimeclasses]
-    resourceNames: [gvisor]
-    verbs: [get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: machinist-runtime-reader
-subjects:
-  - kind: ServiceAccount
-    name: machinist-dispatcher
-    namespace: machinist-system
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: machinist-runtime-reader
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: machinist-cluster-access
-  namespace: machinist-system
-data:
-  kubeconfig: |
-    apiVersion: v1
-    kind: Config
-    clusters:
-      - name: in-cluster
-        cluster:
-          server: https://kubernetes.default.svc
-          certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-    users:
-      - name: dispatcher
-        user:
-          tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-    contexts:
-      - name: in-cluster
-        context:
-          cluster: in-cluster
-          user: dispatcher
-          namespace: machinist-runners
-    current-context: in-cluster
----
-apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: machinist-state
@@ -131,7 +27,26 @@ spec:
     matchLabels:
       app: machinist-control-plane
   policyTypes: [Ingress]
-  ingress: []
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: machinist-runner
+      ports:
+        - protocol: TCP
+          port: 7341
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: machinist-control-plane
+  namespace: machinist-system
+spec:
+  selector:
+    app: machinist-control-plane
+  ports:
+    - port: 7341
+      targetPort: 7341
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -150,7 +65,7 @@ spec:
       labels:
         app: machinist-control-plane
     spec:
-      serviceAccountName: machinist-dispatcher
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: 90
       securityContext:
         runAsNonRoot: true
@@ -162,6 +77,13 @@ spec:
       containers:
         - name: machinist
           image: machinist-control-plane
+          # config.toml and the factory directory live on the state volume.
+          env:
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: machinist-github
+                  key: GH_TOKEN
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -178,36 +100,30 @@ spec:
               ephemeral-storage: 2Gi
           startupProbe:
             exec:
-              command: [python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7341/', timeout=3).close()"]
+              command: [python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7341/healthz', timeout=3).close()"]
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 30
           readinessProbe:
             exec:
-              command: [python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7341/', timeout=3).close()"]
+              command: [python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7341/healthz', timeout=3).close()"]
             periodSeconds: 10
             timeoutSeconds: 5
           livenessProbe:
             exec:
-              command: [python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7341/', timeout=3).close()"]
+              command: [python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7341/healthz', timeout=3).close()"]
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
           volumeMounts:
             - name: state
               mountPath: /var/lib/machinist
-            - name: cluster-access
-              mountPath: /etc/machinist
-              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
         - name: state
           persistentVolumeClaim:
             claimName: machinist-state
-        - name: cluster-access
-          configMap:
-            name: machinist-cluster-access
         - name: tmp
           emptyDir:
             sizeLimit: 2Gi
