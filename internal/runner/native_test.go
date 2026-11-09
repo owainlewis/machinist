@@ -3,7 +3,6 @@ package runner
 import (
 	"encoding/json"
 	"github.com/owainlewis/machinist/internal/config"
-	"github.com/owainlewis/machinist/internal/protocol"
 	"io"
 	"os"
 	"path/filepath"
@@ -67,10 +66,10 @@ func TestNativeCodexChildLifecycleAndPrimary(t *testing.T) {
 }
 func TestNativeClaudeFailureIsOwnedByPrimary(t *testing.T) {
 	n, _, _ := testNative(t, "claude-stream")
-	for _, line := range []string{`{"type":"system","subtype":"task_started","task_id":"child1","task_type":"local_agent","description":"Reader"}`, `{"type":"system","subtype":"task_notification","task_id":"child1","status":"failed","summary":"read failed"}`, `{"type":"result","parent_tool_use_id":"child1","is_error":true,"result":"CHILD"}`, `{"type":"result","is_error":false,"result":"PARENT"}`} {
+	for _, line := range []string{`{"type":"system","subtype":"task_started","task_id":"child1","task_type":"local_agent","description":"Reader"}`, `{"type":"system","subtype":"task_notification","task_id":"child1","status":"failed","summary":"read failed"}`, `{"type":"result","parent_tool_use_id":"child1","is_error":true,"result":"CHILD"}`, `{"type":"result","is_error":false,"result":"PARENT","structured_output":{"outcome":"no_change","summary":"PARENT"}}`} {
 		feedNative(t, n, line+"\n")
 	}
-	if n.final != "PARENT" || n.active["child1"].Status != "failed" {
+	if !strings.Contains(n.final, "PARENT") || n.active["child1"].Status != "failed" {
 		t.Fatal("child failure escaped")
 	}
 }
@@ -84,11 +83,11 @@ func TestNativeInterruptAndUnknownEvents(t *testing.T) {
 	}
 }
 func TestNativeResultSmallContract(t *testing.T) {
-	result, err := parseNativeResult(`{"outcome":"complete","summary":"answer"}`)
-	if err != nil || result.Factory.Role != "primary" {
+	result, err := parseNativeResult("```json\n" + `{"outcome":"no_change","summary":"answer"}` + "\n```")
+	if err != nil || result.Outcome != "no_change" {
 		t.Fatalf("%+v %v", result, err)
 	}
-	if _, err = parseNativeResult(`{"outcome":"complete","summary":""}`); err == nil {
+	if _, err = parseNativeResult(`{"outcome":"no_change","summary":""}`); err == nil {
 		t.Fatal("empty summary accepted")
 	}
 }
@@ -213,63 +212,119 @@ func TestNativeCodexReadsRoleWithoutChangingLifecycle(t *testing.T) {
 	}
 }
 
-func TestClaudeFactoryUsesStructuredDeliveryRatherThanProse(t *testing.T) {
-	const delivery = `{"outcome":"complete","summary":"Delivered","delivery":{"pr_url":"https://github.com/owner/repo/pull/1","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","branch":"codex/task"}}`
-	output := `{"type":"result","is_error":false,"result":"Human explanation before a fenced JSON object", "structured_output":` + delivery + `}` + "\n"
+func TestClaudeUsesStructuredReportRatherThanProse(t *testing.T) {
+	const report = `{"outcome":"pr_ready","summary":"Delivered"}`
+	output := `{"type":"system","subtype":"init","apiKeySource":"ANTHROPIC_API_KEY"}` + "\n" + `{"type":"result","is_error":false,"result":"Human explanation","total_cost_usd":0.25,"structured_output":` + report + `}` + "\n"
 	command := claudeAgent(t, `cat >/dev/null; found=0; for arg in "$@"; do if [ "$arg" = --json-schema ]; then found=1; fi; done; test "$found" = 1 || exit 8; printf '%s' '`+output+`'`, 5*time.Second)
 	command.Adapter = "claude-stream"
-	result, err := Execute(t.Context(), Options{Workflow: true, Factory: &protocol.FactoryContext{Recipe: "native-v1", Role: "primary", Branch: "codex/task"}, Command: command, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard})
+	result, err := Execute(t.Context(), Options{Environment: os.Environ(), Prompt: testPrompt, Command: command, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.StepResult == nil || result.StepResult.Factory.PRURL != "https://github.com/owner/repo/pull/1" || result.StepResult.Factory.Branch != "codex/task" {
-		t.Fatalf("delivery lost: %+v", result.StepResult)
+	if result.Report == nil || result.Report.Outcome != "pr_ready" || result.Report.Summary != "Delivered" {
+		t.Fatalf("report lost: %+v", result.Report)
+	}
+	if result.Cost == nil || *result.Cost != 0.25 || result.CredentialSource != "ANTHROPIC_API_KEY" {
+		t.Fatalf("cost = %v, source = %q", result.Cost, result.CredentialSource)
 	}
 }
 
-func TestClaudeStructuredDeliveryCannotFallBackToProseOrChild(t *testing.T) {
-	for _, raw := range []string{"", `,"structured_output":null`, `,"structured_output":{"outcome":"complete","summary":"","unexpected":true}`} {
+func TestClaudeReportCannotFallBackToProseOrChild(t *testing.T) {
+	for _, raw := range []string{"", `,"structured_output":null`, `,"structured_output":{"outcome":"no_change","summary":"","unexpected":true}`} {
 		n, _, _ := testNative(t, "claude-stream")
-		n.structuredResult = true
-		line := `{"type":"result","is_error":false,"result":"{\"outcome\":\"complete\",\"summary\":\"prose fallback\"}"` + raw + `}`
+		line := `{"type":"result","is_error":false,"result":"{\"outcome\":\"no_change\",\"summary\":\"prose fallback\"}"` + raw + `}`
 		err := n.line([]byte(line))
 		if err == nil {
 			_, err = parseNativeResult(n.lastMessage())
 		}
 		if err == nil {
-			t.Fatal("missing or invalid structured result accepted")
+			t.Fatal("missing or invalid structured report accepted")
 		}
 	}
 	n, _, _ := testNative(t, "claude-stream")
-	n.structuredResult = true
-	feedNative(t, n, `{"type":"result","parent_tool_use_id":"child","is_error":false,"structured_output":{"outcome":"complete","summary":"child"}}`+"\n")
+	feedNative(t, n, `{"type":"result","parent_tool_use_id":"child","is_error":false,"structured_output":{"outcome":"no_change","summary":"child"}}`+"\n")
 	if n.completed || n.lastMessage() != "" {
 		t.Fatal("child delivered primary result")
 	}
-	if _, err := parseNativeResult(`Explanation: {"outcome":"complete","summary":"Done"}`); err == nil || !strings.Contains(err.Error(), "expected one JSON object") {
+	if _, err := parseNativeResult(`Explanation: {"outcome":"no_change","summary":"Done"}`); err == nil || !strings.Contains(err.Error(), "expected one JSON object") {
 		t.Fatalf("unclear result error: %v", err)
 	}
 }
 
-func TestNativeSchemaOnlyAppliesToFactoryClaude(t *testing.T) {
-	command := config.ResolvedCommand{Executor: "claude", Adapter: "claude-stream", Command: []string{"claude", "-p"}}
-	for _, factory := range []bool{false, true} {
-		argv, err := nativeCommand(command, factory)
-		if err != nil {
+func TestNativeSchemaAlwaysAppliesToClaude(t *testing.T) {
+	argv, err := nativeCommand(config.ResolvedCommand{Executor: "claude", Adapter: "claude-stream", Command: []string{"claude", "-p"}, Model: "sonnet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--json-schema "+nativeResultSchema) || !strings.HasSuffix(joined, "--model sonnet") {
+		t.Fatalf("argv = %v", argv)
+	}
+}
+
+func TestClaudeAcceptsKeyCredentialAndBareMode(t *testing.T) {
+	if _, err := nativeCommand(config.ResolvedCommand{Executor: "claude", Adapter: "claude-stream", Command: []string{"claude", "-p", "--bare"}}); err != nil {
+		t.Fatal(err)
+	}
+	n, _, _ := testNative(t, "claude-stream")
+	feedNative(t, n, `{"type":"system","subtype":"init","apiKeySource":"ANTHROPIC_API_KEY"}`+"\n")
+	if n.credentialSource != "ANTHROPIC_API_KEY" {
+		t.Fatalf("source = %q", n.credentialSource)
+	}
+}
+
+func TestCodexRecordsCredentialSourceWithoutRequiringLogin(t *testing.T) {
+	for body, want := range map[string]string{`{"account":{"type":"apiKey"}}`: "apiKey", `{"account":null}`: "none", `{"account":{"type":"chatgpt"}}`: "chatgpt"} {
+		n, input, _ := testNative(t, "codex-app-server")
+		if err := n.line([]byte(`{"id":2,"result":` + body + `}`)); err != nil {
 			t.Fatal(err)
 		}
-		found := false
-		for _, arg := range argv {
-			if arg == "--json-schema" {
-				found = true
-			}
-		}
-		if found != factory {
-			t.Fatalf("factory=%v argv=%v", factory, argv)
+		if n.credentialSource != want || !strings.Contains(input.String(), "model/list") {
+			t.Fatalf("%s: source = %q, input = %s", body, n.credentialSource, input.String())
 		}
 	}
-	command.Command = append(command.Command, "--json-schema", `{}`)
-	if _, err := nativeCommand(command, true); err == nil {
-		t.Fatal("conflicting schema accepted")
+}
+
+func fakeCodexServer(t *testing.T, directory, finalMessage string) string {
+	t.Helper()
+	message, err := json.Marshal(map[string]any{"method": "item/completed", "params": map[string]any{"threadId": "primary", "item": map[string]string{"type": "agentMessage", "text": finalMessage}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(directory, "server.sh")
+	body := `while IFS= read -r line; do
+case "$line" in
+*'"id":1,'*) echo '{"id":1,"result":{}}';;
+*'"id":2,'*) echo '{"id":2,"result":{"account":{"type":"apiKey"}}}';;
+*'"id":3,'*) echo '{"id":3,"result":{"data":[{"id":"fixture","model":"fixture","isDefault":true}]}}';;
+*'"id":4,'*) echo '{"id":4,"result":{"thread":{"id":"primary"}}}';;
+*'"id":5,'*) echo '` + string(message) + `'; echo '{"method":"turn/completed","params":{"threadId":"primary","turn":{"status":"completed"}}}';;
+esac
+done
+`
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+func TestCodexFinalMessageBecomesReport(t *testing.T) {
+	directory := t.TempDir()
+	script := fakeCodexServer(t, directory, `{"outcome":"needs_input","summary":"Stuck","question":"Which API?"}`)
+	result, err := Execute(t.Context(), Options{Environment: os.Environ(), Prompt: testPrompt, Repository: ".", DataDirectory: directory, Command: config.ResolvedCommand{Name: "fake", Adapter: "codex-app-server", Command: []string{"sh", script, "app-server"}, Timeout: 10 * time.Second}, Stdout: io.Discard, Stderr: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report == nil || result.Report.Question != "Which API?" || result.CredentialSource != "apiKey" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestMalformedReportFailsTheRunWithTheReason(t *testing.T) {
+	directory := t.TempDir()
+	script := fakeCodexServer(t, directory, "All done, no JSON here.")
+	result, err := Execute(t.Context(), Options{Environment: os.Environ(), Prompt: testPrompt, Repository: ".", DataDirectory: directory, Command: config.ResolvedCommand{Name: "fake", Adapter: "codex-app-server", Command: []string{"sh", script, "app-server"}, Timeout: 10 * time.Second}, Stdout: io.Discard, Stderr: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "invalid report") || result.State != StateFailed || result.Report != nil {
+		t.Fatalf("state = %s, report = %+v, err = %v", result.State, result.Report, err)
 	}
 }

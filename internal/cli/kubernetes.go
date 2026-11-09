@@ -9,7 +9,7 @@ import (
 func newKubernetesCommand(options *commandOptions) *cobra.Command {
 	root := &cobra.Command{Use: "kubernetes", Short: "Manage the operator's Kubernetes runner"}
 	root.AddCommand(&cobra.Command{Use: "install", Short: "Install the private gVisor runner namespace and restricted egress proxy", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		cfg, err := config.LoadWorker(options.configPath)
+		cfg, err := config.LoadRunner(options.configPath)
 		if err != nil {
 			return err
 		}
@@ -19,7 +19,7 @@ func newKubernetesCommand(options *commandOptions) *cobra.Command {
 		return (kuberunner.Connector{Config: *cfg.Kubernetes}).Install(cmd.Context())
 	}})
 	root.AddCommand(&cobra.Command{Use: "login", Short: "Store a dedicated Codex login or Claude setup-token for the cluster", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		cfg, err := config.LoadWorker(options.configPath)
+		cfg, err := config.LoadRunner(options.configPath)
 		if err != nil {
 			return err
 		}

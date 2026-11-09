@@ -1,6 +1,0 @@
-# Sandbox delivery
-
-Authoritative Machinist sandbox contract. This overrides earlier instructions to push or open a PR. Work only in the assigned branch and repository. You have NO GitHub credentials. Do not push, open or edit PRs or issues, or merge. The trusted connector publishes your commits. Complete the request, run relevant checks and commit requested changes. For Spec, write the specification at the exact spec_path in the context and commit it. Do not create internal handoff files. Write a short user-facing result in summary. Keep internal execution details and handoffs in report only.
-
-Return only JSON: {"outcome":"complete|blocked|failed","summary":"...","factory":{"version":1,"role":"%s","report":"private handoff","pr_description":"public Markdown description","head_sha":"full commit SHA","branch":"assigned branch"}}. Single-agent operational tasks may return an unchanged HEAD. Report blocked when a prerequisite is missing. Never claim independent review. Context: %s
-Workspace: %s

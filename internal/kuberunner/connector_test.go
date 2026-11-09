@@ -24,7 +24,7 @@ import (
 const testAuth = `{"auth_mode":"chatgpt","tokens":{"access_token":"fictional-access","refresh_token":"fictional-refresh"}}`
 
 func configuration() config.Kubernetes {
-	return config.Kubernetes{Context: "test", Namespace: "runners", Image: "example.test/runner@sha256:" + strings.Repeat("a", 64), AuthSecret: "codex-test", ProxyURL: "http://egress:3128"}
+	return config.Kubernetes{Context: "test", Namespace: "runners", Image: "example.test/runner@sha256:" + strings.Repeat("a", 64), Secret: "codex-test", ProxyURL: "http://egress:3128"}
 }
 
 func TestSubscriptionAuthDoesNotFallBackToAPI(t *testing.T) {
@@ -203,7 +203,7 @@ func TestCancellationRetainsAuthAndWaitsForPodDeletion(t *testing.T) {
 				}
 				return nil, fmt.Errorf("unexpected command %s", line)
 			}
-			result, _, err := c.Execute(ctx, runner.Options{Repository: repo, RunID: "run_0123456789abcdef01234567", ArtifactKey: "lease_test", DataDirectory: t.TempDir(), Command: config.ResolvedCommand{Timeout: time.Minute}}, true)
+			result, _, err := c.Execute(ctx, runner.Options{Repository: repo, RunID: "run_0123456789abcdef01234567", DataDirectory: t.TempDir(), Command: config.ResolvedCommand{Timeout: time.Minute}}, true)
 			if result.CleanupUnconfirmed != !podGone || result.ProcessStopped != podGone || result.ID != "run_0123456789abcdef01234567" || result.State != runner.StateCancelled {
 				t.Fatalf("cancellation lost cleanup evidence: state=%s stopped=%v", result.State, result.ProcessStopped)
 			}
@@ -230,7 +230,7 @@ func TestConnectorBeforeJobFailureHasNoOutstandingProcess(t *testing.T) {
 
 func claudeConfiguration() config.Kubernetes {
 	c := configuration()
-	c.AuthSecret, c.Agent = "claude-test", "claude"
+	c.Secret, c.Agent = "claude-test", "claude"
 	return c
 }
 
@@ -362,7 +362,7 @@ func TestClaudeExecutionSkipsCodexStreamLock(t *testing.T) {
 		}
 		return nil, fmt.Errorf("unexpected command %s", line)
 	}
-	result, _, err := c.Execute(ctx, runner.Options{Repository: repo, RunID: "run_0123456789abcdef01234567", ArtifactKey: "lease_test", DataDirectory: t.TempDir(), Command: config.ResolvedCommand{Timeout: time.Minute}}, true)
+	result, _, err := c.Execute(ctx, runner.Options{Repository: repo, RunID: "run_0123456789abcdef01234567", DataDirectory: t.TempDir(), Command: config.ResolvedCommand{Timeout: time.Minute}}, true)
 	if err == nil || !deleted || !result.ProcessStopped || result.State != runner.StateCancelled {
 		t.Fatalf("err=%v deleted=%v stopped=%v state=%s", err, deleted, result.ProcessStopped, result.State)
 	}

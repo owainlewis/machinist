@@ -198,9 +198,9 @@ func TestExecuteEnablesStructuredUsageForLegacyCodexCommand(t *testing.T) {
 	var stdout bytes.Buffer
 	result, err := Execute(t.Context(), Options{
 		Command: config.ResolvedCommand{
-			Name: "build", Executor: "codex", Command: []string{executable, "exec", "-"}, Prompt: "complete prompt\n", Timeout: 5 * time.Second, Hash: "legacy-codex-test-hash",
+			Name: "build", Executor: "codex", Command: []string{executable, "exec", "-"}, Timeout: 5 * time.Second, Hash: "legacy-codex-test-hash",
 		},
-		Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: &stdout, Stderr: io.Discard,
+		Repository: newGitRepository(t), Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Stdout: &stdout, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -232,6 +232,8 @@ func TestExecuteCollectsCodexUsageWithoutChangingOutput(t *testing.T) {
 			result, err := Execute(t.Context(), Options{
 				Command:       agent,
 				Repository:    newGitRepository(t),
+				Prompt:        testPrompt,
+				Environment:   os.Environ(),
 				DataDirectory: t.TempDir(),
 				Stdout:        &stdout,
 				Stderr:        io.Discard,
@@ -257,6 +259,8 @@ func TestExecuteIgnoresMalformedCodexUsageWithoutChangingFailure(t *testing.T) {
 	result, err := Execute(t.Context(), Options{
 		Command:       agent,
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -288,7 +292,6 @@ func codexJSONAgentCommand(t *testing.T, executor, executableName string, wrappe
 		Name:     "build",
 		Executor: executor,
 		Command:  command,
-		Prompt:   "complete prompt\n",
 		Timeout:  timeout,
 		Hash:     "codex-test-hash",
 	}

@@ -1,1 +1,0 @@
-{"pr":"{{task.output_dir}}/pr.json","risk":"{{task.output_dir}}/risk.json","decision":"{{task.output_dir}}/decision.json"}

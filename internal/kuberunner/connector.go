@@ -78,7 +78,7 @@ func (c Connector) Login(ctx context.Context, in io.Reader, out, stderr io.Write
 	if err := c.Config.Validate(); err != nil {
 		return err
 	}
-	if _, err := c.get(ctx, "secret", c.Config.AuthSecret); err == nil {
+	if _, err := c.get(ctx, "secret", c.Config.Secret); err == nil {
 		return fmt.Errorf("account Secret already exists; stop its Jobs before deliberately reseeding it")
 	} else if !resourceMissing(err) {
 		return fmt.Errorf("could not verify the cluster account Secret: %w", err)
@@ -106,7 +106,7 @@ func (c Connector) Login(ctx context.Context, in io.Reader, out, stderr io.Write
 	if err = ValidateAuth(body); err != nil {
 		return err
 	}
-	return c.json(ctx, "create", map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": c.Config.AuthSecret}, "type": "Opaque", "data": map[string][]byte{"auth.json": body}})
+	return c.json(ctx, "create", map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": c.Config.Secret}, "type": "Opaque", "data": map[string][]byte{"auth.json": body}})
 }
 
 func (c Connector) claude() bool { return c.Config.AgentName() == "claude" }
@@ -135,7 +135,7 @@ func (c Connector) loginClaude(ctx context.Context, in io.Reader, out io.Writer)
 	if err := ValidateClaudeToken(token); err != nil {
 		return err
 	}
-	return c.json(ctx, "create", map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": c.Config.AuthSecret}, "type": "Opaque", "data": map[string][]byte{ClaudeTokenFile: token}})
+	return c.json(ctx, "create", map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": c.Config.Secret}, "type": "Opaque", "data": map[string][]byte{ClaudeTokenFile: token}})
 }
 
 func (c Connector) Execute(ctx context.Context, options runner.Options, readOnly bool) (result runner.Result, candidate string, resultErr error) {
@@ -167,12 +167,12 @@ func (c Connector) Execute(ctx context.Context, options runner.Options, readOnly
 	}
 	ctx, cancel := context.WithTimeout(ctx, options.Command.Timeout+10*time.Minute)
 	defer cancel()
-	directory := filepath.Join(options.DataDirectory, "runs", options.RunID, options.ArtifactKey)
+	directory := filepath.Join(options.DataDirectory, "runs", options.RunID)
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return runner.Result{}, "", err
 	}
 	name := objectName("attempt-", options.RunID)
-	lock := objectName("codex-", c.Config.AuthSecret)
+	lock := objectName("codex-", c.Config.Secret)
 	// Claude setup-tokens never refresh, so jobs sharing one need no stream lock.
 	locked := !c.claude()
 	// No expiry or lock stealing: a lost connector must not race a live pod's
@@ -218,7 +218,7 @@ func (c Connector) Execute(ctx context.Context, options runner.Options, readOnly
 	if err != nil {
 		branch = []byte("sandbox-review")
 	}
-	r := Request{RunID: options.RunID, JobID: options.JobID, Base: strings.TrimSpace(string(base)), Branch: strings.TrimSpace(string(branch)), ReadOnly: readOnly, Command: options.Command, Factory: options.Factory, Task: options.Task, Revision: options.Revision, ReviewEvidence: options.ReviewEvidence, Agent: c.Config.AgentName()}
+	r := Request{RunID: options.RunID, JobID: options.JobID, Base: strings.TrimSpace(string(base)), Branch: strings.TrimSpace(string(branch)), ReadOnly: readOnly, Command: options.Command, Prompt: options.Prompt, Agent: c.Config.AgentName()}
 	bundle := filepath.Join(directory, "input.bundle")
 	if _, err = git(ctx, options.Repository, "bundle", "create", bundle, "HEAD"); err != nil {
 		return runner.Result{}, "", err
@@ -359,7 +359,7 @@ func (c Connector) ready(ctx context.Context) error {
 			return fmt.Errorf("could not verify Kubernetes %s %s: %w", item[0], item[1], err)
 		}
 	}
-	if _, err := c.get(ctx, "secret", c.Config.AuthSecret); err != nil {
+	if _, err := c.get(ctx, "secret", c.Config.Secret); err != nil {
 		if resourceMissing(err) {
 			return fmt.Errorf("cluster account login is missing; run machinist kubernetes login: %w", err)
 		}
@@ -482,7 +482,7 @@ func (c Connector) manifest(name string, readOnly bool, deadline int64) map[stri
 	for _, v := range []string{"exchange", "source", "home", "tmp"} {
 		volumes = append(volumes, map[string]any{"name": v, "emptyDir": map[string]string{"sizeLimit": "2Gi"}})
 	}
-	volumes = append(volumes, map[string]any{"name": "codex-auth", "secret": map[string]any{"secretName": c.Config.AuthSecret, "defaultMode": 0440}})
+	volumes = append(volumes, map[string]any{"name": "codex-auth", "secret": map[string]any{"secretName": c.Config.Secret, "defaultMode": 0440}})
 	return map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": name, "labels": map[string]string{"app.kubernetes.io/managed-by": "machinist"}}, "spec": map[string]any{"backoffLimit": 0, "podReplacementPolicy": "Failed", "activeDeadlineSeconds": deadline, "ttlSecondsAfterFinished": 86400, "template": map[string]any{"metadata": map[string]any{"labels": map[string]string{"app": "machinist-agent"}}, "spec": map[string]any{"runtimeClassName": "gvisor", "automountServiceAccountToken": false, "restartPolicy": "Never", "securityContext": map[string]any{"fsGroup": 1000}, "initContainers": []any{prepare}, "containers": []any{agent}, "volumes": volumes}}}}
 }
 
@@ -494,7 +494,7 @@ func (c Connector) retainAuth(ctx context.Context, pod string) error {
 	if err = ValidateAuth(auth); err != nil {
 		return err
 	}
-	secret, err := c.get(ctx, "secret", c.Config.AuthSecret)
+	secret, err := c.get(ctx, "secret", c.Config.Secret)
 	if err != nil {
 		return err
 	}

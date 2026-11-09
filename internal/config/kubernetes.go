@@ -7,12 +7,13 @@ import (
 
 // Kubernetes is operator-owned execution configuration. Tasks cannot change it.
 type Kubernetes struct {
-	Context    string `toml:"context"`
-	Kubeconfig string `toml:"kubeconfig"`
-	Namespace  string `toml:"namespace"`
-	Image      string `toml:"image"`
-	AuthSecret string `toml:"auth_secret"`
-	ProxyURL   string `toml:"proxy_url"`
+	Context      string   `toml:"context"`
+	Kubeconfig   string   `toml:"kubeconfig"`
+	Namespace    string   `toml:"namespace"`
+	Image        string   `toml:"image"`
+	Secret       string   `toml:"secret"`
+	ProxyURL     string   `toml:"proxy_url"`
+	AllowedHosts []string `toml:"allowed_hosts"`
 	// Agent selects the native CLI the cluster runs: "codex" (default) or "claude".
 	Agent string `toml:"agent"`
 }
@@ -27,8 +28,8 @@ func (k Kubernetes) AgentName() string {
 
 func (k Kubernetes) Validate() error {
 	name := regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	if k.Context == "" || !name.MatchString(k.Namespace) || len(k.Namespace) > 63 || !name.MatchString(k.AuthSecret) || len(k.AuthSecret) > 63 {
-		return fmt.Errorf("Kubernetes requires an explicit context, namespace and auth_secret")
+	if k.Context == "" || !name.MatchString(k.Namespace) || len(k.Namespace) > 63 || !name.MatchString(k.Secret) || len(k.Secret) > 63 {
+		return fmt.Errorf("Kubernetes requires an explicit context, namespace and secret")
 	}
 	if k.Agent != "" && k.Agent != "codex" && k.Agent != "claude" {
 		return fmt.Errorf("Kubernetes agent must be codex or claude")

@@ -39,27 +39,22 @@ type nativeStream struct {
 	prompt           string
 	final            string
 	completed        bool
-	structuredResult bool
 	usage            *int64
+	cost             *float64
+	credentialSource string
 	active           map[string]Activity
 	toolRoles        map[string]string
 	roleRequests     map[int]string
 	nextRoleRequest  int
 }
 
-func nativeCommand(command config.ResolvedCommand, structuredResult bool) ([]string, error) {
+func nativeCommand(command config.ResolvedCommand) ([]string, error) {
 	argv := append([]string(nil), command.Command...)
 	if len(argv) == 0 {
 		return nil, errors.New("native executor command is empty")
 	}
 	switch command.Adapter {
 	case "claude-stream":
-		// The configured command owns permissions and discovery settings.
-		for _, arg := range argv {
-			if arg == "--bare" {
-				return nil, errors.New("--bare disables Claude subscription authentication")
-			}
-		}
 		info, ok := claudeCommandInfo(command.Executor, argv)
 		if !ok {
 			return nil, errors.New("claude-stream requires a Claude print command")
@@ -67,15 +62,7 @@ func nativeCommand(command config.ResolvedCommand, structuredResult bool) ([]str
 		if info.hasOutputFormat && info.outputFormat != "stream-json" {
 			return nil, errors.New("claude-stream requires stream-json output")
 		}
-		argv = structuredClaudeCommand(command.Executor, argv)
-		if structuredResult {
-			for _, arg := range argv {
-				if arg == "--json-schema" || strings.HasPrefix(arg, "--json-schema=") {
-					return nil, errors.New("native factory delivery owns Claude --json-schema; remove the configured schema")
-				}
-			}
-			argv = append(argv, "--json-schema", nativeResultSchema)
-		}
+		argv = append(structuredClaudeCommand(command.Executor, argv), "--json-schema", nativeResultSchema)
 		if command.Model != "" {
 			argv = append(argv, "--model", command.Model)
 		}
@@ -172,8 +159,8 @@ func (n *nativeStream) line(line []byte) error {
 	str := func(key string) string { var s string; _ = json.Unmarshal(e[key], &s); return s }
 	if n.adapter == "claude-stream" {
 		typ, sub := str("type"), str("subtype")
-		if typ == "system" && sub == "init" && str("apiKeySource") != "" && str("apiKeySource") != "none" {
-			return errors.New("Claude native host adapter requires subscription sign-in without API key fallback")
+		if typ == "system" && sub == "init" {
+			n.credentialSource = str("apiKeySource")
 		}
 		if typ == "system" && (sub == "task_started" || sub == "task_progress" || sub == "task_notification") {
 			id := str("task_id")
@@ -246,12 +233,14 @@ func (n *nativeStream) line(line []byte) error {
 			if failed {
 				return fmt.Errorf("Claude primary failed: %s", n.final)
 			}
-			if n.structuredResult {
-				raw := e["structured_output"]
-				if len(raw) == 0 || string(raw) == "null" {
-					return errors.New("Claude primary completed without structured delivery output")
-				}
-				n.final = string(raw)
+			raw := e["structured_output"]
+			if len(raw) == 0 || string(raw) == "null" {
+				return errors.New("Claude primary completed without a structured report")
+			}
+			n.final = string(raw)
+			var cost float64
+			if json.Unmarshal(e["total_cost_usd"], &cost) == nil {
+				n.cost = &cost
 			}
 			n.completed = true
 		}
@@ -323,8 +312,9 @@ func (n *nativeStream) line(line []byte) error {
 			} `json:"account"`
 		}
 		_ = json.Unmarshal(response.Result, &account)
-		if account.Account == nil || account.Account.Type != "chatgpt" {
-			return errors.New("Codex native host adapter requires ChatGPT subscription sign-in")
+		n.credentialSource = "none"
+		if account.Account != nil {
+			n.credentialSource = account.Account.Type
 		}
 		return n.send(3, "model/list", map[string]any{"limit": 100})
 	case 3:
@@ -488,21 +478,6 @@ func (n *nativeStream) finish(interrupted bool) error {
 	return parseErr
 }
 func (n *nativeStream) lastMessage() string { return strings.TrimSpace(n.final) }
-
-func nativeEnvironment(environ []string) []string {
-	clean := make([]string, 0, len(environ))
-	for _, entry := range environ {
-		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "CODEX_") && name != "CODEX_HOME" {
-			continue
-		}
-		if strings.Contains(name, "API_KEY") || strings.Contains(name, "AUTH_TOKEN") || strings.Contains(name, "OAUTH_TOKEN") {
-			continue
-		}
-		clean = append(clean, entry)
-	}
-	return clean
-}
 
 func (n *nativeStream) message(text, id string, primary bool) error {
 	if text == "" {

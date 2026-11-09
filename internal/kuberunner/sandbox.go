@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
-	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 )
 
@@ -27,17 +26,14 @@ const MaxLog = 10 << 20
 const SourceDirectory = "/source/repository"
 
 type Request struct {
-	RunID          string                   `json:"run_id"`
-	JobID          string                   `json:"job_id"`
-	Branch         string                   `json:"branch"`
-	Base           string                   `json:"base"`
-	ReadOnly       bool                     `json:"read_only"`
-	Command        config.ResolvedCommand   `json:"command"`
-	Factory        *protocol.FactoryContext `json:"factory,omitempty"`
-	Task           *protocol.Task           `json:"task,omitempty"`
-	Revision       *protocol.Revision       `json:"revision,omitempty"`
-	ReviewEvidence string                   `json:"review_evidence,omitempty"`
-	Agent          string                   `json:"agent,omitempty"`
+	RunID    string                 `json:"run_id"`
+	JobID    string                 `json:"job_id"`
+	Branch   string                 `json:"branch"`
+	Base     string                 `json:"base"`
+	ReadOnly bool                   `json:"read_only"`
+	Command  config.ResolvedCommand `json:"command"`
+	Prompt   string                 `json:"prompt"`
+	Agent    string                 `json:"agent,omitempty"`
 }
 
 // ClaudeTokenFile is the Secret key holding a `claude setup-token` OAuth token.
@@ -253,7 +249,7 @@ func execute(ctx context.Context, r Request, exchange, source string) error {
 			stop()
 		}
 	}()
-	result, runErr := runner.Execute(runContext, runner.Options{Command: r.Command, Factory: r.Factory, Task: r.Task, Revision: r.Revision, ReviewEvidence: r.ReviewEvidence, Workflow: r.Factory != nil, RunID: r.RunID, JobID: r.JobID, Repository: source, DataDirectory: filepath.Join(exchange, "runtime"), Stdout: &limitedWriter{writer: stdout, remaining: MaxLog}, Stderr: &limitedWriter{writer: stderr, remaining: MaxLog}})
+	result, runErr := runner.Execute(runContext, runner.Options{Environment: runner.SanitizedEnvironment(os.Environ()), Prompt: r.Prompt, Command: r.Command, RunID: r.RunID, JobID: r.JobID, Repository: source, DataDirectory: filepath.Join(exchange, "runtime"), Stdout: &limitedWriter{writer: stdout, remaining: MaxLog}, Stderr: &limitedWriter{writer: stderr, remaining: MaxLog}})
 	out := Output{Result: result}
 	if runErr != nil {
 		out.Error = runErr.Error()

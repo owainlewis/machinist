@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,14 +14,6 @@ import (
 
 var initialFiles = []string{
 	"config.toml",
-	"worker.toml",
-	"prompts/task-to-pr.md",
-	"prompts/audit.md",
-	"prompts/triage.md",
-	"prompts/spec.md",
-	"prompts/implement.md",
-	"prompts/review.md",
-	"prompts/primary.md",
 }
 
 func newInitCommand(options *commandOptions) *cobra.Command {
@@ -43,7 +33,7 @@ func initializeMachinist(output io.Writer) error {
 		return fmt.Errorf("find user home directory: %w", err)
 	}
 	directory := filepath.Join(home, ".machinist")
-	for _, path := range []string{directory, filepath.Join(directory, "prompts"), filepath.Join(directory, "server")} {
+	for _, path := range []string{directory, filepath.Join(directory, "server")} {
 		if err := ensureDirectory(path); err != nil {
 			return err
 		}
@@ -58,17 +48,8 @@ func initializeMachinist(output io.Writer) error {
 			return err
 		}
 	}
-
-	token := make([]byte, 32)
-	if _, err := rand.Read(token); err != nil {
-		return fmt.Errorf("generate worker token: %w", err)
-	}
-	if err := installFile(directory, "server/worker.token", []byte(hex.EncodeToString(token)+"\n"), output); err != nil {
-		return err
-	}
-
 	fmt.Fprintf(output, "Machinist configuration is ready in %s\n", directory)
-	fmt.Fprintln(output, "Add repositories to worker.toml before starting a managed worker.")
+	fmt.Fprintln(output, "Add repositories to config.toml.")
 	return nil
 }
 

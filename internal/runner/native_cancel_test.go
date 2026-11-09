@@ -39,7 +39,7 @@ done
 			if cancelled {
 				timeout = time.Minute
 			}
-			result, e := Execute(ctx, Options{Repository: ".", DataDirectory: directory, Command: config.ResolvedCommand{Name: "fake", Adapter: "codex-app-server", Command: []string{"sh", script, "app-server"}, Timeout: timeout}, Stdout: io.Discard, Stderr: io.Discard})
+			result, e := Execute(ctx, Options{Repository: ".", Prompt: testPrompt, Environment: os.Environ(), DataDirectory: directory, Command: config.ResolvedCommand{Name: "fake", Adapter: "codex-app-server", Command: []string{"sh", script, "app-server"}, Timeout: timeout}, Stdout: io.Discard, Stderr: io.Discard})
 			if e == nil {
 				t.Fatal("stalled server succeeded")
 			}
