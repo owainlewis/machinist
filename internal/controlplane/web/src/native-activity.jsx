@@ -85,9 +85,6 @@ export function AgentReports({ activities, selectedID, onSelect }) {
   </section>;
 }
 
-// Historical attempts use the same single-report reader, without a report feed.
-export function ActivityTimeline({ children: activities }) { return <AgentReports activities={activities} />; }
-
 export function PrimaryLog({ logs }) {
   return <section className="run-log" aria-label="Primary agent messages"><h2>Primary log</h2><p className="run-section-description">Messages from the agent coordinating this attempt.</p>{logs.length ? <ol>{logs.map((text, index) => <li key={index}><RunMarkdown>{readableMessage(text)}</RunMarkdown></li>)}</ol> : <p className="run-empty">No primary messages were reported.</p>}</section>;
 }
@@ -95,11 +92,7 @@ export function PrimaryLog({ logs }) {
 function readableMessage(text) {
   try {
     const result = JSON.parse(text);
-    if (["complete", "failed", "blocked"].includes(result.outcome) && typeof result.summary === "string") return result.summary;
+    if (["pr_ready", "needs_input", "no_change", "failed"].includes(result.outcome) && typeof result.summary === "string") return result.summary;
   } catch { /* Ordinary messages are already readable text. */ }
   return text;
-}
-
-export function EventDiagnostics({ events }) {
-  return <section className="run-diagnostics" aria-label="Raw event diagnostics"><h2>Raw event diagnostics</h2><p className="run-section-description">The original event records, for troubleshooting.</p><pre tabIndex={0}>{events.length ? events.map(event => JSON.stringify(event)).join("\n") : "No event records are available."}</pre></section>;
 }

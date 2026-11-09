@@ -46,6 +46,8 @@ const (
 	EntryMessage = "message"
 
 	authorMachinist = "machinist"
+
+	sourceSchedulePrefix = "schedule:"
 )
 
 var (
@@ -107,7 +109,7 @@ const maxListedTickets = 200
 
 // Automation reports whether the ticket came from a schedule. Such a ticket
 // never waits for a person.
-func (t Ticket) Automation() bool { return strings.HasPrefix(t.Source, "schedule:") }
+func (t Ticket) Automation() bool { return strings.HasPrefix(t.Source, sourceSchedulePrefix) }
 
 type Entry struct {
 	ID            int64      `json:"id"`
@@ -214,6 +216,9 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// SetClock replaces the store's clock. Tests use it.
+func (s *Store) SetClock(now func() time.Time) { s.now = now }
 
 func (s *Store) inTx(ctx context.Context, work func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -436,6 +441,17 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 				return err
 			}
 		}
+		if strings.HasPrefix(request.Source, sourceSchedulePrefix) {
+			// An automation runs one ticket at a time.
+			existing, err = scanTicket(tx.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? AND state IN ('working','needs_you','pr_ready') LIMIT 1`, request.Source))
+			if err == nil {
+				ticket = existing
+				return nil
+			}
+			if !errors.Is(err, ErrNotFound) {
+				return err
+			}
+		}
 		now := s.now()
 		if _, err = tx.ExecContext(ctx, `INSERT INTO tickets(id,source,repo,issue_number,title,state,agent,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, request.Source, request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.CreatedBy, stamp(now), stamp(now)); err != nil {
 			return err
@@ -540,17 +556,27 @@ func (s *Store) ListTickets(ctx context.Context, state, repo string) ([]Ticket, 
 	return tickets, rows.Err()
 }
 
+// LatestMessage returns the newest thing Machinist said on a ticket.
+func (s *Store) LatestMessage(ctx context.Context, ticketID string) (string, error) {
+	var body string
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM ticket_entries WHERE ticket_id=? AND kind=? ORDER BY id DESC LIMIT 1`, ticketID, EntryMessage).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return body, err
+}
+
 // WaitingQuestion is what a needs_you ticket is asking, and is empty otherwise.
 func (s *Store) WaitingQuestion(ctx context.Context, ticket Ticket) (string, error) {
 	if ticket.State != StateNeedsYou {
 		return "", nil
 	}
-	var body string
-	err := s.db.QueryRowContext(ctx, `SELECT body FROM ticket_entries WHERE ticket_id=? AND kind=? ORDER BY id DESC LIMIT 1`, ticket.ID, EntryMessage).Scan(&body)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return body, err
+	return s.LatestMessage(ctx, ticket.ID)
+}
+
+// LatestTicketBySource returns the newest ticket from a source.
+func (s *Store) LatestTicketBySource(ctx context.Context, source string) (Ticket, error) {
+	return scanTicket(s.db.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? ORDER BY rowid DESC LIMIT 1`, source))
 }
 
 func activeState(state string) bool {

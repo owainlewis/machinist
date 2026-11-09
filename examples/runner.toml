@@ -1,0 +1,25 @@
+# A local runner. Start it with: machinist runner start
+control_plane = "http://127.0.0.1:7331"
+token_file = "~/.machinist/runner.token"
+data_directory = "~/.machinist/runner"
+slots = 2
+
+# The runner also needs GH_TOKEN, for a GitHub login that belongs to the bot.
+
+[credentials.claude]
+env = ["ANTHROPIC_API_KEY"]
+
+# Use one or both harnesses. A login is for your own machine only, and a Codex
+# login needs slots = 1.
+# [credentials.codex]
+# env = ["OPENAI_API_KEY"]
+# login = true
+
+# Add this table to make this a Kubernetes runner.
+# [kubernetes]
+# context = "my-cluster"
+# namespace = "machinist"
+# image = "ghcr.io/owainlewis/machinist-runner:latest"
+# proxy_url = "http://egress-proxy:3128"
+# secret = "machinist-agent"
+# allowed_hosts = []

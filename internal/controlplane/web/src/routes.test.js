@@ -2,42 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { routeFromHash } from "./routes.js";
 
-test("routeFromHash recognizes task detail routes", () => {
-  assert.deepEqual(routeFromHash("#/runs/job_123"), { view: "task", jobID: "job_123" });
-  assert.deepEqual(routeFromHash("#/runs/job%2F123"), { view: "task", jobID: "job/123" });
+test("the four pages are addressable", () => {
+  for (const view of ["assign", "work", "automations", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, ticketID: "" });
 });
 
-test("routeFromHash falls back to runs for incomplete or malformed routes", () => {
-  assert.deepEqual(routeFromHash("#/runs/"), { view: "runs", jobID: "" });
-  assert.deepEqual(routeFromHash("#/runs/%E0%A4%A"), { view: "runs", jobID: "" });
-  assert.deepEqual(routeFromHash("#/unknown"), { view: "runs", jobID: "" });
+test("assign is the default and unknown routes return to it", () => {
+  for (const hash of ["", "#/", "#/unknown", "#/runs"]) assert.deepEqual(routeFromHash(hash), { view: "assign", ticketID: "" });
 });
 
-test("factory navigation routes remain addressable", () => {
-  for (const view of ["agents", "automations", "settings"]) {
-    assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
-  }
+test("a ticket has its own route", () => {
+  assert.deepEqual(routeFromHash("#/work/t_123"), { view: "ticket", ticketID: "t_123" });
+  assert.deepEqual(routeFromHash("#/work/t%2F1"), { view: "ticket", ticketID: "t/1" });
 });
 
-test("retired inbox links open Runs needing attention", () => {
-  assert.deepEqual(routeFromHash("#/inbox"), { view: "runs", jobID: "", filter: "attention" });
-});
-
-test("removed workflow configuration routes return to runs",()=>{
- for(const hash of ["#/workflows","#/commands"]) assert.deepEqual(routeFromHash(hash),{view:"runs",jobID:""});
-});
-
-test("dashboard is the default page and analytics opens Activity", () => {
-  for (const hash of ["", "#/", "#/dashboard"]) assert.deepEqual(routeFromHash(hash), {view:"dashboard",jobID:""});
-});
-
-test("dashboard links open the exact run filter without accepting arbitrary filters", () => {
-  for (const filter of ["active", "attention", "pr_ready", "failed", "succeeded"]) {
-    assert.deepEqual(routeFromHash(`#/runs?filter=${filter}`),{view:"runs",jobID:"",filter});
-  }
-  assert.deepEqual(routeFromHash("#/runs?filter=unknown"),{view:"runs",jobID:""});
-});
-
-test("Activity and legacy analytics routes open analytics", () => {
-  for (const hash of ["#/activity", "#/analytics"]) assert.deepEqual(routeFromHash(hash), {view:"activity",jobID:""});
+test("incomplete or malformed ticket routes open Work", () => {
+  assert.deepEqual(routeFromHash("#/work/"), { view: "assign", ticketID: "" });
+  assert.deepEqual(routeFromHash("#/work/%E0%A4%A"), { view: "work", ticketID: "" });
 });

@@ -408,7 +408,7 @@ reach.
 *   **Assign box and MCP.** Both call the same intake with a caller-supplied `request_id`.
     A request for an issue with an active ticket returns that ticket.
 *   **Schedule.** Automation files use `internal/triggers` cron. The next occurrence comes
-    from the automation's newest ticket. Missed occurrences collapse into one, and no
+    from the automation's newest ticket, or from when Machinist first saw the file. Missed occurrences collapse into one, and no
     ticket starts while the automation's last one is active.
 
 **Outbound messages** are posted only by the control plane, from `ticket_entries` rows
@@ -615,6 +615,7 @@ Developer routes, all JSON. Errors are `{"error": "..."}` with 400, 401, 404 or 
 | `POST /api/v1/tickets/{id}/cancel` | | Ticket. 409 if ended |
 | `GET /api/v1/ledger` | `repo`, `since` | The G9 figures |
 | `GET /api/v1/runners` | | Each runner's name, harnesses and last contact |
+| `GET /api/v1/repositories` | | Connected repositories and the caller's name. The UI uses it to learn if it is signed in |
 | `GET /api/v1/automations` | | Each automation, next due time and last ticket |
 | `POST /api/v1/automations/{name}/run` | | Ticket |
 
@@ -884,7 +885,7 @@ Tracked files that are not listed below do not change.
 | `examples/factory/agents/default/.codex/agents/machinist-triage.toml`, `machinist-implementer.toml`, `machinist-reviewer.toml` | Codex agents, same roles |
 | `examples/factory/agents/maintainer/agent.toml`, `playbook.md` | Agent allowed to merge, for the automation template |
 | `examples/factory/reviewers/review.md` | Default reviewer |
-| `examples/factory/automations/review-open-prs.md` | Merge automation |
+| `examples/factory/automation-templates/review-open-prs.md` | Merge automation. A template outside `automations/`, because a factory with a placeholder repository fails startup. Copy it to `automations/` and set `repo` |
 | `deploy/kubernetes/runner-daemon/resources.yaml`, `kustomization.yaml` | Runner Deployment using the control plane image. Holds the Job Role moved from the control plane, with `get` on the one agent Secret |
 | `deploy/systemd/machinist-runner.service` | Local runner with `KillMode=control-group` |
 | `docs/factory.md`, `docs/credentials.md`, `docs/runners.md`, `docs/mcp.md` | Factory layout, credentials and spike results, adding runners, connecting MCP |

@@ -1,17 +1,14 @@
 # Examples
 
-`machinist init` installs the files at this level:
+`machinist init` copies these files to `~/.machinist`:
 
-- `config.toml` defines the default factory stages and legacy commands.
-  - `triage`, `spec`, `implement`, and `review` support the app's Standard pipeline.
-  - `task-to-pr` takes a task or GitHub issue to a reviewed pull request.
-  - `audit` finds verified correctness bugs and reports them as GitHub issues.
-- `worker.toml` shows local Codex and Claude Code executors.
-- `prompts/` contains seed prompts. Edit shared app prompts in **Agents**;
-  direct commands continue to use their configured prompt files.
+- `config.toml` configures the control plane.
+- `runner.toml` configures a local runner.
+- `factory/` holds your agents and reviewers:
+  - `agents/default` builds a ticket and opens a pull request. It never merges.
+  - `agents/maintainer` may merge, and is used by the merge automation.
+  - `reviewers/review.md` reads each ticket's first pull request.
 
-The [workflow examples](workflows/README.md) compare this prompt-driven style with a
-workflow written as a script.
-
-The [GitHub comment intake example](github-actions/README.md) turns a new, authorized
-`@machinist` issue comment into a `machinist:requested` label for a managed GitHub trigger.
+`factory/automation-templates/` holds automations that are not switched on. To
+use one, copy it to `factory/automations/`, set `repo` and restart the control
+plane.

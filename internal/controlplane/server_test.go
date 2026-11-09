@@ -124,6 +124,40 @@ func TestNewRejectsMissingHandleAndUnknownDefaultAgent(t *testing.T) {
 	}
 }
 
+func TestStaticUIIsOpenAndHasSecurityHeaders(t *testing.T) {
+	f := newFixture(t)
+	response, body := f.call(t, http.MethodGet, "/", "", nil)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `<div id="root">`) {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	if !strings.Contains(response.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") || response.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("headers = %v", response.Header)
+	}
+}
+
+func TestRepositoriesRouteTellsTheUIItIsSignedIn(t *testing.T) {
+	f := newFixture(t)
+	f.server.config.GitHub.Repositories = []string{"owner/repo"}
+	response, body := f.call(t, http.MethodGet, "/api/v1/repositories", f.token, nil)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "owner/repo") {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+}
+
+func TestHeartbeatKeepsABusyRunnerInTheList(t *testing.T) {
+	f := newFixture(t)
+	run := f.queueRun(t)
+	before := f.server.runners["runner-1"].LastContact
+	time.Sleep(2 * time.Millisecond)
+	if response, body := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/heartbeat", f.token, nil); response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	status := f.server.runners["runner-1"]
+	if !status.LastContact.After(before) || len(status.Harnesses) != 1 {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
 func TestServeRefusesATokenThatIsNotTheBot(t *testing.T) {
 	fakegh.Install(t, "alice")
 	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))

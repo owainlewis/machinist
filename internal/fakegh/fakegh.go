@@ -36,6 +36,11 @@ case "$1 $2" in
   cp "$dir/open-pr" "$dir/pr-$number"
   echo "https://github.com/owner/repo/pull/$number"
   exit 0;;
+"pr merge")
+  number=$3
+  if [ -f "$dir/merge-refused-$number" ]; then cat "$dir/merge-refused-$number" >&2; exit 1; fi
+  echo "$number" >> "$dir/merged"
+  exit 0;;
 "pr comment")
   number=$3
   body=
@@ -313,6 +318,15 @@ func (g *GitHub) Posted() []Post {
 	}
 	return posts
 }
+
+// RefuseMerge makes GitHub refuse to merge a PR, as branch protection does.
+func (g *GitHub) RefuseMerge(number int, message string) {
+	g.t.Helper()
+	g.writeText("merge-refused-"+strconv.Itoa(number), message+"\n")
+}
+
+// Merged returns the PRs that agents merged.
+func (g *GitHub) Merged() []string { return lines(g.read("merged")) }
 
 // PRComments returns the comments agents posted with gh pr comment.
 func (g *GitHub) PRComments() []string { return lines(g.read("pr-comments")) }

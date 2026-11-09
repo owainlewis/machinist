@@ -32,6 +32,7 @@ type system struct {
 	log    *lockedBuffer
 	// address is where the control plane listens.
 	address string
+	token   string
 }
 
 // lockedBuffer collects the control plane's log while it runs.
@@ -57,6 +58,8 @@ type options struct {
 	claude    func(output string) string
 	maxTurns  int
 	reviewers bool
+	// factory, when set, adds files to the factory before it is loaded.
+	factory func(t *testing.T, directory string)
 }
 
 func git(t *testing.T, directory string, args ...string) string {
@@ -164,6 +167,9 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 	if chosen.reviewers {
 		writeFile(t, filepath.Join(factoryDirectory, "reviewers/review.md"), "THE REVIEWER PROMPT\n", 0o600)
 	}
+	if chosen.factory != nil {
+		chosen.factory(t, factoryDirectory)
+	}
 	configPath := filepath.Join(root, "config.toml")
 	writeFile(t, configPath, fmt.Sprintf("[server]\nmax_turns_without_human = %d\n", chosen.maxTurns)+"listen = \"127.0.0.1:0\"\ndatabase = \"tickets.db\"\nfactory = \"factory\"\n\n[github]\nhandle = \"machinist-bot\"\nrepositories = [\"owner/repo\"]\n", 0o600)
 	machinistConfig, err := config.LoadConfig(configPath)
@@ -223,7 +229,7 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 		}
 		_ = store.Close()
 	})
-	return &system{store: store, remote: remote, output: output, data: runnerConfig.DataDirectory, github: github, log: log, address: address.String()}
+	return &system{token: token, store: store, remote: remote, output: output, data: runnerConfig.DataDirectory, github: github, log: log, address: address.String()}
 }
 
 func (s *system) createTicket(t *testing.T) tickets.Ticket {

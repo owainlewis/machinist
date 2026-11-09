@@ -48,7 +48,17 @@ func (s *Server) listRunners(w http.ResponseWriter, _ *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, map[string]any{"runners": runners})
 }
 
-func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request, _ string) {
+// touchRunner records contact from a busy runner, which sends no polls.
+func (s *Server) touchRunner(name string) {
+	s.runnersMu.Lock()
+	defer s.runnersMu.Unlock()
+	status := s.runners[name]
+	status.Name, status.LastContact = name, time.Now().UTC()
+	s.runners[name] = status
+}
+
+func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request, tokenName string) {
+	s.touchRunner(tokenName)
 	cancel, err := s.engine.Heartbeat(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeRunError(w, err)

@@ -24,23 +24,7 @@ test("overview is compact and full reports have a separate reader", async contex
   assert.doesNotMatch(overview,/FULL_REPORT_ONLY|Inspect the patch|<details|<summary|milliseconds/);
   const report=renderToStaticMarkup(React.createElement(AgentReports,{activities:children,selectedID:"review"}));
   assert.match(report,/FULL_REPORT_ONLY/);assert.match(report,/Inspect the patch/);assert.doesNotMatch(report,/<details|<summary/);
-  const log=renderToStaticMarkup(React.createElement(PrimaryLog,{logs:[JSON.stringify({outcome:"complete",summary:"Finished"})]}));assert.match(log,/Finished/);
-});
-
-test("native run separates outcome, logs, history and diagnostics", async context => {
-  const { createServer } = await import("vite");
-  const React = await import("react");
-  const { renderToStaticMarkup } = await import("react-dom/server");
-  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
-  context.after(() => server.close());
-  const { TaskDetail } = await server.ssrLoadModule("/src/task-detail.jsx");
-  const job = { id: "native", recipe: "native-v1", state_backend: "local", state: "succeeded", repository: "example/repo", task: { title: "Read the project", spec: "Read only" }, workflow: { factory: {} }, runs: [{ id: "first", state: "failed", summary: "invalid character 'B' looking for beginning of value" }, { id: "second", state: "succeeded", executor: "claude-native", summary: "Two readers finished." }] };
-  const html = renderToStaticMarkup(React.createElement(TaskDetail, { job, loaded: true }));
-  assert.match(html, /Run outcome/);
-  assert.match(html, /Overview/);
-  assert.match(html, /Attempts \(2\)/);
-  assert.match(html, /required result format/);
-  assert.doesNotMatch(html, /<details|<summary|invalid character/);
+  const log=renderToStaticMarkup(React.createElement(PrimaryLog,{logs:[JSON.stringify({outcome:"no_change",summary:"Finished"})]}));assert.match(log,/Finished/);
 });
 
 const rawEvent = object => ({type:"process.output",stream:"stdout",encoding:"base64",data:Buffer.from(JSON.stringify(object)+"\n").toString("base64")});
@@ -83,13 +67,12 @@ test("selecting a role opens its full report without a duplicate overview feed",
  const events=[{type:"agent.activity",sequence:1,message:JSON.stringify({native_id:"first",role:"reviewer",name:"First review",status:"completed",summary:"Changes requested.\n\nFULL_FIRST_REPORT"})},{type:"agent.activity",sequence:2,message:JSON.stringify({native_id:"second",role:"reviewer",name:"Fresh review",status:"completed",summary:"Accepted.\n\nFULL_SECOND_REPORT"})}];
  context.mock.method(globalThis,"fetch",async()=>({ok:true,json:async()=>({cursor:2,events})}));
  const server=await createServer({server:{middlewareMode:true,hmr:false},appType:"custom"});context.after(()=>server.close());
- const {TaskDetail}=await server.ssrLoadModule("/src/task-detail.jsx");root=createRoot(document.getElementById("test-root"));
- const job={id:"job",recipe:"native-v1",state_backend:"local",state:"succeeded",repository:"example/repo",task:{title:"Verify reports",spec:"Read only"},workflow:{factory:{}},runs:[{id:"run",state:"succeeded",executor:"claude-native",summary:"Finished"}]};
- await React.act(async()=>{root.render(React.createElement(TaskDetail,{job,loaded:true}));});
- let visible=document.querySelector('[role="tabpanel"]:not([hidden])');assert.match(visible.textContent,/Reviewer 1/);assert.doesNotMatch(visible.textContent,/FULL_FIRST_REPORT|FULL_SECOND_REPORT|Agent activity/);
+ const {RunActivity}=await server.ssrLoadModule("/src/task-detail.jsx");root=createRoot(document.getElementById("test-root"));
+ const run={id:"run",status:"succeeded"};
+ await React.act(async()=>{root.render(React.createElement(RunActivity,{run}));});
+ let visible=document.querySelector('.run-activity');assert.match(visible.textContent,/Reviewer 1/);assert.doesNotMatch(visible.textContent,/FULL_SECOND_REPORT/);
  await React.act(async()=>document.querySelector('[aria-label="Read Reviewer 2 report"]').click());
- visible=document.querySelector('[role="tabpanel"]:not([hidden])');assert.match(visible.textContent,/FULL_SECOND_REPORT/);assert.doesNotMatch(visible.textContent,/FULL_FIRST_REPORT/);
- assert.equal(document.activeElement.textContent,"Agent reports");
+ visible=document.querySelector('[aria-label="Agent reports"]');assert.match(visible.textContent,/FULL_SECOND_REPORT/);assert.doesNotMatch(visible.textContent,/FULL_FIRST_REPORT/);
  await React.act(async()=>document.querySelector('[aria-label="Choose an agent report"] button').click());
  assert.match(visible.textContent,/FULL_FIRST_REPORT/);assert.doesNotMatch(visible.textContent,/FULL_SECOND_REPORT/);
 });
@@ -99,14 +82,6 @@ test("full Claude child reports survive a later short notification",()=>{
  assert.equal(reduceActivity(events,"succeeded").children[0].summary,"Full findings. Details that must survive.");
  events[2].message=JSON.stringify({native_id:"tool",primary:false,text:"Historical full findings."});
  assert.equal(reduceActivity(events,"succeeded").children[0].summary,"Historical full findings.");
-});
-
-test("confirmed process shutdown permits retry without another manual assertion",async context=>{
- const {createServer}=await import("vite");const React=await import("react");const {renderToStaticMarkup}=await import("react-dom/server");
- const server=await createServer({server:{middlewareMode:true,hmr:false},appType:"custom"});context.after(()=>server.close());const {TaskDetail}=await server.ssrLoadModule("/src/task-detail.jsx");
- const job={id:"cancel",recipe:"native-v1",state_backend:"local",state:"cancelled",repository:"example/repo",task:{title:"Cancelled",spec:"Read only"},workflow:{factory:{}},runs:[{id:"run",state:"cancelled",process_stopped:true}]};
- let html=renderToStaticMarkup(React.createElement(TaskDetail,{job,loaded:true}));assert.doesNotMatch(html,/I have verified the previous worker/);
- job.runs[0].process_stopped=false;html=renderToStaticMarkup(React.createElement(TaskDetail,{job,loaded:true}));assert.match(html,/I have verified the previous worker/);
 });
 
 test("raw full reports retain their tail beyond the normalized message limit",()=>{

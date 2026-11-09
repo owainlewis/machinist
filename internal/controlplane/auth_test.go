@@ -24,6 +24,9 @@ func TestEveryRouteRequiresAValidToken(t *testing.T) {
 		{http.MethodPost, "/api/v1/tickets/t_x/cancel"},
 		{http.MethodGet, "/api/v1/ledger"},
 		{http.MethodDelete, "/api/v1/session"},
+		{http.MethodGet, "/api/v1/repositories"},
+		{http.MethodGet, "/api/v1/automations"},
+		{http.MethodPost, "/api/v1/automations/x/run"},
 		{http.MethodPost, "/mcp"},
 		{http.MethodGet, "/mcp"},
 	} {

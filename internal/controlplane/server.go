@@ -3,10 +3,12 @@ package controlplane
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"strings"
@@ -22,6 +24,9 @@ import (
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
+//go:embed all:web/dist
+var webAssets embed.FS
+
 const (
 	maxRequestBytes = 1 << 20
 	shutdownTimeout = 10 * time.Second
@@ -29,15 +34,16 @@ const (
 
 // Server is the one control plane of a deployment. It never starts an agent.
 type Server struct {
-	config  config.Config
-	store   *tickets.Store
-	engine  *engine.Engine
-	client  *ghclient.Client
-	github  *sources.GitHub
-	intake  *sources.Intake
-	mcp     http.Handler
-	version string
-	log     io.Writer
+	config   config.Config
+	store    *tickets.Store
+	engine   *engine.Engine
+	client   *ghclient.Client
+	github   *sources.GitHub
+	intake   *sources.Intake
+	schedule *sources.Schedule
+	mcp      http.Handler
+	version  string
+	log      io.Writer
 
 	runnersMu sync.Mutex
 	runners   map[string]runnerStatus
@@ -68,15 +74,16 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		Repositories: machinistConfig.GitHub.Repositories,
 	}
 	return &Server{
-		config:  machinistConfig,
-		store:   store,
-		engine:  ticketEngine,
-		client:  client,
-		intake:  intake,
-		mcp:     mcpserver.New(store, intake, version),
-		version: version,
-		log:     log,
-		runners: map[string]runnerStatus{},
+		config:   machinistConfig,
+		store:    store,
+		engine:   ticketEngine,
+		client:   client,
+		intake:   intake,
+		schedule: sources.NewSchedule(store, loaded.Automations, log),
+		mcp:      mcpserver.New(store, intake, version),
+		version:  version,
+		log:      log,
+		runners:  map[string]runnerStatus{},
 		github: sources.NewGitHub(sources.Options{
 			Client:       client,
 			Store:        store,
@@ -99,8 +106,10 @@ func findPR(client *ghclient.Client) engine.PRFinder {
 	}
 }
 
-// SetPollInterval changes how often GitHub is polled. Tests use it.
-func (s *Server) SetPollInterval(interval time.Duration) { s.github.Interval = interval }
+// SetPollInterval changes how often GitHub and schedules are polled. Tests use it.
+func (s *Server) SetPollInterval(interval time.Duration) {
+	s.github.Interval, s.schedule.Interval = interval, interval
+}
 
 // checkGitHub refuses a token that is not the bot's, because Machinist would
 // then read its own messages as human replies and start runs on them. Other
@@ -147,7 +156,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.requireToken(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/runs/{id}/events", s.requireToken(s.ingestEvents))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.requireToken(s.complete))
-	return mux
+	mux.HandleFunc("GET /api/v1/repositories", s.requireToken(s.listRepositories))
+	mux.HandleFunc("GET /api/v1/automations", s.requireToken(s.listAutomations))
+	mux.HandleFunc("POST /api/v1/automations/{name}/run", s.requireToken(s.runAutomation))
+	mux.Handle("/", http.FileServer(http.FS(mustSub(webAssets, "web/dist"))))
+	return securityHeaders(mux)
+}
+
+func mustSub(files fs.FS, directory string) fs.FS {
+	sub, err := fs.Sub(files, directory)
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' blob:; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -182,6 +212,8 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	go func() { s.engine.Run(engineContext); close(engineDone) }()
 	githubDone := make(chan struct{})
 	go func() { s.github.Run(engineContext); close(githubDone) }()
+	scheduleDone := make(chan struct{})
+	go func() { s.schedule.Run(engineContext); close(scheduleDone) }()
 
 	select {
 	case err = <-served:
@@ -193,6 +225,7 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	stopEngine()
 	<-engineDone
 	<-githubDone
+	<-scheduleDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

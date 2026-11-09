@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
+	"github.com/owainlewis/machinist/internal/triggers"
 )
 
 func (f *fixture) connect(t *testing.T) {
@@ -204,5 +206,37 @@ func TestLedgerRoute(t *testing.T) {
 	}
 	if response, _ := f.call(t, http.MethodGet, "/api/v1/ledger?since=yesterday", f.token, nil); response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d", response.StatusCode)
+	}
+}
+
+func TestAutomationRoutes(t *testing.T) {
+	f := newFixture(t)
+	cron, err := triggers.ParseCron("0 9 * * *", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server.schedule.Automations = []factory.Automation{{Name: "nightly", Repo: "owner/repo", Agent: "default", Prompt: "Do the nightly work", Cron: cron}}
+	response, body := f.call(t, http.MethodGet, "/api/v1/automations", f.token, nil)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"next_due"`) || strings.Contains(string(body), "last_ticket") {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	response, body = f.call(t, http.MethodPost, "/api/v1/automations/nightly/run", f.token, nil)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	first := decodeTicket(t, body)
+	if first.Source != "schedule:nightly" || first.CreatedBy != "runner-1" {
+		t.Fatalf("ticket = %+v", first)
+	}
+	response, body = f.call(t, http.MethodPost, "/api/v1/automations/nightly/run", f.token, nil)
+	if response.StatusCode != http.StatusOK || decodeTicket(t, body).ID != first.ID {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	if response, _ := f.call(t, http.MethodPost, "/api/v1/automations/missing/run", f.token, nil); response.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	response, body = f.call(t, http.MethodGet, "/api/v1/automations", f.token, nil)
+	if !strings.Contains(string(body), first.ID) {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
 }

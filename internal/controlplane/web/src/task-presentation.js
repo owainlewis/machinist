@@ -1,28 +1,39 @@
-export function taskPresentation(job) {
-  const runs = job.runs || [];
-  const latest = runs.at(-1);
-  // Approval belongs to the next stage; its result belongs to the exact
-  // producing attempt bound by the server, never an arbitrary older success.
-  const result = job.state === "awaiting_approval"
-    ? runs.find(run => run.id === latest?.reviewed_run_id)
-    : latest;
-  const current = job.workflow?.current_step ?? 0;
-  return {
-    result,
-    history: runs.filter(run => run.id !== result?.id && run.id !== latest?.id),
-    stages: (job.workflow?.steps || []).map((name, index) => {
-      if (!job.workflow?.factory) return {
-        name,
-        current: index === current && job.state !== "succeeded",
-        complete: index < current || job.state === "succeeded",
-      };
-      const attempts = runs.filter(run => run.command === name);
-      const active = index === current && !["succeeded", "awaiting_merge"].includes(job.state);
-      const skipped = !attempts.length && (index < current || job.state === "succeeded");
-      const complete = name === "review"
-        ? job.workflow.factory.verdict === "accepted" && ["awaiting_merge", "succeeded"].includes(job.state)
-        : !active && attempts.some(run => run.outcome === "complete");
-      return { name, current: active, complete, skipped };
-    }),
-  };
+export const stateLabels = {
+  working: "Working",
+  needs_you: "Needs you",
+  pr_ready: "PR ready",
+  done: "Done",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+const maxFinished = 25;
+
+// Work is ordered by who has to act next, not by when it started.
+export function groupTickets(tickets) {
+  const pick = (...states) => tickets.filter(ticket => states.includes(ticket.state));
+  return [
+    { id: "you", title: "Waiting on you", tickets: pick("needs_you") },
+    { id: "merge", title: "Waiting for a merge", tickets: pick("pr_ready") },
+    { id: "agent", title: "Waiting on an agent", tickets: pick("working") },
+    { id: "finished", title: "Finished", tickets: pick("done", "failed", "cancelled").slice(0, maxFinished) },
+  ].filter(group => group.tickets.length);
+}
+
+export function isActive(ticket) {
+  return ["working", "needs_you", "pr_ready"].includes(ticket?.state);
+}
+
+export function issueLink(ticket) {
+  return ticket.issue_number ? `https://github.com/${ticket.repo}/issues/${ticket.issue_number}` : "";
+}
+
+export function prLink(ticket) {
+  return ticket.pr_number ? `https://github.com/${ticket.repo}/pull/${ticket.pr_number}` : "";
+}
+
+export function ticketSource(ticket) {
+  if (ticket.issue_number) return `Issue #${ticket.issue_number}`;
+  if (ticket.source?.startsWith("schedule:")) return "Automation";
+  return "Assigned here";
 }

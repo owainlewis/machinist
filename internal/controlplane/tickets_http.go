@@ -179,6 +179,36 @@ func (s *Server) ledger(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, ledger)
 }
 
+func (s *Server) listRepositories(w http.ResponseWriter, _ *http.Request, tokenName string) {
+	repositories := s.config.GitHub.Repositories
+	if repositories == nil {
+		repositories = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"repositories": repositories, "name": tokenName})
+}
+
+func (s *Server) listAutomations(w http.ResponseWriter, r *http.Request, _ string) {
+	automations, err := s.schedule.Status(r.Context())
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"automations": automations})
+}
+
+func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName string) {
+	ticket, created, err := s.schedule.RunNow(r.Context(), r.PathValue("name"), tokenName)
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	s.writeTicket(w, r, status, ticket)
+}
+
 func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, tokenName string) {
 	s.mcp.ServeHTTP(w, r.WithContext(mcpserver.WithCaller(r.Context(), tokenName)))
 }
