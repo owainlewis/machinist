@@ -120,25 +120,29 @@ they return a Git bundle, and a separate publisher pushes it using GitHub App cr
 
 ## Open Questions
 
-The spike (step 1 of the plan) settles each of these. Every one has a fallback.
+The spike (step 1 of the plan) ran on 2026-11-09 with Claude Code 2.1.319 and Codex
+0.157.1. [Spike results](../credentials.md) has the evidence. Q1, Q3, Q4 and Q5 are
+settled. Q2 is partly settled.
 
-*   **Q1. Codex credentials.** Does `codex app-server` accept API keys and
-    `CODEX_ACCESS_TOKEN`? The vendor documentation shows `codex exec` and `codex login`.
-    Fallback: run `codex login --with-api-key` into the run's private home. If that also
-    fails, the Codex adapter uses `codex exec --json`, as the Kubernetes sandbox does
-    today, and loses live subagent activity.
-*   **Q2. Ticket log quality.** Can an agent continue after a run is stopped, using only
-    the log and pushed branch, reading reviews and CI failures itself with `gh`? The spike
-    stops one real run and continues it. Fallback:
-    the playbook requires a progress note in the PR or on the branch before each push.
-*   **Q3. Provider terms.** Does each provider permit the intended credential on a shared
-    runner? Fallback: that credential type is documented as unsupported.
-*   **Q4. Codex project trust.** Does writing the clone path as trusted in the run's
-    private `CODEX_HOME/config.toml` stop Codex refusing project configuration? Fallback:
-    pass the same setting with `-c` on the command line.
-*   **Q5. Private home.** With a private `HOME`, can a harness still find the OS user's
-    login, for example in the macOS Keychain? Fallback: key-based runners use a dedicated
-    OS user that has never logged in to the harness.
+*   **Q1. Codex credentials. Settled: use the fallback.** `codex app-server` ignored
+    `OPENAI_API_KEY` and `CODEX_API_KEY` and sent no credentials. After
+    `codex login --with-api-key` into the run's private home, it sent the key. The vendor
+    documentation says app-server accepts `CODEX_ACCESS_TOKEN`. That is not tested,
+    because it needs a real Business or Enterprise token.
+*   **Q2. Ticket log quality. Partly settled.** A real run continued from the log and
+    pushed branch, read the review and CI failure with `gh`, fixed both and kept the
+    earlier commits. In that test the branch was already feature-complete, so continuing
+    unfinished work is not tested. Fallback if it fails: the playbook requires a progress
+    note in the PR or on the branch before each push.
+*   **Q3. Provider terms. Settled.** API keys and cloud provider credentials are allowed
+    on team runners, billed to the key owner. A subscription login is for its owner's own
+    use, on one machine, one run at a time for Codex. See Credentials.
+*   **Q4. Codex project trust. Settled: yes.** Writing the clone's real path as trusted
+    in the run's private `config.toml` stops the warning. The `-c` fallback does not stop
+    it, so it is dropped.
+*   **Q5. Private home. Settled: no.** With a private `HOME` and `CODEX_HOME`, neither
+    harness found the machine's login, on macOS. No dedicated OS user is needed to keep
+    a login out of a key-based run.
 
 ## Critical User Journeys (CUJs)
 
@@ -471,8 +475,10 @@ codex app-server --stdio -c features.multi_agent=true -c sandbox_mode="danger-fu
 
 The Codex model is sent in `thread/start`. These flags turn off each harness's own
 permission checks and sandbox. The limits on an agent are its OS user or gVisor Job, its
-GitHub login and, on Kubernetes, the egress proxy. Each Codex run writes its clone path as
-trusted in its private `config.toml` (Q4).
+GitHub login and, on Kubernetes, the egress proxy. Each Codex run writes its clone's real
+path (symlinks resolved) as trusted in its private `config.toml` before starting Codex
+(Q4). Without that entry Codex trusts the folder itself but still sends the
+`configWarning` that fails the run.
 
 ### Credentials
 
@@ -487,9 +493,17 @@ the runner's environment except an allowlist (`PATH`, `LANG`, `TMPDIR`, proxy an
 settings). On a Kubernetes runner, each Job gets one Secret through `envFrom`, which must
 hold those variables and `GH_TOKEN`. The runner process never reads it.
 
+Codex is the one exception to passing variables through, because `codex app-server` does
+not read a key from its environment (Q1). When a Codex credential holds `OPENAI_API_KEY`,
+the runner or Job pipes it to `codex login --with-api-key` into the run's private
+`CODEX_HOME`, and the run directory is deleted when the run ends.
+
 A local runner can set `login = true` on a credential instead. It then uses the OS user's
 existing harness login and normal home directory. Set `slots = 1` for a Codex login.
-Kubernetes runners do not support logins.
+Kubernetes runners have no `login` option and no login command. A Claude
+`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` is an ordinary variable, so it works
+in the Secret, but it is only for the owner's own use (Q3). Teams use API keys or a cloud
+provider.
 
 ### Configuration
 
@@ -769,6 +783,8 @@ and a run button. Runners lists each runner and when it last made contact.
 *   **Live activity on Kubernetes:** stream events during the run.
 *   **More sources:** Linear, Jira and GitLab.
 *   **Stronger local isolation:** Docker or a process sandbox.
+*   **Spec intake:** designs are written outside Machinist, for example with EGM, and
+    arrive as a job. A later version could accept a spec file as a ticket's request.
 
 --------------------------------------------------------------------------------
 
@@ -833,7 +849,7 @@ Tracked files that are not listed below do not change.
 | `internal/agentrunner/check.go`, `check_test.go` | `runner check`: one `Execute` with a probe prompt, on either runner type, then print the reported credential source. CUJ 7 |
 | `internal/agentrunner/conformance_test.go` | One suite for both runner types: run, report, cancel, timeout |
 | `internal/runner/request.go` | `RunRequest` and `RunResult`, here so that both `agentrunner` and `kuberunner` can use them |
-| `internal/runner/workspace.go`, `workspace_test.go` | New code shared by both runner types: fresh clone, branch checkout or creation, write and exclude subagents, Git identity, Codex trust entry, GitHub environment through `githubauth` |
+| `internal/runner/workspace.go`, `workspace_test.go` | New code shared by both runner types: fresh clone, branch checkout or creation, write and exclude subagents, Git identity, Codex trust entry, `codex login --with-api-key` into the private home when the credential holds a key, GitHub environment through `githubauth` |
 | `internal/runner/harness.go`, `harness_test.go` | The two fixed commands |
 | `internal/e2e/live_test.go` | G11 live scenario under `MACHINIST_NATIVE_LIVE`, importing the engine and both runner types: each harness on each runner type |
 | `internal/config/runner.go`, `runner_test.go` | Runner configuration, replacing `Worker`; old keys rejected |
@@ -871,10 +887,10 @@ Tracked files that are not listed below do not change.
 | `internal/config/kubernetes.go` | Replace `AuthSecret` with `Secret`; add `AllowedHosts` |
 | `internal/protocol/protocol.go` | Shrink to the runner routes' payloads |
 | `internal/githubauth/environment.go` | Remove App wording. The helper is otherwise reused, called from `internal/runner/workspace.go` |
-| `internal/kuberunner/connector.go`, `connector_test.go` | Remove the ConfigMap lock, `retainAuth`, `Login`, Git bundle input and output, and `readOnly`. `ready` checks the one Secret. `manifest` adds `envFrom` and removes the `codex-auth` volume. A test now requires `GH_TOKEN` in the Job |
+| `internal/kuberunner/connector.go`, `connector_test.go` | Remove the ConfigMap lock, `retainAuth`, `Login` and `loginClaude`, the `agent` cluster setting (the run request names the harness), Git bundle input and output, and `readOnly`. `ready` checks the one Secret. `manifest` adds `envFrom` and removes the `codex-auth` volume. A test now requires `GH_TOKEN` in the Job |
 | `internal/kuberunner/sandbox.go` | `Request` becomes `runner.RunRequest`, with subagent files inside. `Receive` accepts only `request.json`. `Prepare` probes the network and creates `/source/repository`. `Sandbox` calls `runner` workspace setup, then launches through `runner.Execute` with the fixed commands. Remove `ValidateAuth`, `Head`, `Dirty`, the `forced_login_method` setting and the `/credentials` read |
-| `internal/kuberunner/install.go` | Add `api.anthropic.com`, `api.github.com`, `uploads.github.com` and configured `AllowedHosts` to the proxy list |
-| `internal/kuberunner/network.go` | Probe `github.com` in place of `chatgpt.com` |
+| `internal/kuberunner/install.go` | Keep `api.anthropic.com`. Add `api.github.com`, `uploads.github.com` and configured `AllowedHosts` to the proxy list |
+| `internal/kuberunner/network.go` | `ProbeNetwork` always probes `github.com` and loses its `provider` argument |
 | `internal/runner/runner.go`, `internal/runner` tests | `Options` gains `Prompt`, and `Environment` becomes the complete environment. `Result` gains `Report` and `Cost` and loses `StepResult`. Parse `total_cost_usd` from Claude Code's result event. Remove `Factory`, `Revision`, `Task`, `PrepareInputs`, `Workflow`, `ArtifactKey`, `ReviewEvidence` and `mergeEnvironment` |
 | `internal/runner/native.go`, `native_test.go` | Remove `nativeEnvironment` and the `--bare` rejection. Remove both checks that require a subscription login, keeping the reported source for `runner check`. Claude Code structured output is always on, so `nativeCommand` loses `structuredResult` and its check for a configured `--json-schema` |
 | `internal/runner/native_result.go` | `nativeResultSchema` and parsing use the report |
