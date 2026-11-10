@@ -1,11 +1,14 @@
 # Agents and subagents
 
 A run launches one fixed command for its harness. These flags turn off the harness's own
-permission checks, so the OS user or gVisor Job is the boundary:
+permission checks, so the OS user or gVisor Job is the boundary. Claude loads only the
+repository's settings and no MCP servers, so a `login = true` run, which shares the user's
+home, does not pick up their own settings, plugins, skills or connectors:
 
 ```text
 claude --print --verbose --output-format stream-json --include-partial-messages
-       --dangerously-skip-permissions --json-schema <report schema> --model <model>
+       --dangerously-skip-permissions --setting-sources project --strict-mcp-config
+       --json-schema <report schema> --model <model>
 codex app-server --stdio -c features.multi_agent=true -c sandbox_mode="danger-full-access"
 ```
 

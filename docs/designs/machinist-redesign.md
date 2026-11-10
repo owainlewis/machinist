@@ -479,7 +479,8 @@ Both launch the same fixed commands, which are not configurable:
 
 ```text
 claude --print --verbose --output-format stream-json --include-partial-messages
-       --dangerously-skip-permissions --json-schema <report schema> --model <model>
+       --dangerously-skip-permissions --setting-sources project --strict-mcp-config
+       --json-schema <report schema> --model <model>
 codex app-server --stdio -c features.multi_agent=true -c sandbox_mode="danger-full-access"
 ```
 
@@ -489,7 +490,9 @@ GitHub login and, on Kubernetes, the egress proxy. Each Codex run writes its clo
 path (symlinks resolved) as trusted in its private `config.toml` before starting Codex
 (Q4). Without that entry Codex trusts the folder itself but still sends the
 `configWarning` that fails the run. A `login = true` run has no private home, so the entry
-is appended to the user's own `config.toml`, which is what Codex does itself.
+is appended to the user's own `config.toml`, which is what Codex does itself. Claude
+loads only the repository's settings and no MCP servers, so a login run does not pick up
+the user's own settings, plugins, skills or connectors.
 
 ### Credentials
 

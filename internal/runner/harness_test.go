@@ -16,7 +16,7 @@ func TestHarnessCommandsAreAcceptedByTheirAdapters(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(argv, " ")
-	for _, want := range []string{"--print", "--verbose", "--output-format stream-json", "--include-partial-messages", "--dangerously-skip-permissions", "--json-schema", "--model sonnet"} {
+	for _, want := range []string{"--print", "--verbose", "--output-format stream-json", "--include-partial-messages", "--dangerously-skip-permissions", "--setting-sources project", "--strict-mcp-config", "--json-schema", "--model sonnet"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %s in %s", want, joined)
 		}
