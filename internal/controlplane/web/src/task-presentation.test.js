@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { groupTickets, isActive, issueLink, prLink, ticketSource } from "./task-presentation.js";
+import { sortTickets, isActive, issueLink, prLink, ticketSource } from "./task-presentation.js";
 
 const ticket = (id, state) => ({ id, state });
 
-test("tickets are grouped by who has to act next", () => {
-  const groups = groupTickets([ticket("a", "working"), ticket("b", "needs_you"), ticket("c", "pr_ready"), ticket("d", "done"), ticket("e", "failed"), ticket("f", "cancelled")]);
-  assert.deepEqual(groups.map(group => [group.id, group.tickets.map(item => item.id)]), [["you", ["b"]], ["merge", ["c"]], ["agent", ["a"]], ["finished", ["d", "e", "f"]]]);
+test("jobs are ordered by who has to act next, then by finished work", () => {
+  const sorted = sortTickets([ticket("d", "done"), ticket("a", "working"), ticket("b", "needs_you"), ticket("c", "pr_ready"), ticket("e", "failed")]);
+  assert.deepEqual(sorted.map(item => item.id), ["b", "a", "c", "d", "e"]);
 });
 
-test("empty groups take no space and finished work is capped", () => {
-  assert.deepEqual(groupTickets([]), []);
-  const groups = groupTickets(Array.from({ length: 40 }, (_, index) => ticket(String(index), "done")));
-  assert.equal(groups.length, 1);
-  assert.equal(groups[0].tickets.length, 25);
+test("finished work is capped and active work is not", () => {
+  assert.deepEqual(sortTickets([]), []);
+  const many = Array.from({ length: 40 }, (_, index) => ticket(String(index), "done"));
+  assert.equal(sortTickets(many).length, 25);
+  assert.equal(sortTickets([...many, ticket("x", "working")])[0].id, "x");
 });
 
 test("the three active states count as active", () => {

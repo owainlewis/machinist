@@ -26,7 +26,7 @@ test("a ticket shows which runner took each run, its log and its figures", async
   assert.doesNotMatch(html, /<script>/);
   const ended = renderToStaticMarkup(React.createElement(TicketView, { detail: { ...detail, ticket: { ...ticket, state: "done" } } }));
   assert.doesNotMatch(ended, /Cancel ticket/);
-  const waiting = renderToStaticMarkup(React.createElement(TicketView, { detail: { ...detail, ticket: { ...ticket, state: "needs_you", question: "Which database?" } } }));
+  const waiting = renderToStaticMarkup(React.createElement(TicketView, { detail: { ...detail, entries: [...detail.entries, entry(3, "message", "machinist", "Which database?")], ticket: { ...ticket, state: "needs_you", question: "Which database?" } } }));
   assert.match(waiting, /Which database\?/);
   assert.match(waiting, /Send reply/);
 });

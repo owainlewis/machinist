@@ -7,10 +7,13 @@ import { createServer } from "vite";
 test("sign in, assign work, then follow it on Work", { timeout: 30000 }, async context => {
   const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/assign" });
   const previous = new Map();
-  for (const name of ["window", "document", "navigator", "localStorage", "Event", "MouseEvent", "HTMLElement", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
+  for (const name of ["window", "document", "navigator", "localStorage", "Event", "MouseEvent", "HTMLElement", "getComputedStyle", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
     previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
   }
+  const noObserver = class { observe() {} unobserve() {} disconnect() {} };
+  previous.set("ResizeObserver", Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver"));
+  Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, writable: true, value: noObserver });
   let signedIn = false;
   const ticket = { id: "t_new", state: "working", repo: "owner/repo", title: "Add dark mode", created_by: "alice", updated_at: new Date().toISOString() };
   const tickets = [];
@@ -67,7 +70,7 @@ test("sign in, assign work, then follow it on Work", { timeout: 30000 }, async c
   assert.ok(posts[0].request_id);
 
   await act(async () => { window.location.hash = "#/work"; });
-  await eventually(() => assert.match(document.querySelector("main").textContent, /Waiting on an agent/));
+  await eventually(() => assert.ok(document.querySelector("table.jobs")));
   assert.ok(document.querySelector('a[href="#/work/t_new"]'));
   assert.equal(document.querySelector('nav a[aria-current="page"]').textContent, "Work");
 

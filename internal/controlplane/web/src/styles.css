@@ -157,29 +157,28 @@ a { text-underline-offset: 3px; }
 .sign-in .brand-wordmark { margin-bottom: 24px; font-size: 20px; }
 .sign-in button { margin-top: 12px; }
 
-/* Assign is one box. It is the largest thing in the product on purpose. */
-.assign-page { padding-top: 12vh; }
-.assign-page h1 { font-size: 30px; letter-spacing: -.03em; }
-.assign-box { display: block; width: 100%; min-height: 220px; resize: vertical; border: 0; border-bottom: 1px solid var(--border); outline: none; background: transparent; padding: 0 0 16px; color: var(--foreground); font-size: 18px; line-height: 1.55; }
-.assign-box::placeholder { color: var(--muted-foreground); opacity: .75; }
-.assign-box:focus { border-bottom-color: var(--primary); }
-.assign-box:focus-visible { outline: none; }
-.assign-actions { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-top: 16px; }
-.assign-actions select { width: auto; max-width: 70%; }
+/* Assign opens like a new chat. */
+.assign-page { padding-top: 22vh; }
+.assign-page h1 { margin-bottom: 20px; font-size: 30px; letter-spacing: -.03em; text-align: center; }
+.assign-input { min-height: 64px; }
+.assign-repository { max-width: 70%; border-radius: 8px; background: transparent; padding: 6px 4px; color: var(--muted-foreground); font-size: 13px; }
 
-/* Work is grouped by who has to act next. */
+/* Work is one table of jobs. */
 .ticket-state { display: inline-flex; flex-shrink: 0; align-items: center; gap: 6px; font-size: 13px; }
 .state-working { animation: run-spin 1.5s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .state-working { animation: none; } }
-.ticket-group ul, .plain-list, .ticket-log { margin: 0; padding: 0; list-style: none; }
-.ticket { border-top: 1px solid var(--border); }
-.ticket-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto 64px; gap: 12px; align-items: center; min-height: 42px; }
-.ticket-title { overflow: hidden; font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.ticket-title:hover { color: var(--primary); }
+.plain-list { margin: 0; padding: 0; list-style: none; }
 .ticket-meta { color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
-.ticket-row time { text-align: right; }
-.answer { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 0 0 16px 28px; }
-.answer-question { max-width: 72ch; font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.jobs { width: 100%; border-collapse: collapse; font-size: 14px; }
+.jobs th { border-bottom: 1px solid var(--border); padding: 0 16px 8px 0; color: var(--muted-foreground); font-size: 12px; font-weight: 500; text-align: left; }
+.jobs td { border-bottom: 1px solid var(--border); padding: 11px 16px 11px 0; white-space: nowrap; }
+.jobs tr { position: relative; }
+.jobs tbody tr:hover { background: var(--muted); }
+.jobs .job-title { width: 100%; max-width: 0; overflow: hidden; font-weight: 500; text-overflow: ellipsis; }
+.jobs .job-title a::after { position: absolute; inset: 0; content: ""; }
+.jobs .job-detail, .jobs .job-updated { color: var(--muted-foreground); font-size: 13px; }
+.jobs .job-updated { padding-right: 0; text-align: right; }
+.work-page .ledger { margin-top: 40px; }
 .ledger dl { display: flex; flex-wrap: wrap; gap: 12px 40px; border-top: 1px solid var(--border); padding-top: 12px; }
 .ledger dt { color: var(--muted-foreground); font-size: 12px; }
 .ledger dd { font-size: 16px; font-variant-numeric: tabular-nums; }
@@ -193,28 +192,65 @@ a { text-underline-offset: 3px; }
 .automation-outcome p { margin-top: 4px; color: var(--muted-foreground); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .automation-outcome a { color: var(--primary); font-size: 13px; text-decoration: underline; }
 
-/* A ticket reads top to bottom: what it is, what it needs, what happened. */
+/* A ticket is a conversation with its agent. */
 .back-link { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 20px; color: var(--muted-foreground); font-size: 13px; }
 .back-link:hover { color: var(--foreground); }
-.ticket-header h1 { margin-bottom: 10px; overflow-wrap: anywhere; }
-.ticket-header { margin-bottom: 28px; }
-.ticket-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; color: var(--muted-foreground); font-size: 13px; }
+.ticket-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; color: var(--muted-foreground); font-size: 12px; }
 .ticket-facts a { text-decoration: underline; }
-.ticket-waiting { border-left: 2px solid var(--warning); padding-left: 16px; }
-.ticket-waiting .answer { padding: 0; }
-.run-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; min-height: 44px; font-size: 14px; }
-.run-row button { margin-left: auto; }
-.run-activity { padding-block: 8px 24px; }
-.ticket-log > li { border-top: 1px solid var(--border); padding-block: 14px; }
-.ticket-log .run-prose { margin-top: 6px; }
-.ticket-footer { margin-top: 32px; }
+.chat-page { display: flex; height: 100dvh; flex-direction: column; }
+.chat-header { display: flex; flex: none; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 10px 16px; }
+.chat-heading { min-width: 0; flex: 1; }
+.chat-heading h1 { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.chat-details { position: relative; flex: none; color: var(--muted-foreground); font-size: 12px; }
+.chat-details summary { cursor: pointer; list-style: none; border-radius: 6px; padding: 7px 10px; }
+.chat-details summary::-webkit-details-marker { display: none; }
+.chat-details summary:hover, .chat-details[open] summary { background: var(--muted); color: var(--foreground); }
+.chat-details dl { position: absolute; z-index: 10; top: calc(100% + 6px); right: 0; display: grid; width: 240px; gap: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 12px; }
+.chat-details dl > div { display: flex; justify-content: space-between; gap: 12px; }
+.chat-details dd { color: var(--foreground); font-variant-numeric: tabular-nums; }
+.chat-error { padding: 8px 16px 0; }
+.chat-thread { min-height: 0; flex: 1; }
+.chat-viewport { display: flex; height: 100%; flex-direction: column; overflow-y: auto; }
+.chat-messages, .chat-footer { width: min(100%, 768px); margin-inline: auto; padding-inline: 16px; }
+.chat-messages { display: flex; flex: 1; flex-direction: column; gap: 22px; padding-block: 28px; }
+.chat-user { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.chat-author { color: var(--muted-foreground); font-size: 12px; }
+.chat-bubble { max-width: 85%; border-radius: 18px; background: var(--muted); padding: 9px 16px; overflow-wrap: anywhere; }
+.chat-assistant { display: flex; flex-direction: column; gap: 10px; overflow-wrap: anywhere; }
+.chat-system { color: var(--muted-foreground); font-size: 13px; text-align: center; }
+.chat-assistant:empty { display: none; }
+.chat-working { color: var(--muted-foreground); font-size: 14px; animation: chat-pulse 1.8s ease-in-out infinite; }
+@keyframes chat-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .chat-working { animation: none; } }
+.chat-step-row { display: flex; width: 100%; flex-wrap: wrap; align-items: center; gap: 2px 12px; border-radius: 8px; padding: 5px 8px; margin-inline: -8px; color: var(--muted-foreground); font-size: 13px; text-align: left; }
+.chat-step-row:not(:disabled):hover { background: var(--muted); }
+.chat-step-row strong { color: var(--foreground); font-weight: 500; }
+.chat-step-chevron { transition: transform .12s; }
+.chat-step-row[aria-expanded="true"] .chat-step-chevron { transform: rotate(90deg); }
+.chat-step-row:disabled .chat-step-chevron { display: none; }
+.run-activity { padding-block: 8px 12px; }
+.chat-footer { position: sticky; bottom: 0; display: flex; flex: none; flex-direction: column; align-items: center; background: linear-gradient(to bottom, transparent, var(--background) 24px); padding-block: 8px 16px; }
+.chat-scroll { display: grid; width: 32px; height: 32px; margin-bottom: 8px; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--muted-foreground); }
+.chat-scroll:disabled { display: none; }
+.chat-composer { width: 100%; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); padding: 10px 10px 8px 14px; }
+.chat-composer:focus-within { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); }
+.chat-input { display: block; width: 100%; max-height: 240px; resize: none; border: 0; outline: none; background: transparent; color: var(--foreground); field-sizing: content; font-size: 15px; line-height: 1.5; }
+.chat-input:focus-visible { outline: none; }
+.chat-input::placeholder { color: var(--muted-foreground); }
+.chat-input:disabled { cursor: not-allowed; }
+.chat-composer-row { display: flex; align-items: center; justify-content: space-between; }
+.chat-composer-row > :only-child { margin-left: auto; }
+.chat-send { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); }
+.chat-send:disabled { background: var(--muted); color: var(--muted-foreground); cursor: not-allowed; }
 
 @media (max-width: 767px) {
   .page { padding: 24px 16px; }
   .assign-page { padding-top: 24px; }
-  .ticket-row { grid-template-columns: 16px minmax(0, 1fr) auto; }
-  .ticket-row > .ticket-meta:not(time) { display: none; }
+  .jobs .job-detail { display: none; }
+  .app-shell:has(.chat-page) { min-height: 0; }
+  .chat-page { height: calc(100dvh - 53px - 4.15rem - env(safe-area-inset-bottom)); }
+  .chat-header { padding-inline: 8px 12px; }
+  .chat-heading .ticket-facts > span:not(.ticket-state) { display: none; }
   .runner-row { grid-template-columns: 1fr auto; gap: 2px 12px; padding-block: 10px; }
   .automation { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .answer { padding-left: 0; }
 }

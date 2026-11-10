@@ -8,16 +8,12 @@ export const stateLabels = {
 };
 
 const maxFinished = 25;
+const activeOrder = { needs_you: 0, working: 1, pr_ready: 2 };
 
-// Work is ordered by who has to act next, not by when it started.
-export function groupTickets(tickets) {
-  const pick = (...states) => tickets.filter(ticket => states.includes(ticket.state));
-  return [
-    { id: "you", title: "Waiting on you", tickets: pick("needs_you") },
-    { id: "merge", title: "Waiting for a merge", tickets: pick("pr_ready") },
-    { id: "agent", title: "Waiting on an agent", tickets: pick("working") },
-    { id: "finished", title: "Finished", tickets: pick("done", "failed", "cancelled").slice(0, maxFinished) },
-  ].filter(group => group.tickets.length);
+// Work that still needs someone comes first, then the latest finished work.
+export function sortTickets(tickets) {
+  const active = tickets.filter(isActive).sort((a, b) => activeOrder[a.state] - activeOrder[b.state]);
+  return [...active, ...tickets.filter(ticket => !isActive(ticket)).slice(0, maxFinished)];
 }
 
 export function isActive(ticket) {

@@ -108,7 +108,7 @@ function App() {
     </aside>
     <main className="min-w-0 flex-1">
       {route.view === "assign" && <AssignPage repositories={session.repositories} />}
-      {route.view === "work" && <WorkPage tickets={status.tickets} ledger={status.ledger} loaded={loaded} error={error} onChanged={refresh} />}
+      {route.view === "work" && <WorkPage tickets={status.tickets} ledger={status.ledger} loaded={loaded} error={error} />}
       {route.view === "ticket" && <TaskDetail ticketID={route.ticketID} onSignedOut={signedOut} onChanged={refresh} />}
       {route.view === "automations" && <AutomationsPage automations={status.automations} loaded={loaded} error={error} onChanged={refresh} />}
       {route.view === "runners" && <RunnersPage runners={status.runners} loaded={loaded} error={error} />}

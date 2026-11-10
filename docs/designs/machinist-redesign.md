@@ -631,8 +631,10 @@ how the first token is made, and tokens are managed only there.
 ### Interface
 
 Navigation is Assign, Work, Automations and Runners. Assign has one box and a repository
-selector. Work lists tickets by what each waits on, answers questions, and shows which
-runner took each run. Automations lists automation files with next due time, last ticket
+selector. Work is one table of jobs and their status, with whatever needs someone first.
+A job opens as a chat built with assistant-ui: the log is the conversation, each run is a
+line that opens to show its activity and runner, and a question is answered from the
+composer. Automations lists automation files with next due time, last ticket
 and a run button. Runners lists each runner and when it last made contact.
 
 ## Alternatives Considered

@@ -1,16 +1,18 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Markdown from "react-markdown";
-import { ArrowLeft } from "lucide-react";
+import { AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useExternalStoreRuntime } from "@assistant-ui/react";
+import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronRight, CircleAlert, LoaderCircle, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
 import { useRunEvents, ExecutionGraph, AgentReports, PrimaryLog } from "./native-activity.jsx";
 import { formatCost, formatTokens, runDuration, ticketFigures } from "./run-metrics.js";
-import { formatTimestamp, State } from "./task-display.jsx";
+import { State } from "./task-display.jsx";
 import { isActive, issueLink, prLink, ticketSource } from "./task-presentation.js";
-import { AnswerBox } from "./work.jsx";
+import { ticketThread } from "./ticket-thread.js";
 
 const pollMillis = 2000;
-const entryLabels = { request: "Request", comment: "Comment", review: "Review", ci: "CI", report: "Report", message: "Machinist" };
+const finishedHint = "This ticket is finished";
+const composerHints = { working: "The agent is working", needs_you: "Reply to continue this ticket", pr_ready: "Comment on the pull request to ask for changes", done: finishedHint, failed: finishedHint, cancelled: finishedHint };
 
 export function RunActivity({ run }) {
   const data = useRunEvents({ id: run.id, state: run.status });
@@ -23,57 +25,113 @@ export function RunActivity({ run }) {
   </div>;
 }
 
-function RunRow({ run, ticket }) {
-  const [open, setOpen] = useState(false);
-  const name = run.kind === "reviewer" ? `Reviewer: ${run.reviewer}` : "Agent run";
-  return <li className="run">
-    <div className="run-row">
-      <strong>{name}</strong>
-      <span className="ticket-meta">{run.status === "queued" ? "Waiting for a runner" : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
-      <span className="ticket-meta">{run.harness}</span>
-      <span className="ticket-meta">{runDuration(run)}</span>
-      <span className="ticket-meta">{run.tokens === undefined ? "" : `${formatTokens(run.tokens)} tokens`}</span>
-      <span className="ticket-meta">{run.cost === undefined ? "" : formatCost(run.cost)}</span>
-      {run.status !== "queued" && <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? "Hide activity" : "Show activity"}<span className="sr-only"> for {name} on {ticket.title}</span></Button>}
-    </div>
-    {open && <RunActivity run={run} />}
-  </li>;
+function runIcon(status) {
+  if (status === "running" || status === "queued") return [LoaderCircle, "text-primary state-working"];
+  return status === "succeeded" ? [Check, "text-success"] : [CircleAlert, "text-warning"];
 }
 
-export function TicketView({ detail, onChanged, onCancel, actionError }) {
+// A run sits in the conversation the way a tool call does: one line that opens.
+function RunStep({ data: run }) {
+  const [open, setOpen] = useState(false);
+  const name = run.kind === "reviewer" ? `Reviewer: ${run.reviewer}` : "Agent run";
+  const [Icon, tone] = runIcon(run.status);
+  return <div className="chat-step">
+    <button type="button" className="chat-step-row" aria-expanded={open} disabled={run.status === "queued"} onClick={() => setOpen(value => !value)}>
+      <Icon className={`size-3.5 shrink-0 ${tone}`} aria-hidden="true" />
+      <strong>{name}</strong>
+      <span>{run.status === "queued" ? "Waiting for a runner" : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
+      <span>{runDuration(run)}</span>
+      {run.tokens !== undefined && <span>{formatTokens(run.tokens)} tokens</span>}
+      {run.cost !== undefined && <span>{formatCost(run.cost)}</span>}
+      <ChevronRight className="chat-step-chevron size-3.5" aria-hidden="true" />
+    </button>
+    {open && <RunActivity run={run} />}
+  </div>;
+}
+
+const ChatText = ({ text }) => <div className="run-prose"><Markdown skipHtml>{text}</Markdown></div>;
+const partComponents = { Text: ChatText, data: { by_name: { run: RunStep } } };
+
+function UserMessage({ author }) {
+  return <MessagePrimitive.Root className="chat-user">
+    {author && <div className="chat-author">{author}</div>}
+    <div className="chat-bubble"><MessagePrimitive.Parts components={partComponents} /></div>
+  </MessagePrimitive.Root>;
+}
+
+function ChatMessage({ message }) {
+  if (message.role === "user") return <UserMessage author={message.metadata?.custom?.author} />;
+  return <MessagePrimitive.Root className={message.role === "system" ? "chat-system" : "chat-assistant"}><MessagePrimitive.Parts components={partComponents} /></MessagePrimitive.Root>;
+}
+
+function TicketChat({ ticket, entries, runs, onChanged, onCancel, onError }) {
+  const messages = useMemo(() => ticketThread(entries, runs), [entries, runs]);
+  const working = ticket.state === "working";
+  const runtime = useExternalStoreRuntime({
+    messages,
+    convertMessage: message => message,
+    isRunning: working,
+    isDisabled: ticket.state !== "needs_you",
+    onNew: async message => {
+      const text = message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+      onError?.("");
+      try {
+        await api(`/api/v1/tickets/${encodeURIComponent(ticket.id)}/answer`, { method: "POST", body: { text } });
+        await onChanged?.();
+      } catch (failure) {
+        onError?.(failure.message);
+        runtime.thread.composer.setText(text);
+      }
+    },
+  });
+  return <AssistantRuntimeProvider runtime={runtime}>
+    <ThreadPrimitive.Root className="chat-thread">
+      <ThreadPrimitive.Viewport className="chat-viewport">
+        <div className="chat-messages">
+          <ThreadPrimitive.Messages>{({ message }) => <ChatMessage message={message} />}</ThreadPrimitive.Messages>
+          {working && <p className="chat-working" role="status">Working</p>}
+        </div>
+        <ThreadPrimitive.ViewportFooter className="chat-footer">
+          <ThreadPrimitive.ScrollToBottom className="chat-scroll" aria-label="Scroll to the latest message"><ArrowDown className="size-4" aria-hidden="true" /></ThreadPrimitive.ScrollToBottom>
+          <ComposerPrimitive.Root className="chat-composer">
+            <ComposerPrimitive.Input className="chat-input" rows={1} placeholder={composerHints[ticket.state]} aria-label="Your answer" />
+            <div className="chat-composer-row">
+              {working
+                ? <button type="button" className="chat-send" aria-label="Stop and cancel ticket" onClick={onCancel}><Square className="size-3.5" fill="currentColor" aria-hidden="true" /></button>
+                : <ComposerPrimitive.Send className="chat-send" aria-label="Send reply"><ArrowUp className="size-4" aria-hidden="true" /></ComposerPrimitive.Send>}
+            </div>
+          </ComposerPrimitive.Root>
+        </ThreadPrimitive.ViewportFooter>
+      </ThreadPrimitive.Viewport>
+    </ThreadPrimitive.Root>
+  </AssistantRuntimeProvider>;
+}
+
+export function TicketView({ detail, onChanged, onCancel, onError, actionError }) {
   const { ticket, entries, runs, figures } = detail;
   const issue = issueLink(ticket);
   const pr = prLink(ticket);
-  return <div className="page ticket-page">
-    <a className="back-link" href="#/work"><ArrowLeft className="size-3.5" aria-hidden="true" />Work</a>
-    <header className="ticket-header">
-      <h1>{ticket.title || ticket.id}</h1>
-      <div className="ticket-facts">
-        <State value={ticket.state} />
-        <span>{ticket.repo}</span>
-        {issue ? <a href={issue} target="_blank" rel="noreferrer">{ticketSource(ticket)}</a> : <span>{ticketSource(ticket)}</span>}
-        {pr && <a href={pr} target="_blank" rel="noreferrer">PR #{ticket.pr_number}</a>}
-        <span>From {ticket.created_by}</span>
+  return <div className="chat-page">
+    <header className="chat-header">
+      <a className="icon-button shrink-0" href="#/work" aria-label="Back to Work"><ArrowLeft className="size-4" aria-hidden="true" /></a>
+      <div className="chat-heading">
+        <h1>{ticket.title || ticket.id}</h1>
+        <div className="ticket-facts">
+          <State value={ticket.state} />
+          <span>{ticket.repo}</span>
+          {issue ? <a href={issue} target="_blank" rel="noreferrer">{ticketSource(ticket)}</a> : <span>{ticketSource(ticket)}</span>}
+          {pr && <a href={pr} target="_blank" rel="noreferrer">PR #{ticket.pr_number}</a>}
+          <span>From {ticket.created_by}</span>
+        </div>
       </div>
+      <details className="chat-details">
+        <summary>Details</summary>
+        <dl>{ticketFigures(figures).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+      </details>
+      {isActive(ticket) && ticket.state !== "working" && <Button variant="outline" size="sm" onClick={onCancel}>Cancel ticket</Button>}
     </header>
-    {actionError && <p className="form-error" role="alert">{actionError}</p>}
-    {ticket.state === "needs_you" && <section className="ticket-waiting" aria-label="Waiting on you"><AnswerBox ticket={ticket} onAnswered={onChanged} /></section>}
-    <section aria-label="Runs">
-      <h2>Runs</h2>
-      {runs.length ? <ul className="plain-list">{runs.map(run => <RunRow key={run.id} run={run} ticket={ticket} />)}</ul> : <p className="page-note">No run has started yet.</p>}
-    </section>
-    <section aria-label="Figures" className="ledger">
-      <h2>Figures</h2>
-      <dl>{ticketFigures(figures).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-    </section>
-    <section aria-label="Log">
-      <h2>Log</h2>
-      <ol className="ticket-log">{entries.map(entry => <li key={entry.id}>
-        <div className="ticket-meta"><strong>{entryLabels[entry.kind] || entry.kind}</strong> by {entry.author} at <time dateTime={entry.created_at}>{formatTimestamp(entry.created_at)}</time></div>
-        <div className="run-prose"><Markdown skipHtml>{entry.body}</Markdown></div>
-      </li>)}</ol>
-    </section>
-    {isActive(ticket) && <footer className="ticket-footer"><Button variant="outline" size="sm" onClick={onCancel}>Cancel ticket</Button></footer>}
+    {actionError && <p className="form-error chat-error" role="alert">{actionError}</p>}
+    <TicketChat ticket={ticket} entries={entries} runs={runs} onChanged={onChanged} onCancel={onCancel} onError={onError} />
   </div>;
 }
 
@@ -122,5 +180,5 @@ export function TaskDetail({ ticketID, onSignedOut, onChanged }) {
     <a className="back-link" href="#/work"><ArrowLeft className="size-3.5" aria-hidden="true" />Work</a>
     {error ? <p className="form-error" role="alert">{error}</p> : <p className="page-note" role="status">Loading ticket</p>}
   </div>;
-  return <TicketView detail={detail} onChanged={changed} onCancel={cancel} actionError={actionError} />;
+  return <TicketView detail={detail} onChanged={changed} onCancel={cancel} onError={setActionError} actionError={actionError} />;
 }

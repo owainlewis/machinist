@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { ArrowUp } from "lucide-react";
 import { api } from "./api.js";
 
 const maxTitle = 100;
@@ -47,16 +47,24 @@ export function AssignPage({ repositories = [] }) {
     <p className="page-note">Connect a repository first. Add it to <code>repositories</code> in config.toml, then restart Machinist.</p>
   </div>;
 
+  function pressKey(event) {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    if (text.trim() && !pending) event.currentTarget.form.requestSubmit();
+  }
+
   return <form className="page assign-page" onSubmit={submit}>
     <h1><label htmlFor="assign-work">What needs doing?</label></h1>
-    <textarea id="assign-work" className="assign-box" autoFocus value={text} onChange={event => setText(event.target.value)} placeholder="Describe the work, or paste an issue number or link" />
-    {error && <p className="form-error" role="alert">{error}</p>}
-    <div className="assign-actions">
-      <label className="sr-only" htmlFor="assign-repository">Repository</label>
-      <select id="assign-repository" className="field-control" value={repository} onChange={event => setChoice(event.target.value)}>
-        {repositories.map(name => <option key={name} value={name}>{name}</option>)}
-      </select>
-      <Button type="submit" disabled={pending || !text.trim()}>{pending ? "Assigning" : "Assign"}</Button>
+    <div className="chat-composer">
+      <textarea id="assign-work" className="chat-input assign-input" autoFocus value={text} onChange={event => setText(event.target.value)} onKeyDown={pressKey} placeholder="Describe the work, or paste an issue number or link" />
+      <div className="chat-composer-row">
+        <label className="sr-only" htmlFor="assign-repository">Repository</label>
+        <select id="assign-repository" className="assign-repository" value={repository} onChange={event => setChoice(event.target.value)}>
+          {repositories.map(name => <option key={name} value={name}>{name}</option>)}
+        </select>
+        <button type="submit" className="chat-send" aria-label={pending ? "Assigning" : "Assign"} disabled={pending || !text.trim()}><ArrowUp className="size-4" aria-hidden="true" /></button>
+      </div>
     </div>
+    {error && <p className="form-error" role="alert">{error}</p>}
   </form>;
 }

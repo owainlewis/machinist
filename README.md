@@ -60,7 +60,7 @@ The production UI is committed, so this build does not need Node.
 | Page | What it does |
 | --- | --- |
 | Assign | One box. Write the work, or paste an issue number or link |
-| Work | Tickets grouped by who has to act next, with questions you can answer in place |
+| Work | One table of jobs and their status. Open a job to follow it and reply, like a chat |
 | Automations | Your scheduled agents, when each is next due and what it last did |
 | Runners | Each runner and when it last made contact |
 
