@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("every page has one heading in the shared page frame", async () => {
-  for (const [file, heading] of [["assign.jsx", "What needs doing?"], ["work.jsx", "Work"], ["automations.jsx", "Automations"], ["runners.jsx", "Runners"]]) {
+  for (const [file, heading] of [["home.jsx", "What needs doing?"], ["work.jsx", "Work"], ["automations.jsx", "Automations"], ["runners.jsx", "Runners"]]) {
     const source = await readFile(new URL(`./${file}`, import.meta.url), "utf8");
     assert.match(source, /className="page /, file);
     assert.ok(source.includes(heading), file);

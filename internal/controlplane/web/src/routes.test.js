@@ -3,11 +3,11 @@ import test from "node:test";
 import { routeFromHash } from "./routes.js";
 
 test("the four pages are addressable", () => {
-  for (const view of ["assign", "work", "automations", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, ticketID: "" });
+  for (const view of ["home", "work", "automations", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, ticketID: "" });
 });
 
-test("assign is the default and unknown routes return to it", () => {
-  for (const hash of ["", "#/", "#/unknown", "#/runs"]) assert.deepEqual(routeFromHash(hash), { view: "assign", ticketID: "" });
+test("home is the default and unknown routes return to it", () => {
+  for (const hash of ["", "#/", "#/unknown", "#/runs", "#/assign"]) assert.deepEqual(routeFromHash(hash), { view: "home", ticketID: "" });
 });
 
 test("a ticket has its own route", () => {
@@ -16,6 +16,6 @@ test("a ticket has its own route", () => {
 });
 
 test("incomplete or malformed ticket routes open Work", () => {
-  assert.deepEqual(routeFromHash("#/work/"), { view: "assign", ticketID: "" });
+  assert.deepEqual(routeFromHash("#/work/"), { view: "home", ticketID: "" });
   assert.deepEqual(routeFromHash("#/work/%E0%A4%A"), { view: "work", ticketID: "" });
 });

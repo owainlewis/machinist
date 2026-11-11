@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatCost, formatDurationMillis, formatTokens, ledgerFigures, runDuration, ticketFigures } from "./run-metrics.js";
+import { formatCost, formatDurationMillis, formatTokens, ledgerFigures, runDuration, stageStatus, ticketFigures } from "./run-metrics.js";
 
 test("durations read at the right scale", () => {
   assert.equal(formatDurationMillis(500), "0s");
@@ -34,4 +34,14 @@ test("the ledger is hidden until a PR has merged", () => {
   assert.deepEqual(ledgerFigures({ merged_prs: 0 }), []);
   const rows = Object.fromEntries(ledgerFigures({ merged_prs: 2, questions: 0.5, feedback_rounds: 1, human_commits: 2.25, tokens: 1000, cost: 3 }));
   assert.deepEqual(rows, { Questions: "0.5", "Feedback rounds": "1", "Human commits": "2.3", Tokens: "1,000", Cost: "$3.00" });
+});
+
+test("a stage status says why the run stopped there", () => {
+  assert.deepEqual(stageStatus({ state: "succeeded", outcome: "pr_ready" }), { label: "Passed", tone: "good" });
+  assert.deepEqual(stageStatus({ state: "succeeded" }), { label: "Passed", tone: "good" });
+  assert.deepEqual(stageStatus({ state: "succeeded", outcome: "failed" }), { label: "Reported failed", tone: "bad" });
+  assert.deepEqual(stageStatus({ state: "succeeded", outcome: "needs_input" }), { label: "Asked a question", tone: "bad" });
+  assert.deepEqual(stageStatus({ state: "timed_out" }), { label: "Timed out", tone: "bad" });
+  assert.deepEqual(stageStatus({ state: "failed" }), { label: "Failed", tone: "bad" });
+  assert.deepEqual(stageStatus({ state: "skipped" }), { label: "Skipped", tone: "muted" });
 });

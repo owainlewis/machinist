@@ -71,14 +71,19 @@ CREATE TABLE IF NOT EXISTS ticket_entries (
 CREATE INDEX IF NOT EXISTS ticket_entries_ticket ON ticket_entries(ticket_id, id);
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, kind TEXT NOT NULL, reviewer TEXT NOT NULL DEFAULT '', harness TEXT NOT NULL, runner TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL, lease_expires_at TEXT, tokens INTEGER, cost REAL, report TEXT, started_at TEXT, ended_at TEXT);
+  status TEXT NOT NULL, lease_expires_at TEXT, tokens INTEGER, cost REAL, report TEXT, queued_at TEXT, started_at TEXT, ended_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_agent_run ON runs(ticket_id) WHERE kind='agent' AND status IN ('queued','running');
 CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
 CREATE TABLE IF NOT EXISTS tokens (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_token_per_name ON tokens(name) WHERE revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS runners (
+  name TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT '', harnesses TEXT NOT NULL DEFAULT '', slots INTEGER NOT NULL DEFAULT 1, last_contact TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS source_cursors (source TEXT NOT NULL, repo TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(source, repo));
-CREATE TABLE IF NOT EXISTS run_activity_events (run TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(run, sequence));`
+CREATE TABLE IF NOT EXISTS run_activity_events (run TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(run, sequence));
+CREATE TABLE IF NOT EXISTS run_stages (
+  run TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '',
+  tokens INTEGER, cost REAL, duration_millis INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', PRIMARY KEY(run, position));`
 
 type Store struct {
 	db  *sql.DB
@@ -122,19 +127,21 @@ type Entry struct {
 	PostedAt      *time.Time `json:"posted_at,omitempty"`
 }
 
+// Run is one run of a ticket. Stages is filled only by Runs.
 type Run struct {
-	ID        string           `json:"id"`
-	TicketID  string           `json:"ticket_id"`
-	Kind      string           `json:"kind"`
-	Reviewer  string           `json:"reviewer,omitempty"`
-	Harness   string           `json:"harness"`
-	Runner    string           `json:"runner,omitempty"`
-	Status    string           `json:"status"`
-	Tokens    *int64           `json:"tokens,omitempty"`
-	Cost      *float64         `json:"cost,omitempty"`
-	Report    *protocol.Report `json:"report,omitempty"`
-	StartedAt *time.Time       `json:"started_at,omitempty"`
-	EndedAt   *time.Time       `json:"ended_at,omitempty"`
+	ID        string                 `json:"id"`
+	TicketID  string                 `json:"ticket_id"`
+	Kind      string                 `json:"kind"`
+	Reviewer  string                 `json:"reviewer,omitempty"`
+	Harness   string                 `json:"harness"`
+	Runner    string                 `json:"runner,omitempty"`
+	Status    string                 `json:"status"`
+	Tokens    *int64                 `json:"tokens,omitempty"`
+	Cost      *float64               `json:"cost,omitempty"`
+	Report    *protocol.Report       `json:"report,omitempty"`
+	Stages    []protocol.StageResult `json:"stages,omitempty"`
+	StartedAt *time.Time             `json:"started_at,omitempty"`
+	EndedAt   *time.Time             `json:"ended_at,omitempty"`
 }
 
 // NewTicket is one piece of intake. SourceKey makes it idempotent.
@@ -180,6 +187,7 @@ type RunCompletion struct {
 	Report *protocol.Report
 	Tokens *int64
 	Cost   *float64
+	Stages []protocol.StageResult
 }
 
 // Claim is a run given to a runner, with the ticket and log it works from.
@@ -337,7 +345,7 @@ func loadRun(ctx context.Context, q querier, id string) (Run, error) {
 
 func (s *Store) Run(ctx context.Context, id string) (Run, error) { return loadRun(ctx, s.db, id) }
 
-// Runs lists a ticket's runs, oldest first.
+// Runs lists a ticket's runs with their stages, oldest first.
 func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+runColumns+` FROM runs WHERE ticket_id=? ORDER BY rowid`, ticketID)
 	if err != nil {
@@ -352,7 +360,36 @@ func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
 		}
 		runs = append(runs, run)
 	}
-	return runs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	stages, err := s.db.QueryContext(ctx, `SELECT run,name,kind,state,outcome,tokens,cost,duration_millis,error FROM run_stages
+	  WHERE run IN (SELECT id FROM runs WHERE ticket_id=?) ORDER BY run,position`, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer stages.Close()
+	byRun := map[string][]protocol.StageResult{}
+	for stages.Next() {
+		var run string
+		var stage protocol.StageResult
+		var tokens sql.NullInt64
+		var cost sql.NullFloat64
+		if err := stages.Scan(&run, &stage.Name, &stage.Kind, &stage.State, &stage.Outcome, &tokens, &cost, &stage.DurationMillis, &stage.Error); err != nil {
+			return nil, err
+		}
+		if tokens.Valid {
+			stage.Tokens = &tokens.Int64
+		}
+		if cost.Valid {
+			stage.Cost = &cost.Float64
+		}
+		byRun[run] = append(byRun[run], stage)
+	}
+	for index := range runs {
+		runs[index].Stages = byRun[runs[index].ID]
+	}
+	return runs, stages.Err()
 }
 
 func loadEntries(ctx context.Context, q querier, ticketID string) ([]Entry, error) {
@@ -654,13 +691,13 @@ func (s *Store) PRClosed(ctx context.Context, ticketID, key, next, message strin
 	})
 }
 
-func queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness string) (string, error) {
+func queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness string, now time.Time) (string, error) {
 	id, err := randomHex(12)
 	if err != nil {
 		return "", err
 	}
 	id = "run_" + id
-	_, err = q.ExecContext(ctx, `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status) VALUES(?,?,?,?,?,?)`, id, ticketID, kind, reviewer, harness, RunQueued)
+	_, err = q.ExecContext(ctx, `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status,queued_at) VALUES(?,?,?,?,?,?,?)`, id, ticketID, kind, reviewer, harness, RunQueued, stamp(now))
 	return id, err
 }
 
@@ -687,7 +724,7 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 		}
 	}
 	for _, reviewer := range transition.FirstPR.Reviewers {
-		if _, err := queueRun(ctx, q, ticket.ID, RunKindReviewer, reviewer, transition.FirstPR.Harness); err != nil {
+		if _, err := queueRun(ctx, q, ticket.ID, RunKindReviewer, reviewer, transition.FirstPR.Harness, now); err != nil {
 			return err
 		}
 	}
@@ -768,7 +805,7 @@ func (s *Store) LastReport(ctx context.Context, ticketID string) (string, error)
 func (s *Store) QueueRun(ctx context.Context, ticketID, harness string) (Run, error) {
 	var run Run
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		id, err := queueRun(ctx, tx, ticketID, RunKindAgent, "", harness)
+		id, err := queueRun(ctx, tx, ticketID, RunKindAgent, "", harness, s.now())
 		if err != nil {
 			return err
 		}
@@ -889,6 +926,12 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, maxTu
 		now := s.now()
 		if _, err = tx.ExecContext(ctx, `UPDATE runs SET status=?,tokens=?,cost=?,report=?,ended_at=? WHERE id=?`, status, completion.Tokens, completion.Cost, report, stamp(now), run.ID); err != nil {
 			return err
+		}
+		for position, stage := range completion.Stages {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO run_stages(run,position,name,kind,state,outcome,tokens,cost,duration_millis,error) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+				run.ID, position, stage.Name, stage.Kind, stage.State, stage.Outcome, stage.Tokens, stage.Cost, stage.DurationMillis, stage.Error); err != nil {
+				return err
+			}
 		}
 		if !isTurn {
 			return nil
@@ -1133,7 +1176,8 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
 	return tokens, rows.Err()
 }
 
-// RevokeToken ends an active token. Its sign-ins end with it.
+// RevokeToken ends an active token. Its sign-ins end with it, and a runner
+// that used it leaves the fleet.
 func (s *Store) RevokeToken(ctx context.Context, name string) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE tokens SET revoked_at=? WHERE name=? AND revoked_at IS NULL`, stamp(s.now()), name)
 	if err != nil {
@@ -1146,7 +1190,8 @@ func (s *Store) RevokeToken(ctx context.Context, name string) error {
 	if revoked == 0 {
 		return ErrNotFound
 	}
-	return nil
+	_, err = s.db.ExecContext(ctx, `DELETE FROM runners WHERE name=?`, name)
+	return err
 }
 
 // TokenName returns the name of a valid token and records its use.

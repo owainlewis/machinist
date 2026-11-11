@@ -55,6 +55,14 @@ func LoadRunner(path string) (Runner, error) {
 // Token reads the bearer token this runner presents to the control plane.
 func (r Runner) Token() (string, error) { return readToken(r.TokenFile) }
 
+// Kind says where this runner's runs happen.
+func (r Runner) Kind() string {
+	if r.Kubernetes != nil {
+		return "kubernetes"
+	}
+	return "local"
+}
+
 // Harnesses lists the harnesses this runner has a credential for.
 func (r Runner) Harnesses() []string {
 	names := make([]string, 0, len(r.Credentials))

@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/githubauth"
+	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 const agentFileLimit = 1 << 20
@@ -88,30 +90,132 @@ func PrepareWorkspace(ctx context.Context, options WorkspaceOptions) (Workspace,
 	return Workspace{Repository: canonical, Environment: environment}, nil
 }
 
-// RunInWorkspace launches the fixed harness command in a prepared workspace.
+// RunInWorkspace runs the stages of a request in order in a prepared workspace.
+// Each stage is a new process, and only the workspace carries over. The run
+// ends at the first stage that fails, or at an agent stage that reports failed
+// or needs_input. The run timeout covers all stages together.
 func RunInWorkspace(ctx context.Context, request RunRequest, workspace Workspace, dataDirectory string) RunResult {
-	command, err := HarnessCommand(request.Harness, request.Model, time.Duration(request.TimeoutMillis)*time.Millisecond)
+	stages := request.Stages
+	if len(stages) == 0 {
+		// PrepareWorkspace already wrote the agent files of the request.
+		stages = []Stage{{Name: request.Harness, Kind: StageAgent, Prompt: request.Prompt, Model: request.Model}}
+	}
+	if !ValidRunID(request.RunID) {
+		return RunResult{State: StateFailed, Error: fmt.Sprintf("invalid run ID %q", request.RunID)}
+	}
+	runDirectory := filepath.Join(dataDirectory, "runs", request.RunID)
+	if err := createDurableDirectory(runDirectory); err != nil {
+		return RunResult{State: StateFailed, Error: fmt.Sprintf("create run directory: %v", err)}
+	}
+	// Every stage appends to one event log, so the sequence numbers stay
+	// continuous for the whole run.
+	log, err := newEventLog(filepath.Join(runDirectory, "events.jsonl"))
 	if err != nil {
 		return RunResult{State: StateFailed, Error: err.Error()}
 	}
-	result, err := Execute(ctx, Options{
+
+	output := RunResult{State: StateSucceeded}
+	results := make([]protocol.StageResult, len(stages))
+	for index, stage := range stages {
+		results[index] = protocol.StageResult{Name: stage.Name, Kind: stage.Kind, State: protocol.StageSkipped}
+	}
+	deadline := time.Now().Add(time.Duration(request.TimeoutMillis) * time.Millisecond)
+	for index, stage := range stages {
+		result, err := runStage(ctx, request, stage, workspace, dataDirectory, log, time.Until(deadline))
+		if result.State == "" {
+			result.State = StateFailed
+		}
+		entry := &results[index]
+		entry.State = string(result.State)
+		entry.Tokens = result.TokenUsage
+		entry.Cost = result.Cost
+		entry.DurationMillis = result.DurationMillis
+		if result.TokenUsage != nil {
+			if output.Tokens == nil {
+				output.Tokens = new(int64)
+			}
+			*output.Tokens += *result.TokenUsage
+		}
+		if result.Cost != nil {
+			if output.Cost == nil {
+				output.Cost = new(float64)
+			}
+			*output.Cost += *result.Cost
+		}
+		if result.CredentialSource != "" {
+			output.CredentialSource = result.CredentialSource
+		}
+		if result.State != StateSucceeded {
+			output.State = result.State
+			output.Report = nil
+			if err != nil {
+				entry.Error = err.Error()
+				output.Error = entry.Error
+				if len(stages) > 1 {
+					output.Error = fmt.Sprintf("stage %s: %s", stage.Name, entry.Error)
+				}
+			}
+			break
+		}
+		report := result.Report
+		if report == nil {
+			continue
+		}
+		entry.Outcome = report.Outcome
+		// A later stage that changed nothing does not hide a pull request an
+		// earlier stage made ready.
+		if output.Report == nil || report.Outcome != protocol.OutcomeNoChange || output.Report.Outcome == protocol.OutcomeNoChange {
+			output.Report = report
+		}
+		if report.Outcome == protocol.OutcomeFailed || report.Outcome == protocol.OutcomeNeedsInput {
+			break
+		}
+	}
+	if err := log.close(); err != nil && output.Error == "" {
+		output.Error = err.Error()
+	}
+	if len(request.Stages) > 0 {
+		output.Stages = results
+	}
+	return output
+}
+
+// runStage starts one stage and waits for it. An agent stage is the harness
+// command. A script stage is sh, with no prompt and no report.
+func runStage(ctx context.Context, request RunRequest, stage Stage, workspace Workspace, dataDirectory string, log *eventLog, remaining time.Duration) (Result, error) {
+	if remaining <= 0 {
+		return Result{State: StateTimedOut}, errors.New("the run timed out before this stage started")
+	}
+	var command config.ResolvedCommand
+	switch stage.Kind {
+	case StageAgent:
+		if err := writeAgentFiles(workspace.Repository, stage.AgentFiles); err != nil {
+			return Result{}, err
+		}
+		var err error
+		command, err = HarnessCommand(request.Harness, stage.Model, remaining)
+		if err != nil {
+			return Result{}, err
+		}
+	case StageScript:
+		command = config.ResolvedCommand{Name: stage.Name, Executor: "sh", Command: []string{"sh", "-c", stage.Script}, Timeout: remaining}
+	default:
+		return Result{}, fmt.Errorf("unknown stage kind %q", stage.Kind)
+	}
+	if err := log.append("stage.started", "", fmt.Sprintf("name=%s kind=%s", stage.Name, stage.Kind)); err != nil {
+		return Result{}, err
+	}
+	return Execute(ctx, Options{
 		Environment:   workspace.Environment,
-		Prompt:        request.Prompt,
+		Prompt:        stage.Prompt,
 		RunID:         request.RunID,
 		Command:       command,
 		Repository:    workspace.Repository,
 		DataDirectory: dataDirectory,
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
+		log:           log,
 	})
-	output := RunResult{State: result.State, Report: result.Report, Tokens: result.TokenUsage, Cost: result.Cost, CredentialSource: result.CredentialSource}
-	if err != nil {
-		output.Error = err.Error()
-	}
-	if output.State == "" {
-		output.State = StateFailed
-	}
-	return output
 }
 
 func runGit(ctx context.Context, directory string, environment []string, args ...string) error {

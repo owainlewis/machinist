@@ -24,7 +24,7 @@ type fakeControlPlane struct {
 	mu          sync.Mutex
 	queue       []string
 	polls       atomic.Int64
-	harnesses   []string
+	poll        protocol.PollRequest
 	token       string
 	heartbeat   func() (int, protocol.HeartbeatResponse)
 	completeErr atomic.Int64
@@ -47,7 +47,7 @@ func (f *fakeControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&request)
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		f.harnesses = request.Harnesses
+		f.poll = request
 		if len(f.queue) == 0 {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -140,10 +140,10 @@ func TestDaemonRunsAndReportsResult(t *testing.T) {
 		t.Fatalf("completion = %+v", completion)
 	}
 	plane.mu.Lock()
-	token, harnesses := plane.token, strings.Join(plane.harnesses, ",")
+	token, poll := plane.token, plane.poll
 	plane.mu.Unlock()
-	if token != "Bearer runner-token" || harnesses != "claude,codex" {
-		t.Fatalf("token = %q, harnesses = %q", token, harnesses)
+	if token != "Bearer runner-token" || strings.Join(poll.Harnesses, ",") != "claude,codex" || poll.Kind != "local" || poll.Slots != 1 {
+		t.Fatalf("token = %q, poll = %+v", token, poll)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {

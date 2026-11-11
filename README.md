@@ -59,10 +59,10 @@ The production UI is committed, so this build does not need Node.
 
 | Page | What it does |
 | --- | --- |
-| Assign | One box. Write the work, or paste an issue number or link |
+| Home | One box to assign work: write it, or paste an issue number or link. Under it, the questions waiting on you, the pull requests ready for review, and what is running now |
 | Work | One table of jobs and their status. Open a job to follow it and reply, like a chat |
 | Automations | Your scheduled agents, when each is next due and what it last did |
-| Runners | Each runner and when it last made contact |
+| Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
 
 A mention counts only from someone with write access. Machinist never merges a pull
 request unless you add an automation that uses an agent allowed to. See

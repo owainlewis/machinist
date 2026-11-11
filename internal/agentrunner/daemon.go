@@ -60,7 +60,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 func (d *Daemon) serveSlot(ctx context.Context) {
 	for ctx.Err() == nil {
 		var request runner.RunRequest
-		err := d.client.Post(ctx, "/api/v1/runners/poll", protocol.PollRequest{Harnesses: d.config.Harnesses()}, &request)
+		err := d.client.Post(ctx, "/api/v1/runners/poll", protocol.PollRequest{Harnesses: d.config.Harnesses(), Kind: d.config.Kind(), Slots: d.config.Slots}, &request)
 		if err != nil && ctx.Err() == nil {
 			fmt.Fprintf(d.log, "machinist: runner poll: %v\n", err)
 		}
@@ -133,7 +133,7 @@ func (d *Daemon) report(ctx context.Context, runID string, result runner.RunResu
 	if err := d.retry(ctx, func(call context.Context) error { return d.flushRunEvents(call, runID) }); err != nil {
 		fmt.Fprintf(d.log, "machinist: send events for run %s: %v\n", runID, err)
 	}
-	completion := protocol.Completion{State: string(result.State), Report: result.Report, Tokens: result.Tokens, Cost: result.Cost, Error: result.Error}
+	completion := protocol.Completion{State: string(result.State), Report: result.Report, Tokens: result.Tokens, Cost: result.Cost, Error: result.Error, Stages: result.Stages}
 	if err := d.retry(ctx, func(call context.Context) error {
 		return d.client.Post(call, "/api/v1/runs/"+runID+"/complete", completion, nil)
 	}); err != nil {

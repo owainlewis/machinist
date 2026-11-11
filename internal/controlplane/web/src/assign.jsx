@@ -15,7 +15,8 @@ export function assignRequest(text, repository, requestID) {
   return { request_id: requestID, repo: repository, title, body: value };
 }
 
-export function AssignPage({ repositories = [] }) {
+// AssignBox is the composer at the top of Home.
+export function AssignBox({ repositories = [] }) {
   const [text, setText] = useState("");
   const [choice, setChoice] = useState("");
   const [error, setError] = useState("");
@@ -42,10 +43,7 @@ export function AssignPage({ repositories = [] }) {
     }
   }
 
-  if (!repositories.length) return <div className="page assign-page">
-    <h1>Assign work</h1>
-    <p className="page-note">Connect a repository first. Add it to <code>repositories</code> in config.toml, then restart Machinist.</p>
-  </div>;
+  if (!repositories.length) return <p className="page-note">Connect a repository first. Add it to <code>repositories</code> in config.toml, then restart Machinist.</p>;
 
   function pressKey(event) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
@@ -53,8 +51,7 @@ export function AssignPage({ repositories = [] }) {
     if (text.trim() && !pending) event.currentTarget.form.requestSubmit();
   }
 
-  return <form className="page assign-page" onSubmit={submit}>
-    <h1><label htmlFor="assign-work">What needs doing?</label></h1>
+  return <form className="assign-box" onSubmit={submit}>
     <div className="chat-composer">
       <textarea id="assign-work" className="chat-input assign-input" autoFocus value={text} onChange={event => setText(event.target.value)} onKeyDown={pressKey} placeholder="Describe the work, or paste an issue number or link" />
       <div className="chat-composer-row">

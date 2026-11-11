@@ -157,9 +157,23 @@ a { text-underline-offset: 3px; }
 .sign-in .brand-wordmark { margin-bottom: 24px; font-size: 20px; }
 .sign-in button { margin-top: 12px; }
 
-/* Assign opens like a new chat. */
-.assign-page { padding-top: 22vh; }
-.assign-page h1 { margin-bottom: 20px; font-size: 30px; letter-spacing: -.03em; text-align: center; }
+/* Home is the assign box with the work that needs someone under it. With nothing to show it opens like a new chat. */
+.home-page[data-quiet] { padding-top: 22vh; }
+.home-page h1 { margin-bottom: 20px; font-size: 30px; letter-spacing: -.03em; text-align: center; }
+.home-page .assign-box { margin-bottom: 40px; }
+.queue-row { display: flex; align-items: center; gap: 16px; min-height: 44px; font-size: 14px; }
+.queue-row > a:first-child { min-width: 0; flex: 1; overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.queue-row a:hover { text-decoration: underline; }
+.queue-row .ticket-meta, .queue-row .ticket-state, .pr-link { flex: none; }
+.pr-link { color: var(--primary); font-size: 13px; }
+.needs-you { padding-bottom: 14px; }
+.question { max-width: 72ch; display: -webkit-box; overflow: hidden; color: var(--muted-foreground); font-size: 13px; line-height: 1.6; white-space: pre-line; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
+.reply { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.reply .field-control { min-height: 2.25rem; flex: 1; padding-block: 0.375rem; }
+.reply .form-error { flex-basis: 100%; margin-block: 0; }
+.queue-note { margin-bottom: 8px; font-size: 13px; }
+.page-warning { max-width: 62ch; margin-bottom: 8px; color: var(--warning); font-size: 13px; line-height: 1.6; }
+.page-warning a { text-decoration: underline; }
 .assign-input { min-height: 64px; }
 .assign-repository { max-width: 70%; border-radius: 8px; background: transparent; padding: 6px 4px; color: var(--muted-foreground); font-size: 13px; }
 
@@ -185,7 +199,12 @@ a { text-underline-offset: 3px; }
 
 /* Rows on the other pages use the same hairline as Work. */
 .plain-list > li { border-top: 1px solid var(--border); }
-.runner-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto auto; gap: 16px; align-items: center; min-height: 44px; font-size: 14px; }
+.runner-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto auto auto; gap: 16px; align-items: center; min-height: 44px; font-size: 14px; }
+.runner-name { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+.runner-jobs { margin: 0 0 8px 126px; padding: 0; list-style: none; }
+.runner-jobs .queue-row { min-height: 32px; font-size: 13px; }
+.runner-jobs .queue-row > a:first-child { font-weight: 400; }
+.fleet-summary { max-width: none; margin-bottom: 16px; }
 .runner-online { color: var(--success); font-size: 13px; }
 .runner-offline { color: var(--warning); font-size: 13px; }
 .automation { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 24px; align-items: start; padding-block: 16px; font-size: 14px; }
@@ -228,7 +247,12 @@ a { text-underline-offset: 3px; }
 .chat-step-chevron { transition: transform .12s; }
 .chat-step-row[aria-expanded="true"] .chat-step-chevron { transform: rotate(90deg); }
 .chat-step-row:disabled .chat-step-chevron { display: none; }
+.run-stages { display: flex; flex-direction: column; margin: 2px 0 6px -2px; border-left: 1px solid var(--border); padding-left: 14px; color: var(--muted-foreground); font-size: 13px; }
+.run-stage { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding-block: 3px; }
+.run-stage strong { color: var(--foreground); font-weight: 500; }
+.run-stage-error { flex-basis: 100%; color: var(--warning); overflow-wrap: anywhere; }
 .run-activity { padding-block: 8px 12px; }
+.run-script-output { max-height: 320px; overflow: auto; margin-bottom: 24px; padding: 12px 14px; background: var(--muted); border-radius: 8px; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-footer { position: sticky; bottom: 0; display: flex; flex: none; flex-direction: column; align-items: center; background: linear-gradient(to bottom, transparent, var(--background) 24px); padding-block: 8px 16px; }
 .chat-scroll { display: grid; width: 32px; height: 32px; margin-bottom: 8px; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--muted-foreground); }
 .chat-scroll:disabled { display: none; }
@@ -245,7 +269,10 @@ a { text-underline-offset: 3px; }
 
 @media (max-width: 767px) {
   .page { padding: 24px 16px; }
-  .assign-page { padding-top: 24px; }
+  .home-page[data-quiet] { padding-top: 24px; }
+  .queue-row { flex-wrap: wrap; gap: 2px 12px; padding-block: 10px; }
+  .queue-row > a:first-child { flex-basis: 100%; }
+  .runner-jobs { margin-left: 0; }
   .jobs .job-detail { display: none; }
   .app-shell:has(.chat-page) { min-height: 0; }
   .chat-page { height: calc(100dvh - 53px - 4.15rem - env(safe-area-inset-bottom)); }

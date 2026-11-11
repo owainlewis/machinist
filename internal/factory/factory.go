@@ -1,4 +1,4 @@
-// Package factory loads a team's agents, reviewers and automations from files.
+// Package factory loads a team's agents, jobs, reviewers and automations from files.
 package factory
 
 import (
@@ -28,6 +28,21 @@ type Agent struct {
 	Files    []runner.AgentFile
 }
 
+// Stage is one step of a job: an agent of the factory, or a shell script.
+type Stage struct {
+	Name   string `toml:"name"`
+	Agent  string `toml:"agent"`
+	Script string `toml:"script"`
+}
+
+// Job is a list of stages that run in order in one workspace. Every agent
+// stage of a job uses Harness.
+type Job struct {
+	Name    string
+	Harness string
+	Stages  []Stage
+}
+
 type Reviewer struct {
 	Name   string
 	Prompt string
@@ -43,13 +58,14 @@ type Automation struct {
 
 type Factory struct {
 	Agents      map[string]Agent
+	Jobs        map[string]Job
 	Reviewers   []Reviewer
 	Automations []Automation
 }
 
 // Load reads and validates a factory directory.
 func Load(directory string) (*Factory, error) {
-	factory := &Factory{Agents: map[string]Agent{}}
+	factory := &Factory{Agents: map[string]Agent{}, Jobs: map[string]Job{}}
 	agents, err := subdirectories(filepath.Join(directory, "agents"))
 	if err != nil {
 		return nil, fmt.Errorf("read agents: %w", err)
@@ -63,6 +79,16 @@ func Load(directory string) (*Factory, error) {
 	}
 	if len(factory.Agents) == 0 {
 		return nil, fmt.Errorf("factory %s has no agents", directory)
+	}
+	if err := eachFile(filepath.Join(directory, "jobs"), "*.toml", func(name, body string) error {
+		job, err := factory.parseJob(name, body)
+		if err != nil {
+			return err
+		}
+		factory.Jobs[name] = job
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("job: %w", err)
 	}
 	if err := eachFile(filepath.Join(directory, "reviewers"), "*.md", func(name, body string) error {
 		if strings.TrimSpace(body) == "" {
@@ -86,13 +112,25 @@ func Load(directory string) (*Factory, error) {
 	return factory, nil
 }
 
+// Job finds what a ticket runs by name. An agent is also a job with one stage.
+func (f *Factory) Job(name string) (Job, bool) {
+	if job, ok := f.Jobs[name]; ok {
+		return job, true
+	}
+	agent, ok := f.Agents[name]
+	if !ok {
+		return Job{}, false
+	}
+	return Job{Name: name, Harness: agent.Harness, Stages: []Stage{{Name: name, Agent: name}}}, true
+}
+
 // Validate checks what depends on the control plane's own configuration.
 func (f *Factory) Validate(defaultAgent string, repositories []string) error {
-	if _, ok := f.Agents[defaultAgent]; !ok {
+	if _, ok := f.Job(defaultAgent); !ok {
 		return fmt.Errorf("default_agent %q is not in the factory", defaultAgent)
 	}
 	for _, automation := range f.Automations {
-		if _, ok := f.Agents[automation.Agent]; !ok {
+		if _, ok := f.Job(automation.Agent); !ok {
 			return fmt.Errorf("automation %s: agent %q is not in the factory", automation.Name, automation.Agent)
 		}
 		if !slices.Contains(repositories, automation.Repo) {
@@ -193,6 +231,49 @@ func loadAgent(directory, name string) (Agent, error) {
 		}
 	}
 	return agent, nil
+}
+
+// parseJob reads a job file. Its agent stages must name agents of the factory
+// that all use one harness, because a run has one harness and one credential.
+func (f *Factory) parseJob(name, body string) (Job, error) {
+	if _, ok := f.Agents[name]; ok {
+		return Job{}, errors.New("an agent already has this name")
+	}
+	var settings struct {
+		Stages []Stage `toml:"stages"`
+	}
+	if err := config.DecodeStrict(name, []byte(body), &settings); err != nil {
+		return Job{}, err
+	}
+	job := Job{Name: name, Stages: settings.Stages}
+	names := map[string]bool{}
+	for index, stage := range job.Stages {
+		if !validName.MatchString(stage.Name) {
+			return Job{}, fmt.Errorf("stage %d: invalid name %q", index+1, stage.Name)
+		}
+		if names[stage.Name] {
+			return Job{}, fmt.Errorf("stage %s is listed twice", stage.Name)
+		}
+		names[stage.Name] = true
+		if (stage.Agent == "") == (strings.TrimSpace(stage.Script) == "") {
+			return Job{}, fmt.Errorf("stage %s: set agent or script, and not both", stage.Name)
+		}
+		if stage.Agent == "" {
+			continue
+		}
+		agent, ok := f.Agents[stage.Agent]
+		if !ok {
+			return Job{}, fmt.Errorf("stage %s: agent %q is not in the factory", stage.Name, stage.Agent)
+		}
+		if job.Harness != "" && agent.Harness != job.Harness {
+			return Job{}, fmt.Errorf("stage %s: agent %q uses %s, but an earlier stage uses %s", stage.Name, stage.Agent, agent.Harness, job.Harness)
+		}
+		job.Harness = agent.Harness
+	}
+	if job.Harness == "" {
+		return Job{}, errors.New("a job needs at least one agent stage")
+	}
+	return job, nil
 }
 
 const frontMatterFence = "+++\n"

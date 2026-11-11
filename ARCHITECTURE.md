@@ -72,6 +72,11 @@ the control plane: poll, heartbeat, events and complete. A run has a 10-minute l
 in the database and renewed by heartbeats. So runs outlive a control plane restart, and a
 lost runner's ticket continues on any other runner once its lease expires.
 
+Each poll also says what the runner is: local or Kubernetes, its harnesses and its slots.
+The control plane stores that with the time of last contact, and heartbeats keep the time
+current while every slot is busy. The Runners page reads it with the running runs and the
+queue, so it is the same after a control plane restart.
+
 | Runner | Where the agent runs | Its limits |
 | --- | --- | --- |
 | Local | A process with a private home and an allowlisted environment | The OS user and the GitHub login |

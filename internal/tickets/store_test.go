@@ -125,7 +125,7 @@ func TestOneActiveAgentRunPerTicket(t *testing.T) {
 	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); err == nil {
 		t.Fatal("second active agent run accepted")
 	}
-	if _, err := queueRun(t.Context(), store.db, ticket.ID, RunKindReviewer, "review", "claude"); err != nil {
+	if _, err := queueRun(t.Context(), store.db, ticket.ID, RunKindReviewer, "review", "claude", time.Now()); err != nil {
 		t.Fatalf("reviewer run blocked: %v", err)
 	}
 }
@@ -180,6 +180,35 @@ func TestCompleteRunAppliesTransitionAndStoresResult(t *testing.T) {
 	}
 	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, 5, completeTo(StateDone)); !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("second completion: %v", err)
+	}
+}
+
+func TestCompleteRunStoresStagesInOrder(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:1")
+	claim := claimRun(t, store, ticket)
+	tokens, cost := int64(12), 0.5
+	stages := []protocol.StageResult{
+		{Name: "build", Kind: "agent", State: "succeeded", Outcome: protocol.OutcomePRReady, Tokens: &tokens, Cost: &cost, DurationMillis: 1500},
+		{Name: "test", Kind: "script", State: "failed", DurationMillis: 20, Error: "command exited with status 1"},
+		{Name: "review", Kind: "agent", State: protocol.StageSkipped},
+	}
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed, Stages: stages}, 5, completeTo(StateNeedsYou)); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := store.Runs(t.Context(), ticket.ID)
+	if err != nil || len(runs) != 1 || len(runs[0].Stages) != 3 {
+		t.Fatalf("runs = %+v, err = %v", runs, err)
+	}
+	build, test, review := runs[0].Stages[0], runs[0].Stages[1], runs[0].Stages[2]
+	if build.Name != "build" || build.Outcome != protocol.OutcomePRReady || *build.Tokens != 12 || *build.Cost != 0.5 || build.DurationMillis != 1500 {
+		t.Fatalf("build = %+v", build)
+	}
+	if test.Kind != "script" || test.State != "failed" || test.Tokens != nil || test.Cost != nil || test.Error != "command exited with status 1" {
+		t.Fatalf("test = %+v", test)
+	}
+	if review.State != protocol.StageSkipped {
+		t.Fatalf("review = %+v", review)
 	}
 }
 

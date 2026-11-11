@@ -47,6 +47,10 @@ type Options struct {
 	DataDirectory string
 	Stdout        io.Writer
 	Stderr        io.Writer
+
+	// log is the open event log of a run with stages. Execute appends to it
+	// and leaves it open, so every stage writes to one file.
+	log *eventLog
 }
 
 type Result struct {
@@ -125,15 +129,18 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		return Result{}, &RuntimeError{Cause: fmt.Errorf("create run directory: %w", err)}
 	}
 	eventsPath := filepath.Join(runDirectory, "events.jsonl")
-	log, err := newEventLog(eventsPath)
-	if err != nil {
-		return Result{}, &RuntimeError{Cause: err}
-	}
-	defer func() {
-		if err := log.close(); err != nil {
-			returnErr = addRuntimeError(returnErr, err)
+	log := options.log
+	if log == nil {
+		log, err = newEventLog(eventsPath)
+		if err != nil {
+			return Result{}, &RuntimeError{Cause: err}
 		}
-	}()
+		defer func() {
+			if err := log.close(); err != nil {
+				returnErr = addRuntimeError(returnErr, err)
+			}
+		}()
+	}
 
 	startedAt := time.Now().UTC()
 	result = Result{

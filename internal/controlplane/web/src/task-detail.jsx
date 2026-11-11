@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Markdown from "react-markdown";
 import { AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useExternalStoreRuntime } from "@assistant-ui/react";
-import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronRight, CircleAlert, LoaderCircle, Square } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronRight, CircleAlert, LoaderCircle, Minus, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
-import { useRunEvents, ExecutionGraph, AgentReports, PrimaryLog } from "./native-activity.jsx";
-import { formatCost, formatTokens, runDuration, ticketFigures } from "./run-metrics.js";
+import { useRunEvents, ExecutionGraph, AgentReports, PrimaryLog, ScriptOutput } from "./native-activity.jsx";
+import { formatCost, formatDurationMillis, formatTokens, runDuration, stageStatus, ticketFigures } from "./run-metrics.js";
 import { State } from "./task-display.jsx";
 import { isActive, issueLink, prLink, ticketSource } from "./task-presentation.js";
 import { ticketThread } from "./ticket-thread.js";
@@ -21,6 +21,7 @@ export function RunActivity({ run }) {
     {data.error && <p className="form-error" role="alert">{data.error}</p>}
     <ExecutionGraph activities={data.children} runState={run.status} loaded={data.loaded} onSelect={setSelected} />
     {data.children.length > 0 && <AgentReports activities={data.children} selectedID={selected} onSelect={setSelected} />}
+    <ScriptOutput scripts={data.scripts} />
     <PrimaryLog logs={data.logs} />
   </div>;
 }
@@ -28,6 +29,26 @@ export function RunActivity({ run }) {
 function runIcon(status) {
   if (status === "running" || status === "queued") return [LoaderCircle, "text-primary state-working"];
   return status === "succeeded" ? [Check, "text-success"] : [CircleAlert, "text-warning"];
+}
+
+const stageIcons = { good: [Check, "text-success"], bad: [CircleAlert, "text-warning"], muted: [Minus, ""] };
+
+// The stages of a job, in the order they ran. They arrive when the run ends.
+function RunStages({ stages }) {
+  return <ol className="run-stages" aria-label="Stages">{stages.map(stage => {
+    const { label, tone } = stageStatus(stage);
+    const [Icon, color] = stageIcons[tone];
+    return <li key={stage.name} className="run-stage">
+      <Icon className={`size-3.5 shrink-0 ${color}`} aria-hidden="true" />
+      <strong>{stage.name}</strong>
+      <span>{stage.kind}</span>
+      <span>{label}</span>
+      {stage.state !== "skipped" && <span>{formatDurationMillis(stage.duration_millis ?? 0)}</span>}
+      {stage.tokens !== undefined && <span>{formatTokens(stage.tokens)} tokens</span>}
+      {stage.cost !== undefined && <span>{formatCost(stage.cost)}</span>}
+      {stage.error && <p className="run-stage-error">{stage.error}</p>}
+    </li>;
+  })}</ol>;
 }
 
 // A run sits in the conversation the way a tool call does: one line that opens.
@@ -45,6 +66,7 @@ function RunStep({ data: run }) {
       {run.cost !== undefined && <span>{formatCost(run.cost)}</span>}
       <ChevronRight className="chat-step-chevron size-3.5" aria-hidden="true" />
     </button>
+    {run.stages?.length > 1 && <RunStages stages={run.stages} />}
     {open && <RunActivity run={run} />}
   </div>;
 }

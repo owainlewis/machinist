@@ -37,6 +37,14 @@ test("historical Codex excludes the primary and interactions preserve child stat
  const result=reduceActivity(events,"running");assert.equal(result.children.length,1);assert.equal(result.children[0].status,"running");assert.equal(result.children[0].name,"/root/reviewer");
 });
 
+test("a script stage shows what it printed, and an agent stage does not",()=>{
+ const output=(stream,text)=>({type:"process.output",stream,encoding:"base64",data:Buffer.from(text).toString("base64")});
+ const stage=(name,kind)=>({type:"stage.started",message:`name=${name} kind=${kind}`});
+ const events=[stage("build","agent"),output("stdout","AGENT JSON\n"),stage("test","script"),output("stdout","ok: 1 check\n"),output("stderr","FAIL: broken line\n"),stage("check","agent"),output("stdout","MORE JSON\n")];
+ assert.deepEqual(reduceActivity(events,"failed").scripts,[{name:"test",output:"ok: 1 check\nFAIL: broken line\n"}]);
+ assert.deepEqual(reduceActivity([output("stdout","no stages\n")],"succeeded").scripts,[]);
+});
+
 test("cancelled activity continues polling until cleanup acknowledgment",()=>{
  assert.equal(pollRunActivity({state:"cancelled",phase:"stopping"}),true);
  assert.equal(pollRunActivity({state:"cancelled",completed_at:"2026-10-21T10:00:00Z"}),false);

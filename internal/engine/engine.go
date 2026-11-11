@@ -106,11 +106,11 @@ func (e *Engine) advance(ctx context.Context, ticket tickets.Ticket) error {
 		}
 		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: waitingState(ticket), Message: message})
 	}
-	agent, ok := e.Factory.Agents[ticket.Agent]
+	job, ok := e.Factory.Job(ticket.Agent)
 	if !ok {
 		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: waitingState(ticket), Message: missingAgentMessage(ticket.Agent)})
 	}
-	_, err = e.Store.QueueRun(ctx, ticket.ID, agent.Harness)
+	_, err = e.Store.QueueRun(ctx, ticket.ID, job.Harness)
 	return err
 }
 
@@ -153,7 +153,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 	if err != nil || claim == nil {
 		return nil, err
 	}
-	agent, ok := e.Factory.Agents[claim.Ticket.Agent]
+	job, ok := e.Factory.Job(claim.Ticket.Agent)
 	if !ok {
 		message := missingAgentMessage(claim.Ticket.Agent)
 		return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, e.MaxTurns, func(ticket tickets.Ticket, _ string) tickets.Transition {
@@ -166,7 +166,6 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		Repository:    claim.Ticket.Repo,
 		Branch:        claim.Ticket.Branch(),
 		Harness:       claim.Run.Harness,
-		Model:         agent.Model,
 		TimeoutMillis: e.RunTimeout.Milliseconds(),
 		GitName:       e.Handle,
 		GitEmail:      BotEmail(e.Handle),
@@ -178,11 +177,36 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 			return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, e.MaxTurns, nil)
 		}
 		request.Prompt = renderReviewerPrompt(reviewer.Prompt, claim.Ticket.Repo, claim.Ticket.PRNumber)
+		request.Model = e.reviewerModel(job)
 		return request, nil
 	}
-	request.Prompt = renderPrompt(agent.Playbook, request.Branch, tickets.RenderLog(claim.Entries))
-	request.AgentFiles = agent.Files
+	request.Stages = e.stages(job, request.Branch, tickets.RenderLog(claim.Entries))
 	return request, nil
+}
+
+// stages turns a job into what the runner starts. Every agent stage gets the
+// same ticket log, and sees the work of earlier stages only in the clone.
+func (e *Engine) stages(job factory.Job, branch, log string) []runner.Stage {
+	stages := make([]runner.Stage, 0, len(job.Stages))
+	for _, stage := range job.Stages {
+		if stage.Agent == "" {
+			stages = append(stages, runner.Stage{Name: stage.Name, Kind: runner.StageScript, Script: stage.Script})
+			continue
+		}
+		agent := e.Factory.Agents[stage.Agent]
+		stages = append(stages, runner.Stage{Name: stage.Name, Kind: runner.StageAgent, Prompt: renderPrompt(agent.Playbook, branch, log), Model: agent.Model, AgentFiles: agent.Files})
+	}
+	return stages
+}
+
+// reviewerModel is the model of the job's first agent stage.
+func (e *Engine) reviewerModel(job factory.Job) string {
+	for _, stage := range job.Stages {
+		if stage.Agent != "" {
+			return e.Factory.Agents[stage.Agent].Model
+		}
+	}
+	return ""
 }
 
 func (e *Engine) reviewer(name string) (factory.Reviewer, bool) {
@@ -235,7 +259,7 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	if err != nil {
 		return err
 	}
-	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: report, Tokens: completion.Tokens, Cost: completion.Cost}, e.MaxTurns, func(ticket tickets.Ticket, status string) tickets.Transition {
+	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: report, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages}, e.MaxTurns, func(ticket tickets.Ticket, status string) tickets.Transition {
 		transition := decide(ticket, status, report, reason, pr)
 		if pr != nil && ticket.PRNumber == 0 {
 			transition.FirstPR = e.firstPR(ticket, pr.Number)
@@ -245,7 +269,8 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 }
 
 func (e *Engine) firstPR(ticket tickets.Ticket, number int) *tickets.FirstPR {
-	first := &tickets.FirstPR{Harness: e.Factory.Agents[ticket.Agent].Harness}
+	job, _ := e.Factory.Job(ticket.Agent)
+	first := &tickets.FirstPR{Harness: job.Harness}
 	if ticket.IssueNumber != 0 {
 		first.Link = fmt.Sprintf("Opened a PR: https://github.com/%s/pull/%d", ticket.Repo, number)
 	}

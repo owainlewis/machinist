@@ -1,4 +1,4 @@
-const pages = new Set(["assign", "work", "automations", "runners"]);
+const pages = new Set(["home", "work", "automations", "runners"]);
 
 export function routeFromHash(hash) {
   const value = hash.replace(/^#\//, "");
@@ -9,5 +9,5 @@ export function routeFromHash(hash) {
       return { view: "work", ticketID: "" };
     }
   }
-  return { view: pages.has(value) ? value : "assign", ticketID: "" };
+  return { view: pages.has(value) ? value : "home", ticketID: "" };
 }

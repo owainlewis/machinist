@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
@@ -44,9 +43,6 @@ type Server struct {
 	mcp      http.Handler
 	version  string
 	log      io.Writer
-
-	runnersMu sync.Mutex
-	runners   map[string]runnerStatus
 }
 
 func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Factory, version string, log io.Writer) (*Server, error) {
@@ -83,7 +79,6 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		mcp:      mcpserver.New(store, intake, version),
 		version:  version,
 		log:      log,
-		runners:  map[string]runnerStatus{},
 		github: sources.NewGitHub(sources.Options{
 			Client:       client,
 			Store:        store,

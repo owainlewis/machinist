@@ -32,6 +32,40 @@ func TestPollRecordsRunnerAndNamesRunAfterToken(t *testing.T) {
 	}
 }
 
+func TestRunnersListShowsSlotsJobsAndQueue(t *testing.T) {
+	f := newFixture(t)
+	run := f.queueRun(t)
+	request := protocol.PollRequest{Harnesses: []string{"claude"}, Kind: "kubernetes", Slots: 4}
+	if response, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, request); response.StatusCode != http.StatusNoContent {
+		t.Fatalf("%d: %s", response.StatusCode, body)
+	}
+	waiting, _, err := f.store.CreateTicket(t.Context(), tickets.NewTicket{Source: "api", Repo: "owner/repo", Title: "Waiting", Body: "Wait", Agent: "default", CreatedBy: "alice", SourceKey: "api:waiting"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.QueueRun(t.Context(), waiting.ID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	response, body := f.call(t, http.MethodGet, "/api/v1/runners", f.token, nil)
+	var fleet struct {
+		Runners []tickets.Runner `json:"runners"`
+		Queue   tickets.Queue    `json:"queue"`
+	}
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &fleet) != nil || len(fleet.Runners) != 1 {
+		t.Fatalf("%d: %s", response.StatusCode, body)
+	}
+	got := fleet.Runners[0]
+	if got.Kind != "kubernetes" || got.Slots != 4 {
+		t.Fatalf("runner = %+v", got)
+	}
+	if len(got.Jobs) != 1 || got.Jobs[0].RunID != run.RunID || got.Jobs[0].TicketID != run.TicketID || got.Jobs[0].StartedAt.IsZero() {
+		t.Fatalf("jobs = %+v", got.Jobs)
+	}
+	if fleet.Queue.Waiting != 1 || fleet.Queue.Oldest == nil {
+		t.Fatalf("queue = %+v", fleet.Queue)
+	}
+}
+
 func TestPollCarriesNoSecrets(t *testing.T) {
 	f := newFixture(t)
 	run := f.queueRun(t)

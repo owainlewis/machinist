@@ -142,3 +142,86 @@ func TestValidateChecksConfigurationReferences(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+// jobFactory is validFactory with a second agent and a job of three stages.
+func jobFactory() map[string]string {
+	files := validFactory()
+	files["agents/reviewer/agent.toml"] = "harness = \"claude\"\nmodel = \"opus\"\n"
+	files["agents/reviewer/playbook.md"] = "Review the branch.\n"
+	files["jobs/ship.toml"] = `[[stages]]
+name = "build"
+agent = "default"
+
+[[stages]]
+name = "test"
+script = "go test ./..."
+
+[[stages]]
+name = "review"
+agent = "reviewer"
+`
+	return files
+}
+
+func TestLoadReadsJobs(t *testing.T) {
+	factory, err := Load(writeFiles(t, jobFactory()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, ok := factory.Job("ship")
+	if !ok || job.Harness != "claude" || len(job.Stages) != 3 {
+		t.Fatalf("job = %+v", job)
+	}
+	if job.Stages[0] != (Stage{Name: "build", Agent: "default"}) || job.Stages[1] != (Stage{Name: "test", Script: "go test ./..."}) || job.Stages[2].Agent != "reviewer" {
+		t.Fatalf("stages = %+v", job.Stages)
+	}
+	if err := factory.Validate("ship", []string{"owner/repo"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAnAgentIsAJobWithOneStage(t *testing.T) {
+	factory, err := Load(writeFiles(t, validFactory()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, ok := factory.Job("default")
+	if !ok || job.Harness != "claude" || len(job.Stages) != 1 || job.Stages[0] != (Stage{Name: "default", Agent: "default"}) {
+		t.Fatalf("job = %+v", job)
+	}
+	if _, ok := factory.Job("missing"); ok {
+		t.Fatal("found a job that is not in the factory")
+	}
+}
+
+func TestLoadRejectsInvalidJobs(t *testing.T) {
+	stage := func(body string) string { return "[[stages]]\n" + body + "\n" }
+	for _, test := range []struct {
+		name, want, job string
+	}{
+		{"no stages", "at least one agent stage", ""},
+		{"only scripts", "at least one agent stage", stage(`name = "test"` + "\n" + `script = "true"`)},
+		{"agent and script", "agent or script", stage(`name = "build"` + "\n" + `agent = "default"` + "\n" + `script = "true"`)},
+		{"neither", "agent or script", stage(`name = "build"`)},
+		{"bad stage name", "invalid name", stage(`name = "Build It"` + "\n" + `agent = "default"`)},
+		{"stage twice", "listed twice", stage(`name = "build"`+"\n"+`agent = "default"`) + stage(`name = "build"`+"\n"+`script = "true"`)},
+		{"unknown agent", `agent "ghost" is not in the factory`, stage(`name = "build"` + "\n" + `agent = "ghost"`)},
+		{"two harnesses", "an earlier stage uses claude", stage(`name = "build"`+"\n"+`agent = "default"`) + stage(`name = "review"`+"\n"+`agent = "other"`)},
+		{"unknown key", "unknown key", stage(`name = "build"` + "\n" + `agent = "default"` + "\n" + `needs = "test"`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			files := validFactory()
+			files["agents/other/agent.toml"] = "harness = \"codex\"\n"
+			files["agents/other/playbook.md"] = "Review.\n"
+			files["jobs/ship.toml"] = test.job
+			if _, err := Load(writeFiles(t, files)); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+	files := validFactory()
+	files["jobs/default.toml"] = stage(`name = "build"` + "\n" + `agent = "default"`)
+	if _, err := Load(writeFiles(t, files)); err == nil || !strings.Contains(err.Error(), "an agent already has this name") {
+		t.Fatalf("error = %v", err)
+	}
+}

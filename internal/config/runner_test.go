@@ -41,6 +41,9 @@ allowed_hosts = ["proxy.golang.org"]
 	if runner.Kubernetes.Kubeconfig != filepath.Join(directory, "cluster", "config") || runner.Kubernetes.Secret != "agent-credentials" || runner.Kubernetes.AllowedHosts[0] != "proxy.golang.org" {
 		t.Fatalf("kubernetes = %+v", runner.Kubernetes)
 	}
+	if runner.Kind() != "kubernetes" || (Runner{}).Kind() != "local" {
+		t.Fatalf("kind = %q", runner.Kind())
+	}
 	if got := strings.Join(runner.Harnesses(), ","); got != "claude,codex" {
 		t.Fatalf("harnesses = %q", got)
 	}

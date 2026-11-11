@@ -309,8 +309,8 @@ func TestSignalsWhileNeedsYouWaitForTheNextRun(t *testing.T) {
 	}
 	next := assignRun(t, e)
 	for _, want := range []string{"SIGNAL ci", "SIGNAL review", "Use v2"} {
-		if !strings.Contains(next.Prompt, want) {
-			t.Fatalf("missing %q in:\n%s", want, next.Prompt)
+		if !strings.Contains(prompt(t, next), want) {
+			t.Fatalf("missing %q in:\n%s", want, prompt(t, next))
 		}
 	}
 }
@@ -392,8 +392,8 @@ func TestInputDuringRunStartsTheNextRunAtOnce(t *testing.T) {
 	if got := state(t, e, ticket.ID); got != tickets.StateWorking {
 		t.Fatalf("state = %s", got)
 	}
-	if next := assignRun(t, e); !strings.Contains(next.Prompt, "Also this") {
-		t.Fatalf("prompt = %s", next.Prompt)
+	if next := assignRun(t, e); !strings.Contains(prompt(t, next), "Also this") {
+		t.Fatalf("prompt = %s", prompt(t, next))
 	}
 }
 

@@ -24,10 +24,10 @@ test("a PR link is treated as written work, not an issue", async context => {
   assert.equal(assignRequest("https://github.com/a/b/pull/7", "o/r", "id").issue_number, undefined);
 });
 
-test("with no repository the page says how to connect one", async context => {
-  const { AssignPage } = await load(context);
-  assert.match(renderToStaticMarkup(React.createElement(AssignPage, { repositories: [] })), /Connect a repository/);
-  const html = renderToStaticMarkup(React.createElement(AssignPage, { repositories: ["o/r", "o/s"] }));
-  assert.match(html, /What needs doing/);
+test("with no repository the box says how to connect one", async context => {
+  const { AssignBox } = await load(context);
+  assert.match(renderToStaticMarkup(React.createElement(AssignBox, { repositories: [] })), /Connect a repository/);
+  const html = renderToStaticMarkup(React.createElement(AssignBox, { repositories: ["o/r", "o/s"] }));
+  assert.match(html, /id="assign-work"/);
   assert.match(html, /<option value="o\/s">/);
 });

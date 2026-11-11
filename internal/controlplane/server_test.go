@@ -147,12 +147,19 @@ func TestRepositoriesRouteTellsTheUIItIsSignedIn(t *testing.T) {
 func TestHeartbeatKeepsABusyRunnerInTheList(t *testing.T) {
 	f := newFixture(t)
 	run := f.queueRun(t)
-	before := f.server.runners["runner-1"].LastContact
+	contact := func() tickets.Runner {
+		runners, _, err := f.store.Fleet(t.Context())
+		if err != nil || len(runners) != 1 {
+			t.Fatalf("runners = %+v, err = %v", runners, err)
+		}
+		return runners[0]
+	}
+	before := contact().LastContact
 	time.Sleep(2 * time.Millisecond)
 	if response, body := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/heartbeat", f.token, nil); response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
-	status := f.server.runners["runner-1"]
+	status := contact()
 	if !status.LastContact.After(before) || len(status.Harnesses) != 1 {
 		t.Fatalf("status = %+v", status)
 	}

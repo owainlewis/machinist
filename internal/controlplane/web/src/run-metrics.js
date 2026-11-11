@@ -50,3 +50,16 @@ export function runDuration(run) {
   const ended = Date.parse(run.ended_at);
   return Number.isFinite(started) && Number.isFinite(ended) ? formatDurationMillis(ended - started) : "";
 }
+
+// A stage passed when its process succeeded and its agent did not report
+// failed or needs_input. A stage after the one that ended the run is skipped.
+export function stageStatus(stage) {
+  if (stage.state === "skipped") return { label: "Skipped", tone: "muted" };
+  if (stage.state !== "succeeded") {
+    const text = String(stage.state || "failed").replaceAll("_", " ");
+    return { label: text[0].toUpperCase() + text.slice(1), tone: "bad" };
+  }
+  if (stage.outcome === "failed") return { label: "Reported failed", tone: "bad" };
+  if (stage.outcome === "needs_input") return { label: "Asked a question", tone: "bad" };
+  return { label: "Passed", tone: "good" };
+}

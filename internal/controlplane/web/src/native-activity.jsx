@@ -89,6 +89,11 @@ export function PrimaryLog({ logs }) {
   return <section className="run-log" aria-label="Primary agent messages"><h2>Primary log</h2><p className="run-section-description">Messages from the agent coordinating this attempt.</p>{logs.length ? <ol>{logs.map((text, index) => <li key={index}><RunMarkdown>{readableMessage(text)}</RunMarkdown></li>)}</ol> : <p className="run-empty">No primary messages were reported.</p>}</section>;
 }
 
+// What a script stage printed. It is the place to look when the stage failed.
+export function ScriptOutput({ scripts }) {
+  return scripts.map(script => <section key={script.name} className="run-log" aria-label={`Output of the ${script.name} stage`}><h2>Output of {script.name}</h2>{script.output ? <pre className="run-script-output">{script.output}</pre> : <p className="run-empty">The script printed nothing.</p>}</section>);
+}
+
 function readableMessage(text) {
   try {
     const result = JSON.parse(text);

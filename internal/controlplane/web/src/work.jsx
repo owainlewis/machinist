@@ -20,7 +20,7 @@ export function WorkPage({ tickets = [], ledger, loaded, error }) {
     <h1>Work</h1>
     {error && <p className="form-error" role="alert">{error}</p>}
     {!loaded && !error && <p className="page-note" role="status">Loading tickets</p>}
-    {loaded && !jobs.length && <p className="page-note">Nothing yet. <a href="#/assign">Assign some work</a>, or mention the bot on an issue.</p>}
+    {loaded && !jobs.length && <p className="page-note">Nothing yet. <a href="#/home">Assign some work</a>, or mention the bot on an issue.</p>}
     {jobs.length > 0 && <table className="jobs">
       <thead><tr><th scope="col">Job</th><th scope="col">Status</th><th scope="col" className="job-detail">Repository</th><th scope="col" className="job-detail">PR</th><th scope="col" className="job-updated">Updated</th></tr></thead>
       <tbody>{jobs.map(ticket => <JobRow key={ticket.id} ticket={ticket} />)}</tbody>

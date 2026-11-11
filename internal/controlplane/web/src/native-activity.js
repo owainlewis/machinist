@@ -26,7 +26,32 @@ export function reduceActivity(events, runState) {
     }
   }
   const stopped = ["interrupted", "cancelled", "timed_out"].includes(runState);
-  return { children: [...children.values()].map(child => { const report=native.messages.get(child.native_id) || native.messages.get(native.agents.get(child.native_id)?.tool) || reports.get(child.native_id) || reports.get(native.agents.get(child.native_id)?.tool) || native.reports.get(child.native_id) || child.summary || ""; return {...child,summary:report,status: stopped && child.status === "running" ? "interrupted" : child.status}; }), logs };
+  return { scripts: scriptOutputs(events), children: [...children.values()].map(child => { const report=native.messages.get(child.native_id) || native.messages.get(native.agents.get(child.native_id)?.tool) || reports.get(child.native_id) || reports.get(native.agents.get(child.native_id)?.tool) || native.reports.get(child.native_id) || child.summary || ""; return {...child,summary:report,status: stopped && child.status === "running" ? "interrupted" : child.status}; }), logs };
+}
+
+const scriptOutputLimit = 16000;
+
+// What each script stage printed, stdout and stderr in the order they arrived.
+// A stage.started event marks where the output of a stage begins. Long output
+// keeps its end, which is where a failure is reported.
+function scriptOutputs(events) {
+  const scripts = [];
+  let current = null;
+  for (const event of events) {
+    if (event.type === "stage.started") {
+      const [, name, kind] = /^name=(.*) kind=(\w+)$/.exec(event.message || "") || [];
+      current = kind === "script" ? { name, output: "", decoders: new Map() } : null;
+      if (current) scripts.push(current);
+    }
+    if (!current || event.type !== "process.output" || event.encoding !== "base64") continue;
+    try {
+      const key = event.stream || "stdout";
+      if (!current.decoders.has(key)) current.decoders.set(key, new TextDecoder());
+      const bytes = Uint8Array.from(atob(event.data), char => char.charCodeAt(0));
+      current.output = (current.output + current.decoders.get(key).decode(bytes, {stream: true})).slice(-scriptOutputLimit);
+    } catch { /* Malformed raw output does not hide the rest. */ }
+  }
+  return scripts.map(({ name, output }) => ({ name, output }));
 }
 
 function nativeIdentities(events) {

@@ -101,6 +101,14 @@ the control plane image. Before first use, apply the overlay and create these Se
 | `machinist-runner-token` | `machinist-system` | `token`, from `machinist token create` |
 | `machinist-agent` | `machinist-runners` | `GH_TOKEN` and the harness credentials |
 
+## Watching the fleet
+
+The Runners page lists every runner that has asked for work, with where it runs, its
+harnesses, how many of its slots are busy and the runs it holds. It also says how many
+runs are waiting for a free slot and how long the oldest has waited. A runner that has
+made no contact for 90 seconds shows as not responding. Revoking a runner's token removes
+it from the list.
+
 ## When a runner is lost
 
 A run has a 10-minute lease, renewed every 30 seconds. If a runner dies, the lease expires,

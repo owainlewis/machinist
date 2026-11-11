@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/inter";
-import { Clock3, LogOut, Moon, PenLine, Rows3, Server, Sun } from "lucide-react";
+import { Clock3, House, LogOut, Moon, Rows3, Server, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { routeFromHash } from "@/routes";
 import { createStatusLoader } from "@/status-loader";
 import { api, SignedOutError } from "./api.js";
-import { AssignPage } from "./assign.jsx";
 import { AutomationsPage } from "./automations.jsx";
+import { HomePage } from "./home.jsx";
 import { RunnersPage } from "./runners.jsx";
 import { SignIn } from "./sign-in.jsx";
 import { TaskDetail } from "./task-detail.jsx";
@@ -15,12 +15,12 @@ import { WorkPage } from "./work.jsx";
 import "./styles.css";
 
 const pollMillis = 2000;
-const emptyStatus = { tickets: [], runners: [], automations: [], ledger: null };
-const navigation = [["assign", PenLine, "Assign"], ["work", Rows3, "Work"], ["automations", Clock3, "Automations"], ["runners", Server, "Runners"]];
+const emptyStatus = { tickets: [], runners: [], queue: null, automations: [], ledger: null };
+const navigation = [["home", House, "Home"], ["work", Rows3, "Work"], ["automations", Clock3, "Automations"], ["runners", Server, "Runners"]];
 
 async function loadStatus() {
   const [tickets, runners, automations, ledger] = await Promise.all([api("/api/v1/tickets"), api("/api/v1/runners"), api("/api/v1/automations"), api("/api/v1/ledger")]);
-  return { tickets: tickets.tickets, runners: runners.runners, automations: automations.automations, ledger };
+  return { tickets: tickets.tickets, runners: runners.runners, queue: runners.queue, automations: automations.automations, ledger };
 }
 
 function readTheme() {
@@ -107,11 +107,11 @@ function App() {
       </div>
     </aside>
     <main className="min-w-0 flex-1">
-      {route.view === "assign" && <AssignPage repositories={session.repositories} />}
+      {route.view === "home" && <HomePage repositories={session.repositories} tickets={status.tickets} runners={status.runners} queue={status.queue} loaded={loaded} error={error} onChanged={refresh} />}
       {route.view === "work" && <WorkPage tickets={status.tickets} ledger={status.ledger} loaded={loaded} error={error} />}
       {route.view === "ticket" && <TaskDetail ticketID={route.ticketID} onSignedOut={signedOut} onChanged={refresh} />}
       {route.view === "automations" && <AutomationsPage automations={status.automations} loaded={loaded} error={error} onChanged={refresh} />}
-      {route.view === "runners" && <RunnersPage runners={status.runners} loaded={loaded} error={error} />}
+      {route.view === "runners" && <RunnersPage runners={status.runners} queue={status.queue} loaded={loaded} error={error} />}
     </main>
   </div>;
 }
