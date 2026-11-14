@@ -27,6 +27,7 @@ Start with the [quick start](../README.md#quick-start).
 | Guide | Use it to |
 | --- | --- |
 | [Development](development.md) | Build, test and contribute |
+| [Direction](direction.md) | See what Machinist is for and what is missing |
 | [Design](designs/machinist-redesign.md) | Read the full design, including the state table |
 | [Examples](../examples/README.md) | See the files `machinist init` installs |
 | [Issue triage demo](issue-triage-demo.md) | See a standalone GitHub Actions demo |
