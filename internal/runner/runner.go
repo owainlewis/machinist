@@ -38,39 +38,39 @@ const (
 )
 
 type Options struct {
-	Environment    []string
-	ReviewEvidence string
-	Factory        *protocol.FactoryContext
-	Revision       *protocol.Revision
-	Task           *protocol.Task
-	PrepareInputs  func(context.Context, string) (map[string]string, error)
-	Workflow       bool
-	JobID          string
-	RunID          string
-	ArtifactKey    string
-	Command        config.ResolvedCommand
-	Repository     string
-	DataDirectory  string
-	Stdout         io.Writer
-	Stderr         io.Writer
+	Environment   []string
+	Prompt        string
+	JobID         string
+	RunID         string
+	Command       config.ResolvedCommand
+	Repository    string
+	DataDirectory string
+	Stdout        io.Writer
+	Stderr        io.Writer
+
+	// log is the open event log of a run with stages. Execute appends to it
+	// and leaves it open, so every stage writes to one file.
+	log *eventLog
 }
 
 type Result struct {
-	ProcessStopped bool                 `json:"process_stopped"`
-	StepResult     *protocol.StepResult `json:"step_result,omitempty"`
-	ID             string               `json:"id"`
-	Command        string               `json:"command"`
-	CommandHash    string               `json:"command_hash"`
-	Definition     string               `json:"definition"`
-	Repository     string               `json:"repository"`
-	State          State                `json:"state"`
-	ExitCode       int                  `json:"exit_code"`
-	StartedAt      time.Time            `json:"started_at"`
-	CompletedAt    time.Time            `json:"completed_at"`
-	DurationMillis int64                `json:"duration_millis"`
-	TokenUsage     *int64               `json:"token_usage,omitempty"`
-	FinalMessage   string               `json:"final_message,omitempty"`
-	EventsPath     string               `json:"events_path"`
+	ProcessStopped   bool             `json:"process_stopped"`
+	Report           *protocol.Report `json:"report,omitempty"`
+	Cost             *float64         `json:"cost,omitempty"`
+	CredentialSource string           `json:"credential_source,omitempty"`
+	ID               string           `json:"id"`
+	Command          string           `json:"command"`
+	CommandHash      string           `json:"command_hash"`
+	Definition       string           `json:"definition"`
+	Repository       string           `json:"repository"`
+	State            State            `json:"state"`
+	ExitCode         int              `json:"exit_code"`
+	StartedAt        time.Time        `json:"started_at"`
+	CompletedAt      time.Time        `json:"completed_at"`
+	DurationMillis   int64            `json:"duration_millis"`
+	TokenUsage       *int64           `json:"token_usage,omitempty"`
+	FinalMessage     string           `json:"final_message,omitempty"`
+	EventsPath       string           `json:"events_path"`
 
 	CleanupUnconfirmed bool `json:"cleanup_unconfirmed,omitempty"`
 }
@@ -121,29 +121,26 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		if err != nil {
 			return Result{}, &RuntimeError{Cause: err}
 		}
-	} else if !validRunID(runID) {
+	} else if !ValidRunID(runID) {
 		return Result{}, fmt.Errorf("invalid run ID %q", runID)
 	}
 	runDirectory := filepath.Join(options.DataDirectory, "runs", runID)
-	if options.ArtifactKey != "" {
-		if !validArtifactKey(options.ArtifactKey) {
-			return Result{}, fmt.Errorf("invalid artifact key %q", options.ArtifactKey)
-		}
-		runDirectory = filepath.Join(runDirectory, options.ArtifactKey)
-	}
 	if err := createDurableDirectory(runDirectory); err != nil {
 		return Result{}, &RuntimeError{Cause: fmt.Errorf("create run directory: %w", err)}
 	}
 	eventsPath := filepath.Join(runDirectory, "events.jsonl")
-	log, err := newEventLog(eventsPath)
-	if err != nil {
-		return Result{}, &RuntimeError{Cause: err}
-	}
-	defer func() {
-		if err := log.close(); err != nil {
-			returnErr = addRuntimeError(returnErr, err)
+	log := options.log
+	if log == nil {
+		log, err = newEventLog(eventsPath)
+		if err != nil {
+			return Result{}, &RuntimeError{Cause: err}
 		}
-	}()
+		defer func() {
+			if err := log.close(); err != nil {
+				returnErr = addRuntimeError(returnErr, err)
+			}
+		}()
+	}
 
 	startedAt := time.Now().UTC()
 	result = Result{
@@ -164,7 +161,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	executorCommand := structuredCommand(options.Command.Executor, options.Command.Command)
 	native := options.Command.Adapter == "claude-stream" || options.Command.Adapter == "codex-app-server"
 	if native {
-		executorCommand, err = nativeCommand(options.Command, options.Factory != nil && options.Factory.Recipe == "native-v1")
+		executorCommand, err = nativeCommand(options.Command)
 		if err != nil {
 			return completeFailure(&result, log, runDirectory, err)
 		}
@@ -179,48 +176,6 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	}
 	_, claudeAgent := claudeCommandInfo(options.Command.Executor, executorCommand)
 	agentExecutor := native || codexExecIndex(options.Command.Executor, executorCommand) >= 1 || claudeAgent
-	if options.Factory != nil && !native && newUsageCollector(options.Command.Executor, executorCommand) == nil {
-		return completeFailure(&result, log, runDirectory, fmt.Errorf("factory stages require a structured Codex or Claude Code executor"))
-	}
-	outputDirectory := ""
-	scratchDirectory := ""
-	if options.Task != nil && options.Factory == nil {
-		outputDirectory = filepath.Join(runDirectory, "outputs")
-		scratchDirectory = filepath.Join(runDirectory, "scratch")
-		if err := os.Mkdir(scratchDirectory, 0700); err != nil {
-			return completeFailure(&result, log, runDirectory, err)
-		}
-		if err := os.Mkdir(outputDirectory, 0700); err != nil {
-			return completeFailure(&result, log, runDirectory, err)
-		}
-		inputs := map[string]string{}
-		if options.PrepareInputs != nil && options.Factory == nil {
-			var err error
-			inputs, err = options.PrepareInputs(ctx, filepath.Join(runDirectory, "inputs"))
-			if err != nil {
-				return completeFailure(&result, log, runDirectory, err)
-			}
-		}
-		rendered, err := config.RenderTaskTemplate(options.Command.Prompt, *options.Task, outputDirectory, inputs)
-		if err != nil {
-			return completeFailure(&result, log, runDirectory, err)
-		}
-		if agentExecutor {
-			rendered += revisionPrompt(options.Revision, inputs)
-		}
-		options.Command.Prompt = rendered
-		snapshot, _ := json.Marshal(struct {
-			Task   *protocol.Task    `json:"task"`
-			Prompt string            `json:"prompt"`
-			Inputs map[string]string `json:"inputs"`
-		}{options.Task, rendered, inputs})
-		if err = os.WriteFile(filepath.Join(runDirectory, "input.json"), snapshot, 0600); err != nil {
-			return completeFailure(&result, log, runDirectory, err)
-		}
-	}
-	if options.Task == nil && agentExecutor {
-		options.Command.Prompt += revisionPrompt(options.Revision, nil)
-	}
 	tokenUsagePath := filepath.Join(runDirectory, tokenUsageFileName)
 	if err := os.Remove(tokenUsagePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return completeFailure(&result, log, runDirectory, fmt.Errorf("reset executor token usage report: %w", err))
@@ -228,42 +183,9 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 
 	command := exec.Command(executorCommand[0], executorCommand[1:]...)
 	command.Dir = repository
-	command.Env = append(mergeEnvironment(sanitizedEnvironment(os.Environ()), options.Environment), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
+	command.Env = append(append([]string(nil), options.Environment...), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
 	if native {
-		command.Env = nativeEnvironment(command.Env)
-	}
-	if options.Revision != nil {
-		revisionPath := filepath.Join(runDirectory, "revision.json")
-		body, err := json.Marshal(options.Revision)
-		if err != nil {
-			return completeFailure(&result, log, runDirectory, err)
-		}
-		if err := os.WriteFile(revisionPath, body, 0600); err != nil {
-			return completeFailure(&result, log, runDirectory, err)
-		}
-		command.Env = append(command.Env, "MACHINIST_REVISION_PATH="+revisionPath)
-	}
-	if outputDirectory != "" {
-		command.Env = append(command.Env, "MACHINIST_OUTPUT_DIR="+outputDirectory, "MACHINIST_SCRATCH_DIR="+scratchDirectory, "MACHINIST_INPUT_DIR="+filepath.Join(runDirectory, "inputs"))
-	}
-	if options.Workflow {
-		resultPath := filepath.Join(runDirectory, "step-result.json")
-		command.Env = append(command.Env, "MACHINIST_STEP_RESULT_PATH="+resultPath, "MACHINIST_JOB_ID="+options.JobID)
-		if agentExecutor && options.Factory == nil {
-			options.Command.Prompt += "\n\nMachinist workflow contract: perform the work above, then write a JSON object to the file named by the MACHINIST_STEP_RESULT_PATH environment variable. Use exactly the fields outcome (complete, blocked, or failed) and summary (a nonempty explanation). MACHINIST_OUTPUT_DIR is the published task folder: save only requested deliverables and files needed by later stages there. Every file there is uploaded and shown to the user. Use MACHINIST_SCRATCH_DIR for temporary clones, helper scripts, caches, raw command logs, and other working files; scratch files are not published or carried forward. Summarize verification in the final report; publish raw logs only when requested or needed to explain a failure. Do not report complete if work remains blocked. The next step starts only after complete. Reconcile existing issue/PR work before repeating side effects; this may be a retry.\n"
-		}
-	}
-	if options.Factory != nil {
-		body, err := json.Marshal(map[string]string{"role": options.Factory.Role, "pr_url": options.Factory.PRURL, "head_sha": options.Factory.HeadSHA, "branch": options.Factory.Branch})
-		if err != nil {
-			return completeFailure(&result, log, runDirectory, err)
-		}
-		command.Env = append(command.Env, "MACHINIST_FACTORY_CONTEXT="+string(body))
-		options.Command.Prompt += options.ReviewEvidence
-		options.Command.Prompt += factoryPrompt(options.Factory, repository)
-	}
-	if native {
-		if err := nativeProvenance(runDirectory, repository, options.Command); err != nil {
+		if err := nativeProvenance(runDirectory, repository, options.Command, options.Prompt); err != nil {
 			return completeFailure(&result, log, runDirectory, err)
 		}
 	}
@@ -313,12 +235,12 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	inputResult := make(chan error, 1)
 	var nativeOutput *nativeStream
 	if native {
-		nativeOutput = &nativeStream{adapter: options.Command.Adapter, log: log, stdin: stdinWriter, model: options.Command.Model, cwd: repository, prompt: options.Command.Prompt, structuredResult: options.Factory != nil && options.Factory.Recipe == "native-v1"}
+		nativeOutput = &nativeStream{adapter: options.Command.Adapter, log: log, stdin: stdinWriter, model: options.Command.Model, cwd: repository, prompt: options.Prompt}
 	}
 	if options.Command.Adapter == "codex-app-server" {
 		go func() { inputResult <- nativeOutput.start() }()
 	} else {
-		go writePrompt(stdinWriter, options.Command.Prompt, inputResult)
+		go writePrompt(stdinWriter, options.Prompt, inputResult)
 	}
 	streamErrors := make(chan error, 2)
 	var streams sync.WaitGroup
@@ -368,24 +290,16 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 			outcome = fmt.Errorf("%s (%w)", hint, outcome)
 		}
 	}
-	if options.Workflow && state == StateSucceeded {
-		step, err := readStepResult(filepath.Join(runDirectory, "step-result.json"))
-		// Factory stages return their contract as the final agent message;
-		// the host reads it without granting the agent filesystem write access.
-		if options.Factory != nil && usageCollector != nil {
-			step, err = parseFactoryMessage(usageCollector.lastMessage())
-		}
-		if nativeOutput != nil && options.Factory != nil {
-			if options.Factory.Recipe == "native-v1" {
-				step, err = parseNativeResult(nativeOutput.lastMessage())
+	if nativeOutput != nil {
+		result.Cost = nativeOutput.cost
+		result.CredentialSource = nativeOutput.credentialSource
+		if state == StateSucceeded {
+			report, err := parseNativeResult(nativeOutput.lastMessage())
+			if err != nil {
+				state, exitCode, outcome = StateFailed, 1, err
 			} else {
-				step, err = parseFactoryMessage(nativeOutput.lastMessage())
+				result.Report = report
 			}
-		}
-		if err != nil {
-			state, exitCode, outcome = StateFailed, 1, err
-		} else {
-			result.StepResult = step
 		}
 	}
 	var collectedTokenUsage *int64
@@ -411,27 +325,6 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		return result, &OutcomeError{State: state, ExitCode: exitCode, Cause: outcome}
 	}
 	return result, nil
-}
-
-func validRunID(value string) bool {
-	if len(value) != len("run_")+24 || !strings.HasPrefix(value, "run_") {
-		return false
-	}
-	_, err := hex.DecodeString(strings.TrimPrefix(value, "run_"))
-	return err == nil
-}
-
-func validArtifactKey(value string) bool {
-	if len(value) == 0 || len(value) > 128 {
-		return false
-	}
-	for _, character := range value {
-		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 func supervise(ctx context.Context, process *os.Process, processOwner string, timeout time.Duration, processResult <-chan processWait, inputResult <-chan error, streamErrors <-chan error, streamsDone <-chan struct{}, closeInput, closeStreams func(), outputWriters ...io.Writer) (State, int, error) {
@@ -573,7 +466,7 @@ func ResolveRepository(value string) (string, error) {
 		return "", fmt.Errorf("repository path %q is not a directory", absPath)
 	}
 	command := exec.Command("git", "-C", absPath, "rev-parse", "--show-toplevel")
-	command.Env = sanitizedEnvironment(os.Environ())
+	command.Env = SanitizedEnvironment(os.Environ())
 	output, err := command.Output()
 	if err != nil {
 		return "", fmt.Errorf("repository path %q is not inside a Git worktree", absPath)
@@ -784,11 +677,12 @@ func createDurableDirectory(path string) error {
 	return nil
 }
 
-func sanitizedEnvironment(environ []string) []string {
+// SanitizedEnvironment removes settings that would point Git at another repository.
+func SanitizedEnvironment(environ []string) []string {
 	clean := make([]string, 0, len(environ))
 	for _, entry := range environ {
 		name, _, _ := strings.Cut(entry, "=")
-		if isRepositoryGitEnvironment(name) || name == "MACHINIST_STEP_RESULT_PATH" || name == "MACHINIST_JOB_ID" || name == "MACHINIST_OUTPUT_DIR" || name == "MACHINIST_INPUT_DIR" || name == "MACHINIST_SCRATCH_DIR" || name == "MACHINIST_REVISION_PATH" {
+		if isRepositoryGitEnvironment(name) {
 			continue
 		}
 		clean = append(clean, entry)
@@ -874,37 +768,4 @@ func randomID(prefix string, bytes int) (string, error) {
 		return "", fmt.Errorf("generate %s ID: %w", prefix, err)
 	}
 	return prefix + "_" + hex.EncodeToString(buffer), nil
-}
-
-// mergeEnvironment applies only supported process credential settings, once per key.
-func mergeEnvironment(base, overrides []string) []string {
-	allowed := func(name string) bool {
-		switch name {
-		case "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "MACHINIST_GITHUB_REPOSITORY", "GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_CONFIG_COUNT":
-			return true
-		}
-		return strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")
-	}
-	values := map[string]string{}
-	order := []string{}
-	for index, list := range [][]string{base, overrides} {
-		for _, entry := range list {
-			name, _, ok := strings.Cut(entry, "=")
-			if !ok {
-				continue
-			}
-			if index == 1 && !allowed(name) {
-				continue
-			}
-			if _, exists := values[name]; !exists {
-				order = append(order, name)
-			}
-			values[name] = entry
-		}
-	}
-	result := make([]string, 0, len(order))
-	for _, name := range order {
-		result = append(result, values[name])
-	}
-	return result
 }

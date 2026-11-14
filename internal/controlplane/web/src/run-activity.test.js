@@ -4,25 +4,29 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
-test("active work shows real phases and distinguishes a live runner from a delayed heartbeat", async context => {
+const ticket = { id: "t_1", repo: "owner/repo", title: "Fix login", state: "pr_ready", issue_number: 5, pr_number: 7, created_by: "alice" };
+const entry = (id, kind, author, body) => ({ id, kind, author, body, created_at: "2026-10-15T19:59:00Z" });
+
+test("a ticket shows which runner took each run, its log and its figures", async context => {
   const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
   context.after(() => server.close());
-  const { RunActivity } = await server.ssrLoadModule("/src/task-detail.jsx");
-  const now = Date.parse("2026-10-15T20:00:00Z");
-  const run = { phase: "checking_pr", worker_name: "cluster-runner", started_at: "2026-10-15T19:59:00Z", heartbeat_at: "2026-10-15T19:59:56Z" };
-  const render = value => renderToStaticMarkup(React.createElement(RunActivity, { run: value, now }));
-  const active = render(run);
-  assert.match(active, /Checking the pull request and CI/);
-  assert.match(active, /Runner connected/);
-  assert.match(active, /heartbeat 4s ago/);
-  assert.match(active, /Elapsed 1m/);
-  assert.doesNotMatch(active, /The agent is working/);
-  const delayed = render({ ...run, heartbeat_at: "2026-10-15T19:59:10Z" });
-  assert.match(delayed, /Runner status delayed/);
-  assert.match(delayed, /50s ago/);
-  assert.doesNotMatch(delayed, /Runner connected/);
-  assert.match(render({}), /Waiting for runner status/);
-  assert.match(render({ ...run, phase: undefined }), /Runner active/);
-  assert.match(render({ ...run, heartbeat_at: "2026-10-15T19:59:38Z" }), /Runner status delayed/);
-  assert.match(render({ ...run, phase: "starting_sandbox" }), /Starting the Kubernetes sandbox/);
+  const { TicketView } = await server.ssrLoadModule("/src/task-detail.jsx");
+  const detail = {
+    ticket,
+    entries: [entry(1, "request", "alice", "Fix the **login**"), entry(2, "message", "machinist", "<script>alert(1)</script>Working on it")],
+    runs: [
+      { id: "run_1", kind: "agent", status: "succeeded", harness: "claude", runner: "mac-mini", tokens: 1200, cost: 0.5, started_at: "2026-10-15T19:59:00Z", ended_at: "2026-10-15T20:00:00Z" },
+      { id: "run_2", kind: "reviewer", reviewer: "review", status: "failed", harness: "claude", runner: "cluster" },
+      { id: "run_3", kind: "reviewer", reviewer: "security", status: "queued", harness: "claude" },
+    ],
+    figures: { ticket_id: "t_1", questions: 0, feedback_rounds: 0, tokens: 1200, elapsed: 1e9, merged: false },
+  };
+  const html = renderToStaticMarkup(React.createElement(TicketView, { detail }));
+  for (const want of [/succeeded on mac-mini/, /Reviewer: review/, /failed on cluster/, /Waiting for a runner/, /1,200 tokens/, /\$0\.50/, /issues\/5/, /pull\/7/, /<strong>login<\/strong>/, /Cancel ticket/, /Feedback rounds/]) assert.match(html, want);
+  assert.doesNotMatch(html, /<script>/);
+  const ended = renderToStaticMarkup(React.createElement(TicketView, { detail: { ...detail, ticket: { ...ticket, state: "done" } } }));
+  assert.doesNotMatch(ended, /Cancel ticket/);
+  const waiting = renderToStaticMarkup(React.createElement(TicketView, { detail: { ...detail, entries: [...detail.entries, entry(3, "message", "machinist", "Which database?")], ticket: { ...ticket, state: "needs_you", question: "Which database?" } } }));
+  assert.match(waiting, /Which database\?/);
+  assert.match(waiting, /Send reply/);
 });

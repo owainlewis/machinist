@@ -1,0 +1,22 @@
+[Unit]
+Description=Machinist runner
+After=network-online.target machinist-control-plane.service
+Wants=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=machinist
+Group=machinist
+Environment=HOME=/home/machinist
+WorkingDirectory=/home/machinist
+EnvironmentFile=/etc/machinist/runner.env
+ExecStart=/usr/local/bin/machinist runner start
+Restart=always
+RestartSec=5s
+# If the runner crashes, stop the agents it started.
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

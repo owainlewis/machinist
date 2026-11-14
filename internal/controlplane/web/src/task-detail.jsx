@@ -1,547 +1,206 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Markdown from "react-markdown";
-import { ArrowLeft, ArrowRight, Check } from "lucide-react";
-import { Tabs } from "@/components/ui/tabs";
+import { AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useExternalStoreRuntime } from "@assistant-ui/react";
+import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronRight, CircleAlert, LoaderCircle, Minus, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
-import { Artifacts, useTaskArtifacts } from "./artifacts.jsx";
-import { useRunEvents, ExecutionGraph, AgentReports, ActivityTimeline, PrimaryLog, EventDiagnostics, RunMarkdown } from "./native-activity.jsx";
-import { stageLabel } from "./stage-progress.jsx";
-import { taskPresentation } from "./task-presentation.js";
-import { jobDisplayTitle } from "./runs-board.js";
-import { formatDurationMillis, formatTokenUsage } from "./run-metrics.js";
-import {
-  State,
-  friendlyName,
-  stateLabel,
-  formatTimestamp,
-} from "./task-display.jsx";
+import { api, SignedOutError } from "./api.js";
+import { useRunEvents, ExecutionGraph, AgentReports, PrimaryLog, ScriptOutput } from "./native-activity.jsx";
+import { formatCost, formatDurationMillis, formatTokens, runDuration, stageStatus, ticketFigures } from "./run-metrics.js";
+import { State } from "./task-display.jsx";
+import { isActive, issueLink, prLink, ticketSource } from "./task-presentation.js";
+import { ticketThread } from "./ticket-thread.js";
 
-export function TaskDetail({
-  csrfToken,
-  job,
-  loaded,
-  error,
-  deleting,
-  onDelete,
-  onWorkflowAction,
-}) {
-  const artifacts = useTaskArtifacts(job, csrfToken);
-  const githubState = ["github", "local"].includes(job?.state_backend);
-  const factoryTask = githubState || Boolean(job?.workflow?.factory);
-  if (!job)
-    return (
-      <div className="p-8">
-        <a href="#/runs" className="text-sm underline">
-          Back to tasks
-        </a>
-        <p className="mt-4">{!loaded ? "Loading task…" : "Task not found."}</p>
-        {error && <p role="alert">{error}</p>}
-      </div>
-    );
-  if (job.recipe === "native-v1") return <NativeTaskDetail job={job} error={error} onWorkflowAction={onWorkflowAction} />;
-  if (factoryTask) return <FactoryTaskDetail job={job} error={error} onWorkflowAction={onWorkflowAction} />;
-  const terminal = ["succeeded", "failed", "cancelled"].includes(job.state);
-  const latest = job.runs.at(-1);
-  const lastCompleted = job.runs.findLast((run) => run.outcome === "complete");
-  const { result, history, stages } = taskPresentation(job);
-  const reviewing = job.state === "awaiting_approval";
-  return (
-    <div className="mx-auto max-w-[1200px] space-y-7 p-4 sm:p-6 lg:p-8">
-      <header className="space-y-4">
-        <Button asChild variant="ghost" size="sm" className="-ml-3">
-          <a href="#/runs">
-            <ArrowLeft className="size-4" />
-            Back to tasks
-          </a>
-        </Button>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <h1 className="min-w-0 break-words text-2xl font-semibold">
-            {jobDisplayTitle(job)}
-          </h1>
-          <State value={job.state} />
+const pollMillis = 2000;
+const finishedHint = "This ticket is finished";
+const composerHints = { working: "The agent is working", needs_you: "Reply to continue this ticket", pr_ready: "Comment on the pull request to ask for changes", done: finishedHint, failed: finishedHint, cancelled: finishedHint };
+
+export function RunActivity({ run }) {
+  const data = useRunEvents({ id: run.id, state: run.status });
+  const [selected, setSelected] = useState(null);
+  return <div className="run-activity">
+    {data.error && <p className="form-error" role="alert">{data.error}</p>}
+    <ExecutionGraph activities={data.children} runState={run.status} loaded={data.loaded} onSelect={setSelected} />
+    {data.children.length > 0 && <AgentReports activities={data.children} selectedID={selected} onSelect={setSelected} />}
+    <ScriptOutput scripts={data.scripts} />
+    <PrimaryLog logs={data.logs} />
+  </div>;
+}
+
+function runIcon(status) {
+  if (status === "running" || status === "queued") return [LoaderCircle, "text-info state-working"];
+  return status === "succeeded" ? [Check, "text-success"] : [CircleAlert, "text-warning"];
+}
+
+const stageIcons = { good: [Check, "text-success"], bad: [CircleAlert, "text-warning"], muted: [Minus, ""] };
+
+// The stages of a job, in the order they ran. They arrive when the run ends.
+function RunStages({ stages }) {
+  return <ol className="run-stages" aria-label="Stages">{stages.map(stage => {
+    const { label, tone } = stageStatus(stage);
+    const [Icon, color] = stageIcons[tone];
+    return <li key={stage.name} className="run-stage">
+      <Icon className={`size-3.5 shrink-0 ${color}`} aria-hidden="true" />
+      <strong>{stage.name}</strong>
+      <span>{stage.kind}</span>
+      <span>{label}</span>
+      {stage.state !== "skipped" && <span>{formatDurationMillis(stage.duration_millis ?? 0)}</span>}
+      {stage.tokens !== undefined && <span>{formatTokens(stage.tokens)} tokens</span>}
+      {stage.cost !== undefined && <span>{formatCost(stage.cost)}</span>}
+      {stage.error && <p className="run-stage-error">{stage.error}</p>}
+    </li>;
+  })}</ol>;
+}
+
+// A run sits in the conversation the way a tool call does: one line that opens.
+function RunStep({ data: run }) {
+  const [open, setOpen] = useState(false);
+  const name = run.kind === "reviewer" ? `Reviewer: ${run.reviewer}` : "Agent run";
+  const [Icon, tone] = runIcon(run.status);
+  return <div className="chat-step">
+    <button type="button" className="chat-step-row" aria-expanded={open} disabled={run.status === "queued"} onClick={() => setOpen(value => !value)}>
+      <Icon className={`size-3.5 shrink-0 ${tone}`} aria-hidden="true" />
+      <strong>{name}</strong>
+      <span>{run.status === "queued" ? "Waiting for a runner" : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
+      <span>{runDuration(run)}</span>
+      {run.tokens !== undefined && <span>{formatTokens(run.tokens)} tokens</span>}
+      {run.cost !== undefined && <span>{formatCost(run.cost)}</span>}
+      <ChevronRight className="chat-step-chevron size-3.5" aria-hidden="true" />
+    </button>
+    {run.stages?.length > 1 && <RunStages stages={run.stages} />}
+    {open && <RunActivity run={run} />}
+  </div>;
+}
+
+const ChatText = ({ text }) => <div className="run-prose"><Markdown skipHtml>{text}</Markdown></div>;
+const partComponents = { Text: ChatText, data: { by_name: { run: RunStep } } };
+
+function UserMessage({ author }) {
+  return <MessagePrimitive.Root className="chat-user">
+    {author && <div className="chat-author">{author}</div>}
+    <div className="chat-bubble"><MessagePrimitive.Parts components={partComponents} /></div>
+  </MessagePrimitive.Root>;
+}
+
+function ChatMessage({ message }) {
+  if (message.role === "user") return <UserMessage author={message.metadata?.custom?.author} />;
+  return <MessagePrimitive.Root className={message.role === "system" ? "chat-system" : "chat-assistant"}><MessagePrimitive.Parts components={partComponents} /></MessagePrimitive.Root>;
+}
+
+function TicketChat({ ticket, entries, runs, onChanged, onCancel, onError }) {
+  const messages = useMemo(() => ticketThread(entries, runs), [entries, runs]);
+  const working = ticket.state === "working";
+  const runtime = useExternalStoreRuntime({
+    messages,
+    convertMessage: message => message,
+    isRunning: working,
+    isDisabled: ticket.state !== "needs_you",
+    onNew: async message => {
+      const text = message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+      onError?.("");
+      try {
+        await api(`/api/v1/tickets/${encodeURIComponent(ticket.id)}/answer`, { method: "POST", body: { text } });
+        await onChanged?.();
+      } catch (failure) {
+        onError?.(failure.message);
+        runtime.thread.composer.setText(text);
+      }
+    },
+  });
+  return <AssistantRuntimeProvider runtime={runtime}>
+    <ThreadPrimitive.Root className="chat-thread">
+      <ThreadPrimitive.Viewport className="chat-viewport">
+        <div className="chat-messages">
+          <ThreadPrimitive.Messages>{({ message }) => <ChatMessage message={message} />}</ThreadPrimitive.Messages>
+          {working && <p className="chat-working" role="status">Working</p>}
         </div>
-        <p className="text-sm text-muted-foreground">
-          {job.repository} · {friendlyName(job.workflow?.name || job.command)}
-        </p>
-        {job.task?.source_url && (
-          <a
-            className="block text-sm text-primary underline"
-            href={job.task.source_url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Source ↗
-          </a>
-        )}
-        {error && (
-          <p role="alert" className="text-sm text-danger">
-            {error}
-          </p>
-        )}
-      </header>
-      {stages.length > 1 && (
-        <ol
-          className="flex flex-wrap items-center gap-3 text-sm"
-          aria-label="Task progress"
-        >
-          {stages.map((stage, index) => (
-            <li
-              key={index}
-              className="flex items-center gap-3"
-              aria-current={stage.current ? "step" : undefined}
-            >
-              {index > 0 && (
-                <ArrowRight
-                  className="size-4 text-muted-foreground"
-                  aria-hidden="true"
-                />
-              )}
-              <span
-                className={cn(
-                  "flex items-center gap-2 py-1",
-                  stage.current
-                    ? "font-medium text-foreground"
-                    : "text-muted-foreground",
-                )}
-              >
-                {stage.complete ? (
-                  <Check
-                    className="size-4 text-success"
-                    aria-label="Complete"
-                  />
-                ) : (
-                  <span className="text-xs">{index + 1}</span>
-                )}
-                {stageLabel(stage.name)}
-                {stage.skipped && <span className="text-xs text-muted-foreground">Skipped</span>}
-                {stage.current && (
-                  <span className="text-xs text-muted-foreground">
-                    {reviewing ? "Awaiting approval" : stateLabel(job.state)}
-                  </span>
-                )}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
-      <Tabs
-        key={job.id}
-        label="Task sections"
-        items={[
-          {
-            id: "result",
-            label: "Activity",
-            content: (
-              <Card
-                className="space-y-5 p-5 sm:p-6"
-                aria-label="Current result"
-              >
-                <h2 className="text-lg font-semibold">
-                  {resultTitle(job, result)}
-                </h2>
-                {result?.summary && (
-                  <p className="line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
-                    {result.summary}
-                  </p>
-                )}
-                {result?.error && result.error !== result.summary && (
-                  <p
-                    role="alert"
-                    className="whitespace-pre-wrap break-words text-sm text-danger"
-                  >
-                    {result.error}
-                  </p>
-                )}
-                {factoryTask && result?.github_url && <a className="block text-sm text-primary underline" href={result.github_url} target="_blank" rel="noreferrer">Open stage on GitHub</a>}
-                {job.workflow?.factory?.spec_url && <a className="block text-sm text-primary underline" href={job.workflow.factory.spec_url} target="_blank" rel="noreferrer">Open spec on GitHub</a>}
-                {result && job.task && !factoryTask && (
-                  <Artifacts
-                    key={result.id}
-                    artifacts={artifacts}
-                    runID={result.id}
-                    csrfToken={csrfToken}
-                  />
-                )}
-                {job.workflow && (
-                  <TaskActions
-                    key={`${job.id}:${latest?.id}:${job.state}`}
-                    job={job}
-                    result={result}
-                    onAction={onWorkflowAction}
-                  />
-                )}
-              </Card>
-            ),
-          },
-          ...(job.task && lastCompleted && !factoryTask
-            ? [
-                {
-                  id: "files",
-                  label: "Artifacts",
-                  content: (
-                    <Artifacts
-                      artifacts={artifacts}
-                      runID={lastCompleted.id}
-                      csrfToken={csrfToken}
-                    />
-                  ),
-                },
-              ]
-            : []),
-          ...(history.length
-            ? [
-                {
-                  id: "history",
-                  label: "Timeline",
-                  content: (
-                    <ol className="space-y-4">
-                      {history.map((run) => (
-                        <li
-                          key={run.id}
-                          className="space-y-3 border-l-2 border-border pl-4"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <h3 className="font-medium">
-                              {run.outcome === "changes_requested"
-                                ? "Changes requested"
-                                : stageLabel(run.command)}
-                            </h3>
-                            <State
-                              value={
-                                run.outcome === "complete"
-                                  ? "succeeded"
-                                  : run.outcome || run.state
-                              }
-                            />
-                          </div>
-                          {run.summary && (
-                            <p className="whitespace-pre-wrap leading-6">
-                              {run.summary}
-                            </p>
-                          )}
-                          {run.error && run.error !== run.summary && (
-                            <p className="text-danger">{run.error}</p>
-                          )}
-                          {job.task && !factoryTask && (
-                            <Artifacts
-                              artifacts={artifacts}
-                              runID={run.id}
-                              csrfToken={csrfToken}
-                            />
-                          )}
-                          {run.github_url && <a className="block text-sm text-primary underline" href={run.github_url} target="_blank" rel="noreferrer">Open stage on GitHub</a>}
-                          <ExecutionDetails run={run} />
-                        </li>
-                      ))}
-                    </ol>
-                  ),
-                },
-              ]
-            : []),
-          {
-            id: "agents",
-            label: "Agents",
-            content: <div className="divide-y divide-border">{job.runs.map(run => <article key={run.id} className="py-4"><div className="flex flex-wrap justify-between gap-3"><h2 className="text-sm font-medium">{stageLabel(run.command)}</h2><State value={run.state} /></div><ExecutionDetails run={run} /><section className="mt-3 text-xs"><h3 className="text-muted-foreground">Prompt snapshot</h3><pre className="mt-3 overflow-auto whitespace-pre-wrap break-words font-mono leading-6">{run.prompt || "Prompt snapshot is not reported for this attempt. View the current agent definition in Agents."}</pre></section></article>)}</div>,
-          },
-          {
-            id: "instructions",
-            label: "Instructions",
-            content: (
-              <pre className="whitespace-pre-wrap break-words font-sans leading-6">
-                {job.task
-                  ? job.task.spec || "Use the linked source for requirements."
-                  : job.prompt}
-              </pre>
-            ),
-          },
-          {
-            id: "details",
-            label: "Details",
-            content: (
-              <div className="space-y-6 text-sm">
-                {result?.revision && (
-                  <section>
-                    <h2 className="mb-2 font-medium">Requested changes</h2>
-                    <p className="whitespace-pre-wrap">
-                      {result.revision.feedback}
-                    </p>
-                  </section>
-                )}
-                {result?.summary && (
-                  <section>
-                    <h2 className="mb-2 font-medium">Full summary</h2>
-                    <p className="whitespace-pre-wrap leading-6">
-                      {result.summary}
-                    </p>
-                  </section>
-                )}
-                {result && <ExecutionDetails run={result} />}
-                <section className="border-t border-border pt-4">
-                  <dl className="my-4 grid gap-3 sm:grid-cols-3">
-                    <RunMetric label="Task ID" value={job.id} />
-                    <RunMetric label="Repository" value={job.repository} />
-                    <RunMetric
-                      label="Created"
-                      value={formatTimestamp(job.created_at)}
-                    />
-                    <RunMetric
-                      label="Updated"
-                      value={formatTimestamp(job.updated_at)}
-                    />
-                  </dl>
-                  {githubState ? job.task?.source_url && <Button asChild variant="outline"><a href={job.task?.source_url} target="_blank" rel="noreferrer">Open issue</a></Button> : <Button
-                    variant="outline"
-                    disabled={!terminal || deleting}
-                    onClick={() => onDelete(job)}
-                  >
-                    {deleting ? "Deleting…" : "Delete task"}
-                  </Button>}
-                </section>
-              </div>
-            ),
-          },
-        ]}
-      />
-    </div>
-  );
+        <ThreadPrimitive.ViewportFooter className="chat-footer">
+          <ThreadPrimitive.ScrollToBottom className="chat-scroll" aria-label="Scroll to the latest message"><ArrowDown className="size-4" aria-hidden="true" /></ThreadPrimitive.ScrollToBottom>
+          <ComposerPrimitive.Root className="chat-composer">
+            <ComposerPrimitive.Input className="chat-input" rows={1} placeholder={composerHints[ticket.state]} aria-label="Your answer" />
+            <div className="chat-composer-row">
+              {working
+                ? <button type="button" className="chat-send" aria-label="Stop and cancel ticket" onClick={onCancel}><Square className="size-3.5" fill="currentColor" aria-hidden="true" /></button>
+                : <ComposerPrimitive.Send className="chat-send" aria-label="Send reply"><ArrowUp className="size-4" aria-hidden="true" /></ComposerPrimitive.Send>}
+            </div>
+          </ComposerPrimitive.Root>
+        </ThreadPrimitive.ViewportFooter>
+      </ThreadPrimitive.Viewport>
+    </ThreadPrimitive.Root>
+  </AssistantRuntimeProvider>;
 }
 
-function resultExplanation(run) {
-  const message = run?.summary || run?.error || "";
-  return /^invalid character .*looking for beginning of value/.test(message)
-    ? "The primary agent returned a response that could not be read as the required result format. This attempt was marked failed."
-    : message;
-}
-
-function NativeAttempt({ run, number }) {
-  const data = useRunEvents(run);
-  return <article className="run-attempt">
-    <header className="run-section-heading"><h2>Attempt {number}</h2><State value={run.state} /></header>
-    <RunMarkdown>{resultExplanation(run) || "No result was reported."}</RunMarkdown>
-    {data.error && <p role="status" className="run-connection-error">{data.error} Showing the last received activity.</p>}
-    <ActivityTimeline loaded={data.loaded} runState={run.state}>{data.children}</ActivityTimeline>
-  </article>;
-}
-
-function NativeTaskDetail({ job, error, onWorkflowAction }) {
-  const [view,setView]=useState("overview");
- const [selectedAgent,setSelectedAgent]=useState(null);
- useEffect(()=>{setView("overview");setSelectedAgent(null);},[job.id]);
-  const latest = job.runs.at(-1);
-  const data = useRunEvents(latest);
-  const finished = !["running", "queued"].includes(job.state);
-  const summary = resultExplanation(latest);
-  return <article className="factory-task native-run-detail">
-    <header className="factory-task-header">
-      <a href="#/runs" className="factory-back"><ArrowLeft className="size-4" aria-hidden="true" />All runs</a>
-      <div className="factory-task-title"><h1>{jobDisplayTitle(job)}</h1><State value={job.state} /></div>
-      <div className="factory-task-meta"><span>{job.repository}</span><span>{latest?.executor?.startsWith("claude") ? "Claude Code" : latest?.executor?.startsWith("codex") ? "Codex" : latest?.executor || "Awaiting runner"}</span>{latest && <span>Attempt {job.runs.length}</span>}{latest?.duration_millis != null && <span>{formatDurationMillis(latest.duration_millis)}</span>}</div>
+export function TicketView({ detail, onChanged, onCancel, onError, actionError }) {
+  const { ticket, entries, runs, figures } = detail;
+  const issue = issueLink(ticket);
+  const pr = prLink(ticket);
+  return <div className="chat-page">
+    <header className="chat-header">
+      <a className="icon-button" href="#/work" aria-label="Back to Work"><ArrowLeft className="size-[18px]" aria-hidden="true" /></a>
+      <h1>{ticket.title || ticket.id}</h1>
     </header>
-    {error && <p role="alert" className="run-connection-error">{error}</p>}
-    {job.github_sync_error && <p role="status" className="run-connection-error">{job.github_sync_error}</p>}
-    <Tabs key={job.id} label="Run sections" value={view} onValueChange={setView} items={[
-      { id: "overview", label: "Overview", content: <>
-        <section className="run-outcome" aria-label="Run outcome"><h2>{job.state === "succeeded" ? "Result" : job.state === "failed" ? "What went wrong" : job.state === "blocked" ? "Needs your input" : "Current status"}</h2>
-          {latest?.phase === "stopping" && <p role="status">Stopping agent processes and collecting final activity…</p>}
-          {latest?.phase === "stop_unconfirmed" && <p role="status">Cancellation was requested, but process shutdown could not be confirmed.</p>}
-          {summary && <RunMarkdown>{summary}</RunMarkdown>}
-          {job.state === "running" ? <RunActivity run={latest} /> : !summary && <p className="run-empty">{job.state === "queued" ? "Waiting for a runner to pick up this task." : "No result was reported."}</p>}
-          {job.workflow?.factory?.pr_url && <a className="factory-spec-link" href={job.workflow.factory.pr_url} target="_blank" rel="noreferrer">Open pull request<ArrowRight size={16} aria-hidden="true" /></a>}
-          <TaskActions key={`${job.id}:${latest?.id}:${job.state}:${job.hold_version || 0}`} job={job} result={latest} onAction={onWorkflowAction} />
-        </section>
-        {data.error && <p role="status" className="run-connection-error">{data.error} Showing the last received activity.</p>}
-        <ExecutionGraph activities={data.children} runState={latest?.state} loaded={data.loaded} onSelect={id=>{setSelectedAgent(id);setView("reports");}} />
-        {finished && job.runs.length > 1 && <p className="run-history-note">This task took {job.runs.length} attempts. Earlier results are preserved in the Attempts tab.</p>}
-      </> },
-      { id: "reports", label: "Agent reports", content: <AgentReports activities={data.children} selectedID={selectedAgent} onSelect={setSelectedAgent} /> },
-      { id: "log", label: "Primary log", content: <PrimaryLog logs={data.logs} /> },
-      ...(job.runs.length > 1 ? [{ id: "attempts", label: `Attempts (${job.runs.length})`, content: <section aria-label="Previous attempts"><h2 className="run-panel-title">Attempt history</h2><p className="run-section-description">Each retry keeps the earlier result and agent activity.</p>{[...job.runs].reverse().map((run, index) => <NativeAttempt key={run.id} run={run} number={job.runs.length - index} />)}</section> }] : []),
-      { id: "details", label: "Details", content: <section className="run-details"><h2 className="run-panel-title">Execution details</h2>{latest && <ExecutionDetails run={latest} />}<h2 className="run-panel-title">Original request</h2><RunMarkdown>{job.task?.spec || job.prompt}</RunMarkdown>{job.task?.source_url && <a className="factory-spec-link" href={job.task.source_url} target="_blank" rel="noreferrer">Open source issue</a>}<EventDiagnostics events={data.events} /></section> },
-    ]} />
-  </article>;
-}
-
-function FactoryTaskDetail({ job, error, onWorkflowAction }) {
-  const { result, history, stages } = taskPresentation(job);
-  const latest = job.runs.at(-1);
-  const progress = job.workflow?.factory;
-  return (
-    <article className="factory-task">
-      <header className="factory-task-header">
-        <a href="#/runs" className="factory-back"><ArrowLeft className="size-4" aria-hidden="true" />All runs</a>
-        <div className="factory-task-title"><h1>{jobDisplayTitle(job)}</h1><State value={job.state} /></div>
-        <div className="factory-task-meta"><span>{job.repository}</span>{job.task?.source_url && <><span>·</span><a href={job.task.source_url} target="_blank" rel="noreferrer">Open issue</a></>}</div>
-      </header>
-      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-      {job.github_sync_error && <p role="status" className="text-sm text-warning">{job.github_sync_error}</p>}
-      {job.recipe !== "native-v1" && <ol className="factory-progress" aria-label="Task progress">
-        {stages.map(stage => <li key={stage.name} aria-current={stage.current ? "step" : undefined} className={cn(stage.current && "is-current", stage.complete && "is-complete")}>
-          {stage.complete && <Check className="size-3.5" aria-label="Complete" />}{job.recipe === "single" ? "Agent" : job.recipe === "answer" ? "Answer" : stageLabel(stage.name)}{stage.skipped && <span>Skipped</span>}
-        </li>)}
-      </ol>}
-      <Tabs key={job.id} label="Run sections" items={[
-        {id:"activity",label:"Activity",content:<>      <section className="factory-result" aria-label="Current result">
-        <h2>{resultTitle(job, result)}</h2>
-        {result?.summary && <p className="factory-summary">{job.state === "failed" && /^invalid character .*looking for beginning of value/.test(result.summary) ? "The agent returned an unreadable result. Retry this stage, or request changes on the existing PR." : result.summary}</p>}
-        {job.maintenance && result?.report && <div className="markdown-prompt" aria-label="Maintenance report"><Markdown>{result.report}</Markdown></div>}
-        {result?.error && result.error !== result.summary && <p role="alert" className="factory-summary text-danger">{result.error}</p>}
-        {job.state === "running" ? <RunActivity run={latest} /> : !result?.summary && <p className="factory-summary">{job.state === "queued" ? "Waiting for a runner to pick up this task." : "No result was reported."}</p>}
-        {progress?.spec_url && <a className="factory-spec-link" href={progress.spec_url} target="_blank" rel="noreferrer">Open spec on GitHub<ArrowRight className="size-4" aria-hidden="true" /></a>}
-        <TaskActions key={`${job.id}:${latest?.id}:${job.state}:${job.hold_version || 0}`} job={job} result={result} onAction={onWorkflowAction} />
-      </section>
-      {history.length > 0 && <section className="factory-history" aria-label="Previous attempts"><h2>Earlier activity</h2><ol>{history.map(run => <li key={run.id}><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{stageLabel(run.command)}</span><State value={run.outcome === "complete" ? "succeeded" : run.outcome || run.state} /></div><p>{run.summary || run.error}</p>{run.github_url && <a href={run.github_url} target="_blank" rel="noreferrer">View on GitHub</a>}</li>)}</ol></section>}
-</>},
-        {id:"details",label:"Details",content:<>      <section className="factory-details"><h2 className="text-sm font-medium">Run details</h2>
-        {result && <ExecutionDetails run={result} />}
-        <dl className="mt-5 grid gap-3 sm:grid-cols-2"><RunMetric label="Task ID" value={job.id} /><RunMetric label="Updated" value={formatTimestamp(job.updated_at)} /></dl>
-        {result?.github_url && <a className="mt-5 block text-sm text-primary underline" href={result.github_url} target="_blank" rel="noreferrer">Open stage on GitHub</a>}
-        <h2 className="mt-6 mb-2 text-sm font-medium">Original request</h2><p className="whitespace-pre-wrap break-words text-sm leading-6">{job.task?.spec || job.prompt}</p>
-      </section></>},
-      ]} />
-
-    </article>
-  );
-}
-
-export function RunActivity({ run, now }) {
-  const [clock, setClock] = useState(Date.now);
-  useEffect(() => {
-    if (now !== undefined) return;
-    const timer = setInterval(() => setClock(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [now]);
-  now ??= clock;
-  const phases = { preparing: "Preparing the workspace", checking_pr: "Checking the pull request and CI", starting_sandbox: "Starting the Kubernetes sandbox", running_agent: "Agent running", collecting_result: "Collecting the result and stopping the sandbox", publishing: "Publishing the branch and pull request" };
-  const age = run?.heartbeat_at ? Math.max(0, Math.floor((now - Date.parse(run.heartbeat_at)) / 1000)) : null;
-  const elapsed = run?.started_at ? Math.max(0, now - Date.parse(run.started_at)) : null;
-  return <div className="space-y-2">
-    <p role="status" className="factory-summary">{phases[run?.phase] || (age === null ? "Waiting for runner status" : "Runner active")}</p>
-    <p className={cn("text-xs", age !== null && age > 20 ? "text-warning" : "text-muted-foreground")}>
-      {run?.worker_name && <span>{run.worker_name} · </span>}
-      {age === null ? "No heartbeat received yet." : age > 20 ? `Runner status delayed. Last heartbeat ${age}s ago. The run may be interrupted.` : `Runner connected · heartbeat ${age}s ago.`}
-      {elapsed !== null && <span> · Elapsed {formatDurationMillis(Math.floor(elapsed / 1000) * 1000)}</span>}
-    </p>
-  </div>;
-}
-
-function ExecutionDetails({ run }) {
-  return (
-    <section
-      aria-label="execution details"
-      className="text-xs text-muted-foreground"
-    >
-      <dl className="mt-3 grid gap-3 sm:grid-cols-3">
-        <RunMetric label="Started" value={formatTimestamp(run.started_at)} />
-        <RunMetric
-          label="Completed"
-          value={formatTimestamp(run.completed_at)}
-        />
-        <RunMetric
-          label="Exit code"
-          value={
-            run.exit_code === undefined ? "Unavailable" : String(run.exit_code)
-          }
-        />
-        <RunMetric label="Run ID" value={run.id} mono />
-        <RunMetric label="Executor" value={run.executor} />
-        <RunMetric label="Worker" value={run.worker_name || "Unassigned"} />
-        <RunMetric
-          label="Duration"
-          value={
-            Number.isSafeInteger(run.duration_millis)
-              ? formatDurationMillis(run.duration_millis)
-              : "Not available"
-          }
-        />
-        <RunMetric label="Model" value={run.model || "Executor default"} />
-        <RunMetric
-          label="Tokens"
-          value={
-            formatTokenUsage(run.token_usage) === "Unavailable"
-              ? "Not reported"
-              : formatTokenUsage(run.token_usage)
-          }
-        />
-      </dl>
-    </section>
-  );
-}
-
-function RunMetric({ label, value, mono = false }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd
-        className={cn("mt-0.5 truncate text-sm", mono && "font-mono")}
-        title={value}
-      >
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-export function TaskActions({ job, result, onAction }) {
-  const [stopped, setStopped] = useState(false);
-  const [requesting, setRequesting] = useState(false);
-  const [feedback, setFeedback] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [releaseConfirmed, setReleaseConfirmed] = useState(false);
-  const latest = job.runs.at(-1);
-  const prURL = job.workflow?.factory?.pr_url || (result || latest)?.summary?.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/)?.[0];
-  const needsStopped = (["interrupted", "cancelled"].includes(job.state) || latest?.cleanup_unconfirmed) && !latest?.process_stopped;
-  const retryable = ["blocked", "failed", "interrupted", "cancelled"].includes(job.state);
-  const humanDecision = job.state === "blocked" && job.workflow?.factory?.verdict === "human_decision_needed";
-  const canRequest = job.recipe !== "answer" && (job.state === "awaiting_merge" || humanDecision || (job.state === "awaiting_approval" && latest?.reviewed_run_id) || (["failed", "blocked"].includes(job.state) && latest?.command === "review" && prURL));
-  const stage = job.recipe === "single" ? "agent" : job.recipe === "answer" ? "answer" : stageLabel(latest?.command).toLowerCase();
-  const act = async name => {
-    setBusy(true);
-    try { await onAction(job, name, stopped, ["request_changes", "retry"].includes(name) ? feedback : name === "publication_hold" ? "Operator requested private publication hold" : ""); }
-    finally { setBusy(false); }
-  };
-  const dismissAttention = (["github", "local"].includes(job.state_backend) || Boolean(job.workflow?.factory)) && !job.inbox_cleared && ["blocked", "failed", "interrupted", "timed_out"].includes(job.state) && <Button variant="ghost" disabled={busy} onClick={() => act("clear_inbox")}>Dismiss from attention</Button>;
-  const stopConfirmation = needsStopped && <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={stopped} onChange={event => setStopped(event.target.checked)} />I have verified the previous worker process has stopped.</label>;
-  if (job.publication_hold) return <section className="publication-hold"><h3>Publication held private</h3><p>{job.publication_hold}</p><p>Review the content and destination before releasing this hold. Retry and prompt changes cannot release it.</p><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={releaseConfirmed} onChange={event => setReleaseConfirmed(event.target.checked)} />I allow publication to {job.repository}.</label>{stopConfirmation}<Button className="mt-4" variant="outline" disabled={busy || !releaseConfirmed || (needsStopped && !stopped)} onClick={() => act("release_publication")}>Release publication hold</Button>{dismissAttention}</section>;
-  return <div className="task-actions">
-    {humanDecision ? <p className="action-hint">The reviewer needs your judgment. Send a decision to Build, or retry Review after resolving the question.</p> : job.state === "blocked" ? <p className="action-hint">Resolve the blocker or reply to the agent before retrying.</p> : needsStopped ? <p className="action-hint">Confirm the previous process has stopped before continuing.</p> : job.state === "awaiting_merge" ? <p className="action-hint">{job.recipe === "single" ? "Single-agent mode has no independent review. Inspect the PR and CI on GitHub before merging, then check its status here." : "Review and CI must match the current PR head. Merge on GitHub when ready, then check its status here."}</p> : null}
-    {(retryable || requesting) && <label className="block"><span className="field-label">{requesting ? "What needs to change?" : "Reply to the agent (optional)"}</span><textarea className="field-control min-h-24" value={feedback} onChange={event => setFeedback(event.target.value)} maxLength={4000} placeholder={requesting ? "Explain the change to make on the existing PR." : "Answer the question or explain what changed."} /></label>}
-    {stopConfirmation}
-    <div className="task-action-row">
-      {requesting ? <><Button disabled={busy || !feedback.trim()} onClick={() => act("request_changes")}>{busy ? "Sending…" : "Send feedback and revise"}</Button><Button variant="outline" disabled={busy} onClick={() => setRequesting(false)}>Keep reviewing</Button></> : <>
-        {job.state === "awaiting_approval" && <Button disabled={busy} onClick={() => act("approve")}>Approve and start {stage}</Button>}
-        {job.state === "awaiting_merge" && <Button disabled={busy} onClick={() => act("complete_merge")}>Check merge status</Button>}
-        {humanDecision && <Button disabled={busy} onClick={() => setRequesting(true)}>Request changes</Button>}
-        {retryable && <Button variant={humanDecision ? "outline" : "default"} disabled={busy || (needsStopped && !stopped)} onClick={() => act("retry")}>Retry {stage}</Button>}
-        {canRequest && !humanDecision && <Button variant="outline" disabled={busy} onClick={() => setRequesting(true)}>Request changes</Button>}
-      </>}
-      {prURL && <Button asChild variant="outline"><a href={prURL} target="_blank" rel="noreferrer">Open PR</a></Button>}
-      <div className="task-secondary-actions">
-        {dismissAttention}
-        {(retryable || ["awaiting_approval", "awaiting_merge"].includes(job.state)) && <Button variant="ghost" disabled={busy || (needsStopped && !stopped)} onClick={() => act("publication_hold")}>Keep private</Button>}
-        {["queued", "running", "awaiting_approval", "awaiting_merge", "blocked", "interrupted"].includes(job.state) && <Button variant="ghost" disabled={busy} onClick={() => act("cancel")}>Cancel task</Button>}
+    <div className="ticket-body">
+      <div className="ticket-main">
+        {actionError && <p className="form-error chat-error" role="alert">{actionError}</p>}
+        <TicketChat ticket={ticket} entries={entries} runs={runs} onChanged={onChanged} onCancel={onCancel} onError={onError} />
       </div>
+      <aside className="ticket-details" aria-label="Details">
+        <dl className="detail-rows">
+          <div><dt>Status</dt><dd><State value={ticket.state} /></dd></div>
+          <div><dt>Repository</dt><dd>{ticket.repo}</dd></div>
+          <div><dt>Source</dt><dd>{issue ? <a href={issue} target="_blank" rel="noreferrer">{ticketSource(ticket)}</a> : ticketSource(ticket)}</dd></div>
+          {pr && <div><dt>Pull request</dt><dd><a href={pr} target="_blank" rel="noreferrer">PR #{ticket.pr_number}</a></dd></div>}
+          <div><dt>From</dt><dd>{ticket.created_by}</dd></div>
+        </dl>
+        <dl className="detail-rows detail-figures">{ticketFigures(figures).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+        {isActive(ticket) && ticket.state !== "working" && <Button variant="outline" size="sm" onClick={onCancel}>Cancel ticket</Button>}
+      </aside>
     </div>
   </div>;
 }
 
-function resultTitle(job, result) {
-  const command = job.recipe === "single" ? "Agent" : job.recipe === "answer" ? "Answer" : stageLabel(job.runs.at(-1)?.command);
-  switch (job.state) {
-    case "awaiting_approval":
-      return result
-        ? `${stageLabel(result.command)} ready for review`
-        : `Ready to start ${command.toLowerCase()}`;
-    case "running":
-      return `${command} in progress`;
-    case "queued":
-      return `${command} queued`;
-    case "awaiting_merge":
-      return "Pull request ready for your review";
-    case "succeeded":
-      return "Task complete";
-    default:
-      return `${command} · ${stateLabel(job.state)}`;
+// The app keys this by ticket, so each ticket has its own instance. A reply that
+// arrives for a ticket someone has left can then never show under another one.
+export function TaskDetail({ ticketID, onSignedOut, onChanged }) {
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const refresh = useCallback(async () => {
+    try {
+      const next = await api(`/api/v1/tickets/${encodeURIComponent(ticketID)}`);
+      setDetail(next);
+      setError("");
+    } catch (failure) {
+      if (failure instanceof SignedOutError) onSignedOut?.();
+      else setError(failure.message);
+    }
+  }, [ticketID, onSignedOut]);
+  useEffect(() => {
+    let stopped = false;
+    let timer;
+    const load = async () => {
+      await refresh();
+      if (!stopped) timer = window.setTimeout(load, pollMillis);
+    };
+    load();
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [refresh]);
+  async function changed() {
+    await refresh();
+    await onChanged?.();
   }
+  async function cancel() {
+    if (!window.confirm("Cancel this ticket and stop any run in progress? Its pull request stays open.")) return;
+    setActionError("");
+    try {
+      await api(`/api/v1/tickets/${encodeURIComponent(ticketID)}/cancel`, { method: "POST" });
+      await changed();
+    } catch (failure) {
+      setActionError(failure.message);
+    }
+  }
+  if (!detail) return <div className="page">
+    <a className="back-link" href="#/work"><ArrowLeft className="size-3.5" aria-hidden="true" />Work</a>
+    {error ? <p className="form-error" role="alert">{error}</p> : <p className="page-note" role="status">Loading ticket</p>}
+  </div>;
+  return <TicketView detail={detail} onChanged={changed} onCancel={cancel} onError={setActionError} actionError={actionError} />;
 }

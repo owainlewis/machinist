@@ -20,6 +20,11 @@ import (
 	"github.com/owainlewis/machinist/internal/config"
 )
 
+const (
+	testPrompt  = "complete prompt\n"
+	testTimeout = 5 * time.Second
+)
+
 func TestEscapedDescendantHelper(t *testing.T) {
 	if os.Getenv("MACHINIST_TEST_ESCAPED") != "1" {
 		return
@@ -51,6 +56,8 @@ func TestExecuteStreamsPromptAndPersistsOrderedResult(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
 		Command:       helperAgent("echo", time.Second),
 		Repository:    repository,
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: dataDirectory,
 		Stdout:        &stdout,
 		Stderr:        &stderr,
@@ -131,6 +138,8 @@ func TestExecutePersistsOnlyExplicitValidTokenUsage(t *testing.T) {
 			result, err := Execute(t.Context(), Options{
 				Command:       helperAgent(test.mode, time.Second),
 				Repository:    newGitRepository(t),
+				Prompt:        testPrompt,
+				Environment:   os.Environ(),
 				DataDirectory: t.TempDir(),
 				Stdout:        io.Discard,
 				Stderr:        io.Discard,
@@ -165,6 +174,8 @@ func TestExecuteInjectsMachinistEnvironment(t *testing.T) {
 	result, err := Execute(t.Context(), Options{
 		Command:       helperAgent("environment", time.Second),
 		Repository:    repository,
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        &stdout,
 		Stderr:        io.Discard,
@@ -186,6 +197,8 @@ func TestExecuteUsesManagedRunIDAndRejectsUnsafeIDs(t *testing.T) {
 		RunID:         runID,
 		Command:       helperAgent("echo", time.Second),
 		Repository:    repository,
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: dataDirectory,
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -193,23 +206,8 @@ func TestExecuteUsesManagedRunIDAndRejectsUnsafeIDs(t *testing.T) {
 	if err != nil || result.ID != runID {
 		t.Fatalf("result = %#v, %v", result, err)
 	}
-	attempt, err := Execute(t.Context(), Options{
-		RunID:         runID,
-		ArtifactKey:   "lease_abcdef0123456789",
-		Command:       helperAgent("echo", time.Second),
-		Repository:    repository,
-		DataDirectory: dataDirectory,
-		Stdout:        io.Discard,
-		Stderr:        io.Discard,
-	})
-	if err != nil || attempt.ID != runID || filepath.Base(filepath.Dir(attempt.EventsPath)) != "lease_abcdef0123456789" {
-		t.Fatalf("attempt result = %#v, %v", attempt, err)
-	}
 	if _, err := Execute(t.Context(), Options{RunID: "../escape", Command: helperAgent("echo", time.Second), Repository: repository, DataDirectory: dataDirectory, Stdout: io.Discard, Stderr: io.Discard}); err == nil || !strings.Contains(err.Error(), "invalid run ID") {
 		t.Fatalf("unsafe run ID error = %v", err)
-	}
-	if _, err := Execute(t.Context(), Options{RunID: runID, ArtifactKey: "../escape", Command: helperAgent("echo", time.Second), Repository: repository, DataDirectory: dataDirectory, Stdout: io.Discard, Stderr: io.Discard}); err == nil || !strings.Contains(err.Error(), "invalid artifact key") {
-		t.Fatalf("unsafe artifact key error = %v", err)
 	}
 }
 
@@ -224,6 +222,8 @@ func TestExecuteUsesRepositoryAsWorkingDirectory(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
 		Command:       agent,
 		Repository:    nested,
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        &stdout,
 		Stderr:        io.Discard,
@@ -247,12 +247,13 @@ func TestExecuteIgnoresInheritedRepositoryGitEnvironment(t *testing.T) {
 		Command: config.ResolvedCommand{
 			Name:       "plan",
 			Command:    []string{"/bin/sh", "-c", "cat >/dev/null; git rev-parse --show-toplevel"},
-			Prompt:     "complete prompt\n",
 			Timeout:    time.Second,
 			Definition: "/definition/config.toml",
 			Hash:       "test-hash",
 		},
 		Repository:    requested,
+		Prompt:        testPrompt,
+		Environment:   SanitizedEnvironment(os.Environ()),
 		DataDirectory: t.TempDir(),
 		Stdout:        &stdout,
 		Stderr:        io.Discard,
@@ -270,6 +271,8 @@ func TestExecuteFinishesWhenDescendantKeepsOutputPipesOpen(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
 		Command:       helperAgent("background", 10*time.Second),
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -288,7 +291,6 @@ func TestExecuteFinishesWhenSessionDetachedDescendantKeepsPipesOpen(t *testing.T
 	agent := config.ResolvedCommand{
 		Name:       "plan",
 		Command:    []string{"/bin/sh", "-c", script, "machinist-helper", os.Args[0], marker},
-		Prompt:     "complete prompt\n",
 		Timeout:    5 * time.Second,
 		Definition: "/definition/config.toml",
 		Hash:       "test-hash",
@@ -297,6 +299,8 @@ func TestExecuteFinishesWhenSessionDetachedDescendantKeepsPipesOpen(t *testing.T
 	result, err := Execute(context.Background(), Options{
 		Command:       agent,
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -315,7 +319,6 @@ func TestExecuteFinishesWhenSessionDetachedDescendantKeepsAllPipesOpen(t *testin
 	agent := config.ResolvedCommand{
 		Name:       "plan",
 		Command:    []string{"/bin/sh", "-c", script, "machinist-helper", os.Args[0], marker},
-		Prompt:     strings.Repeat("prompt", 40<<10),
 		Timeout:    5 * time.Second,
 		Definition: "/definition/config.toml",
 		Hash:       "test-hash",
@@ -324,6 +327,8 @@ func TestExecuteFinishesWhenSessionDetachedDescendantKeepsAllPipesOpen(t *testin
 	result, err := Execute(context.Background(), Options{
 		Command:       agent,
 		Repository:    newGitRepository(t),
+		Prompt:        strings.Repeat("prompt", 40<<10),
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -407,6 +412,8 @@ func TestExecuteSucceedsWhenAgentReadsExactPromptLength(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
 		Command:       helperAgent("exact-prompt", time.Second),
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -433,6 +440,8 @@ func TestExecuteStreamsAndRecordsOutputWithoutChangingBytes(t *testing.T) {
 			result, err := Execute(context.Background(), Options{
 				Command:       helperAgent(test.mode, 10*time.Second),
 				Repository:    newGitRepository(t),
+				Prompt:        testPrompt,
+				Environment:   os.Environ(),
 				DataDirectory: t.TempDir(),
 				Stdout:        &stdout,
 				Stderr:        io.Discard,
@@ -459,6 +468,8 @@ func TestExecuteStreamsOutputBeforeAgentExits(t *testing.T) {
 		_, err := Execute(context.Background(), Options{
 			Command:       helperAgent("stream", 5*time.Second),
 			Repository:    repository,
+			Prompt:        testPrompt,
+			Environment:   os.Environ(),
 			DataDirectory: dataDirectory,
 			Stdout:        writer,
 			Stderr:        io.Discard,
@@ -483,6 +494,8 @@ func TestExecuteTreatsOutputWriteFailureAsRuntimeFailure(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
 		Command:       helperAgent("echo", time.Second),
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        errorWriter{err: syscall.EPIPE},
 		Stderr:        io.Discard,
@@ -498,6 +511,8 @@ func TestExecuteReturnsAgentExitStatusAndPersistsFailure(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
 		Command:       helperAgent("fail", time.Second),
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -517,6 +532,8 @@ func TestExecuteTimesOutAgent(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
 		Command:       helperAgent("sleep", 50*time.Millisecond),
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -537,6 +554,8 @@ func TestExecuteCancelsAgent(t *testing.T) {
 	result, err := Execute(ctx, Options{
 		Command:       helperAgent("sleep", time.Minute),
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -556,12 +575,13 @@ func TestExecuteDoesNotStartAgentWhenAlreadyCancelled(t *testing.T) {
 		Command: config.ResolvedCommand{
 			Name:       "plan",
 			Command:    []string{"/bin/sh", "-c", `touch "$1"`, "machinist-test", marker},
-			Prompt:     "complete prompt\n",
 			Timeout:    time.Second,
 			Definition: "/definition/config.toml",
 			Hash:       "test-hash",
 		},
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -591,12 +611,13 @@ func TestExecuteRecordsCommandStartFailure(t *testing.T) {
 		Command: config.ResolvedCommand{
 			Name:       "missing",
 			Command:    []string{filepath.Join(t.TempDir(), "not-an-agent")},
-			Prompt:     "prompt",
 			Timeout:    time.Second,
 			Definition: "config.toml",
 			Hash:       "hash",
 		},
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
@@ -663,7 +684,6 @@ func helperAgent(mode string, timeout time.Duration) config.ResolvedCommand {
 	return config.ResolvedCommand{
 		Name:       "plan",
 		Command:    []string{"/bin/sh", "-c", script},
-		Prompt:     "complete prompt\n",
 		Timeout:    timeout,
 		Definition: "/definition/config.toml",
 		Hash:       "test-hash",
@@ -688,6 +708,8 @@ func assertBlockedOutputStops(t *testing.T, ctx context.Context, timeout time.Du
 	result, err := Execute(ctx, Options{
 		Command:       helperAgent("flood", timeout),
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        writer,
 		Stderr:        io.Discard,

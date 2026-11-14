@@ -52,7 +52,7 @@ func TestCancelStopsDetachedDescendantButNotSentinel(t *testing.T) {
 	defer cancel()
 	done := make(chan Result, 1)
 	go func() {
-		res, _ := Execute(ctx, Options{Repository: ".", DataDirectory: dir, Environment: []string{"MACHINIST_TREE_HELPER=parent", "MACHINIST_TREE_PID=" + pidPath}, Command: config.ResolvedCommand{Name: "detached", Command: []string{os.Args[0], "-test.run=^TestDetachedTreeHelper$"}, Timeout: time.Minute}, Stdout: io.Discard, Stderr: io.Discard})
+		res, _ := Execute(ctx, Options{Repository: ".", Prompt: testPrompt, Environment: os.Environ(), DataDirectory: dir, Command: config.ResolvedCommand{Name: "detached", Command: []string{os.Args[0], "-test.run=^TestDetachedTreeHelper$"}, Timeout: time.Minute}, Stdout: io.Discard, Stderr: io.Discard})
 		done <- res
 	}()
 	var pid int
@@ -104,7 +104,7 @@ func TestCancellationDoesNotConfirmFailedProcessEnumeration(t *testing.T) {
 	t.Setenv("PATH", bin)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	result, err := Execute(ctx, Options{Repository: ".", DataDirectory: t.TempDir(), Command: config.ResolvedCommand{Name: "scanner-failure", Command: []string{"/bin/sh", "-c", "/bin/sleep 60"}, Timeout: time.Minute}, Stdout: io.Discard, Stderr: io.Discard})
+	result, err := Execute(ctx, Options{Repository: ".", Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Command: config.ResolvedCommand{Name: "scanner-failure", Command: []string{"/bin/sh", "-c", "/bin/sleep 60"}, Timeout: time.Minute}, Stdout: io.Discard, Stderr: io.Discard})
 	if err == nil || result.State != StateFailed || result.ProcessStopped || !result.CleanupUnconfirmed {
 		t.Fatalf("false shutdown confirmation: %+v %v", result, err)
 	}
@@ -113,7 +113,7 @@ func TestCancellationDoesNotConfirmFailedProcessEnumeration(t *testing.T) {
 func TestCancelledBeforeLaunchIsAlreadyStopped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	result, err := Execute(ctx, Options{Repository: ".", DataDirectory: t.TempDir(), Command: config.ResolvedCommand{Name: "not-started", Command: []string{"/bin/sh", "-c", "exit 99"}, Timeout: time.Minute}, Stdout: io.Discard, Stderr: io.Discard})
+	result, err := Execute(ctx, Options{Repository: ".", Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Command: config.ResolvedCommand{Name: "not-started", Command: []string{"/bin/sh", "-c", "exit 99"}, Timeout: time.Minute}, Stdout: io.Discard, Stderr: io.Discard})
 	if err == nil || result.State != StateCancelled || !result.ProcessStopped {
 		t.Fatalf("prelaunch cancel: %+v %v", result, err)
 	}
@@ -124,7 +124,7 @@ func TestNaturalExitStopsReparentedTool(t *testing.T) {
 	pidPath := filepath.Join(dir, "orphan.pid")
 	t.Setenv("MACHINIST_TREE_HELPER", "orphan-parent")
 	t.Setenv("MACHINIST_TREE_PID", pidPath)
-	result, err := Execute(t.Context(), Options{Repository: ".", DataDirectory: dir, Command: config.ResolvedCommand{Name: "orphan", Command: []string{os.Args[0], "-test.run=^TestDetachedTreeHelper$"}, Timeout: time.Minute}, Stdout: io.Discard, Stderr: io.Discard})
+	result, err := Execute(t.Context(), Options{Repository: ".", Prompt: testPrompt, Environment: os.Environ(), DataDirectory: dir, Command: config.ResolvedCommand{Name: "orphan", Command: []string{os.Args[0], "-test.run=^TestDetachedTreeHelper$"}, Timeout: time.Minute}, Stdout: io.Discard, Stderr: io.Discard})
 	b, _ := os.ReadFile(pidPath)
 	pid, _ := strconv.Atoi(string(b))
 	if pid <= 0 {

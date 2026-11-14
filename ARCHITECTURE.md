@@ -1,221 +1,105 @@
 # Architecture
 
-Machinist has one Go control plane, a React UI, and workers on a local host, VM,
-or Kubernetes. It connects selected repositories through a GitHub App. The same
-control plane can run locally, on a VM, or in the existing GKE runner cluster.
-There is no required Machinist-hosted service.
+Machinist has one Go control plane with an embedded React UI, and any number of runners.
+The control plane owns tickets, the ledger, GitHub polling, the UI and MCP. It never starts
+an agent. Runners do, and they dial out, so a runner behind a firewall needs no inbound
+route.
 
 ```mermaid
 flowchart LR
-    User[Operator] --> UI[React UI or jobs API]
-    UI --> Foreman[Go control plane and deterministic foreman]
-    Foreman --> DB[(Private SQLite and runtime files)]
-    Foreman <--> GitHub[GitHub App API]
-    Foreman --> Host[Local or VM worker]
-    Foreman --> Connector[Trusted Kubernetes connector]
-    Host --> CLI[Native coding CLI]
-    Connector --> Job[gVisor Job and native Codex CLI]
-    Job -->|bounded Git bundle| Connector
-    Connector -->|validated branch and PR| GitHub
+    Mention[GitHub mention] --> Intake
+    Assign[Assign box] --> Intake
+    MCP[MCP tool] --> Intake
+    Schedule[Automation file] --> Intake
+    Intake --> Store[(SQLite tickets.db)]
+    Store --> Engine[Ticket engine]
+    Engine --> Queue[Run queue]
+    Local[Local runner] -->|poll, heartbeat, events, complete| Queue
+    Kube[Kubernetes runner] -->|poll, heartbeat, events, complete| Queue
+    Local --> Agent[Agent and gh in a fresh clone]
+    Kube --> Job[gVisor Job per run]
+    Agent --> GitHub[GitHub: branch, PR, comments]
+    Job --> GitHub
 ```
 
-## Product model
+## Tickets
 
-An **agent** is shared configuration and a Markdown role prompt, independent of
-repositories. A **project** selects a connected repository and its checkout.
-A **job** binds a request to a project and one fixed execution mode:
+A ticket is one piece of work with one fixed branch, `machinist/<ticket id>`. Every run
+starts from a fresh clone and checks out that branch if it exists. The only state carried
+between runs is the pushed branch and the ticket log: the request, agent reports, human
+comments and pointers to CI failures. The agent reads the detail with `gh`.
 
-- `factory`: Triage → optional Spec and approval → Build → independent Review.
-  Findings return to Build on the same branch and PR, for at most three repairs.
-- `single`: one agent completes a task end to end, without a separate reviewer.
+Each run ends with one report: `pr_ready`, `needs_input`, `no_change` or `failed`. After a
+run, the control plane looks up the branch's pull request. The agent does not report it,
+so a crash or lost runner cannot create a second one.
 
-Each stage starts a fresh coding process. Triage and Review require restricted
-read-only executors. An informational request can finish in Triage; requested
-files, including documents and reports, require PR delivery. Spec approval is
-bound to its producing attempt. Review acceptance is bound to the implementation
-attempt and published head, not just a successful process exit.
+| State | Meaning |
+| --- | --- |
+| `working` | An agent is running or about to |
+| `needs_you` | Waiting for a person |
+| `pr_ready` | A pull request is open and nothing is running |
+| `done` | Merged, or finished with no pull request needed |
+| `failed` | An automation's run failed. Automations never wait for a person |
+| `cancelled` | Someone cancelled it. Its pull request stays open |
 
-The foreman is code that validates evidence and advances state. Conversational
-Foreman chat, arbitrary workflow editing in the app, PostgreSQL, and replicated
-control planes are not implemented. Lower-level direct commands and legacy
-sequence workflows remain separate supported interfaces.
+A ticket stops and asks a person after `max_turns_without_human` agent runs with no human
+input. Each run has a deadline. Provider spend limits cap total cost.
 
-## State and authority
+The full state table is in the
+[design](docs/designs/machinist-redesign.md#ticket-states), and every row has a test.
 
-GitHub holds linked issues, published specifications, branches, PRs, checks, and
-review discussions. A request does not need an issue. Linked issues receive one
-readable status comment updated in place, with reconciliation after an uncertain
-write. Internal prompts, logs, events, and handoffs are not posted to issues or
-committed as deliverables.
+## Reviewers
 
-Private SQLite `jobs.db` holds jobs, attempts, prompt versions and snapshots,
-approvals, automation definitions, feedback, and completion receipts. It lives
-beside the worker token, normally under `~/.machinist/server`. Credentials,
-checkouts, logs, and worker outputs also belong to the private runtime. Back up
-the whole runtime with a consistent SQLite snapshot. GitHub is not a backup of
-execution state.
+On a ticket's first pull request, the engine queues one run per file in
+`factory/reviewers`. A reviewer gets a fresh clone and no subagents, and posts one comment
+with `gh`. It is advice. Its result changes no ticket state, and comments by the bot never
+start a run.
 
-One process owns the database through a host lock. New submission receipts and
-initial events commit atomically. Replaying the same `client_request_id` and
-payload returns the existing job; changing the payload returns 409. Stale prompt
-and automation edits are rejected. Running attempts retain their prompt snapshots.
-Shared prompts are seeded once from legacy repository prompts, ordered by
-repository name; existing shared edits take precedence.
+## Intake
 
-On upgrade, the former `factory.db` is snapshotted into `jobs.db` and retired under
-`archive/factory-v1.db`. IDs, events and hashed receipts survive. Legacy
-`machinist.db` stores remain separate. Imported blocked jobs receive a publication
-hold. Holds survive retries and prompt edits, prevent dispatch and GitHub updates,
-and require an explicit release naming the current hold version. Stop running
-work before changing publication access. A hold cannot undo an external write
-already issued.
+Polling is used because the control plane has a private address that webhooks cannot reach.
+Once a minute per repository it reads new comments, and for each open ticket it reads the
+pull request's state, reviews and checks. Every piece of intake has a unique source key, so
+processing one twice has no effect.
 
-## GitHub and host execution
+Only the control plane posts Machinist's own messages, from rows it has stored. A crash
+between posting and recording can post a message twice.
 
-Onboarding uses a GitHub App's public client ID and device authorization. Access
-is limited to the installation/user repository intersection; setup checks App
-permissions and user write access. Tokens and refresh data stay private on the
-control-plane host. Clients receive neither an App private key nor a shared
-client secret. Refresh is serialized and preserves prior credentials on failure.
+## Runners
 
-Local agent Git/gh processes receive a refreshed token through the environment.
-The Git helper scopes normal Git authentication to the selected repository;
-the API token can access other repositories granted to the App. VM workers use
-their own host GitHub credentials. Local/VM workers are trusted with their host
-account permissions: checkout selection is not an operating-system sandbox.
-Executables, argument arrays, paths, models, and credentials are operator-owned.
-Repository content cannot widen registered executor configuration.
+A runner holds a token and polls only when it has a free slot. Four routes connect it to
+the control plane: poll, heartbeat, events and complete. A run has a 10-minute lease stored
+in the database and renewed by heartbeats. So runs outlive a control plane restart, and a
+lost runner's ticket continues on any other runner once its lease expires.
 
-Setup requires a real read-only PONG, plus repository and GitHub access checks.
-Local workers start automatically. VM workers use a private pairing script and
-an operator-created SSH tunnel. The app neither provisions SSH nor exposes a
-public listener. Agents are shared across configured projects.
+Each poll also says what the runner is: local or Kubernetes, its harnesses and its slots.
+The control plane stores that with the time of last contact, and heartbeats keep the time
+current while every slot is busy. The Runners page reads it with the running runs and the
+queue, so it is the same after a control plane restart.
 
-Project run-mode defaults and short instructions live in the existing atomic
-onboarding settings file. The authenticated Projects editor changes only this
-submission metadata, so running workers and job history are unaffected. New
-interactive submissions resolve omitted choices from project defaults; explicit
-choices win, and the admitted prompt stores the instructions used. Submission
-receipts are checked before defaults so retrying a request preserves its job.
-Projects do not override the shared agent or model configuration.
+| Runner | Where the agent runs | Its limits |
+| --- | --- | --- |
+| Local | A process with a private home and an allowlisted environment | The OS user and the GitHub login |
+| Kubernetes | One gVisor Job per run, through an egress proxy | The Job, the proxy's host list and the GitHub login |
 
-## Kubernetes execution
+## Credentials and the GitHub login
 
-`internal/kuberunner` launches a fixed digest-pinned gVisor Job per attempt. Pods
-are non-root, with a read-only root filesystem, dropped capabilities, bounded
-resources, no host mounts, and no service-account token. Triage and Review source
-is mounted read-only. An enforced NetworkPolicy permits cluster DNS and an
-allowlisted HTTPS CONNECT proxy. Credential-free preparation verifies denial of
-metadata, Kubernetes API, direct internet, and unapproved proxy destinations.
+Agents use `gh` directly, with the bot's token. They push branches and open pull requests
+themselves. Model credentials live on runners, never on the control plane. Branch protection
+and the login's permissions are what limit an agent. At startup the control plane refuses a
+token that is not the bot's, and warns about an unprotected default branch or admin rights.
 
-The agent receives a dedicated native Codex account cache, never GitHub, worker,
-or cluster credentials. A ConfigMap lock serializes that account stream across
-attempts and connectors. Native refresh is written back to the Secret using a
-resource-version check. The CLI and code it runs can read the model credential;
-this is trusted personal automation, not a shared subscription service.
+## Packages
 
-The trusted connector imports a bounded returned Git bundle into a disposable
-bare repository, validates head and ancestry, and publishes only the assigned
-fast-forward branch and PR. It never runs candidate source in the publisher.
-Publication checks the active lease and reconciles uncertain remote writes.
-
-Cancellation asks the native process to stop, retains refreshed authentication
-when possible, then foreground-deletes the Job. Unlock requires confirmed Pod
-absence. Uncertain execution or cache persistence retains the lock for operator
-recovery. There are no automatic Pod retries or local/API billing fallbacks.
-See [runner setup and recovery](docs/local-factory/kubernetes.md).
-
-The [GKE control plane](docs/local-factory/cloud-control-plane.md) uses one replica,
-Recreate updates, and SQLite on a persistent disk. Its built-in dispatcher uses a
-rotating in-cluster Kubernetes service-account token and narrow runner-namespace
-RBAC. It needs no personal gcloud login at runtime. The UI stays on loopback,
-accessed by operator port-forward; no public ingress is installed. Never run the
-old laptop state and the cloud copy concurrently.
-
-## Automations and GitHub follow-ups
-
-Saved automations start single-agent jobs from the project root, manually or on
-a five-field cron schedule with an IANA timezone. The control plane checks due
-work every 15 seconds, coalesces missed occurrences, and prevents overlapping
-unresolved jobs. Pausing prevents future scheduled admissions, not manual runs.
-
-Repository maintenance is a distinct automation type. It gives a read-only agent
-bounded issue/PR evidence and validates its recommendations. The foreman can
-append existing classification labels without removing human or routing labels.
-It never closes issues or PRs or posts internal reports to GitHub.
-
-Only recorded factory PRs with an accepted independent review on the current head
-can qualify for automatic merge. The fixed policy permits small edits to existing,
-non-sensitive Markdown documentation. It also requires complete diff evidence,
-a merge recommendation, successful current checks, strict protection for every
-observed context, resolved conversations, and no outstanding change requests or
-private hold. Fresh revalidation and a SHA-guarded asynchronous squash merge use
-`bypass_rules: false`. Pending requests are not called merged. Single-agent and
-unrelated PRs never qualify. The full policy is in [Automations](docs/local-factory/automations.md).
-
-A separate poller checks up to ten PR-ready jobs per minute for qualifying CI
-failures, trusted review feedback, and confirmed merges. It repairs the same PR
-within the normal three-round limit and deduplicates consumed feedback. It does
-not merge or resolve conversations. Only a confirmed merge with the recorded PR
-head completes a delivery. See [GitHub follow-ups](docs/local-factory/github-followups.md).
-
-## Failures and code boundaries
-
-Transitions commit before dispatch or acknowledgement. Duplicate completions do
-not advance twice. Restart interrupts running work instead of replaying external
-side effects; retry requires proof the old process stopped. GitHub publication
-failures preserve durable results and remain visible. Missing or incomplete
-remote evidence fails closed.
-
-- `internal/controlplane`: API, onboarding, SQLite jobs, deterministic foreman,
-  schedules, maintenance policy, GitHub polling and status publication.
-- `internal/managedworker`: allowlisted execution, workspaces, evidence,
-  publication, leases, heartbeats and process lifecycle.
-- `internal/runner`: bounded process execution, provider output and token reporting.
-- `internal/kuberunner`: sandbox templates, proxy, authentication retention and cleanup.
-- `internal/githubauth`: process-scoped Git credentials.
-
-Automated checks cover state transitions, privacy, idempotency, authorization,
-merge gates, cleanup and provider failure paths. Live GKE evidence is recorded
-beside the relevant deployment guide; it does not prove every provider or failure
-mode. Follow [Development](docs/development.md) for repeatable checks.
-
-## Native agent runs
-
-The versioned `native-v1` recipe owns one `primary` run. Claude uses streaming CLI
-JSON; Codex owns one stdio app-server with account/model preflight. The harness
-discovers repository child definitions in the task worktree. Children are observed
-activities with native identities, not separately scheduled runs or leases.
-Only primary messages and usage determine the outcome. Child failures can be
-recovered by the primary.
-
-Worker disk spools carry sequence IDs. Bounded lease-authenticated batches replay
-idempotently into a separate SQLite activity stream, which the UI polls. Completion
-flushes pending events. Existing lifecycle history, publication holds and PR
-branch/head evidence checks remain intact. Native feedback queues another primary
-attempt without legacy role routing or the three-repair limit. Existing maintenance
-automations retain their enforced review policy.
-
-Native runs currently require host workers and saved Codex repository trust. They
-do not enforce the legacy spec gate or isolated read-only review checkout. The
-server retains in-memory leases and honest interruption handling after restart.
-See [native operation and checks](docs/native-agents.md).
-
-## Factory dispatch admission
-
-Factory polling serializes admission under the server mutex. Successful
-assignments rotate across eligible repository aliases; jobs within an alias use
-creation time and ID ordering. Live-lease replay precedes admission limits.
-The optional `server.max_concurrent_jobs_per_repository` supplements the global
-limit without changing its default. Cancelled/interrupted attempts with
-unconfirmed shutdown retain admission occupancy from durable job history even
-when their cleanup-upload grant has expired. Conflicting repository and named
-worker work waits for stop confirmation.
-
-Status exposes additive capacity bounds and queued waiting reasons; worker
-capabilities are retained from polls for compatibility checks. These are
-observations and configured constraints, not credential-lock telemetry. The
-managed worker and a Kubernetes Codex credential stream each run serially;
-independent eligible workers may fill global capacity. Credential locking,
-publication holds, authentication and sandbox boundaries remain in force.
-See [configuration](docs/configuration.md#factory-admission-and-capacity).
+```text
+internal/tickets       tickets, runs, tokens, ledger, in SQLite
+internal/engine        the state table, run queue, leases and posted messages
+internal/sources       GitHub polling, schedules and the one intake path
+internal/ghclient      gh, with no shell
+internal/factory       loads agents, reviewers and automations from files
+internal/controlplane  HTTP routes, sign-in and the embedded UI
+internal/mcpserver     the five MCP tools
+internal/agentrunner   the runner daemon, and the local and Kubernetes executors
+internal/kuberunner    gVisor Jobs, egress proxy and the code that runs in the Job
+internal/runner        fresh clones, the fixed harness commands and event parsing
+```

@@ -5,3 +5,5 @@ resources:
 replicas:
   - name: machinist-control-plane
     count: 0
+  - name: machinist-runner
+    count: 0

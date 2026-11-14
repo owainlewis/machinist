@@ -1,0 +1,202 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: machinist-runner
+  namespace: machinist-system
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: machinist-runner
+  namespace: machinist-runners
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create, get]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [machinist-agent]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [machinist-egress]
+    verbs: [get]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    resourceNames: [agent-isolation, proxy-isolation]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: machinist-runner
+  namespace: machinist-runners
+subjects:
+  - kind: ServiceAccount
+    name: machinist-runner
+    namespace: machinist-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: machinist-runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: machinist-runtime-reader
+rules:
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    resourceNames: [gvisor]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: machinist-runtime-reader
+subjects:
+  - kind: ServiceAccount
+    name: machinist-runner
+    namespace: machinist-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: machinist-runtime-reader
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: machinist-cluster-access
+  namespace: machinist-system
+data:
+  kubeconfig: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+      - name: in-cluster
+        cluster:
+          server: https://kubernetes.default.svc
+          certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    users:
+      - name: runner
+        user:
+          tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    contexts:
+      - name: in-cluster
+        context:
+          cluster: in-cluster
+          user: runner
+          namespace: machinist-runners
+    current-context: in-cluster
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: machinist-runner-config
+  namespace: machinist-system
+data:
+  # deploy.py replaces image with the release's runner digest. The Secret
+  # machinist-agent in machinist-runners must hold GH_TOKEN and these variables.
+  runner.toml: |
+    control_plane = "http://machinist-control-plane.machinist-system.svc:7341"
+    token_file = "/etc/machinist/token/token"
+    data_directory = "/var/lib/machinist-runner"
+    slots = 4
+
+    [credentials.claude]
+    env = ["ANTHROPIC_API_KEY"]
+
+    [kubernetes]
+    context = "in-cluster"
+    kubeconfig = "/etc/machinist/cluster/kubeconfig"
+    namespace = "machinist-runners"
+    image = "machinist-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    secret = "machinist-agent"
+    proxy_url = "http://machinist-egress:3128"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: machinist-runner
+  namespace: machinist-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: machinist-runner
+  template:
+    metadata:
+      labels:
+        app: machinist-runner
+    spec:
+      serviceAccountName: machinist-runner
+      # Time to report running work, so the tickets continue on the next runner.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runner
+          image: machinist-control-plane
+          args: [runner, start, --config=/etc/machinist/config/runner.toml]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/machinist/config
+              readOnly: true
+            - name: cluster-access
+              mountPath: /etc/machinist/cluster
+              readOnly: true
+            - name: token
+              mountPath: /etc/machinist/token
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/machinist-runner
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: machinist-runner-config
+        - name: cluster-access
+          configMap:
+            name: machinist-cluster-access
+        - name: token
+          secret:
+            secretName: machinist-runner-token
+            defaultMode: 0440
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi

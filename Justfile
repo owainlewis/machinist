@@ -11,11 +11,11 @@ build: frontend
 control-plane: build
     ./bin/machinist start --config=examples/config.toml
 
-# Start the local managed worker.
-worker: build
-    ./bin/machinist worker start
+# Start a local runner.
+runner: build
+    ./bin/machinist runner start
 
-# Start the local control plane and managed worker together.
+# Start the local control plane and a runner together.
 local: build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -32,8 +32,8 @@ local: build
 
     ./bin/machinist start --config=examples/config.toml &
     control_plane_pid=$!
-    ./bin/machinist worker start &
-    worker_pid=$!
+    ./bin/machinist runner start &
+    runner_pid=$!
 
     status=0
     while true; do
@@ -41,8 +41,8 @@ local: build
             wait "$control_plane_pid" || status=$?
             break
         fi
-        if ! kill -0 "$worker_pid" 2>/dev/null; then
-            wait "$worker_pid" || status=$?
+        if ! kill -0 "$runner_pid" 2>/dev/null; then
+            wait "$runner_pid" || status=$?
             break
         fi
         sleep 1
@@ -59,7 +59,7 @@ check:
     node --test .github/scripts/issue-triage.test.cjs
     cd internal/controlplane/web && npm ci && npm test && npm run build
     just format-check
-    python3 -m unittest discover -s evals -p 'test_*.py'
+    python3 -m unittest discover -s deploy/kubernetes -p 'test_*.py'
     go vet ./...
     go test -race ./...
     go build ./...

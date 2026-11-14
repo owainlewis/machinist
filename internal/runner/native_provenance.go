@@ -16,7 +16,7 @@ import (
 
 // Record inputs without copying or translating native definitions. Discovery
 // and trust remain the harness's responsibility in the actual task worktree.
-func nativeProvenance(directory, repository string, command config.ResolvedCommand) error {
+func nativeProvenance(directory, repository string, command config.ResolvedCommand, prompt string) error {
 	type file struct {
 		Path   string `json:"path"`
 		SHA256 string `json:"sha256"`
@@ -48,7 +48,7 @@ func nativeProvenance(directory, repository string, command config.ResolvedComma
 	if err != nil {
 		return err
 	}
-	body, err := json.MarshalIndent(map[string]any{"version": 1, "adapter": command.Adapter, "command": command.Command, "model": command.Model, "prompt": command.Prompt, "definition": command.Definition, "command_hash": command.Hash, "repository_files": files, "trust_paths": trustPaths, "trust": "requires saved CLI trust for project configuration"}, "", "  ")
+	body, err := json.MarshalIndent(map[string]any{"version": 1, "adapter": command.Adapter, "command": command.Command, "model": command.Model, "prompt": prompt, "definition": command.Definition, "command_hash": command.Hash, "repository_files": files, "trust_paths": trustPaths, "trust": "requires saved CLI trust for project configuration"}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -57,7 +57,7 @@ func nativeProvenance(directory, repository string, command config.ResolvedComma
 
 func nativeTrustPaths(ctx context.Context, repository string) ([]string, error) {
 	command := exec.CommandContext(ctx, "git", "-C", repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	command.Env = sanitizedEnvironment(os.Environ())
+	command.Env = SanitizedEnvironment(os.Environ())
 	body, err := command.Output()
 	if err != nil {
 		return nil, fmt.Errorf("resolve native repository trust: %w", err)

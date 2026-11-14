@@ -1,112 +1,104 @@
 # Machinist
 
-Run coding agents on infrastructure you control: your computer, a VM, or
-Kubernetes. Connect GitHub, submit a job, and get a pull request or a direct
-answer. Machinist is early-access, open-source software.
+A job runner for coding agents. Your team assigns work in one place, and agents run it on
+machines you control: a laptop, a VM or Kubernetes. Everyone can see what is running, what
+is waiting on a person and what it cost. It is early-access, open-source software.
 
-The Go control plane and React UI track execution, approvals, review and delivery.
-Codex or Claude Code runs the work through its native CLI. Agents are reusable
-configurations; projects choose the repositories where jobs run.
+- **One place for the team.** One control plane holds every job. Anyone signed in can see
+  what each agent is doing, answer its questions and open its pull request.
+- **Runs anywhere.** A runner is a small daemon that asks the control plane for work. Start
+  one on a Mac, a VM or a Kubernetes cluster. The control plane treats them all the same.
+- **Your agents.** An agent is a folder of plain files: a playbook, a model, and the
+  subagents and skills it can use. It runs on Claude Code or Codex.
+- **A pipeline you define.** A job is a list of stages: an agent, another agent, a script.
+  A script stage is a gate an agent cannot skip.
+- **Usage you can see.** Runs, pass rate, tokens and cost for the last two weeks, and the
+  figures for every job.
+
+Mention the bot on a GitHub issue, type the work into a box, or send it from a coding
+session over MCP. An agent works on its own branch and opens one pull request. A fresh
+reviewer comments on it. If a person asks for changes or CI fails, the same job continues
+on the same pull request. When the agent needs a decision, it asks and waits.
+
+See [Direction](docs/direction.md) for where this is going and what is missing today.
 
 <a id="quick-start"></a>
 
 ## Quick start
 
-Install Go 1.26.6, Git, GitHub CLI and your chosen coding CLI. Authenticate the
-coding CLI on its execution host. Then build from the repository root:
+You need Go 1.26.6, Git, the GitHub CLI and Claude Code or Codex. You also need a GitHub
+account for the bot, with write access to the repositories it will work on.
 
 ```sh
 git clone https://github.com/owainlewis/machinist.git
 cd machinist
 go build -o ./bin/machinist ./cmd/machinist
 ./bin/machinist init
-./bin/machinist start
 ```
 
-The production UI bundle is committed, so this Go build does not need Node.
-Open the printed loopback URL, connect your GitHub App, choose a project and
-agent, and verify a real PONG. See the [setup guide](docs/local-factory/README.md).
+`init` creates `~/.machinist` with a control plane config, a runner config, a starter
+factory and a token for a local runner.
 
-Add repositories through **Projects → Add project**. Only repositories granted
-to the GitHub App appear. **Manage GitHub access** and **Refresh repositories**
-let you grant more. Projects share agent settings and the selected execution
-target; adding one preserves the existing projects.
+1.  In `~/.machinist/config.toml`, set `github.handle` to the bot's login and list your
+    repositories.
+2.  In `~/.machinist/runner.toml`, choose a credential for each harness. See
+    [Credentials](docs/credentials.md).
+3.  Start the control plane with the bot's token:
 
-## Run a job
+    ```sh
+    GH_TOKEN=<bot token> ./bin/machinist start
+    ```
 
-Use **Runs → New run** with a request or GitHub issue link. New host runs default
-to [native agents](docs/native-agents.md): one primary Claude or Codex run discovers
-repository-defined children and shows their live activity under the run. Configure
-`commands.primary.prompt_file` and commit `.claude/agents/*.md` or
-`.codex/agents/*.toml` in the task repository. Codex requires saved CLI trust for
-the main repository root. Native child reviews are advisory; this mode has no
-enforced specification approval or separate read-only review checkout.
+4.  With the bot's token and your harness credential set, prove the runner works, then
+    start it:
 
-The existing modes remain available, including the Kubernetes single-agent path:
+    ```sh
+    GH_TOKEN=<bot token> ANTHROPIC_API_KEY=<key> ./bin/machinist runner check --repo owner/name
+    ```
 
-- **Standard pipeline:** Triage → optional Spec and approval → Build → independent
-  Review. Findings return to Build on the same PR, for up to three repair rounds.
-- **Single agent:** one agent completes a task end to end, without a separate
-  reviewer. Use it for operational work and saved automations.
+    ```sh
+    GH_TOKEN=<bot token> ANTHROPIC_API_KEY=<key> ./bin/machinist runner start
+    ```
 
-Requested files, including reports and documents, are delivered through a PR.
-Questions and checks without requested changes can return a result directly.
-GitHub holds published issues, specs and PRs. Internal prompts, handoffs, logs and
-execution state stay in the private Machinist runtime.
+5.  Create a token for yourself and sign in at `http://127.0.0.1:7331`:
 
-Machinist watches delivered PRs for CI failures, trusted review feedback and
-confirmed merges. Repairs stay on the same task and PR. You normally decide when
-to merge; optional repository maintenance can auto-merge a narrow class of
-independently reviewed, low-risk documentation changes under enforced branch
-protections. Single-agent and unrelated PRs never qualify.
+    ```sh
+    ./bin/machinist token create "$USER"
+    ```
 
-## Automate repository work
+The production UI is committed, so this build does not need Node.
 
-Save an agent job in **Automations**, run it manually, or give it a cron schedule
-and timezone. Each run starts at the project root. Missed schedules coalesce into
-one run, and unresolved jobs prevent overlap. Keep the control plane running.
+## Using it
 
-**Repository maintenance** triages bounded batches of open issues and PRs,
-appends existing classification labels without removing human labels, and applies
-the fixed conservative merge policy. It never closes issues or PRs or posts
-internal reports to GitHub. Start manually and inspect its report before enabling
-a schedule. See [Automations](docs/local-factory/automations.md) for exact rules.
-
-## Choose infrastructure
-
-| Target | Execution and ownership |
+| Page | What it does |
 | --- | --- |
-| Local | Managed native CLI worker on the control-plane host |
-| VM | Same local setup on a VM, or a paired remote worker with its own credentials |
-| Kubernetes | A gVisor Job per attempt; dedicated native Codex login; trusted connector publishes PRs |
+| Home | One box to assign work: write it, or paste an issue number or link. Under it, what is running now, what needs you, the pass rate and tokens for the last 14 days, and a list of recent work where you can answer a question in place |
+| Work | One table of jobs with a status on each row, and tabs to filter it. Open a job to follow it and reply, like a chat, with its details at the side |
+| Automations | Your scheduled jobs, when each is next due and what it last did |
+| Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
 
-The control plane can also run in GKE: one replica, SQLite on a persistent disk,
-and an in-cluster dispatcher. No public ingress or external database is required.
-The shipped Kubernetes target supports Codex subscription login; other providers
-and billing modes are not implied. There is no required Machinist cloud account.
+A mention counts only from someone with write access. Machinist never merges a pull
+request unless you add an automation that uses an agent allowed to. See
+[Security](SECURITY.md) for what an agent can do.
 
-One control plane owns the private runtime. Back up its full state, including a
-consistent SQLite snapshot and worker outputs. Do not run a stale laptop copy
-alongside the cloud dispatcher. Publication holds survive restarts and require an
-explicit release. See [job recovery](docs/local-factory/local-jobs.md).
+## How it fits together
+
+One control plane holds tickets and talks to GitHub. It never starts an agent. Any number
+of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
+[Architecture](ARCHITECTURE.md).
 
 ## Go deeper
 
 | Guide | What it covers |
 | --- | --- |
-| [Documentation](docs/README.md) | Current setup, operations, and separate legacy references |
-| [Your first job](docs/task-guide.md) | Submission, spec approval, review, and delivery |
-| [GitHub follow-ups](docs/local-factory/github-followups.md) | CI failures, review feedback, and merge handling |
-| [Configuration](docs/configuration.md) | App settings, worker executors, commands, and compatibility |
-| [VM deployment](docs/vm-deployment.md) | Host the app or connect a remote worker |
-| [Kubernetes runners](docs/local-factory/kubernetes.md) | gVisor, native login, isolation, and recovery |
-| [GKE control plane](docs/local-factory/cloud-control-plane.md) | Deployment, private access, backup, and rollback |
-| [Development](docs/development.md) | Build, check, and contribute |
+| [Documentation](docs/README.md) | The full list |
+| [Direction](docs/direction.md) | What Machinist is for, and what is missing |
+| [Factory files](docs/factory.md) | Agents, jobs, reviewers and automations |
+| [Runners](docs/runners.md) | Adding local and Kubernetes runners |
+| [Credentials](docs/credentials.md) | Which credential to use, and why |
+| [MCP](docs/mcp.md) | Assigning work from Claude Code or Codex |
+| [Configuration](docs/configuration.md) | Every setting |
+| [Development](docs/development.md) | Build, test and contribute |
 
-Direct `machinist run` commands and legacy sequence workflows remain available for
-scripts. They are separate from the app's two built-in modes; see
-[the command reference](docs/workflows.md).
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing and
-[SECURITY.md](SECURITY.md) for private vulnerability reports. Machinist uses the
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing. Machinist uses the
 [MIT License](LICENSE).

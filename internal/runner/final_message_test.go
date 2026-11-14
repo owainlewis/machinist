@@ -2,6 +2,7 @@ package runner
 
 import (
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,8 @@ func TestExecuteRecordsTheFinalAgentMessage(t *testing.T) {
 	result, err := Execute(t.Context(), Options{
 		Command:       agent,
 		Repository:    newGitRepository(t),
+		Prompt:        testPrompt,
+		Environment:   os.Environ(),
 		DataDirectory: t.TempDir(),
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,

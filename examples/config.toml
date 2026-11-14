@@ -1,74 +1,14 @@
 [server]
 listen = "127.0.0.1:7331"
-state = "factory"
-worker_token_file = "~/.machinist/server/worker.token"
-# max_concurrent_jobs = 1
-# max_concurrent_jobs_per_repository = 1
+database = "~/.machinist/server/tickets.db"
+factory = "~/.machinist/factory"
+default_agent = "default"
+max_turns_without_human = 5
+run_timeout = "60m"
+# tls_cert = "/etc/machinist/tls.crt"
+# tls_key = "/etc/machinist/tls.key"
 
-# Legacy specialists retain their deterministic factory routing.
-# New native-agent runs use commands.primary below.
-# Use executor "claude" for Claude Code; review requires "claude-review".
-# The worker may run on this host or on a configured remote machine.
-[workflows.factory]
-mode = "factory"
-steps = [
-  { id = "triage", command = "triage" },
-  { id = "spec", command = "spec" },
-  { id = "implement", command = "implement" },
-  { id = "review", command = "review" },
-]
-
-[commands.triage]
-executor = "codex"
-prompt_file = "prompts/triage.md"
-timeout = "30m"
-
-[commands.spec]
-executor = "codex"
-prompt_file = "prompts/spec.md"
-timeout = "30m"
-
-[commands.implement]
-executor = "codex"
-prompt_file = "prompts/implement.md"
-timeout = "120m"
-
-[commands.review]
-executor = "codex-review"
-prompt_file = "prompts/review.md"
-timeout = "45m"
-
-# Legacy direct command: take a task or GitHub issue to a reviewed pull request.
-[commands.task-to-pr]
-executor = "codex"
-prompt_file = "prompts/task-to-pr.md"
-timeout = "120m"
-
-# Find verified correctness bugs and report them as GitHub issues.
-[commands.audit]
-executor = "codex"
-prompt_file = "prompts/audit.md"
-timeout = "60m"
-
-# Queue task-to-pr when an issue is labelled machinist:requested, and audit weekly.
-# Each repository name must also exist in worker.toml.
-# [github.repositories]
-# my-project = "owner/my-project"
-#
-# [triggers.github.issue-intake]
-# every = "5m"
-# label = "machinist:requested"
-# command = "task-to-pr"
-#
-# [triggers.cron.weekly-audit]
-# schedule = "0 6 * * 1"
-# timezone = "UTC"
-# repository = "my-project"
-# command = "audit"
-# prompt = "Audit the repository for high-confidence correctness bugs."
-
-# One primary run. Child definitions live in each repository's native folders.
-[commands.primary]
-executor = "codex-native"
-prompt_file = "prompts/primary.md"
-timeout = "120m"
+# The control plane reads its GitHub token from GH_TOKEN.
+[github]
+handle = "machinist-bot"
+repositories = []

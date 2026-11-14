@@ -1,443 +1,12 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestLoadWorkerResolvesRelativePathsFromConfig(t *testing.T) {
-	directory := t.TempDir()
-	path := filepath.Join(directory, "worker.toml")
-	writeTestFile(t, path, "data_directory = \"state\"\n")
-
-	worker, err := LoadWorker(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if worker.DataDirectory != filepath.Join(directory, "state") {
-		t.Fatalf("data directory = %q", worker.DataDirectory)
-	}
-	definition, err := worker.ResolveMachinistConfig("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if definition != filepath.Join(directory, "config.toml") {
-		t.Fatalf("definition = %q", definition)
-	}
-}
-
-func TestLoadWorkerDefaultsNameToHostname(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "worker.toml")
-	writeTestFile(t, path, "data_directory = \"state\"\n")
-
-	worker, err := LoadWorker(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostname, err := os.Hostname()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if worker.Name != hostname {
-		t.Fatalf("worker name = %q, want hostname %q", worker.Name, hostname)
-	}
-}
-
-func TestWorkerNameDefaultsReportHostnameFailure(t *testing.T) {
-	want := errors.New("hostname unavailable")
-	_, err := applyWorkerDefaultsWithHostname(Worker{DataDirectory: t.TempDir()}, func() (string, error) {
-		return "", want
-	})
-	if !errors.Is(err, want) || !strings.Contains(err.Error(), "find machine hostname") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestWorkerExplicitNameDoesNotReadHostname(t *testing.T) {
-	worker, err := applyWorkerDefaultsWithHostname(Worker{Name: " configured-worker ", DataDirectory: t.TempDir()}, func() (string, error) {
-		t.Fatal("hostname lookup called for explicit worker name")
-		return "", nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if worker.Name != "configured-worker" {
-		t.Fatalf("worker name = %q", worker.Name)
-	}
-}
-
-func TestLoadWorkerRejectsUnknownFields(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "worker.toml")
-	writeTestFile(t, path, "mystery = true\n")
-
-	_, err := LoadWorker(path)
-	if err == nil || !strings.Contains(err.Error(), "strict mode") {
-		t.Fatalf("expected unknown-field error, got %v", err)
-	}
-}
-
-func TestLoadManagedWorkerResolvesMachineConfiguration(t *testing.T) {
-	directory := t.TempDir()
-	writeTestFile(t, filepath.Join(directory, "token"), "secret\n")
-	path := filepath.Join(directory, "worker.toml")
-	writeTestFile(t, path, `name = "local"
-data_directory = "state"
-
-[control_plane]
-url = "http://127.0.0.1:7331"
-token_file = "token"
-
-[executors.test]
-command = ["agent", "run"]
-
-[repositories.machinist]
-path = "repository"
-`)
-	worker, err := LoadWorker(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repository, err := worker.ResolveRepository("machinist"); err != nil || repository != filepath.Join(directory, "repository") {
-		t.Fatalf("repository = %q, %v", repository, err)
-	}
-	if token, err := worker.WorkerToken(); err != nil || token != "secret" {
-		t.Fatalf("token = %q, %v", token, err)
-	}
-	resolved, err := worker.ResolveCommandModel(ResolvedCommand{Executor: "test"}, "")
-	if err != nil || len(resolved.Command) != 2 || resolved.Command[1] != "run" {
-		t.Fatalf("agent = %#v, %v", resolved, err)
-	}
-}
-
-func TestLoadConfigCombinesServerAndCommands(t *testing.T) {
-	directory := t.TempDir()
-	writeTestFile(t, filepath.Join(directory, "token"), "secret")
-	path := filepath.Join(directory, "config.toml")
-	writeTestFile(t, filepath.Join(directory, "plan.md"), "Plan {{machinist.prompt}}.\n")
-	writeTestFile(t, path, `[server]
-database = "state/machinist.db"
-worker_token_file = "token"
-max_concurrent_jobs = 2
-
-[commands.plan]
-executor = "test"
-prompt_file = "plan.md"
-
-`)
-	machinistConfig, err := LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := machinistConfig.Server
-	if server.Listen != "127.0.0.1:7331" || server.Database != filepath.Join(directory, "state", "machinist.db") || server.ConcurrentJobLimit() != 2 {
-		t.Fatalf("server = %#v", server)
-	}
-	if machinistConfig.Path() != path || len(machinistConfig.Commands) != 1 {
-		t.Fatalf("Machinist config = %#v, path = %q", machinistConfig, machinistConfig.Path())
-	}
-	if token, err := server.WorkerToken(); err != nil || token != "secret" {
-		t.Fatalf("token = %q, %v", token, err)
-	}
-}
-
-func TestLoadConfigRejectsRemovedConfigurationWithMigrationGuidance(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	writeTestFile(t, path, "[pipelines.quality]\nagents=[\"review\"]\n")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "replace each pipeline with a repository-owned orchestration script") {
-		t.Fatalf("pipeline migration error = %v", err)
-	}
-	writeTestFile(t, path, "[agents.review]\nexecutor=\"codex\"\n")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "agents were renamed to commands") {
-		t.Fatalf("agent migration error = %v", err)
-	}
-}
-
-func TestCommandWithoutPromptTemplatePassesInputThrough(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	writeTestFile(t, path, "[commands.script]\nexecutor=\"script\"\n")
-	command, err := LoadCommand(path, "script")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rendered, err := RenderPrompt(command, "raw task")
-	if err != nil || rendered.Prompt != "raw task" {
-		t.Fatalf("rendered script command = %#v, %v", rendered, err)
-	}
-}
-
-func TestLoadConfigValidatesOptionalConcurrentJobLimit(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		value string
-		want  int
-	}{
-		{name: "omitted is unlimited", want: 0},
-		{name: "positive limit", value: "max_concurrent_jobs = 1\n", want: 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			directory := t.TempDir()
-			writeTestFile(t, filepath.Join(directory, "token"), "secret")
-			path := filepath.Join(directory, "config.toml")
-			writeTestFile(t, path, "[server]\nworker_token_file = \"token\"\n"+test.value)
-			machinistConfig, err := LoadConfig(path)
-			if err != nil || machinistConfig.Server.ConcurrentJobLimit() != test.want {
-				t.Fatalf("limit = %d, error = %v", machinistConfig.Server.ConcurrentJobLimit(), err)
-			}
-		})
-	}
-
-	for _, value := range []string{"0", "-1"} {
-		t.Run("reject "+value, func(t *testing.T) {
-			directory := t.TempDir()
-			writeTestFile(t, filepath.Join(directory, "token"), "secret")
-			path := filepath.Join(directory, "config.toml")
-			writeTestFile(t, path, "[server]\nworker_token_file = \"token\"\nmax_concurrent_jobs = "+value+"\n")
-			if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "max_concurrent_jobs must be positive") {
-				t.Fatalf("error = %v", err)
-			}
-		})
-	}
-}
-
-func TestLoadCommandResolvesPromptAndHashesDefinition(t *testing.T) {
-	directory := t.TempDir()
-	writeTestFile(t, filepath.Join(directory, "plan.md"), "Inspect the repository for {{machinist.prompt}}.\n")
-	definition := filepath.Join(directory, "config.toml")
-	writeTestFile(t, definition, `[commands.plan]
-executor = "test"
-prompt_file = "plan.md"
-timeout = "45s"
-`)
-
-	agent, err := LoadCommand(definition, "plan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if agent.Name != "plan" || agent.Prompt != "Inspect the repository for {{machinist.prompt}}.\n" {
-		t.Fatalf("unexpected agent: %#v", agent)
-	}
-	if agent.Timeout != 45*time.Second {
-		t.Fatalf("timeout = %s", agent.Timeout)
-	}
-	resolved, err := (Worker{Executors: map[string]Executor{"test": {Command: []string{"agent", "run"}}}}).ResolveCommandModel(agent, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(resolved.Command) != 2 || resolved.Command[1] != "run" {
-		t.Fatalf("command = %#v", resolved.Command)
-	}
-	if len(agent.Hash) != 64 {
-		t.Fatalf("hash = %q", agent.Hash)
-	}
-}
-
-func TestResolveCommandModelUsesAliasAndLeavesDefaultOptional(t *testing.T) {
-	worker := Worker{Executors: map[string]Executor{"codex": {
-		Command: []string{"codex", "exec", "--model=" + modelParameter, "-"},
-		Models:  map[string]string{"luna": "gpt-5.6-luna"},
-	}}}
-	agent := ResolvedCommand{Executor: "codex"}
-
-	resolved, err := worker.ResolveCommandModel(agent, "luna")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved.Model != "gpt-5.6-luna" || strings.Join(resolved.Command, " ") != "codex exec --model=gpt-5.6-luna -" {
-		t.Fatalf("resolved = %#v", resolved)
-	}
-	defaulted, err := worker.ResolveCommandModel(agent, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if defaulted.Model != "" || strings.Join(defaulted.Command, " ") != "codex exec -" {
-		t.Fatalf("defaulted = %#v", defaulted)
-	}
-}
-
-func TestResolveCommandModelRejectsUnsupportedSelection(t *testing.T) {
-	for name, executor := range map[string]Executor{
-		"missing placeholder": {Command: []string{"agent", "run"}},
-		"unknown alias":       {Command: []string{"agent", "--model=" + modelParameter}, Models: map[string]string{"fast": "fast-v1"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := (Worker{Executors: map[string]Executor{"test": executor}}).ResolveCommandModel(ResolvedCommand{Executor: "test"}, "other")
-			if err == nil {
-				t.Fatal("expected model selection error")
-			}
-		})
-	}
-}
-
-func TestWorkerModelCapabilitiesAndConfiguration(t *testing.T) {
-	worker, err := applyWorkerDefaultsWithHostname(Worker{
-		Name:          "test",
-		DataDirectory: t.TempDir(),
-		Executors: map[string]Executor{
-			"aliased": {Command: []string{"agent", "--model=" + modelParameter}, Models: map[string]string{"slow": "v2", "fast": "v1"}},
-			"raw":     {Command: []string{"agent", "--model=" + modelParameter}},
-			"fixed":   {Command: []string{"agent"}},
-		},
-	}, func() (string, error) { return "unused", nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilities := worker.ModelCapabilities()
-	if strings.Join(capabilities["aliased"], ",") != "fast,slow" || capabilities["raw"] == nil {
-		t.Fatalf("capabilities = %#v", capabilities)
-	}
-	if _, ok := capabilities["fixed"]; ok {
-		t.Fatalf("fixed executor advertised model support: %#v", capabilities)
-	}
-
-	_, err = applyWorkerDefaultsWithHostname(Worker{
-		Name:          "test",
-		DataDirectory: t.TempDir(),
-		Executors:     map[string]Executor{"invalid": {Command: []string{"agent"}, Models: map[string]string{"fast": "v1"}}},
-	}, func() (string, error) { return "unused", nil })
-	if err == nil || !strings.Contains(err.Error(), modelParameter) {
-		t.Fatalf("invalid model config error = %v", err)
-	}
-}
-
-func TestLoadWorkerRejectsCompoundModelPlaceholderArgument(t *testing.T) {
-	_, err := applyWorkerDefaultsWithHostname(Worker{
-		Name:          "test",
-		DataDirectory: t.TempDir(),
-		Executors:     map[string]Executor{"invalid": {Command: []string{"agent", "prefix-" + modelParameter}}},
-	}, func() (string, error) { return "unused", nil })
-	if err == nil || !strings.Contains(err.Error(), "complete optional") {
-		t.Fatalf("compound placeholder error = %v", err)
-	}
-}
-
-func TestLoadWorkerRejectsLegacyFactoryModelParameter(t *testing.T) {
-	_, err := applyWorkerDefaultsWithHostname(Worker{
-		Name:          "test",
-		DataDirectory: t.TempDir(),
-		Executors:     map[string]Executor{"invalid": {Command: []string{"agent", "--model={{factory.model}}"}}},
-	}, func() (string, error) { return "unused", nil })
-	if err == nil || !strings.Contains(err.Error(), "legacy Factory parameter namespace") {
-		t.Fatalf("legacy model parameter error = %v", err)
-	}
-}
-
-func TestRenderPromptReplacesEveryPromptParameterWithoutReevaluation(t *testing.T) {
-	agent := ResolvedCommand{Prompt: "Before {{machinist.prompt}} between {{machinist.prompt}} after"}
-	prompt := "fix {{machinist.prompt}} and $(touch never)"
-	rendered, err := RenderPrompt(agent, prompt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "Before " + prompt + " between " + prompt + " after"
-	if rendered.Prompt != want {
-		t.Fatalf("prompt = %q, want %q", rendered.Prompt, want)
-	}
-}
-
-func TestRenderPromptRejectsEmptyAndOversizedPrompts(t *testing.T) {
-	agent := ResolvedCommand{Prompt: promptParameter}
-	if _, err := RenderPrompt(agent, " \n\t"); err == nil || !strings.Contains(err.Error(), "prompt is required") {
-		t.Fatalf("expected empty-prompt error, got %v", err)
-	}
-	if _, err := RenderPrompt(agent, strings.Repeat("x", maxInputPromptBytes+1)); err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("expected prompt-size error, got %v", err)
-	}
-}
-
-func TestRenderPromptRejectsOversizedRenderedPromptBeforeReplacement(t *testing.T) {
-	agent := ResolvedCommand{
-		Name:   "plan",
-		Prompt: strings.Repeat(promptParameter, maxPromptBytes/len(promptParameter)),
-	}
-	if _, err := RenderPrompt(agent, strings.Repeat("x", maxInputPromptBytes)); err == nil || !strings.Contains(err.Error(), "rendered command prompt exceeds") {
-		t.Fatalf("expected rendered-size error, got %v", err)
-	}
-}
-
-func TestLoadCommandRequiresPromptParameterAndRejectsUnsupportedMachinistParameter(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		prompt string
-		want   string
-	}{
-		{name: "missing prompt", prompt: "Plan this ticket.\n", want: "must include {{machinist.prompt}}"},
-		{name: "legacy Factory namespace", prompt: "Plan {{machinist.prompt}} with {{factory.prompt}}.\n", want: "legacy Factory parameter namespace"},
-		{name: "legacy task parameter", prompt: "Plan {{machinist.task}}.\n", want: "unsupported Machinist parameter"},
-		{name: "unsupported parameter", prompt: "Plan {{machinist.prompt}} in {{machinist.repository}}.\n", want: "unsupported Machinist parameter"},
-		{name: "empty parameter", prompt: "Plan {{machinist.prompt}} with {{machinist.}}.\n", want: "unsupported Machinist parameter"},
-		{name: "unclosed parameter", prompt: "Plan {{machinist.prompt}} with {{machinist.repository.\n", want: "malformed Machinist parameter"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			directory := t.TempDir()
-			writeTestFile(t, filepath.Join(directory, "plan.md"), test.prompt)
-			definition := filepath.Join(directory, "config.toml")
-			writeTestFile(t, definition, "[commands.plan]\nexecutor = \"test\"\nprompt_file = \"plan.md\"\n")
-			if _, err := LoadCommand(definition, "plan"); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("expected %q error, got %v", test.want, err)
-			}
-		})
-	}
-}
-
-func TestLoadCommandRejectsMissingAndInvalidDefinitions(t *testing.T) {
-	directory := t.TempDir()
-	writeTestFile(t, filepath.Join(directory, "plan.md"), "Plan.\n")
-	definition := filepath.Join(directory, "config.toml")
-	writeTestFile(t, definition, `[commands.plan]
-prompt_file = "plan.md"
-`)
-
-	if _, err := LoadCommand(definition, "missing"); err == nil || !strings.Contains(err.Error(), "not defined") {
-		t.Fatalf("expected missing-agent error, got %v", err)
-	}
-	if _, err := LoadCommand(definition, "plan"); err == nil || !strings.Contains(err.Error(), "must define executor") {
-		t.Fatalf("expected executor error, got %v", err)
-	}
-}
-
-func TestExampleCommandDefinitionsLoad(t *testing.T) {
-	definition := filepath.Join("..", "..", "examples", "config.toml")
-	definitions, err := LoadDefinitions(definition)
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := []string{"audit", "task-to-pr", "triage", "spec", "implement", "review", "primary"}
-	if len(definitions.Commands) != len(names) {
-		t.Fatalf("example commands = %#v, want %v", definitions.Commands, names)
-	}
-	for _, name := range names {
-		t.Run(name, func(t *testing.T) {
-			command, err := LoadCommand(definition, name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(command.Prompt, promptParameter) {
-				t.Fatalf("command prompt does not contain %s", promptParameter)
-			}
-		})
-	}
-}
-
-func TestShippedMachinistSkillDescribesGitHubIntake(t *testing.T) {
-	path := filepath.Join("..", "..", "skills", "machinist", "SKILL.md")
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	guidance := string(body)
-	for _, required := range []string{"[triggers.github.<name>]", "machinist:requested", "machinist:queued", "intake labels"} {
-		if !strings.Contains(guidance, required) {
-			t.Fatalf("%s does not describe %q", path, required)
-		}
-	}
-	if strings.Contains(guidance, "Label-based delegation is not implemented") {
-		t.Fatalf("%s still rejects label-based delegation", path)
-	}
-}
 
 func writeTestFile(t *testing.T, path, body string) {
 	t.Helper()
@@ -446,95 +15,102 @@ func writeTestFile(t *testing.T, path, body string) {
 	}
 }
 
-func TestLoadConfigRejectsRemovedShepherdSchedules(t *testing.T) {
+func TestLoadConfigAppliesDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeTestFile(t, path, "")
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := loaded.Server
+	if server.Listen != "127.0.0.1:7331" || server.DefaultAgent != "default" || server.MaxTurnsWithoutHuman != 5 || server.RunDeadline() != time.Hour {
+		t.Fatalf("server = %+v", server)
+	}
+	if server.Database != filepath.Join(home, ".machinist", "server", "tickets.db") || server.Factory != filepath.Join(home, ".machinist", "factory") {
+		t.Fatalf("paths = %q, %q", server.Database, server.Factory)
+	}
+	if loaded.Path() != path {
+		t.Fatalf("path = %q", loaded.Path())
+	}
+}
+
+func TestLoadConfigReadsEveryKeyAndResolvesPaths(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "config.toml")
-	writeTestFile(t, filepath.Join(directory, "shepherd.md"), "{{machinist.prompt}}\n")
-	writeTestFile(t, path, "[commands.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=1\n")
-	_, err := LoadDefinitions(path)
-	if err == nil || !strings.Contains(err.Error(), "shepherd schedules were removed") {
-		t.Fatalf("error = %v, want removed shepherd schedule guidance", err)
+	writeTestFile(t, path, `[server]
+listen = "10.0.0.5:7331"
+database = "data/tickets.db"
+factory = "factory"
+default_agent = "maintainer"
+max_turns_without_human = 2
+run_timeout = "15m"
+tls_cert = "tls.crt"
+tls_key = "tls.key"
+
+[github]
+handle = "machinist-bot"
+repositories = ["owner/one", "owner/two"]
+`)
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := loaded.Server
+	if server.Listen != "10.0.0.5:7331" || server.DefaultAgent != "maintainer" || server.MaxTurnsWithoutHuman != 2 || server.RunDeadline() != 15*time.Minute {
+		t.Fatalf("server = %+v", server)
+	}
+	for got, want := range map[string]string{server.Database: "data/tickets.db", server.Factory: "factory", server.TLSCert: "tls.crt", server.TLSKey: "tls.key"} {
+		if got != filepath.Join(directory, filepath.FromSlash(want)) {
+			t.Fatalf("path = %q, want it under %q", got, directory)
+		}
+	}
+	if loaded.GitHub.Handle != "machinist-bot" || strings.Join(loaded.GitHub.Repositories, ",") != "owner/one,owner/two" {
+		t.Fatalf("github = %+v", loaded.GitHub)
 	}
 }
 
-func TestServerStateStorageSelection(t *testing.T) {
-	for _, state := range []string{"", "sqlite", "github"} {
-		t.Run(state, func(t *testing.T) {
-			directory := t.TempDir()
-			server, err := applyServerDefaults(Server{State: state, WorkerTokenFile: "token", configDir: directory})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if state == "github" && server.Database != "" {
-				t.Fatalf("GitHub mode resolved a local database: %s", server.Database)
-			}
-			if state != "github" && !filepath.IsAbs(server.Database) {
-				t.Fatalf("legacy database not resolved: %s", server.Database)
-			}
-			if server.WorkerTokenFile != filepath.Join(directory, "token") {
-				t.Fatalf("token path: %s", server.WorkerTokenFile)
-			}
-		})
-	}
-	if _, err := applyServerDefaults(Server{State: "unknown", WorkerTokenFile: "token"}); err == nil {
-		t.Fatal("accepted unknown state backend")
-	}
-	server, err := applyServerDefaults(Server{State: "github", Database: "~/ignored.db", WorkerTokenFile: "token", configDir: t.TempDir()})
-	if err != nil || server.Database != "" {
-		t.Fatalf("GitHub mode retained database: %+v %v", server, err)
+func TestLoadConfigNamesOldKeys(t *testing.T) {
+	for _, test := range []struct{ body, key string }{
+		{"[server]\nstate = \"factory\"\n", "server.state"},
+		{"[server]\nworker_token_file = \"worker.token\"\n", "server.worker_token_file"},
+		{"[server]\nmax_concurrent_jobs = 2\n", "server.max_concurrent_jobs"},
+		{"[commands.plan]\nexecutor = \"codex\"\n", "commands"},
+		{"[workflows.factory]\nmode = \"factory\"\n", "workflows"},
+		{"[triggers.github.intake]\nevery = \"5m\"\n", "triggers"},
+		{"[storage]\nbackend = \"local\"\n", "storage"},
+	} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeTestFile(t, path, test.body)
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown key "+test.key) {
+			t.Fatalf("%q: error = %v", test.body, err)
+		}
 	}
 }
 
-func TestKubeconfigPathsFollowConfigDirectory(t *testing.T) {
-	for _, input := range []string{"cluster/config", "~/machinist-kubeconfig", ""} {
-		t.Run(input, func(t *testing.T) {
-			base := t.TempDir()
-			want := input
-			if input != "" {
-				var err error
-				want, err = resolveConfigPath(input, base)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			worker, err := applyWorkerDefaults(Worker{Name: "test", configDir: base, Kubernetes: &Kubernetes{Kubeconfig: input}})
-			if err != nil || worker.Kubernetes.Kubeconfig != want {
-				t.Fatalf("worker path: %v %v", worker.Kubernetes, err)
-			}
-			server, err := applyServerDefaults(Server{State: "factory", WorkerTokenFile: "worker.token", configDir: base, Kubernetes: &Kubernetes{Kubeconfig: input}})
-			if err != nil || server.Kubernetes.Kubeconfig != want {
-				t.Fatalf("server path: %v %v", server.Kubernetes, err)
-			}
-		})
+func TestLoadConfigRejectsInvalidValues(t *testing.T) {
+	for _, test := range []struct{ body, want string }{
+		{"[server]\nmax_turns_without_human = -1\n", "max_turns_without_human"},
+		{"[server]\nrun_timeout = \"soon\"\n", "run_timeout"},
+		{"[server]\nrun_timeout = \"-1m\"\n", "run_timeout"},
+		{"[server]\ntls_cert = \"tls.crt\"\n", "tls_cert and tls_key"},
+		{"not toml =", "parse config"},
+	} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeTestFile(t, path, test.body)
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("%q: error = %v", test.body, err)
+		}
 	}
 }
 
-func TestLoadConfigRepositoryJobLimit(t *testing.T) {
-	for _, value := range []string{"", "2", "0", "-1"} {
-		t.Run("limit="+value, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.toml")
-			body := "[server]\nworker_token_file = 'token'\n"
-			if value != "" {
-				body += "max_concurrent_jobs_per_repository = " + value + "\n"
-			}
-			writeTestFile(t, path, body)
-			c, err := LoadConfig(path)
-			if value == "0" || value == "-1" {
-				if err == nil {
-					t.Fatal("accepted nonpositive limit")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := 0
-			if value == "2" {
-				want = 2
-			}
-			if c.Server.RepositoryJobLimit() != want {
-				t.Fatalf("limit=%d want %d", c.Server.RepositoryJobLimit(), want)
-			}
-		})
+func TestExampleConfigurationLoads(t *testing.T) {
+	loaded, err := LoadConfig(filepath.Join("..", "..", "examples", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Server.DefaultAgent != "default" || loaded.GitHub.Handle == "" {
+		t.Fatalf("example = %+v", loaded)
 	}
 }

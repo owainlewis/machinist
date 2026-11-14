@@ -1,7 +1,0 @@
-# Human-readable pull requests
-
-Write the PR for a person who has not seen the ticket or agent conversation. Use a specific title describing the resulting change. Lead the body with the concrete problem and what users can now do. Describe the final diff, not the original ambition or the history of attempts. A small change usually needs one or two short paragraphs and a brief verification list.
-
-Include only details that help someone review the change. Name the checks actually performed and their results; distinguish failures, pending checks and unavailable checks from passing checks. Link the assigned issue when relevant. Never invent evidence. Leave out agent IDs, handoffs, tool transcripts, review-round history, internal prompts and long inventories of implementation facts. Do not paste the task or final JSON into the PR.
-
-When this execution has GitHub access and owns PR publication, read the actual published PR title and body against the final diff before reporting success. In a commit-only sandbox, check the proposed description against the diff before returning it to the trusted publisher. Correct stale scope, vague titles, unreadable detail and unsupported verification claims. If delegating implementation or review, pass these PR requirements to that agent. Ask a reviewer to check the description as well as the code when review is used. The primary remains responsible for the published description. Never merge.

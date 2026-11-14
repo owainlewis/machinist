@@ -1,8 +1,7 @@
 package cli
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,19 +10,20 @@ import (
 	"path/filepath"
 
 	machinistexamples "github.com/owainlewis/machinist/examples"
+	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/tickets"
 	"github.com/spf13/cobra"
+)
+
+const (
+	starterFactory  = "factory"
+	runnerTokenFile = "runner.token"
+	localRunnerName = "local"
 )
 
 var initialFiles = []string{
 	"config.toml",
-	"worker.toml",
-	"prompts/task-to-pr.md",
-	"prompts/audit.md",
-	"prompts/triage.md",
-	"prompts/spec.md",
-	"prompts/implement.md",
-	"prompts/review.md",
-	"prompts/primary.md",
+	"runner.toml",
 }
 
 func newInitCommand(options *commandOptions) *cobra.Command {
@@ -31,19 +31,19 @@ func newInitCommand(options *commandOptions) *cobra.Command {
 		Use:   "init",
 		Short: "Create the default Machinist configuration",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return initializeMachinist(options.stdout)
+		RunE: func(command *cobra.Command, _ []string) error {
+			return initializeMachinist(command.Context(), options.stdout)
 		},
 	}
 }
 
-func initializeMachinist(output io.Writer) error {
+func initializeMachinist(ctx context.Context, output io.Writer) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("find user home directory: %w", err)
 	}
 	directory := filepath.Join(home, ".machinist")
-	for _, path := range []string{directory, filepath.Join(directory, "prompts"), filepath.Join(directory, "server")} {
+	for _, path := range []string{directory, filepath.Join(directory, "server")} {
 		if err := ensureDirectory(path); err != nil {
 			return err
 		}
@@ -58,18 +58,63 @@ func initializeMachinist(output io.Writer) error {
 			return err
 		}
 	}
-
-	token := make([]byte, 32)
-	if _, err := rand.Read(token); err != nil {
-		return fmt.Errorf("generate worker token: %w", err)
-	}
-	if err := installFile(directory, "server/worker.token", []byte(hex.EncodeToString(token)+"\n"), output); err != nil {
+	if err := installFactory(directory, output); err != nil {
 		return err
 	}
-
+	if err := installRunnerToken(ctx, directory, output); err != nil {
+		return err
+	}
 	fmt.Fprintf(output, "Machinist configuration is ready in %s\n", directory)
-	fmt.Fprintln(output, "Add repositories to worker.toml before starting a managed worker.")
+	fmt.Fprintln(output, "Set github.handle and repositories in config.toml, and credentials in runner.toml.")
 	return nil
+}
+
+// installFactory copies the starter factory without replacing the team's files.
+func installFactory(directory string, output io.Writer) error {
+	return fs.WalkDir(machinistexamples.Files, starterFactory, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return ensureDirectory(filepath.Join(directory, filepath.FromSlash(path)))
+		}
+		body, err := machinistexamples.Files.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read default %s: %w", path, err)
+		}
+		return installFile(directory, path, body, output)
+	})
+}
+
+// installRunnerToken makes the token the local runner starts with. A token named
+// local whose file was lost can never be read again, so it is replaced.
+func installRunnerToken(ctx context.Context, directory string, output io.Writer) error {
+	path := filepath.Join(directory, runnerTokenFile)
+	if _, err := os.Lstat(path); err == nil {
+		fmt.Fprintf(output, "kept %s\n", runnerTokenFile)
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("inspect existing %s: %w", runnerTokenFile, err)
+	}
+	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.toml"))
+	if err != nil {
+		return err
+	}
+	store, err := tickets.Open(machinistConfig.Server.Database)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	token, err := store.CreateToken(ctx, localRunnerName)
+	if errors.Is(err, tickets.ErrTokenExists) {
+		if err = store.RevokeToken(ctx, localRunnerName); err == nil {
+			token, err = store.CreateToken(ctx, localRunnerName)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("create runner token: %w", err)
+	}
+	return installFile(directory, runnerTokenFile, []byte(token+"\n"), output)
 }
 
 func installFile(root, name string, body []byte, output io.Writer) error {

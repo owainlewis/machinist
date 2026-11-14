@@ -4,73 +4,103 @@ import { act } from "react";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 
-test("retired Inbox opens Runs and task actions remain available", { timeout: 15000 }, async context => {
-  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/inbox" });
+test("sign in, assign work, then follow it on Work", { timeout: 30000 }, async context => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/home" });
   const previous = new Map();
-  for (const name of ["window", "document", "navigator", "localStorage", "Event", "MouseEvent", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
+  for (const name of ["window", "document", "navigator", "localStorage", "Event", "MouseEvent", "HTMLElement", "getComputedStyle", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
     previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
   }
-  globalThis.IS_REACT_ACT_ENVIRONMENT = false;
-  const job = { id: "last-task", repository: "owner/repo", recipe: "factory", state_backend: "local", state: "blocked", updated_at: "2026-10-16T12:00:00Z", task: { title: "Task needing attention" }, workflow: { name: "factory", steps: ["triage"], current_step: 0, factory: {} }, runs: [{ id: "triage-run", command: "triage", state: "succeeded", summary: "Needs a decision" }] };
-  let dismissal;
-  globalThis.fetch = async (url, options) => {
-    if (url.endsWith("/clear_inbox") && options?.method === "POST") { dismissal = JSON.parse(options.body); job.inbox_cleared = true; return { ok: true, json: async () => ({}) }; }
-    if (url.endsWith("/cancel") && options?.method === "POST") { job.state = "cancelled"; return { ok: true, json: async () => ({}) }; }
-    if (url.endsWith("/artifacts")) return { ok: true, json: async () => [] };
-    return { ok: true, json: async () => ({ jobs: [{ ...job }], workers: [], commands: [], repositories: ["owner/repo"], triggers: [], state_backend: "local", csrf_token: "test" }) };
+  const noObserver = class { observe() {} unobserve() {} disconnect() {} };
+  previous.set("ResizeObserver", Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver"));
+  Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, writable: true, value: noObserver });
+  let signedIn = false;
+  const ticket = { id: "t_new", state: "working", repo: "owner/repo", title: "Add dark mode", created_by: "alice", updated_at: new Date().toISOString() };
+  const tickets = [];
+  const posts = [];
+  let releaseOld;
+  const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === "/api/v1/session" && options.method === "POST") {
+      const { token } = JSON.parse(options.body);
+      if (token !== "good") return reply(401, { error: "invalid token" });
+      signedIn = true;
+      return reply(200, { name: "alice" });
+    }
+    if (!signedIn) return reply(401, { error: "a token is required" });
+    if (url === "/api/v1/repositories") return reply(200, { repositories: ["owner/repo"], name: "alice" });
+    if (url === "/api/v1/tickets" && options.method === "POST") { posts.push(JSON.parse(options.body)); tickets.push(ticket); return reply(201, ticket); }
+    if (url === "/api/v1/tickets") return reply(200, { tickets });
+    if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
+    if (url === "/api/v1/automations") return reply(200, { automations: [] });
+    if (url === "/api/v1/ledger") return reply(200, { merged_prs: 0 });
+    if (url === "/api/v1/usage") return reply(200, { days: [] });
+    if (url === "/api/v1/tickets/t_old") return new Promise(resolve => { releaseOld = () => resolve(reply(200, { ticket: { ...ticket, id: "t_old", title: "An older job" }, entries: [], runs: [], figures: { questions: 0, feedback_rounds: 0, tokens: 0, elapsed: 0, merged: false } })); });
+    if (url === "/api/v1/tickets/t_new") return reply(200, { ticket, entries: [], runs: [], figures: { questions: 0, feedback_rounds: 0, tokens: 0, elapsed: 0, merged: false } });
+    throw new Error(`unexpected ${url}`);
   };
   const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
   let root;
   context.after(async () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     await act(async () => root?.unmount());
-    await server.close(); dom.window.close();
+    await server.close();
+    dom.window.close();
     for (const [name, descriptor] of previous) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
       else delete globalThis[name];
     }
   });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = false;
   root = (await server.ssrLoadModule("/src/main.jsx")).appRoot;
-  await eventually(() => assert.ok(document.querySelector('[role="table"][aria-label="Runs"]')));
-  assert.equal(document.querySelector("h1").textContent, "Runs");
-  assert.equal(document.querySelector('nav a[href="#/inbox"]'), null);
-  assert.match(document.querySelector('[role="table"]').textContent, /Task needing attention/);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  await act(async () => document.querySelector('a[href="#/runs/last-task"]').click());
-  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Task needing attention"));
-  const dismiss = [...document.querySelectorAll("main button")].find(button => button.textContent === "Dismiss from attention");
-  assert.ok(dismiss);
-  await act(async () => dismiss.click());
-  await eventually(() => assert.equal([...document.querySelectorAll("main button")].some(button => button.textContent === "Dismiss from attention"), false));
-  assert.equal(dismissal.expected_updated_at, job.updated_at);
-  assert.equal(job.state, "blocked", "acknowledging does not cancel or retry the task");
-  await act(async () => { window.location.hash = "#/runs?filter=attention"; });
-  await eventually(() => assert.match(document.querySelector("main").textContent, /No matching tasks/));
-  assert.doesNotMatch(document.querySelector("main").textContent, /Task needing attention/);
-  await act(async () => { window.location.hash = "#/runs/last-task"; });
-  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Task needing attention"));
-  const cancel = [...document.querySelectorAll("main button")].find(button => button.textContent === "Cancel task");
-  assert.ok(cancel);
-  await act(async () => cancel.click());
-  await eventually(() => assert.equal([...document.querySelectorAll("main button")].some(button => button.textContent === "Cancel task"), false));
-  await act(async () => { window.location.hash = "#/runs"; });
-  await eventually(() => assert.ok(document.querySelector('[role="table"][aria-label="Runs"]')));
-  assert.match(document.querySelector('[role="table"]').textContent, /Task needing attention/);
-  assert.match(document.querySelector('[role="table"]').textContent, /Cancelled/);
-  await act(async () => { window.location.hash = "#/dashboard"; });
-  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Dashboard"));
-  assert.ok(document.querySelector('section[aria-label="Recent outcomes"] a[href="#/runs/last-task"]'));
-  await act(async () => document.querySelector('nav a[href="#/activity"]').click());
-  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Activity"));
-  assert.ok(document.querySelector('[aria-label="Time window"]'));
-  assert.equal(document.querySelector('section[aria-label="Needs you"]'), null);
 
+  await eventually(() => assert.ok(document.querySelector("#token")));
+  await type("#token", "bad");
+  await act(async () => document.querySelector("form button").click());
+  await eventually(() => assert.match(document.querySelector('[role="alert"]').textContent, /not valid/));
+  await type("#token", "good");
+  await act(async () => document.querySelector("form button").click());
+
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "What needs doing?"));
+  assert.deepEqual([...document.querySelectorAll("nav a")].map(link => link.textContent), ["Home", "Work", "Automations", "Runners"]);
+  await type("#assign-work", "Add dark mode");
+  await act(async () => document.querySelector("form button").click());
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Add dark mode"));
+  assert.equal(window.location.hash, "#/work/t_new");
+  assert.equal(posts[0].repo, "owner/repo");
+  assert.equal(posts[0].body, "Add dark mode");
+  assert.ok(posts[0].request_id);
+
+  await act(async () => { window.location.hash = "#/work"; });
+  await eventually(() => assert.ok(document.querySelector("table.jobs")));
+  assert.ok(document.querySelector('a[href="#/work/t_new"]'));
+  assert.equal(document.querySelector('nav a[aria-current="page"]').textContent, "Work");
+
+  // A reply for a ticket someone has left must not show under the next one.
+  await act(async () => { window.location.hash = "#/work/t_old"; });
+  await eventually(() => assert.ok(releaseOld));
+  await act(async () => { window.location.hash = "#/work/t_new"; });
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Add dark mode"));
+  await act(async () => { releaseOld(); await new Promise(resolve => setTimeout(resolve, 50)); });
+  assert.equal(document.querySelector("h1").textContent, "Add dark mode");
+
+  signedIn = false;
+  await eventually(() => assert.ok(document.querySelector("#token")), 300);
 });
 
-async function eventually(check) {
-  for (let i = 0; i < 30; i++) {
-    try { check(); return; } catch (error) { if (i === 29) throw error; }
-    await act(() => new Promise(resolve => setTimeout(resolve, 10)));
+async function type(selector, value) {
+  const element = document.querySelector(selector);
+  const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value").set;
+  await act(async () => {
+    setter.call(element, value);
+    element.dispatchEvent(new window.Event("input", { bubbles: true }));
+  });
+}
+
+async function eventually(check, attempts = 60) {
+  for (let i = 0; i < attempts; i++) {
+    try { check(); return; } catch (error) { if (i === attempts - 1) throw error; }
+    await act(() => new Promise(resolve => setTimeout(resolve, 20)));
   }
 }

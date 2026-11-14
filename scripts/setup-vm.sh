@@ -74,69 +74,38 @@ done
 
 runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist init
 
-worker_was_enabled=false
-worker_was_active=false
-if systemctl is-enabled --quiet machinist-worker.service 2>/dev/null; then
-  worker_was_enabled=true
-fi
-if systemctl is-active --quiet machinist-worker.service 2>/dev/null; then
-  worker_was_active=true
-fi
-
 service_base_url="https://raw.githubusercontent.com/owainlewis/machinist/$machinist_version/deploy/systemd"
 service_tmp_dir=$(mktemp -d)
 trap 'rm -rf "$service_tmp_dir"' EXIT
 curl -fsSL "$service_base_url/machinist-control-plane.service" \
   -o "$service_tmp_dir/machinist-control-plane.service"
-curl -fsSL "$service_base_url/machinist-worker.service" \
-  -o "$service_tmp_dir/machinist-worker.service"
+curl -fsSL "$service_base_url/machinist-runner.service" \
+  -o "$service_tmp_dir/machinist-runner.service"
 install -m 0644 "$service_tmp_dir/machinist-control-plane.service" \
   /etc/systemd/system/machinist-control-plane.service
-install -m 0644 "$service_tmp_dir/machinist-worker.service" \
-  /etc/systemd/system/machinist-worker.service
+install -m 0644 "$service_tmp_dir/machinist-runner.service" \
+  /etc/systemd/system/machinist-runner.service
 systemctl daemon-reload
 systemctl enable machinist-control-plane.service
 systemctl restart machinist-control-plane.service
-if runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist worker validate --help >/dev/null 2>&1; then
-  if runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist worker validate >/dev/null 2>&1; then
-    systemctl enable machinist-worker.service
-    systemctl restart machinist-worker.service
-  else
-    systemctl disable --now machinist-worker.service
-  fi
-else
-  if [[ $worker_was_active == true ]]; then
-    if [[ $worker_was_enabled == true ]]; then
-      systemctl enable machinist-worker.service
-    else
-      systemctl disable machinist-worker.service
-    fi
-    systemctl restart machinist-worker.service
-    echo "installed Machinist release does not support worker validation; restored the previously active worker" >&2
-  else
-    if [[ $worker_was_enabled == true ]]; then
-      systemctl enable machinist-worker.service
-      systemctl stop machinist-worker.service
-      echo "installed Machinist release does not support worker validation; preserved the enabled but inactive worker" >&2
-    else
-      systemctl disable --now machinist-worker.service
-    fi
-  fi
-fi
+# The runner needs credentials first, so the operator enables it in the steps below.
+systemctl disable --now machinist-worker.service 2>/dev/null || true
 
 cat <<'EOF'
 
 VM bootstrap complete.
 
 Next steps:
-  1. Run `su - machinist`, then complete the remaining login and repository steps as that user.
-  2. Run `gh auth login`.
-  3. Run `codex` once and sign in.
-  4. Run `claude` once and sign in.
-  5. Clone each repository agents may use and register its absolute path in
-     ~/.machinist/worker.toml.
-  6. Exit back to root and run `systemctl enable --now machinist-worker` after registering a repository.
-  7. Check `systemctl status machinist-control-plane machinist-worker`.
+  1. Run `su - machinist`, then edit ~/.machinist/config.toml and set github.handle
+     and github.repositories.
+  2. Edit ~/.machinist/runner.toml and choose the credential for each harness.
+  3. Exit back to root. Put GH_TOKEN, for the bot account, and those credentials in
+     /etc/machinist/runner.env. Put GH_TOKEN in /etc/machinist/control-plane.env.
+     Make both files readable only by root.
+  4. Run `systemctl restart machinist-control-plane`.
+  5. Run `su - machinist -c 'set -a; . /etc/machinist/runner.env; machinist runner check --repo owner/name'` as root.
+  6. Run `systemctl enable --now machinist-runner`.
+  7. Check `systemctl status machinist-control-plane machinist-runner`.
 
 Keep the control plane on 127.0.0.1. Reach it from your computer with:
   ssh -N -L 7331:127.0.0.1:7331 machinist

@@ -1,132 +1,70 @@
-const zeroTime = "0001-01-01T00:00:00Z";
-const activeTaskStates = new Set(["queued", "running"]);
-const terminalTaskStates = new Set(["succeeded", "failed"]);
-
-export function tasksInWindow(jobs, days, now = new Date()) {
-  const since = new Date(now);
-  since.setHours(0, 0, 0, 0);
-  since.setDate(since.getDate() - Number(days) + 1);
-  return jobs.filter((job) => {
-    const createdAt = Date.parse(job.created_at);
-    return validDate(job.created_at) && createdAt >= since.getTime() && createdAt <= now.getTime();
-  });
-}
-
-export function taskAnalytics(jobs, days, now = new Date()) {
-  const tasks = tasksInWindow(jobs, days, now);
-  const terminalTasks = tasks.filter((task) => terminalTaskStates.has(task.state));
-  const contributingDurations = terminalTasks.flatMap((task) => {
-    const duration = taskDurationMillis(task.runs);
-    return duration === undefined ? [] : [duration];
-  });
-  const succeededTasks = terminalTasks.filter((task) => task.state === "succeeded").length;
-
-  return {
-    tasks,
-    totalTasks: tasks.length,
-    successRate: terminalTasks.length ? succeededTasks / terminalTasks.length : null,
-    failedTasks: terminalTasks.length - succeededTasks,
-    activeTasks: tasks.filter((task) => activeTaskStates.has(task.state)).length,
-    averageTaskDurationMillis: contributingDurations.length
-      ? Math.round(contributingDurations.reduce((total, duration) => total + duration, 0) / contributingDurations.length)
-      : null,
-    contributingTasks: contributingDurations.length,
-  };
-}
-
-export function completedRuns(jobs, days, now = new Date()) {
-  return completedRunsForTasks(tasksInWindow(jobs, days, now));
-}
-
-export function completedRunsForTasks(tasks) {
-  return tasks
-    .flatMap((job) => job.runs)
-    .filter((run) => validDate(run.completed_at))
-    .sort((left, right) => Date.parse(right.completed_at) - Date.parse(left.completed_at));
-}
-
 export function formatDurationMillis(milliseconds) {
-  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) return "Unavailable";
-  if (milliseconds < 1000) return `${milliseconds}ms`;
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "Unavailable";
   const seconds = Math.floor(milliseconds / 1000);
-  const remainder = milliseconds % 1000;
-  if (seconds < 60) return remainder ? `${seconds}.${String(remainder).padStart(3, "0").replace(/0+$/, "")}s` : `${seconds}s`;
+  if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${remainingSeconds}s`;
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-export function formatTokenUsage(value) {
-  return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) ? value.replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "Unavailable";
+export function formatTokens(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "Not reported";
+  return Math.round(value).toLocaleString("en-US");
 }
 
-export function formatSuccessRate(rate) {
-  if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0 || rate > 1) return "Unavailable";
-  return `${Math.round(rate * 1000) / 10}%`;
+// A large count in a few characters, for a tile or a chart axis.
+export function formatCompact(value) {
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
-export function tokenUsageSummary(runs) {
-  let total = 0n;
-  let reported = 0;
-  let completed = 0;
-  for (const run of runs) {
-    if (!validDate(run.completed_at)) continue;
-    completed += 1;
-    if (!validTokenUsage(run.token_usage)) continue;
-    total += BigInt(run.token_usage);
-    reported += 1;
+export function formatCost(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "Not reported";
+}
+
+function average(value) {
+  return value.toFixed(1).replace(/\.0$/, "");
+}
+
+// The Go server sends a duration in nanoseconds.
+export function ticketFigures(figures) {
+  if (!figures) return [];
+  return [
+    ["Questions asked", String(figures.questions)],
+    ["Feedback rounds", String(figures.feedback_rounds)],
+    ["Human commits", figures.human_commits === undefined ? "Counted at merge" : String(figures.human_commits)],
+    ["Tokens", formatTokens(figures.tokens)],
+    ["Cost", formatCost(figures.cost)],
+    ["Elapsed", formatDurationMillis(figures.elapsed / 1e6)],
+    ["Merged", figures.merged ? "Yes" : "No"],
+  ];
+}
+
+export function ledgerFigures(ledger) {
+  if (!ledger?.merged_prs) return [];
+  return [
+    ["Questions", average(ledger.questions)],
+    ["Feedback rounds", average(ledger.feedback_rounds)],
+    ["Human commits", average(ledger.human_commits)],
+    ["Tokens", formatTokens(ledger.tokens)],
+    ["Cost", formatCost(ledger.cost)],
+  ];
+}
+
+export function runDuration(run) {
+  const started = Date.parse(run.started_at);
+  const ended = Date.parse(run.ended_at);
+  return Number.isFinite(started) && Number.isFinite(ended) ? formatDurationMillis(ended - started) : "";
+}
+
+// A stage passed when its process succeeded and its agent did not report
+// failed or needs_input. A stage after the one that ended the run is skipped.
+export function stageStatus(stage) {
+  if (stage.state === "skipped") return { label: "Skipped", tone: "muted" };
+  if (stage.state !== "succeeded") {
+    const text = String(stage.state || "failed").replaceAll("_", " ");
+    return { label: text[0].toUpperCase() + text.slice(1), tone: "bad" };
   }
-  return {
-    total: reported ? total.toString() : undefined,
-    reported,
-    completed,
-    unavailable: completed - reported,
-  };
+  if (stage.outcome === "failed") return { label: "Reported failed", tone: "bad" };
+  if (stage.outcome === "needs_input") return { label: "Asked a question", tone: "bad" };
+  return { label: "Passed", tone: "good" };
 }
-
-export function runModelSummary(runs) {
-  const models = [];
-  let hasUnspecifiedModel = false;
-  for (const run of runs) {
-    const model = typeof run.model === "string" ? run.model.trim() : "";
-    if (!model) {
-      hasUnspecifiedModel = true;
-      continue;
-    }
-    if (!models.includes(model)) models.push(model);
-  }
-  if (hasUnspecifiedModel) models.push("Executor default");
-  return models.length ? models.join(" · ") : "Executor default";
-}
-
-export function taskDurationMillis(runs) {
-  const executedRuns = runs;
-  if (!executedRuns.length || !executedRuns.every((run) => validDuration(run.duration_millis))) return undefined;
-  return executedRuns.reduce((total, run) => total + run.duration_millis, 0);
-}
-
-export function formatReportingCoverage(summary) {
-  if (!summary.completed) return "No completed runs";
-  return `${summary.reported} of ${summary.completed} run${summary.completed === 1 ? "" : "s"}`;
-}
-
-export function formatTaskTokenUsage(summary) {
-  if (summary.total === undefined) return "Not reported";
-  const total = `${formatTokenUsage(summary.total)} tokens`;
-  if (!summary.unavailable) return total;
-  return `${total} reported · ${summary.unavailable} run${summary.unavailable === 1 ? "" : "s"} unreported`;
-}
-
-export function runDetails(run) {
-  const values = [run.executor];
-  if (run.worker_name) values.push(run.worker_name);
-  if (run.model) values.push(run.model);
-  if (Number.isSafeInteger(run.duration_millis)) values.push(formatDurationMillis(run.duration_millis));
-  if (validDate(run.completed_at)) values.push(validTokenUsage(run.token_usage) ? `${formatTokenUsage(run.token_usage)} tokens` : "Token usage unavailable");
-  return values.join(" · ");
-}
-
-function validTokenUsage(value) { return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value); }
-function validDate(value) { return Boolean(value && value !== zeroTime && Number.isFinite(Date.parse(value))); }
-function validDuration(value) { return Number.isSafeInteger(value) && value >= 0; }

@@ -15,9 +15,7 @@ type RunEvent struct {
 	Data     string `json:"data,omitempty"`
 }
 type RunEventBatch struct {
-	InstanceID string            `json:"instance_id"`
-	LeaseToken string            `json:"lease_token"`
-	Events     []json.RawMessage `json:"events"`
+	Events []json.RawMessage `json:"events"`
 }
 type RunEventPage struct {
 	Cursor int64             `json:"cursor"`

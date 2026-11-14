@@ -2,24 +2,19 @@ package cli
 
 import (
 	"bytes"
-	"context"
-	"encoding/hex"
-	"encoding/json"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
 	"testing"
 
 	machinistexamples "github.com/owainlewis/machinist/examples"
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/tickets"
 )
 
-func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
+func TestInitInstallsDefaultConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	var stdout bytes.Buffer
@@ -30,53 +25,40 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 	directory := filepath.Join(home, ".machinist")
-	wantFiles := []string{
-		"config.toml",
-		"prompts/audit.md",
-		"prompts/implement.md", "prompts/primary.md",
-		"prompts/review.md",
-		"prompts/spec.md",
-		"prompts/task-to-pr.md",
-		"prompts/triage.md",
-		"server/worker.token",
-		"worker.toml",
-	}
-	if got := regularFiles(t, directory); strings.Join(got, "\n") != strings.Join(wantFiles, "\n") {
-		t.Fatalf("installed files = %#v, want %#v", got, wantFiles)
-	}
-	for _, name := range initialFiles {
-		want, err := machinistexamples.Files.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := os.ReadFile(filepath.Join(directory, filepath.FromSlash(name)))
-		if err != nil {
-			t.Fatalf("read installed %s: %v", name, err)
-		}
-		if !bytes.Equal(got, want) {
-			t.Fatalf("installed %s does not match its default", name)
+	installed := regularFiles(t, directory)
+	for _, name := range []string{
+		"config.toml", "runner.toml", "runner.token",
+		"factory/agents/default/agent.toml", "factory/agents/default/playbook.md",
+		"factory/agents/default/.claude/agents/machinist-reviewer.md",
+		"factory/agents/default/.codex/agents/machinist-reviewer.toml",
+		"factory/agents/maintainer/playbook.md", "factory/reviewers/review.md",
+		"factory/automation-templates/review-open-prs.md",
+	} {
+		if !slices.Contains(installed, name) {
+			t.Fatalf("%s is missing from %q", name, installed)
 		}
 	}
-	tokenPath := filepath.Join(directory, "server", "worker.token")
-	token, err := os.ReadFile(tokenPath)
+	assertStarterFactoryAndTokenWork(t, directory)
+	want, err := machinistexamples.Files.ReadFile("config.toml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := hex.DecodeString(strings.TrimSpace(string(token)))
-	if err != nil || len(decoded) != 32 {
-		t.Fatalf("worker token is not 32 random bytes: %q, %v", token, err)
+	path := filepath.Join(directory, "config.toml")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range wantFiles {
-		path := filepath.Join(directory, filepath.FromSlash(name))
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("mode for %s = %o, want 600", path, info.Mode().Perm())
-		}
+	if !bytes.Equal(got, want) {
+		t.Fatal("installed config.toml does not match its default")
 	}
-	for _, path := range []string{directory, filepath.Join(directory, "prompts"), filepath.Join(directory, "server")} {
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode for %s = %o, want 600", path, info.Mode().Perm())
+	}
+	for _, path := range []string{directory, filepath.Join(directory, "server")} {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -85,28 +67,10 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 			t.Fatalf("mode for %s = %o, want 700", path, info.Mode().Perm())
 		}
 	}
-
-	definition := filepath.Join(directory, "config.toml")
-	definitions, err := config.LoadDefinitions(definition)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := config.LoadConfig(path); err != nil {
+		t.Fatalf("load installed configuration: %v", err)
 	}
-	if len(definitions.Commands) != 7 {
-		t.Fatalf("installed definitions = commands %#v", definitions.Commands)
-	}
-	for _, name := range []string{"task-to-pr", "audit", "triage", "spec", "implement", "review", "primary"} {
-		if _, err := config.LoadCommand(definition, name); err != nil {
-			t.Fatalf("load installed agent %s: %v", name, err)
-		}
-	}
-	worker, err := config.LoadWorker(filepath.Join(directory, "worker.toml"))
-	if err != nil {
-		t.Fatalf("load installed worker: %v", err)
-	}
-	if got := strings.Join(worker.Executors["codex"].Command, " "); !strings.Contains(got, "codex exec --json") {
-		t.Fatalf("installed Codex executor does not request structured output: %q", got)
-	}
-	if !strings.Contains(stdout.String(), "created prompts/audit.md") || !strings.Contains(stdout.String(), "Add repositories to worker.toml") {
+	if !strings.Contains(stdout.String(), "created config.toml") || !strings.Contains(stdout.String(), "Set github.handle and repositories in config.toml") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -146,55 +110,86 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
 		t.Fatalf("first init exit code = %d", exitCode)
 	}
-	directory := filepath.Join(home, ".machinist")
-	for name, body := range map[string]string{
-		"config.toml":           "custom config\n",
-		"worker.toml":           "custom worker\n",
-		"prompts/task-to-pr.md": "custom task-to-pr\n",
-		"prompts/plan.md":       "old plan\n",
-		"prompts/build.md":      "old build\n",
-		"prompts/verify.md":     "old verify\n",
-		"prompts/custom.md":     "custom agent\n",
-		"server/worker.token":   "custom token\n",
-	} {
-		if err := os.WriteFile(filepath.Join(directory, filepath.FromSlash(name)), []byte(body), 0o600); err != nil {
+	path := filepath.Join(home, ".machinist", "config.toml")
+	if err := os.WriteFile(path, []byte("custom config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("second init exit code = %d", exitCode)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "custom config\n" {
+		t.Fatalf("init changed the existing file: %q", got)
+	}
+	if !strings.Contains(stdout.String(), "kept config.toml") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("third init exit code = %d", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "created config.toml") {
+		t.Fatalf("missing default not restored: %q", stdout.String())
+	}
+}
+
+func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
+	t.Helper()
+	loaded, err := factory.Load(filepath.Join(directory, "factory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Validate("default", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Agents["default"].Files) != 6 || len(loaded.Reviewers) != 1 || len(loaded.Automations) != 0 {
+		t.Fatalf("factory = %+v", loaded)
+	}
+	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := tickets.Open(machinistConfig.Server.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	token, err := os.ReadFile(filepath.Join(directory, "runner.token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, err := store.TokenName(t.Context(), strings.TrimSpace(string(token))); err != nil || name != "local" {
+		t.Fatalf("name = %q, err = %v", name, err)
+	}
+	info, err := os.Stat(filepath.Join(directory, "runner.token"))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("info = %v, err = %v", info, err)
+	}
+	if _, err := config.LoadRunner(filepath.Join(directory, "runner.toml")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInitReplacesALostRunnerToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for range 2 {
+		if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+			t.Fatalf("exit code = %d", exitCode)
+		}
+		if err := os.Remove(filepath.Join(home, ".machinist", "runner.token")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	auditPath := filepath.Join(directory, "prompts", "audit.md")
-	if err := os.Remove(auditPath); err != nil {
-		t.Fatal(err)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("exit code = %d", exitCode)
 	}
-	preserved := regularFileContents(t, directory)
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &stdout, &stderr, "test"); exitCode != 0 {
-		t.Fatalf("second init exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-	for name, want := range preserved {
-		got, err := os.ReadFile(filepath.Join(directory, filepath.FromSlash(name)))
-		if err != nil {
-			t.Fatalf("read preserved %s: %v", name, err)
-		}
-		if !bytes.Equal(got, want) {
-			t.Fatalf("init changed existing file %s", name)
-		}
-	}
-	audit, err := os.ReadFile(auditPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantAudit, err := machinistexamples.Files.ReadFile("prompts/audit.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(audit, wantAudit) {
-		t.Fatal("init failed to restore the missing audit default")
-	}
-	if !strings.Contains(stdout.String(), "kept prompts/task-to-pr.md") || !strings.Contains(stdout.String(), "created prompts/audit.md") || !strings.Contains(stdout.String(), "kept server/worker.token") {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
+	assertStarterFactoryAndTokenWork(t, filepath.Join(home, ".machinist"))
 }
 
 func regularFiles(t *testing.T, root string) []string {
@@ -217,19 +212,6 @@ func regularFiles(t *testing.T, root string) []string {
 		t.Fatal(err)
 	}
 	return files
-}
-
-func regularFileContents(t *testing.T, root string) map[string][]byte {
-	t.Helper()
-	contents := make(map[string][]byte)
-	for _, name := range regularFiles(t, root) {
-		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		contents[name] = body
-	}
-	return contents
 }
 
 func TestInitRejectsExistingNonFile(t *testing.T) {
@@ -280,7 +262,7 @@ func TestInitRejectsExistingNonFile(t *testing.T) {
 }
 
 func TestInitRejectsSymlinkedSetupDirectories(t *testing.T) {
-	for _, name := range []string{".machinist", ".machinist/prompts", ".machinist/server"} {
+	for _, name := range []string{".machinist", ".machinist/server"} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
@@ -299,9 +281,6 @@ func TestInitRejectsSymlinkedSetupDirectories(t *testing.T) {
 			if exitCode != 2 || !strings.Contains(stderr.String(), "already exists and is not a directory") {
 				t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
 			}
-			if strings.Contains(stdout.String(), "configuration is ready") {
-				t.Fatalf("init reported success with symlinked setup directory: %q", stdout.String())
-			}
 			entries, err := os.ReadDir(external)
 			if err != nil {
 				t.Fatal(err)
@@ -313,545 +292,33 @@ func TestInitRejectsSymlinkedSetupDirectories(t *testing.T) {
 	}
 }
 
-func TestWorkerRunInjectsInputIntoNamedPrompt(t *testing.T) {
-	repository := newCLIRepository(t)
-	workerConfig := writeCLIConfig(t, "success")
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	exitCode := Execute(t.Context(), []string{
-		"worker", "run",
-		"--command=plan",
-		"--prompt=fix issue 123",
-		"--repo=" + repository,
-		"--config=" + workerConfig,
-	}, strings.NewReader("ignored"), &stdout, &stderr, "test")
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr.String())
-	}
-	if stdout.String() != "configured plan prompt\n\nPrompt:\nfix issue 123\n" {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-	if !strings.Contains(stderr.String(), "succeeded; events:") {
-		t.Fatalf("stderr = %q", stderr.String())
-	}
-}
-
-func TestRunExecutesOneAgent(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"run",
-		"--command=plan",
-		"--prompt=issue 42",
-		"--repo=" + newCLIRepository(t),
-		"--config=" + writeCLIConfig(t, "success"),
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 || stdout.String() != "configured plan prompt\n\nPrompt:\nissue 42\n" {
-		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
-	}
-}
-
-func TestSubmitQueuesAgentWithConfiguredBearerToken(t *testing.T) {
-	var gotAuthorization string
-	var gotRequest submitJobRequest
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/v1/catalog":
-			writeTestJSON(response, map[string]any{
-				"commands": []string{"plan"}, "repositories": []string{"machinist"},
-			})
-		case "/api/v1/jobs":
-			gotAuthorization = request.Header.Get("Authorization")
-			if err := json.NewDecoder(request.Body).Decode(&gotRequest); err != nil {
-				http.Error(response, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeTestJSON(response, map[string]string{"id": "job_admitted"})
-		default:
-			http.NotFound(response, request)
-		}
-	}))
-	defer server.Close()
-	workerConfig := writeSubmitWorkerConfig(t, server.URL, "secret")
-
-	var stdout, stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"submit",
-		"--command=plan",
-		"--model=luna",
-		"--prompt=fix issue 13",
-		"--repo=machinist",
-		"--config=" + workerConfig,
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 || stdout.String() != "job_admitted\n" {
-		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
-	}
-	if gotAuthorization != "Bearer secret" {
-		t.Fatalf("authorization = %q", gotAuthorization)
-	}
-	if gotRequest != (submitJobRequest{Prompt: "fix issue 13", Repository: "machinist", Command: "plan", Model: "luna"}) {
-		t.Fatalf("submission = %#v", gotRequest)
-	}
-}
-
-func TestSubmitUsesCatalogWhenStatusHistoryIsLarge(t *testing.T) {
-	var catalogRequested bool
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/v1/status":
-			writeTestJSON(response, map[string]any{
-				"jobs": []any{map[string]string{"prompt": strings.Repeat("history ", 1<<18)}},
-			})
-		case "/api/v1/catalog":
-			catalogRequested = true
-			writeTestJSON(response, map[string]any{
-				"commands": []string{"plan"}, "repositories": []string{"machinist"},
-			})
-		case "/api/v1/jobs":
-			writeTestJSON(response, map[string]string{"id": "job_large_history"})
-		default:
-			http.NotFound(response, request)
-		}
-	}))
-	defer server.Close()
-	workerConfig := writeSubmitWorkerConfig(t, server.URL, "secret")
-
-	var stdout, stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"submit",
-		"--command=plan",
-		"--prompt=work despite history",
-		"--repo=machinist",
-		"--config=" + workerConfig,
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 || stdout.String() != "job_large_history\n" || !catalogRequested {
-		t.Fatalf("exit code = %d, stdout = %q, stderr = %q, catalog requested = %t", exitCode, stdout.String(), stderr.String(), catalogRequested)
-	}
-}
-
-func TestSubmitRejectsUnknownValuesBeforeCreatingJob(t *testing.T) {
-	postCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/api/v1/catalog" {
-			writeTestJSON(response, map[string]any{
-				"commands": []string{"plan"}, "repositories": []string{"machinist"},
-			})
-			return
-		}
-		if request.URL.Path == "/api/v1/jobs" {
-			postCount++
-		}
-		http.NotFound(response, request)
-	}))
-	defer server.Close()
-	workerConfig := writeSubmitWorkerConfig(t, server.URL, "secret")
-
-	for _, test := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{name: "command", args: []string{"--command=missing", "--prompt=work", "--repo=machinist"}, want: `command "missing" is not defined`},
-		{name: "repository", args: []string{"--command=plan", "--prompt=work", "--repo=missing"}, want: `repository "missing" is not defined in the control plane`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var stderr bytes.Buffer
-			args := append(test.args, "--config="+workerConfig)
-			if exitCode := Execute(t.Context(), append([]string{"submit"}, args...), strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode == 0 || !strings.Contains(stderr.String(), test.want) {
-				t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-			}
-		})
-	}
-	if postCount != 0 {
-		t.Fatalf("invalid submissions sent %d POST requests", postCount)
-	}
-}
-
-func TestRunRequiresExactlyOneSelection(t *testing.T) {
-	for _, args := range [][]string{
-		{"run", "--prompt=issue 42"},
-	} {
-		var stderr bytes.Buffer
-		if exitCode := Execute(t.Context(), args, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 {
-			t.Fatalf("args = %#v, exit code = %d, stderr = %q", args, exitCode, stderr.String())
-		}
-	}
-}
-
-func TestWorkerRunSelectsDifferentAgentPrompts(t *testing.T) {
-	repository := newCLIRepository(t)
-	workerConfig := writeCLIConfig(t, "success")
-	for _, test := range []struct {
-		agent string
-		want  string
-	}{
-		{agent: "plan", want: "configured plan prompt\n"},
-		{agent: "review", want: "configured review prompt\n"},
-	} {
-		t.Run(test.agent, func(t *testing.T) {
-			var stdout bytes.Buffer
-			var stderr bytes.Buffer
-			exitCode := Execute(t.Context(), []string{
-				"worker", "run",
-				"--command=" + test.agent,
-				"--prompt=check ticket",
-				"--repo=" + repository,
-				"--config=" + workerConfig,
-			}, strings.NewReader(""), &stdout, &stderr, "test")
-			if exitCode != 0 || stdout.String() != test.want+"\nPrompt:\ncheck ticket\n" {
-				t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
-			}
-		})
-	}
-}
-
-func TestWorkerRunRejectsPositionalPrompt(t *testing.T) {
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "run", "old task", "--command=plan", "--prompt=new task"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 2 || !strings.Contains(stderr.String(), "unknown command") && !strings.Contains(stderr.String(), "accepts 0 arg") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-}
-
-func TestWorkerRunRequiresPrompt(t *testing.T) {
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "run", "--command=plan"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 2 || !strings.Contains(stderr.String(), "required flag(s) \"prompt\"") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-}
-
-func TestWorkerRunRejectsLegacyTaskFlag(t *testing.T) {
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "run", "--command=plan", "--task=issue 42"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 2 || !strings.Contains(stderr.String(), "unknown flag: --task") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-}
-
-func TestWorkerRunRejectsLegacyFactoryConfigFlag(t *testing.T) {
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "run", "--command=plan", "--prompt=issue 42", "--factory-config=legacy.toml"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 2 || !strings.Contains(stderr.String(), "unknown flag: --factory-config") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-}
-
-func TestWorkerRunRejectsEmptyPrompt(t *testing.T) {
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"worker", "run",
-		"--command=plan",
-		"--prompt=   ",
-		"--repo=" + newCLIRepository(t),
-		"--config=" + writeCLIConfig(t, "success"),
-	}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 2 || !strings.Contains(stderr.String(), "prompt is required") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-}
-
-func TestWorkerRunDoesNotEvaluatePromptAsTemplateOrShell(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "not-run")
-	prompt := "fix $(touch " + marker + ") and preserve {{machinist.prompt}}\nsecond line"
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"worker", "run",
-		"--command=plan",
-		"--prompt=" + prompt,
-		"--repo=" + newCLIRepository(t),
-		"--config=" + writeCLIConfig(t, "success"),
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-	want := "configured plan prompt\n\nPrompt:\n" + prompt + "\n"
-	if stdout.String() != want {
-		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("prompt text was evaluated as a shell command: %v", err)
-	}
-}
-
-func TestWorkerRunReturnsAgentExitStatus(t *testing.T) {
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"worker", "run",
-		"--command=plan",
-		"--prompt=fail this task",
-		"--repo=" + newCLIRepository(t),
-		"--config=" + writeCLIConfig(t, "fail"),
-	}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 9 || !strings.Contains(stderr.String(), "status 9") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-}
-
-func TestWorkerRunSelectsConfiguredModelAlias(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"worker", "run",
-		"--command=plan",
-		"--model=luna",
-		"--prompt=test model selection",
-		"--repo=" + newCLIRepository(t),
-		"--config=" + writeCLIConfig(t, "model"),
-	}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-	if stdout.String() != "gpt-test-luna\n" {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-}
-
-func TestWorkerRunReturnsRuntimeFailureStatus(t *testing.T) {
-	workerConfig := writeCLIConfig(t, "success")
-	blockedDataDirectory := filepath.Join(filepath.Dir(workerConfig), "blocked-data")
-	if err := os.WriteFile(blockedDataDirectory, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	workerBody := "data_directory = " + strconv.Quote(blockedDataDirectory) + "\n" +
-		"\n" +
-		"[executors.default]\n" +
-		"command = [\"/bin/sh\", \"-c\", \"cat\"]\n"
-	if err := os.WriteFile(workerConfig, []byte(workerBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"worker", "run",
-		"--command=plan",
-		"--prompt=exercise runtime failure",
-		"--repo=" + newCLIRepository(t),
-		"--config=" + workerConfig,
-	}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 1 || !strings.Contains(stderr.String(), "create run directory") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-}
-
 func TestVersion(t *testing.T) {
 	var stdout bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"version"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, "1.2.3")
-	if exitCode != 0 || stdout.String() != "1.2.3\n" {
-		t.Fatalf("exit code = %d, stdout = %q", exitCode, stdout.String())
+	if exitCode := Execute(t.Context(), []string{"version"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, "v1.2.3"); exitCode != 0 {
+		t.Fatalf("exit code = %d", exitCode)
+	}
+	if stdout.String() != "v1.2.3\n" {
+		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
-func TestWorkerValidateRequiresRepository(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
-		t.Fatalf("init exit code = %d", exitCode)
-	}
-
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 2 || !strings.Contains(stderr.String(), "requires at least one executor and repository") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-}
-
-func TestWorkerValidateAcceptsCompleteConfiguration(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
-		t.Fatalf("init exit code = %d", exitCode)
-	}
-	workerPath := filepath.Join(home, ".machinist", "worker.toml")
-	file, err := os.OpenFile(workerPath, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.WriteString("\n[repositories.example]\npath = \"" + filepath.ToSlash(t.TempDir()) + "\"\n"); err != nil {
-		if closeErr := file.Close(); closeErr != nil {
-			t.Errorf("close worker configuration after write failure: %v", closeErr)
+func TestRemovedCommandsAreUnknown(t *testing.T) {
+	for _, name := range []string{"run", "submit", "worker"} {
+		var stderr bytes.Buffer
+		if exitCode := Execute(t.Context(), []string{name}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "unknown command") {
+			t.Fatalf("%s: exit code = %d, stderr = %q", name, exitCode, stderr.String())
 		}
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{"worker", "validate"}, strings.NewReader(""), &stdout, &stderr, "test")
-	if exitCode != 0 || strings.TrimSpace(stdout.String()) != "worker configuration is valid" {
-		t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
 	}
 }
 
-func TestStartReportsListeningAfterBindAndStopsOnCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	stderr := &cancelWriter{cancel: cancel}
-	exitCode := Execute(ctx, []string{
-		"start",
-		"--config=" + writeStartConfig(t),
-		"--listen=127.0.0.1:0",
-	}, strings.NewReader(""), &bytes.Buffer{}, stderr, "test")
-	if exitCode != 0 {
+func TestKubernetesCommandReadsRunnerConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runner.toml")
+	if err := os.WriteFile(path, []byte("[executors.codex]\ncommand = [\"codex\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"kubernetes", "install", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	if exitCode != 2 || !strings.Contains(stderr.String(), "unknown key executors") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
-	const prefix = "machinist: control plane listening on http://"
-	if !strings.HasPrefix(stderr.String(), prefix) || !strings.HasSuffix(stderr.String(), "\n") || strings.Count(stderr.String(), "\n") != 1 {
-		t.Fatalf("stderr = %q", stderr.String())
-	}
-	address := strings.TrimSuffix(strings.TrimPrefix(stderr.String(), prefix), "\n")
-	host, port, err := net.SplitHostPort(address)
-	if err != nil || host != "127.0.0.1" || port == "0" {
-		t.Fatalf("reported address = %q, parse error = %v", address, err)
-	}
-	rebound, err := net.Listen("tcp", address)
-	if err != nil {
-		t.Fatalf("reported address %s was not released: %v", address, err)
-	}
-	rebound.Close()
-}
-
-func TestStartDoesNotReportListeningWhenAddressIsInUse(t *testing.T) {
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer occupied.Close()
-	var stderr bytes.Buffer
-	exitCode := Execute(t.Context(), []string{
-		"start",
-		"--config=" + writeStartConfig(t),
-		"--listen=" + occupied.Addr().String(),
-	}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 2 || !strings.Contains(stderr.String(), "listen on "+occupied.Addr().String()) {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-	if strings.Contains(stderr.String(), "control plane listening") {
-		t.Fatalf("start reported listening after bind failed: %q", stderr.String())
-	}
-}
-
-type cancelWriter struct {
-	bytes.Buffer
-	cancel context.CancelFunc
-}
-
-func (w *cancelWriter) Write(body []byte) (int, error) {
-	w.cancel()
-	return w.Buffer.Write(body)
-}
-
-func writeStartConfig(t *testing.T) string {
-	t.Helper()
-	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "worker.token"), []byte("secret\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(directory, "config.toml")
-	body := "[server]\n" +
-		"database = \"machinist.db\"\n" +
-		"worker_token_file = \"worker.token\"\n"
-	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return configPath
-}
-
-func writeCLIConfig(t *testing.T, mode string) string {
-	t.Helper()
-	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "plan.md"), []byte("configured plan prompt\n\nPrompt:\n{{machinist.prompt}}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(directory, "review.md"), []byte("configured review prompt\n\nPrompt:\n{{machinist.prompt}}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(directory, "build.md"), []byte("configured build prompt\n\nPrompt:\n{{machinist.prompt}}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(directory, "verify.md"), []byte("configured verify prompt\n\nPrompt:\n{{machinist.prompt}}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	definition := filepath.Join(directory, "config.toml")
-	script := "cat"
-	if mode == "fail" {
-		script = "exit 9"
-	}
-	if mode == "model" {
-		script = `printf '%s\n' "${0#--model=}"; cat >/dev/null`
-	}
-	buildScript := script
-	if mode == "fail-build" {
-		buildScript = "cat >/dev/null; exit 9"
-	}
-	definitionBody := "[commands.plan]\n" +
-		"executor = \"default\"\n" +
-		"prompt_file = \"plan.md\"\n" +
-		"timeout = \"5s\"\n\n" +
-		"[commands.review]\n" +
-		"executor = \"default\"\n" +
-		"prompt_file = \"review.md\"\n" +
-		"timeout = \"5s\"\n\n" +
-		"[commands.build]\n" +
-		"executor = \"build\"\n" +
-		"prompt_file = \"build.md\"\n" +
-		"timeout = \"5s\"\n\n" +
-		"[commands.verify]\n" +
-		"executor = \"default\"\n" +
-		"prompt_file = \"verify.md\"\n" +
-		"timeout = \"5s\"\n"
-	if err := os.WriteFile(definition, []byte(definitionBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	worker := filepath.Join(directory, "worker.toml")
-	defaultCommand := "command = [\"/bin/sh\", \"-c\", " + strconv.Quote(script) + "]\n"
-	if mode == "model" {
-		defaultCommand = "command = [\"/bin/sh\", \"-c\", " + strconv.Quote(script) + ", \"--model={{machinist.model}}\"]\n" +
-			"models = { luna = \"gpt-test-luna\" }\n"
-	}
-	workerBody := "data_directory = \"" + filepath.ToSlash(filepath.Join(directory, "data")) + "\"\n" +
-		"\n" +
-		"[executors.default]\n" +
-		defaultCommand + "\n" +
-		"[executors.build]\n" +
-		"command = [\"/bin/sh\", \"-c\", " + strconv.Quote(buildScript) + "]\n"
-	if err := os.WriteFile(worker, []byte(workerBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return worker
-}
-
-func writeSubmitWorkerConfig(t *testing.T, endpoint, token string) string {
-	t.Helper()
-	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "token"), []byte(token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(directory, "worker.toml")
-	body := "[control_plane]\nurl = " + strconv.Quote(endpoint) + "\ntoken_file = \"token\"\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func writeTestJSON(response http.ResponseWriter, value any) {
-	response.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(response).Encode(value)
-}
-
-func newCLIRepository(t *testing.T) string {
-	t.Helper()
-	directory := t.TempDir()
-	command := exec.Command("git", "init", "--quiet", directory)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, output)
-	}
-	root, err := filepath.EvalSymlinks(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return root
 }

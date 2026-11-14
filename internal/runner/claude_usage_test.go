@@ -179,7 +179,7 @@ func TestExecuteCollectsClaudeUsageAndPreservesOutput(t *testing.T) {
 	claude := claudeAgent(t, `cat >/dev/null; if [ "$2" != "--verbose" ] || [ "$3" != "--output-format" ] || [ "$4" != "stream-json" ]; then exit 8; fi; printf '%s' '`+output+`'; printf 'claude stderr\n' >&2`, 5*time.Second)
 	var stdout, stderr bytes.Buffer
 	result, err := Execute(t.Context(), Options{
-		Command: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: &stdout, Stderr: &stderr,
+		Command: claude, Repository: newGitRepository(t), Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Stdout: &stdout, Stderr: &stderr,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestExecuteCollectsClaudeUsageAndPreservesOutput(t *testing.T) {
 func TestExecuteUsesClaudeFileFallbackForExplicitText(t *testing.T) {
 	claude := claudeAgentWithCommand(t, []string{"--print", "--output-format", "text"}, `cat >/dev/null; if [ "$1" != "--print" ] || [ "$2" != "--output-format" ] || [ "$3" != "text" ] || [ -n "$4" ]; then exit 8; fi; printf 'text output'; printf 2468 > "$MACHINIST_TOKEN_USAGE_PATH"`, 5*time.Second)
 	result, err := Execute(t.Context(), Options{
-		Command: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
+		Command: claude, Repository: newGitRepository(t), Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +211,7 @@ func TestExecuteUsesClaudeFileFallbackForExplicitText(t *testing.T) {
 func TestExecuteUsesClaudeFileFallbackForExplicitTextAfterTimeout(t *testing.T) {
 	claude := claudeAgentWithCommand(t, []string{"--print", "--output-format", "text"}, `cat >/dev/null; printf 2468 > "$MACHINIST_TOKEN_USAGE_PATH"; sleep 60`, 5*time.Second)
 	result, err := Execute(t.Context(), Options{
-		Command: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
+		Command: claude, Repository: newGitRepository(t), Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
 	})
 	var outcome *OutcomeError
 	if !errors.As(err, &outcome) || outcome.State != StateTimedOut || outcome.ExitCode != 124 {
@@ -226,7 +226,7 @@ func TestExecuteCollectsClaudeExplicitJSONUsageWithoutNormalizing(t *testing.T) 
 	const output = `{"type":"result","usage":{"input_tokens":5,"cache_creation_input_tokens":6,"cache_read_input_tokens":7,"output_tokens":8}}`
 	claude := claudeAgentWithCommand(t, []string{"--print", "--output-format", "json"}, `cat >/dev/null; if [ "$1" != "--print" ] || [ "$2" != "--output-format" ] || [ "$3" != "json" ] || [ -n "$4" ]; then exit 8; fi; printf '%s' '`+output+`'`, 5*time.Second)
 	result, err := Execute(t.Context(), Options{
-		Command: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
+		Command: claude, Repository: newGitRepository(t), Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +250,7 @@ func TestExecutePreservesClaudeFailureAndTimeoutWithUsage(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := Execute(t.Context(), Options{
-				Command: claudeAgent(t, test.script, test.timeout), Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
+				Command: claudeAgent(t, test.script, test.timeout), Repository: newGitRepository(t), Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
 			})
 			var outcome *OutcomeError
 			if !errors.As(err, &outcome) || outcome.State != test.state || outcome.ExitCode != test.exit {
@@ -266,7 +266,7 @@ func TestExecutePreservesClaudeFailureAndTimeoutWithUsage(t *testing.T) {
 func TestExecuteInvalidClaudeUsagePreservesFailure(t *testing.T) {
 	claude := claudeAgent(t, `cat >/dev/null; printf '%s' '{"type":"result","usage":{"input_tokens":1.5,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}'; exit 7`, 5*time.Second)
 	result, err := Execute(t.Context(), Options{
-		Command: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
+		Command: claude, Repository: newGitRepository(t), Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
 	})
 	var outcome *OutcomeError
 	if !errors.As(err, &outcome) || outcome.State != StateFailed || outcome.ExitCode != 7 {
@@ -280,7 +280,7 @@ func TestExecuteInvalidClaudeUsagePreservesFailure(t *testing.T) {
 func TestExecuteLeavesClaudeUsageUnavailableWhenResultHasNoUsage(t *testing.T) {
 	claude := claudeAgent(t, `cat >/dev/null; printf '%s' '{"type":"result","subtype":"success"}'`, 5*time.Second)
 	result, err := Execute(t.Context(), Options{
-		Command: claude, Repository: newGitRepository(t), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
+		Command: claude, Repository: newGitRepository(t), Prompt: testPrompt, Environment: os.Environ(), DataDirectory: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -301,6 +301,6 @@ func claudeAgentWithCommand(t *testing.T, arguments []string, script string, tim
 		t.Fatal(err)
 	}
 	return config.ResolvedCommand{
-		Name: "build", Executor: "claude", Command: append([]string{executable}, arguments...), Prompt: "complete prompt\n", Timeout: timeout, Hash: "claude-test-hash",
+		Name: "build", Executor: "claude", Command: append([]string{executable}, arguments...), Timeout: timeout, Hash: "claude-test-hash",
 	}
 }

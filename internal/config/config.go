@@ -1,193 +1,67 @@
 package config
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
-	"github.com/owainlewis/machinist/internal/triggers"
 	"github.com/pelletier/go-toml/v2"
 )
 
 const (
-	defaultTimeout           = 30 * time.Minute
-	maxConfigBytes           = 1 << 20
-	maxPromptBytes           = 256 << 10
-	maxInputPromptBytes      = 256 << 10
-	maxRenderedPromptBytes   = maxPromptBytes + maxInputPromptBytes
-	maxTokenBytes            = 8 << 10
-	defaultWorkerDirName     = ".machinist/worker"
-	defaultServerDirName     = ".machinist/server"
-	promptParameter          = "{{machinist.prompt}}"
-	modelParameter           = "{{machinist.model}}"
-	machinistParameterPrefix = "{{machinist"
-	legacyFactoryPrefix      = "{{factory."
+	defaultListen        = "127.0.0.1:7331"
+	defaultAgent         = "default"
+	defaultMaxTurns      = 5
+	defaultRunTimeout    = 60 * time.Minute
+	maxConfigBytes       = 1 << 20
+	maxTokenBytes        = 8 << 10
+	defaultServerDirName = ".machinist/server"
+	defaultFactoryDir    = ".machinist/factory"
 )
 
-type Worker struct {
-	Kubernetes    *Kubernetes           `toml:"kubernetes"`
-	Name          string                `toml:"name"`
-	DataDirectory string                `toml:"data_directory"`
-	ControlPlane  ControlPlane          `toml:"control_plane"`
-	Executors     map[string]Executor   `toml:"executors"`
-	Repositories  map[string]Repository `toml:"repositories"`
-	configDir     string
-}
-
-type ControlPlane struct {
-	URL       string `toml:"url"`
-	TokenFile string `toml:"token_file"`
-}
-
-type Executor struct {
-	Adapter  string            `toml:"adapter"`
-	ReadOnly bool              `toml:"read_only"`
-	Command  []string          `toml:"command"`
-	Models   map[string]string `toml:"models"`
-}
-
-func (e Executor) supportsModel() bool {
-	return e.Adapter == "codex-app-server" || e.Adapter == "claude-stream" || slices.ContainsFunc(e.Command, func(argument string) bool { return strings.Contains(argument, modelParameter) })
-}
-
-type Repository struct {
-	Path string `toml:"path"`
-}
-
 type Server struct {
-	Kubernetes                     *Kubernetes `toml:"kubernetes"`
-	State                          string      `toml:"state"`
-	Listen                         string      `toml:"listen"`
-	Database                       string      `toml:"database"`
-	WorkerTokenFile                string      `toml:"worker_token_file"`
-	MaxConcurrentJobsPerRepository *int        `toml:"max_concurrent_jobs_per_repository"`
-	MaxConcurrentJobs              *int        `toml:"max_concurrent_jobs"`
-	configDir                      string
+	Listen               string `toml:"listen"`
+	Database             string `toml:"database"`
+	Factory              string `toml:"factory"`
+	DefaultAgent         string `toml:"default_agent"`
+	MaxTurnsWithoutHuman int    `toml:"max_turns_without_human"`
+	RunTimeout           string `toml:"run_timeout"`
+	TLSCert              string `toml:"tls_cert"`
+	TLSKey               string `toml:"tls_key"`
+	runTimeout           time.Duration
+	configDir            string
+}
+
+// RunDeadline is the longest one run may last.
+func (s Server) RunDeadline() time.Duration { return s.runTimeout }
+
+type GitHub struct {
+	Handle       string   `toml:"handle"`
+	Repositories []string `toml:"repositories"`
 }
 
 type Config struct {
-	Storage   Storage             `toml:"storage"`
-	Workflows map[string]Workflow `toml:"workflows"`
-	Server    Server              `toml:"server"`
-	Commands  map[string]Command  `toml:"commands"`
-	GitHub    GitHub              `toml:"github"`
-	Triggers  TriggerDefinitions  `toml:"triggers"`
-	path      string
+	Server Server `toml:"server"`
+	GitHub GitHub `toml:"github"`
+	path   string
 }
 
-type GitHub struct {
-	Repositories map[string]string `toml:"repositories"`
-}
+func (c Config) Path() string { return c.path }
 
-type TriggerDefinitions struct {
-	GitHub   map[string]GitHubTrigger   `toml:"github"`
-	Interval map[string]IntervalTrigger `toml:"interval"`
-	Cron     map[string]CronTrigger     `toml:"cron"`
-}
-
-type TriggerSelection struct {
-	Command string `toml:"command"`
-	Model   string `toml:"model"`
-}
-
-type GitHubTrigger struct {
-	TriggerSelection
-	Every string `toml:"every"`
-	Label string `toml:"label"`
-}
-
-type IntervalTrigger struct {
-	TriggerSelection
-	Every      string `toml:"every"`
-	Repository string `toml:"repository"`
-	Prompt     string `toml:"prompt"`
-}
-
-type CronTrigger struct {
-	TriggerSelection
-	Schedule   string `toml:"schedule"`
-	Timezone   string `toml:"timezone"`
-	Repository string `toml:"repository"`
-	Prompt     string `toml:"prompt"`
-}
-
-type ResolvedTrigger struct {
-	Identity           string
-	Family             string
-	Name               string
-	Repository         string
-	GitHubRepository   string
-	GitHubRepositories map[string]string
-	Every              time.Duration
-	Schedule           string
-	Timezone           string
-	Label              string
-	SelectionName      string
-	Model              string
-	Prompt             string
-	Command            ResolvedCommand
-	Signature          string
-	cron               *triggers.Cron
-}
-
-type Command struct {
-	Model      string `toml:"model"`
-	Executor   string `toml:"executor"`
-	PromptFile string `toml:"prompt_file"`
-	Timeout    string `toml:"timeout"`
-}
-
+// ResolvedCommand is the process and timeout for one run.
 type ResolvedCommand struct {
 	Adapter    string
 	Name       string
 	Executor   string
 	Command    []string
 	Model      string
-	Prompt     string
 	Timeout    time.Duration
 	Definition string
 	Hash       string
-}
-
-func LoadWorker(path string) (Worker, error) {
-	worker := Worker{}
-	if path == "" {
-		defaultPath, err := defaultConfigPath("worker.toml")
-		if err != nil {
-			return Worker{}, err
-		}
-		path = defaultPath
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-			worker.configDir = filepath.Dir(path)
-			return applyWorkerDefaults(worker)
-		} else if err != nil {
-			return Worker{}, fmt.Errorf("inspect worker config: %w", err)
-		}
-	}
-
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return Worker{}, fmt.Errorf("resolve worker config: %w", err)
-	}
-	body, err := readBoundedFile(absPath, maxConfigBytes)
-	if err != nil {
-		return Worker{}, fmt.Errorf("read worker config %q: %w", absPath, err)
-	}
-	decoder := toml.NewDecoder(strings.NewReader(string(body)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&worker); err != nil {
-		return Worker{}, fmt.Errorf("parse worker config %q: %w", absPath, err)
-	}
-	worker.configDir = filepath.Dir(absPath)
-	return applyWorkerDefaults(worker)
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -198,11 +72,15 @@ func LoadConfig(path string) (Config, error) {
 		}
 		path = defaultPath
 	}
-	machinistConfig, err := loadConfigFile(path)
+	absPath, err := filepath.Abs(path)
 	if err != nil {
+		return Config{}, fmt.Errorf("resolve Machinist config: %w", err)
+	}
+	machinistConfig := Config{path: absPath}
+	if err := decodeFile(absPath, &machinistConfig); err != nil {
 		return Config{}, err
 	}
-	machinistConfig.Server.configDir = filepath.Dir(machinistConfig.path)
+	machinistConfig.Server.configDir = filepath.Dir(absPath)
 	machinistConfig.Server, err = applyServerDefaults(machinistConfig.Server)
 	if err != nil {
 		return Config{}, err
@@ -210,419 +88,82 @@ func LoadConfig(path string) (Config, error) {
 	return machinistConfig, nil
 }
 
-func loadConfigFile(path string) (Config, error) {
-	absPath, err := filepath.Abs(path)
+// decodeFile rejects keys the target does not define and names each one, so an
+// old configuration fails at startup with the key to remove.
+func decodeFile(path string, target any) error {
+	body, err := readBoundedFile(path, maxConfigBytes)
 	if err != nil {
-		return Config{}, fmt.Errorf("resolve Machinist config: %w", err)
+		return fmt.Errorf("read config %q: %w", path, err)
 	}
-	body, err := readBoundedFile(absPath, maxConfigBytes)
-	if err != nil {
-		return Config{}, fmt.Errorf("read Machinist config %q: %w", absPath, err)
-	}
-	var raw map[string]any
-	if err := toml.Unmarshal(body, &raw); err != nil {
-		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
-	}
-	if _, ok := raw["pipelines"]; ok {
-		return Config{}, fmt.Errorf("parse Machinist config %q: pipelines were removed; replace each pipeline with a repository-owned orchestration script configured under [commands]", absPath)
-	}
-	if _, ok := raw["shepherd"]; ok {
-		return Config{}, fmt.Errorf("parse Machinist config %q: shepherd schedules were removed; schedule a command with a [triggers.cron.NAME] or [triggers.interval.NAME] trigger", absPath)
-	}
-	if _, ok := raw["agents"]; ok {
-		return Config{}, fmt.Errorf("parse Machinist config %q: agents were renamed to commands; move [agents.NAME] definitions to [commands.NAME] and use --command", absPath)
-	}
-	if err := validateTriggerKeys(raw); err != nil {
-		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
-	}
-	machinistConfig := Config{path: absPath}
+	return DecodeStrict(path, body, target)
+}
+
+// DecodeStrict decodes TOML and names any key the target does not define.
+func DecodeStrict(path string, body []byte, target any) error {
 	decoder := toml.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&machinistConfig); err != nil {
-		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
-	}
-	for _, name := range machinistConfig.WorkflowNames() {
-		if _, err := machinistConfig.ResolveTaskWorkflow(name, ""); err != nil {
-			return Config{}, err
+	err := decoder.Decode(target)
+	var missing *toml.StrictMissingError
+	if errors.As(err, &missing) {
+		keys := make([]string, 0, len(missing.Errors))
+		for _, unknown := range missing.Errors {
+			keys = append(keys, strings.Join(unknown.Key(), "."))
 		}
+		return fmt.Errorf("parse config %q: unknown key %s", path, strings.Join(keys, ", "))
 	}
-	return machinistConfig, nil
-}
-
-func (c Config) Path() string { return c.path }
-
-// CommandNames lists the defined command names in sorted order.
-func (c Config) CommandNames() []string { return sortedMapKeys(c.Commands) }
-
-func (w Worker) ResolveMachinistConfig(override string) (string, error) {
-	if override != "" {
-		return resolveConfigPath(override, "")
-	}
-	return resolveConfigPath("config.toml", w.configDir)
-}
-
-func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel string) (ResolvedCommand, error) {
-	executor, ok := w.Executors[command.Executor]
-	if !ok {
-		return ResolvedCommand{}, fmt.Errorf("executor %q is not configured on this worker", command.Executor)
-	}
-	if err := validateCommand(command.Executor, executor.Command); err != nil {
-		return ResolvedCommand{}, err
-	}
-	model, err := resolveModel(command.Executor, executor, requestedModel)
 	if err != nil {
-		return ResolvedCommand{}, err
-	}
-	command.Command = make([]string, 0, len(executor.Command))
-	for _, argument := range executor.Command {
-		if model == "" && strings.Contains(argument, modelParameter) {
-			continue
-		}
-		command.Command = append(command.Command, strings.ReplaceAll(argument, modelParameter, model))
-	}
-	command.Adapter = executor.Adapter
-	command.Model = model
-	return command, nil
-}
-
-func resolveModel(name string, executor Executor, requested string) (string, error) {
-	model := strings.TrimSpace(requested)
-	if model == "" {
-		return "", nil
-	}
-	if !executor.supportsModel() {
-		return "", fmt.Errorf("executor %q does not support model selection; add %s to its command", name, modelParameter)
-	}
-	if resolved, ok := executor.Models[model]; ok {
-		model = strings.TrimSpace(resolved)
-	} else if len(executor.Models) > 0 {
-		return "", fmt.Errorf("model %q is not configured for executor %q", model, name)
-	}
-	if model == "" || len(model) > 128 || strings.ContainsAny(model, "\x00\r\n") {
-		return "", fmt.Errorf("executor %q model is invalid", name)
-	}
-	return model, nil
-}
-
-func (w Worker) ResolveRepository(name string) (string, error) {
-	repository, ok := w.Repositories[name]
-	if !ok {
-		return "", fmt.Errorf("repository %q is not configured on this worker", name)
-	}
-	return resolveConfigPath(repository.Path, w.configDir)
-}
-
-func (w Worker) WorkerToken() (string, error) {
-	if strings.TrimSpace(w.ControlPlane.TokenFile) == "" {
-		return "", errors.New("control_plane.token_file is required")
-	}
-	path, err := resolveConfigPath(w.ControlPlane.TokenFile, w.configDir)
-	if err != nil {
-		return "", err
-	}
-	return readToken(path)
-}
-
-func (w Worker) ExecutorNames() []string { return sortedMapKeys(w.Executors) }
-
-func (w Worker) ModelCapabilities() map[string][]string {
-	capabilities := make(map[string][]string)
-	for name, executor := range w.Executors {
-		if executor.supportsModel() {
-			capabilities[name] = sortedMapKeys(executor.Models)
-		}
-	}
-	return capabilities
-}
-
-func (w Worker) RepositoryNames() []string { return sortedMapKeys(w.Repositories) }
-
-func (s Server) WorkerToken() (string, error) {
-	return readToken(s.WorkerTokenFile)
-}
-
-func (s Server) ConcurrentJobLimit() int {
-	if s.MaxConcurrentJobs == nil {
-		return 0
-	}
-	return *s.MaxConcurrentJobs
-}
-
-func (s Server) RepositoryJobLimit() int {
-	if s.MaxConcurrentJobsPerRepository == nil {
-		return 0
-	}
-	return *s.MaxConcurrentJobsPerRepository
-}
-
-func LoadCommand(definitionPath, name string) (ResolvedCommand, error) {
-	if strings.TrimSpace(name) == "" {
-		return ResolvedCommand{}, errors.New("command name is required")
-	}
-	definition, err := loadConfigFile(definitionPath)
-	if err != nil {
-		return ResolvedCommand{}, err
-	}
-	return definition.ResolveCommand(name)
-}
-
-// ResolveCommand resolves one named command from an already loaded definition.
-func (c Config) ResolveCommand(name string) (ResolvedCommand, error) {
-	command, ok := c.Commands[name]
-	if !ok {
-		return ResolvedCommand{}, fmt.Errorf("command %q is not defined in %s", name, c.path)
-	}
-	return resolveCommand(c.path, name, command)
-}
-
-func LoadDefinitions(path string) (Config, error) { return loadConfigFile(path) }
-
-func resolveCommand(definitionPath, name string, command Command) (ResolvedCommand, error) {
-	if strings.TrimSpace(command.Executor) == "" {
-		return ResolvedCommand{}, fmt.Errorf("command %q must define executor", name)
-	}
-	prompt := promptParameter
-	if strings.TrimSpace(command.PromptFile) != "" {
-		promptPath, err := expandHome(command.PromptFile)
-		if err != nil {
-			return ResolvedCommand{}, fmt.Errorf("resolve command %q prompt: %w", name, err)
-		}
-		if !filepath.IsAbs(promptPath) {
-			promptPath = filepath.Join(filepath.Dir(definitionPath), promptPath)
-		}
-		body, err := readBoundedFile(filepath.Clean(promptPath), maxPromptBytes)
-		if err != nil {
-			return ResolvedCommand{}, fmt.Errorf("read command %q prompt %q: %w", name, promptPath, err)
-		}
-		prompt = string(body)
-		if strings.TrimSpace(prompt) == "" {
-			return ResolvedCommand{}, fmt.Errorf("command %q prompt is empty", name)
-		}
-		if err := validatePromptParameters(name, prompt); err != nil {
-			return ResolvedCommand{}, err
-		}
-	}
-	timeout := defaultTimeout
-	if command.Timeout != "" {
-		var err error
-		timeout, err = time.ParseDuration(command.Timeout)
-		if err != nil {
-			return ResolvedCommand{}, fmt.Errorf("command %q timeout: %w", name, err)
-		}
-		if timeout <= 0 {
-			return ResolvedCommand{}, fmt.Errorf("command %q timeout must be positive", name)
-		}
-	}
-
-	resolved := ResolvedCommand{
-		Name:       name,
-		Executor:   command.Executor,
-		Model:      command.Model,
-		Prompt:     prompt,
-		Timeout:    timeout,
-		Definition: definitionPath,
-	}
-	var err error
-	resolved.Hash, err = commandHash(resolved)
-	if err != nil {
-		return ResolvedCommand{}, err
-	}
-	return resolved, nil
-}
-
-func RenderPrompt(command ResolvedCommand, prompt string) (ResolvedCommand, error) {
-	if strings.TrimSpace(prompt) == "" {
-		return ResolvedCommand{}, errors.New("prompt is required")
-	}
-	if len(prompt) > maxInputPromptBytes {
-		return ResolvedCommand{}, fmt.Errorf("prompt exceeds %d bytes", maxInputPromptBytes)
-	}
-	parameterCount := strings.Count(command.Prompt, promptParameter)
-	if parameterCount == 0 {
-		return ResolvedCommand{}, fmt.Errorf("command %q prompt must include %s", command.Name, promptParameter)
-	}
-	literalBytes := len(command.Prompt) - parameterCount*len(promptParameter)
-	if literalBytes > maxRenderedPromptBytes || len(prompt) > (maxRenderedPromptBytes-literalBytes)/parameterCount {
-		return ResolvedCommand{}, fmt.Errorf("rendered command prompt exceeds %d bytes", maxRenderedPromptBytes)
-	}
-	command.Prompt = strings.ReplaceAll(command.Prompt, promptParameter, prompt)
-	return command, nil
-}
-
-// ValidatePromptParameters validates editable command templates using the definition rules.
-func ValidatePromptParameters(commandName, prompt string) error {
-	return validatePromptParameters(commandName, prompt)
-}
-
-func validatePromptParameters(commandName, prompt string) error {
-	if strings.Contains(prompt, legacyFactoryPrefix) {
-		return fmt.Errorf("command %q prompt uses the unsupported legacy Factory parameter namespace", commandName)
-	}
-	hasPrompt := false
-	remaining := prompt
-	for {
-		start := strings.Index(remaining, machinistParameterPrefix)
-		if start < 0 {
-			break
-		}
-		remaining = remaining[start:]
-		end := strings.Index(remaining, "}}")
-		if end < 0 {
-			return fmt.Errorf("command %q prompt contains a malformed Machinist parameter", commandName)
-		}
-		parameter := remaining[:end+2]
-		if parameter != promptParameter {
-			return fmt.Errorf("command %q prompt uses unsupported Machinist parameter %q", commandName, parameter)
-		}
-		hasPrompt = true
-		remaining = remaining[end+2:]
-	}
-	if !hasPrompt && !strings.Contains(prompt, "{{task.") && !strings.Contains(prompt, "{{inputs.") && !strings.Contains(prompt, "{{stage.") {
-		return fmt.Errorf("command %q prompt must include %s", commandName, promptParameter)
+		return fmt.Errorf("parse config %q: %w", path, err)
 	}
 	return nil
 }
 
-func applyWorkerDefaults(worker Worker) (Worker, error) {
-	return applyWorkerDefaultsWithHostname(worker, os.Hostname)
-}
-
-func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, error)) (Worker, error) {
-	worker.Name = strings.TrimSpace(worker.Name)
-	if worker.Name == "" {
-		hostname, err := getHostname()
-		if err != nil {
-			return Worker{}, fmt.Errorf("find machine hostname: %w", err)
-		}
-		worker.Name = strings.TrimSpace(hostname)
-		if worker.Name == "" {
-			return Worker{}, errors.New("find machine hostname: hostname is empty")
-		}
-	}
-	if worker.DataDirectory == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return Worker{}, fmt.Errorf("find user home directory: %w", err)
-		}
-		worker.DataDirectory = filepath.Join(home, filepath.FromSlash(defaultWorkerDirName))
-	}
-	dataDirectory, err := expandHome(worker.DataDirectory)
-	if err != nil {
-		return Worker{}, fmt.Errorf("resolve worker data directory: %w", err)
-	}
-	if !filepath.IsAbs(dataDirectory) && worker.configDir != "" {
-		dataDirectory = filepath.Join(worker.configDir, dataDirectory)
-	}
-	worker.DataDirectory, err = filepath.Abs(dataDirectory)
-	if err != nil {
-		return Worker{}, fmt.Errorf("resolve worker data directory: %w", err)
-	}
-	worker.DataDirectory = filepath.Clean(worker.DataDirectory)
-	for name, repository := range worker.Repositories {
-		if strings.TrimSpace(name) == "" || strings.TrimSpace(repository.Path) == "" {
-			return Worker{}, errors.New("repository names and paths must be non-empty")
-		}
-		path, err := resolveConfigPath(repository.Path, worker.configDir)
-		if err != nil {
-			return Worker{}, fmt.Errorf("resolve repository %q: %w", name, err)
-		}
-		repository.Path = path
-		worker.Repositories[name] = repository
-	}
-	for name, executor := range worker.Executors {
-		switch executor.Adapter {
-		case "", "process", "claude-stream", "codex-app-server":
-		default:
-			return Worker{}, fmt.Errorf("executor %q has unknown adapter %q", name, executor.Adapter)
-		}
-		if executor.Adapter != "" && executor.Adapter != "process" && slices.ContainsFunc(executor.Command, func(arg string) bool { return strings.Contains(arg, modelParameter) }) {
-			return Worker{}, fmt.Errorf("executor %q native adapter supplies model directly; remove model placeholders", name)
-		}
-		if err := validateCommand(name, executor.Command); err != nil {
-			return Worker{}, err
-		}
-		for alias, model := range executor.Models {
-			if strings.TrimSpace(alias) == "" || strings.TrimSpace(model) == "" {
-				return Worker{}, fmt.Errorf("executor %q model aliases and values must be non-empty", name)
-			}
-		}
-		if len(executor.Models) > 0 && !executor.supportsModel() {
-			return Worker{}, fmt.Errorf("executor %q defines models but its command does not contain %s", name, modelParameter)
-		}
-	}
-	if worker.Kubernetes != nil && worker.Kubernetes.Kubeconfig != "" {
-		worker.Kubernetes.Kubeconfig, err = resolveConfigPath(worker.Kubernetes.Kubeconfig, worker.configDir)
-		if err != nil {
-			return Worker{}, err
-		}
-	}
-	return worker, nil
-}
-
 func applyServerDefaults(server Server) (Server, error) {
-	if server.State != "" && server.State != "sqlite" && server.State != "github" && server.State != "factory" {
-		return Server{}, errors.New("server state must be factory or sqlite (github is a legacy alias)")
-	}
 	if server.Listen == "" {
-		server.Listen = "127.0.0.1:7331"
+		server.Listen = defaultListen
 	}
-	if server.State == "github" || server.State == "factory" {
-		server.Database = ""
-	} else if server.Database == "" {
-		home, err := os.UserHomeDir()
+	if server.DefaultAgent == "" {
+		server.DefaultAgent = defaultAgent
+	}
+	if server.MaxTurnsWithoutHuman == 0 {
+		server.MaxTurnsWithoutHuman = defaultMaxTurns
+	}
+	if server.MaxTurnsWithoutHuman < 0 {
+		return Server{}, errors.New("max_turns_without_human must be positive")
+	}
+	server.runTimeout = defaultRunTimeout
+	if server.RunTimeout != "" {
+		timeout, err := time.ParseDuration(server.RunTimeout)
 		if err != nil {
-			return Server{}, fmt.Errorf("find user home directory: %w", err)
+			return Server{}, fmt.Errorf("run_timeout: %w", err)
 		}
-		server.Database = filepath.Join(home, filepath.FromSlash(defaultServerDirName), "machinist.db")
-	} else {
-		path, err := resolveConfigPath(server.Database, server.configDir)
-		if err != nil {
-			return Server{}, fmt.Errorf("resolve database: %w", err)
+		if timeout <= 0 {
+			return Server{}, errors.New("run_timeout must be positive")
 		}
-		server.Database = path
+		server.runTimeout = timeout
 	}
-	if strings.TrimSpace(server.WorkerTokenFile) == "" {
-		return Server{}, errors.New("worker_token_file is required")
+	if (server.TLSCert == "") != (server.TLSKey == "") {
+		return Server{}, errors.New("tls_cert and tls_key must be set together")
 	}
-	if server.MaxConcurrentJobsPerRepository != nil && *server.MaxConcurrentJobsPerRepository <= 0 {
-		return Server{}, errors.New("max_concurrent_jobs_per_repository must be positive")
-	}
-	if server.MaxConcurrentJobs != nil && *server.MaxConcurrentJobs <= 0 {
-		return Server{}, errors.New("max_concurrent_jobs must be positive")
-	}
-	tokenPath, err := resolveConfigPath(server.WorkerTokenFile, server.configDir)
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return Server{}, fmt.Errorf("resolve worker token file: %w", err)
+		return Server{}, fmt.Errorf("find user home directory: %w", err)
 	}
-	if server.Kubernetes != nil && server.Kubernetes.Kubeconfig != "" {
-		server.Kubernetes.Kubeconfig, err = resolveConfigPath(server.Kubernetes.Kubeconfig, server.configDir)
+	if server.Database == "" {
+		server.Database = filepath.Join(home, filepath.FromSlash(defaultServerDirName), "tickets.db")
+	}
+	if server.Factory == "" {
+		server.Factory = filepath.Join(home, filepath.FromSlash(defaultFactoryDir))
+	}
+	for _, path := range []*string{&server.Database, &server.Factory, &server.TLSCert, &server.TLSKey} {
+		if *path == "" {
+			continue
+		}
+		*path, err = resolveConfigPath(*path, server.configDir)
 		if err != nil {
 			return Server{}, err
 		}
 	}
-	server.WorkerTokenFile = tokenPath
 	return server, nil
-}
-
-func validateCommand(name string, command []string) error {
-	if len(command) == 0 || strings.TrimSpace(command[0]) == "" {
-		return fmt.Errorf("executor %q must define a non-empty command", name)
-	}
-	for index, argument := range command {
-		if strings.ContainsRune(argument, '\x00') {
-			return fmt.Errorf("executor %q command argument %d contains a null byte", name, index)
-		}
-		if strings.Contains(argument, legacyFactoryPrefix) {
-			return fmt.Errorf("executor %q command uses the unsupported legacy Factory parameter namespace", name)
-		}
-		if index == 0 && strings.Contains(argument, modelParameter) {
-			return fmt.Errorf("executor %q command executable cannot contain %s", name, modelParameter)
-		}
-		if strings.Contains(argument, modelParameter) && (!strings.HasPrefix(argument, "--") || !strings.HasSuffix(argument, "="+modelParameter) || strings.Count(argument, modelParameter) != 1) {
-			return fmt.Errorf("executor %q must use %s as a complete optional --flag=%s argument", name, modelParameter, modelParameter)
-		}
-	}
-	return nil
 }
 
 func resolveConfigPath(path, base string) (string, error) {
@@ -650,15 +191,6 @@ func readToken(path string) (string, error) {
 		return "", fmt.Errorf("token file %q is empty", path)
 	}
 	return token, nil
-}
-
-func sortedMapKeys[T any](values map[string]T) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 func defaultConfigPath(name string) (string, error) {
@@ -697,18 +229,4 @@ func readBoundedFile(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("file exceeds %d bytes", limit)
 	}
 	return body, nil
-}
-
-func commandHash(command ResolvedCommand) (string, error) {
-	payload, err := json.Marshal(struct {
-		Name     string        `json:"name"`
-		Executor string        `json:"executor"`
-		Prompt   string        `json:"prompt"`
-		Timeout  time.Duration `json:"timeout"`
-	}{command.Name, command.Executor, command.Prompt, command.Timeout})
-	if err != nil {
-		return "", fmt.Errorf("encode command definition: %w", err)
-	}
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:]), nil
 }

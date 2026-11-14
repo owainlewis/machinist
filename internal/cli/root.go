@@ -5,30 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"slices"
-	"strings"
 
-	"github.com/owainlewis/machinist/internal/config"
-	"github.com/owainlewis/machinist/internal/controlplane"
-	"github.com/owainlewis/machinist/internal/managedworker"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/updater"
 	"github.com/spf13/cobra"
 )
 
 type commandOptions struct {
-	configPath          string
-	machinistConfigPath string
-	commandName         string
-	prompt              string
-	model               string
-	repository          string
-	stdin               io.Reader
-	stdout              io.Writer
-	stderr              io.Writer
-	version             string
-	listen              string
+	configPath string
+	stdin      io.Reader
+	stdout     io.Writer
+	stderr     io.Writer
+	version    string
 }
 
 func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, version string) int {
@@ -59,25 +47,18 @@ func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 func newRootCommand(options *commandOptions) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "machinist",
-		Short:         "Run approved commands as supervised workloads",
+		Short:         "Assign work to coding agents and track every run",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
 	root.PersistentFlags().StringVar(&options.configPath, "config", "", "configuration file")
 	root.AddCommand(newInitCommand(options))
-	root.AddCommand(newRunCommand(options))
-	root.AddCommand(newSubmitCommand(options))
 	root.AddCommand(newStartCommand(options))
+	root.AddCommand(newRunnerCommand(options))
+	root.AddCommand(newTokenCommand(options))
 	root.AddCommand(newUpdateCommand(options))
 	root.AddCommand(newKubernetesCommand(options))
 	root.AddCommand(newSandboxCommand(options))
-
-	worker := &cobra.Command{Use: "worker", Short: "Run or connect a Machinist Worker"}
-	worker.AddCommand(newRunCommand(options))
-	worker.AddCommand(newWorkerStartCommand(options))
-	worker.AddCommand(newWorkerValidateCommand(options))
-	root.AddCommand(worker)
-
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the Machinist version",
@@ -87,25 +68,6 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 		},
 	})
 	return root
-}
-
-func newWorkerValidateCommand(options *commandOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:   "validate",
-		Short: "Validate the managed worker configuration",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			workerConfig, err := config.LoadWorker(options.configPath)
-			if err != nil {
-				return err
-			}
-			if _, err := managedworker.New(workerConfig, io.Discard, io.Discard); err != nil {
-				return err
-			}
-			_, err = fmt.Fprintln(options.stdout, "worker configuration is valid")
-			return err
-		},
-	}
 }
 
 func newUpdateCommand(options *commandOptions) *cobra.Command {
@@ -132,225 +94,4 @@ func newUpdateCommand(options *commandOptions) *cobra.Command {
 	}
 	update.Flags().StringVar(&requestedVersion, "version", "", "release version to install, such as v0.2.0 (default latest)")
 	return update
-}
-
-type submitCatalog struct {
-	Workflows    []string `json:"workflows"`
-	Commands     []string `json:"commands"`
-	Repositories []string `json:"repositories"`
-}
-
-type submitJobRequest struct {
-	Title      string `json:"title,omitempty"`
-	SourceURL  string `json:"source_url,omitempty"`
-	Spec       string `json:"spec,omitempty"`
-	Workflow   string `json:"workflow,omitempty"`
-	Prompt     string `json:"prompt"`
-	Repository string `json:"repository"`
-	Command    string `json:"command"`
-	Model      string `json:"model,omitempty"`
-}
-
-type submitJobResponse struct {
-	ID string `json:"id"`
-}
-
-func newSubmitCommand(options *commandOptions) *cobra.Command {
-	var commandName, workflowName, prompt, model, repository, title, sourceURL, spec string
-	submit := &cobra.Command{
-		Use:   "submit",
-		Short: "Queue work for a managed Machinist Worker",
-		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			if title != "" || sourceURL != "" || spec != "" {
-				if workflowName == "" || prompt != "" {
-					return errors.New("task fields require --workflow and cannot be combined with --prompt")
-				}
-				return submitRequestToServer(command.Context(), options, submitJobRequest{Workflow: workflowName, Repository: repository, Model: model, Title: title, SourceURL: sourceURL, Spec: spec})
-			}
-			if strings.TrimSpace(prompt) == "" {
-				return errors.New("provide --spec or --source-url for a workflow, or --prompt for a command")
-			}
-			return submitSelection(command.Context(), options, commandName, prompt, model, repository, workflowName)
-		},
-	}
-	submit.Flags().StringVar(&workflowName, "workflow", "", "workflow name from the control plane")
-	submit.Flags().StringVar(&commandName, "command", "", "command name from the control plane")
-	submit.Flags().StringVar(&prompt, "prompt", "", "legacy work request supplied to a command or workflow")
-	submit.Flags().StringVar(&model, "model", "", "executor model or configured alias for this task")
-	submit.Flags().StringVar(&repository, "repo", "", "configured repository name (required)")
-	submit.MarkFlagsOneRequired("command", "workflow")
-	submit.MarkFlagsMutuallyExclusive("command", "workflow")
-	submit.Flags().StringVar(&title, "title", "", "task title")
-	submit.Flags().StringVar(&sourceURL, "source-url", "", "original issue or task URL")
-	submit.Flags().StringVar(&spec, "spec", "", "task requirements")
-	_ = submit.MarkFlagRequired("repo")
-	return submit
-}
-
-func submitSelection(ctx context.Context, options *commandOptions, commandName, prompt, model, repository string, workflows ...string) error {
-	workflow := ""
-	if len(workflows) > 0 {
-		workflow = workflows[0]
-	}
-	return submitRequestToServer(ctx, options, submitJobRequest{Workflow: workflow, Prompt: prompt, Repository: repository, Command: commandName, Model: model})
-}
-func submitRequestToServer(ctx context.Context, options *commandOptions, request submitJobRequest) error {
-	repository, workflow, commandName := request.Repository, request.Workflow, request.Command
-	worker, err := config.LoadWorker(options.configPath)
-	if err != nil {
-		return err
-	}
-	client, err := managedworker.NewClient(worker)
-	if err != nil {
-		return err
-	}
-	var catalog submitCatalog
-	if err := client.Get(ctx, "/api/v1/catalog", &catalog); err != nil {
-		return fmt.Errorf("read control plane catalog: %w", err)
-	}
-	if !slices.Contains(catalog.Repositories, repository) {
-		return fmt.Errorf("repository %q is not defined in the control plane; check the configured repository name and worker registration", repository)
-	}
-	if workflow != "" && !slices.Contains(catalog.Workflows, workflow) {
-		return fmt.Errorf("workflow %q is not defined in the control plane", workflow)
-	}
-	if workflow == "" && !slices.Contains(catalog.Commands, commandName) {
-		return fmt.Errorf("command %q is not defined in the control plane", commandName)
-	}
-	var result submitJobResponse
-	if err := client.Post(ctx, "/api/v1/jobs", request, &result); err != nil {
-		return fmt.Errorf("submit job: %w", err)
-	}
-	if strings.TrimSpace(result.ID) == "" {
-		return errors.New("control plane submission response did not include a job ID")
-	}
-	fmt.Fprintln(options.stdout, result.ID)
-	return nil
-}
-
-func newStartCommand(options *commandOptions) *cobra.Command {
-	start := &cobra.Command{
-		Use:   "start",
-		Short: "Start the Machinist control plane",
-		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			machinistConfig, err := config.LoadConfig(options.configPath)
-			if err != nil {
-				return err
-			}
-			serverConfig := machinistConfig.Server
-			if options.listen != "" {
-				serverConfig.Listen = options.listen
-			}
-			token, err := serverConfig.WorkerToken()
-			if err != nil {
-				return err
-			}
-			if serverConfig.State == "factory" || serverConfig.State == "github" {
-				server, err := controlplane.NewGitHubFactoryServer(machinistConfig.Path(), token, serverConfig.ConcurrentJobLimit())
-				if err != nil {
-					return err
-				}
-				server.SetLocalWorkerFactory(func(cfg config.Worker) (controlplane.LocalWorker, error) {
-					return managedworker.New(cfg, options.stdout, options.stderr)
-				})
-				return server.Serve(command.Context(), serverConfig.Listen, func(address net.Addr) {
-					fmt.Fprintf(options.stderr, "machinist: local factory listening on http://%s\n", address)
-				})
-			}
-			store, err := controlplane.OpenStore(serverConfig.Database)
-			if err != nil {
-				return err
-			}
-			defer store.Close()
-			server, err := controlplane.NewServer(store, machinistConfig.Path(), token, serverConfig.ConcurrentJobLimit())
-			if err != nil {
-				return err
-			}
-			return server.Serve(command.Context(), serverConfig.Listen, func(address net.Addr) {
-				fmt.Fprintf(options.stderr, "machinist: control plane listening on http://%s\n", address)
-			})
-		},
-	}
-	start.Flags().StringVar(&options.listen, "listen", "", "loopback listen address (default 127.0.0.1:7331)")
-	return start
-}
-
-func newWorkerStartCommand(options *commandOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:   "start",
-		Short: "Start a managed Machinist Worker",
-		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			workerConfig, err := config.LoadWorker(options.configPath)
-			if err != nil {
-				return err
-			}
-			worker, err := managedworker.New(workerConfig, options.stdout, options.stderr)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(options.stderr, "machinist: worker %s connecting to %s\n", workerConfig.Name, workerConfig.ControlPlane.URL)
-			return worker.Run(command.Context())
-		},
-	}
-}
-
-func newRunCommand(options *commandOptions) *cobra.Command {
-	run := &cobra.Command{
-		Use:   "run",
-		Short: "Run one configured command in a Git repository",
-		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			return runSelection(command.Context(), options)
-		},
-	}
-	run.Flags().StringVar(&options.commandName, "command", "", "command name from the Machinist definition")
-	_ = run.MarkFlagRequired("command")
-	run.Flags().StringVar(&options.prompt, "prompt", "", "legacy work request supplied to a command or workflow")
-	run.Flags().StringVar(&options.model, "model", "", "executor model or configured alias for this task")
-	run.Flags().StringVar(&options.repository, "repo", ".", "Git repository path")
-	run.Flags().StringVar(&options.machinistConfigPath, "machinist-config", "", "shared Machinist configuration file")
-	_ = run.MarkFlagRequired("prompt")
-	return run
-}
-
-func runSelection(ctx context.Context, options *commandOptions) error {
-	worker, err := config.LoadWorker(options.configPath)
-	if err != nil {
-		return err
-	}
-	definitionPath, err := worker.ResolveMachinistConfig(options.machinistConfigPath)
-	if err != nil {
-		return err
-	}
-	command, err := config.LoadCommand(definitionPath, options.commandName)
-	if err != nil {
-		return err
-	}
-	return runConfiguredCommand(ctx, options, worker, command)
-}
-
-func runConfiguredCommand(ctx context.Context, options *commandOptions, worker config.Worker, configured config.ResolvedCommand) error {
-	var err error
-	configured, err = config.RenderPrompt(configured, options.prompt)
-	if err != nil {
-		return err
-	}
-	configured, err = worker.ResolveCommandModel(configured, options.model)
-	if err != nil {
-		return err
-	}
-	result, err := runner.Execute(ctx, runner.Options{
-		Command:       configured,
-		Repository:    options.repository,
-		DataDirectory: worker.DataDirectory,
-		Stdout:        options.stdout,
-		Stderr:        options.stderr,
-	})
-	if result.ID != "" {
-		fmt.Fprintf(options.stderr, "machinist: run %s %s; events: %s\n", result.ID, result.State, result.EventsPath)
-	}
-	return err
 }

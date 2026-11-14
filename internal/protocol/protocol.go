@@ -1,70 +1,40 @@
 package protocol
 
-import "encoding/json"
-
+// PollRequest offers the harnesses this runner has a credential for. Kind and
+// Slots say where it runs and how many runs it does at once, for the fleet page.
 type PollRequest struct {
-	NativeAgents      bool                `json:"native_agents,omitempty"`
-	Adapters          map[string]string   `json:"adapters,omitempty"`
-	Runtime           string              `json:"runtime,omitempty"`
-	SingleAgent       bool                `json:"single_agent,omitempty"`
-	HealthChecks      bool                `json:"health_checks,omitempty"`
-	Factory           bool                `json:"factory,omitempty"`
-	ReadOnlyExecutors []string            `json:"read_only_executors,omitempty"`
-	SharedOutputs     bool                `json:"shared_outputs,omitempty"`
-	Reviews           bool                `json:"reviews,omitempty"`
-	Artifacts         bool                `json:"artifacts,omitempty"`
-	Workflows         bool                `json:"workflows,omitempty"`
-	InstanceID        string              `json:"instance_id"`
-	Name              string              `json:"name"`
-	Executors         []string            `json:"executors"`
-	Repositories      []string            `json:"repositories"`
-	Models            map[string][]string `json:"models,omitempty"`
+	Harnesses []string `json:"harnesses"`
+	Kind      string   `json:"kind,omitempty"`
+	Slots     int      `json:"slots,omitempty"`
 }
 
-type PollResponse struct {
-	Run *RunSpec `json:"run,omitempty"`
+type HeartbeatResponse struct {
+	Cancel bool `json:"cancel"`
 }
 
-type RunSpec struct {
-	HealthCheck      bool                `json:"health_check,omitempty"`
-	GitHubRepository string              `json:"github_repository,omitempty"`
-	Factory          *FactoryContext     `json:"factory,omitempty"`
-	Revision         *Revision           `json:"revision,omitempty"`
-	Task             *Task               `json:"task,omitempty"`
-	Inputs           map[string]Artifact `json:"inputs,omitempty"`
-	RequiredOutputs  []string            `json:"required_outputs,omitempty"`
-	ArtifactLimits   *ArtifactLimits     `json:"artifact_limits,omitempty"`
-	Workflow         bool                `json:"workflow,omitempty"`
-	ID               string              `json:"id"`
-	JobID            string              `json:"job_id"`
-	Command          string              `json:"command"`
-	CommandHash      string              `json:"command_hash"`
-	Executor         string              `json:"executor"`
-	Model            string              `json:"model,omitempty"`
-	Repository       string              `json:"repository"`
-	RenderedPrompt   string              `json:"rendered_prompt"`
-	TimeoutMillis    int64               `json:"timeout_millis"`
-	LeaseToken       string              `json:"lease_token"`
-}
-
-type Heartbeat struct {
-	Phase      string `json:"phase,omitempty"`
-	InstanceID string `json:"instance_id"`
-	LeaseToken string `json:"lease_token"`
-}
-
+// Completion ends a run. Error says why a run has no report.
 type Completion struct {
-	ProcessStopped   bool            `json:"process_stopped,omitempty"`
-	Artifacts        []string        `json:"artifacts,omitempty"`
-	PublicationError string          `json:"publication_error,omitempty"`
-	InstanceID       string          `json:"instance_id"`
-	LeaseToken       string          `json:"lease_token"`
-	State            string          `json:"state"`
-	ExitCode         int             `json:"exit_code"`
-	Error            string          `json:"error,omitempty"`
-	Result           json.RawMessage `json:"result,omitempty"`
-	Events           string          `json:"events,omitempty"`
+	State  string        `json:"state"`
+	Report *Report       `json:"report,omitempty"`
+	Tokens *int64        `json:"tokens,omitempty"`
+	Cost   *float64      `json:"cost,omitempty"`
+	Error  string        `json:"error,omitempty"`
+	Stages []StageResult `json:"stages,omitempty"`
+}
 
-	// Explicit runner cleanup failure; absence preserves historical completion semantics.
-	CleanupUnconfirmed bool `json:"cleanup_unconfirmed,omitempty"`
+// StageSkipped is the state of a stage that never ran, because an earlier
+// stage ended the run.
+const StageSkipped = "skipped"
+
+// StageResult is what one stage of a run produced. State is a runner state or
+// StageSkipped. Outcome is the report outcome of an agent stage.
+type StageResult struct {
+	Name           string   `json:"name"`
+	Kind           string   `json:"kind"`
+	State          string   `json:"state"`
+	Outcome        string   `json:"outcome,omitempty"`
+	Tokens         *int64   `json:"tokens,omitempty"`
+	Cost           *float64 `json:"cost,omitempty"`
+	DurationMillis int64    `json:"duration_millis,omitempty"`
+	Error          string   `json:"error,omitempty"`
 }
