@@ -33,6 +33,7 @@ test("sign in, assign work, then follow it on Work", { timeout: 30000 }, async c
     if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
     if (url === "/api/v1/automations") return reply(200, { automations: [] });
     if (url === "/api/v1/ledger") return reply(200, { merged_prs: 0 });
+    if (url === "/api/v1/usage") return reply(200, { days: [] });
     if (url === "/api/v1/tickets/t_new") return reply(200, { ticket, entries: [], runs: [], figures: { questions: 0, feedback_rounds: 0, tokens: 0, elapsed: 0, merged: false } });
     throw new Error(`unexpected ${url}`);
   };

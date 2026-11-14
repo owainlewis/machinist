@@ -145,6 +145,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/tickets/{id}/cancel", s.requireToken(s.cancelTicket))
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.requireToken(s.runEvents))
 	mux.HandleFunc("GET /api/v1/ledger", s.requireToken(s.ledger))
+	mux.HandleFunc("GET /api/v1/usage", s.requireToken(s.usage))
 	mux.HandleFunc("/mcp", s.requireToken(s.serveMCP))
 	mux.HandleFunc("POST /api/v1/runners/poll", s.requireToken(s.poll))
 	mux.HandleFunc("GET /api/v1/runners", s.requireToken(s.listRunners))

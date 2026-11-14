@@ -3,15 +3,15 @@ import { cva } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg border text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
-        outline: "border border-border/70 bg-transparent hover:bg-muted",
-        ghost: "text-muted-foreground hover:bg-muted hover:text-foreground",
+        default: "border-transparent bg-primary text-primary-foreground hover:bg-primary/90",
+        outline: "border-border bg-surface hover:bg-muted",
+        ghost: "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground",
       },
-      size: { default: "h-9 px-3.5", sm: "h-8 gap-1.5 rounded-md px-2.5 text-xs", icon: "size-9" },
+      size: { default: "h-[38px] px-3.5", sm: "h-8 gap-1.5 px-2.5 text-[13px]", icon: "size-[38px]" },
     },
     defaultVariants: { variant: "default", size: "default" },
   },

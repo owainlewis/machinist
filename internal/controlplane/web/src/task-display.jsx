@@ -4,17 +4,17 @@ import { cn } from "@/lib/utils";
 import { stateLabels } from "./task-presentation.js";
 
 const glyphs = {
-  working: [LoaderCircle, "text-primary"],
-  needs_you: [CircleHelp, "text-warning"],
-  pr_ready: [GitPullRequest, "text-info"],
-  done: [Check, "text-success"],
-  failed: [X, "text-danger"],
-  cancelled: [Ban, "text-muted-foreground"],
+  working: [LoaderCircle, "pill-info"],
+  needs_you: [CircleHelp, "pill-warning"],
+  pr_ready: [GitPullRequest, "pill-review"],
+  done: [Check, "pill-success"],
+  failed: [X, "pill-danger"],
+  cancelled: [Ban, ""],
 };
 
 export function State({ value, label = true }) {
   const [Icon, tone] = glyphs[value] || glyphs.cancelled;
-  return <span className={cn("ticket-state", tone)}>
+  return <span className={cn("pill", tone)}>
     <Icon className={cn("size-3.5", value === "working" && "state-working")} aria-hidden="true" />
     {label ? <span>{stateLabels[value] || value}</span> : <span className="sr-only">{stateLabels[value] || value}</span>}
   </span>;

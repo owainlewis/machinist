@@ -179,6 +179,18 @@ func (s *Server) ledger(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, ledger)
 }
 
+// usageDays is how far back the usage charts on Home look.
+const usageDays = 14
+
+func (s *Server) usage(w http.ResponseWriter, r *http.Request, _ string) {
+	usage, err := s.store.Usage(r.Context(), usageDays)
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
+}
+
 func (s *Server) listRepositories(w http.ResponseWriter, _ *http.Request, tokenName string) {
 	repositories := s.config.GitHub.Repositories
 	if repositories == nil {

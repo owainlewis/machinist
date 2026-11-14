@@ -39,26 +39,38 @@ export function stalled(runners, queue, now = Date.now()) {
   return Boolean(queue?.waiting) && !runners.some(runner => runnerOnline(runner, now));
 }
 
-function fleetSummary(runners, now = Date.now()) {
+export function slotWord(count) {
+  return count === 1 ? "slot" : "slots";
+}
+
+// What the runners in contact can hold, and what they hold now.
+export function fleet(runners, now = Date.now()) {
   const online = runners.filter(runner => runnerOnline(runner, now));
-  const slots = online.reduce((total, runner) => total + (runner.slots || 1), 0);
-  const busy = online.reduce((total, runner) => total + (runner.jobs || []).length, 0);
-  return `${online.length} of ${runners.length} online, ${busy} of ${slots} ${slots === 1 ? "slot" : "slots"} busy`;
+  return {
+    online: online.length,
+    slots: online.reduce((total, runner) => total + (runner.slots || 1), 0),
+    busy: online.reduce((total, runner) => total + (runner.jobs || []).length, 0),
+  };
+}
+
+function fleetSummary(runners, now = Date.now()) {
+  const { online, slots, busy } = fleet(runners, now);
+  return `${online} of ${runners.length} online, ${busy} of ${slots} ${slotWord(slots)} busy`;
 }
 
 function Runner({ runner }) {
   const online = runnerOnline(runner);
   const jobs = runner.jobs || [];
   const slots = runner.slots || 1;
-  return <li className="runner">
+  return <li>
     <div className="runner-row">
-      <span className={online ? "runner-online" : "runner-offline"}>{online ? "Online" : "Not responding"}</span>
       <span className="runner-name"><strong>{runner.name}</strong>{kinds[runner.kind] && <span className="ticket-meta">{kinds[runner.kind]}</span>}</span>
       <span className="ticket-meta">{(runner.harnesses || []).join(", ")}</span>
-      <span className="ticket-meta">{jobs.length} of {slots} {slots === 1 ? "slot" : "slots"} busy</span>
+      <span className="ticket-meta">{jobs.length} of {slots} {slotWord(slots)} busy</span>
       <time className="ticket-meta" dateTime={runner.last_contact}>Last contact {relativeTime(runner.last_contact)}</time>
+      <span className={online ? "pill pill-success" : "pill pill-warning"}>{online ? "Online" : "Not responding"}</span>
     </div>
-    {jobs.length > 0 && <ul className="runner-jobs">{jobs.map(job => <li key={job.run_id} className="queue-row">
+    {jobs.length > 0 && <ul className="runner-jobs">{jobs.map(job => <li key={job.run_id}>
       <a href={`#/work/${encodeURIComponent(job.ticket_id)}`}>{job.title || job.ticket_id}</a>
       <span className="ticket-meta">{jobRole(job)}</span>
       <time className="ticket-meta" dateTime={job.started_at}>{elapsed(job.started_at)}</time>
@@ -69,12 +81,16 @@ function Runner({ runner }) {
 export function RunnersPage({ runners = [], queue, loaded, error }) {
   const waiting = queueLine(queue);
   return <div className="page runners-page">
-    <h1>Runners</h1>
+    <header className="page-head">
+      <div>
+        <h1>Runners</h1>
+        {runners.length > 0 && <p className="page-sub">{fleetSummary(runners)}{waiting && `. ${waiting}`}</p>}
+      </div>
+    </header>
     {error && <p className="form-error" role="alert">{error}</p>}
     {!loaded && !error && <p className="page-note" role="status">Loading runners</p>}
-    {loaded && !runners.length && <p className="page-note">No runner has connected yet. Run <code>machinist runner start</code> on a machine or cluster.</p>}
-    {runners.length > 0 && <p className="page-note fleet-summary">{fleetSummary(runners)}{waiting && `. ${waiting}`}</p>}
+    {loaded && !runners.length && <p className="empty">No runner has connected yet. Run <code>machinist runner start</code> on a machine or cluster.</p>}
     {stalled(runners, queue) && <p className="page-warning" role="status">No runner is online, so waiting runs cannot start.</p>}
-    {runners.length > 0 && <ul className="plain-list">{runners.map(runner => <Runner key={runner.name} runner={runner} />)}</ul>}
+    {runners.length > 0 && <ul className="list">{runners.map(runner => <Runner key={runner.name} runner={runner} />)}</ul>}
   </div>;
 }

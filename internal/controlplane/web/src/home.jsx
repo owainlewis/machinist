@@ -2,15 +2,16 @@ import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api } from "./api.js";
 import { AssignBox } from "./assign.jsx";
-import { elapsed, jobRole, queueLine, runningJobs, stalled } from "./runners.jsx";
+import { DayChart } from "./charts.jsx";
+import { formatCompact, formatCost, formatTokens } from "./run-metrics.js";
+import { elapsed, fleet, jobRole, queueLine, runningJobs, slotWord, stalled } from "./runners.jsx";
 import { State, relativeTime } from "./task-display.jsx";
-import { isActive, prLink } from "./task-presentation.js";
+import { isActive, prLink, sortTickets } from "./task-presentation.js";
+import { usageTotals } from "./usage.js";
 
 const maxFinished = 5;
-
-function ticketHref(id) {
-  return `#/work/${encodeURIComponent(id)}`;
-}
+const runSeries = [{ key: "succeeded", label: "Passed" }, { key: "failed", label: "Failed" }];
+const tokenSeries = [{ key: "tokens", label: "Tokens" }];
 
 // A short answer goes back from here. A longer one has the ticket page.
 function Reply({ ticket, onChanged }) {
@@ -40,64 +41,70 @@ function Reply({ ticket, onChanged }) {
   </form>;
 }
 
-function Section({ id, title, count, children }) {
-  return <section aria-labelledby={id}>
-    <h2 id={id}>{title} {count > 0 && <span>{count}</span>}</h2>
-    {children}
-  </section>;
+function Tile({ label, value, unit, sub, note }) {
+  return <div className="tile">
+    <h2 className="label">{label}</h2>
+    <p className="tile-value">{value}{unit && <span>{unit}</span>}</p>
+    <p className="tile-sub">{sub}</p>
+    {note && <p className="tile-note">{note}</p>}
+  </div>;
 }
 
-export function HomePage({ repositories = [], tickets = [], runners = [], queue, loaded, error, onChanged }) {
-  const needsYou = tickets.filter(ticket => ticket.state === "needs_you");
-  const ready = tickets.filter(ticket => ticket.state === "pr_ready");
-  const running = runningJobs(runners);
-  const waiting = queueLine(queue);
-  const finished = tickets.filter(ticket => !isActive(ticket)).slice(0, maxFinished);
-  const quiet = loaded && !needsYou.length && !ready.length && !running.length && !waiting && !finished.length;
+// One row per ticket. Its status is on the row, and a question can be answered in place.
+function WorkRow({ ticket, job, onChanged }) {
+  const pr = prLink(ticket);
+  return <li>
+    <div className="row-line">
+      <div className="row-title"><a href={`#/work/${encodeURIComponent(ticket.id)}`}>{ticket.title || ticket.id}</a><span className="ticket-meta">{ticket.repo}</span></div>
+      <div className="row-detail">
+        {job && <span>{jobRole(job)} on {job.runner}, <time dateTime={job.started_at}>{elapsed(job.started_at)}</time></span>}
+        {pr && <a className="pr-link" href={pr} target="_blank" rel="noreferrer">PR #{ticket.pr_number}</a>}
+      </div>
+      <State value={ticket.state} />
+      <time className="row-time" dateTime={ticket.updated_at}>{relativeTime(ticket.updated_at)}</time>
+    </div>
+    {ticket.state === "needs_you" && <div className="row-extra">
+      {ticket.question && <p className="question">{ticket.question}</p>}
+      <Reply ticket={ticket} onChanged={onChanged} />
+    </div>}
+  </li>;
+}
 
-  return <div className="page home-page" data-quiet={quiet || undefined}>
-    <h1><label htmlFor="assign-work">What needs doing?</label></h1>
+export function HomePage({ repositories = [], tickets = [], runners = [], queue, usage, loaded, error, onChanged }) {
+  const sorted = sortTickets(tickets);
+  const recent = [...sorted.filter(isActive), ...sorted.filter(ticket => !isActive(ticket)).slice(0, maxFinished)];
+  const needsYou = tickets.filter(ticket => ticket.state === "needs_you").length;
+  const ready = tickets.filter(ticket => ticket.state === "pr_ready").length;
+  const running = runningJobs(runners);
+  const { online, slots, busy } = fleet(runners);
+  const days = usage?.days || [];
+  const totals = usageTotals(days);
+  const period = `Last ${days.length} days`;
+
+  return <div className="page home-page">
+    <header className="page-head"><h1><label htmlFor="assign-work">What needs doing?</label></h1></header>
     <AssignBox repositories={repositories} />
     {error && <p className="form-error" role="alert">{error}</p>}
+    {stalled(runners, queue) && <p className="page-warning" role="status">No runner is online, so waiting runs cannot start. See <a href="#/runners">Runners</a>.</p>}
 
-    {needsYou.length > 0 && <Section id="home-needs-you" title="Needs you" count={needsYou.length}>
-      <ul className="plain-list">{needsYou.map(ticket => <li key={ticket.id} className="needs-you">
-        <div className="queue-row">
-          <a href={ticketHref(ticket.id)}>{ticket.title || ticket.id}</a>
-          <span className="ticket-meta">{ticket.repo}</span>
-          <time className="ticket-meta" dateTime={ticket.updated_at}>{relativeTime(ticket.updated_at)}</time>
-        </div>
-        {ticket.question && <p className="question">{ticket.question}</p>}
-        <Reply ticket={ticket} onChanged={onChanged} />
-      </li>)}</ul>
-    </Section>}
+    <div className="tiles">
+      <Tile label="Running now" value={busy} unit={`of ${slots} ${slotWord(slots)}`} sub={queueLine(queue) || "No runs waiting"} note={runners.length ? `${online} of ${runners.length} runners online` : "No runner connected"} />
+      <Tile label="Needs you" value={needsYou} unit={needsYou === 1 ? "job" : "jobs"} sub={ready ? `${ready} ${ready === 1 ? "PR" : "PRs"} ready for review` : "No PRs waiting for review"} />
+      {totals.judged
+        ? <Tile label="Pass rate" value={`${totals.passRate}%`} sub={`${totals.succeeded} of ${totals.judged} runs passed`} note={period} />
+        : <Tile label="Pass rate" value={0} unit="runs" sub="No run has finished" note={days.length > 0 && period} />}
+      <Tile label="Tokens" value={formatCompact(totals.tokens)} sub={totals.cost > 0 ? `${formatCost(totals.cost)} reported cost` : "No cost reported"} note={days.length > 0 && period} />
+    </div>
 
-    {ready.length > 0 && <Section id="home-ready" title="Ready for review" count={ready.length}>
-      <ul className="plain-list">{ready.map(ticket => <li key={ticket.id} className="queue-row">
-        <a href={ticketHref(ticket.id)}>{ticket.title || ticket.id}</a>
-        <span className="ticket-meta">{ticket.repo}</span>
-        {ticket.pr_number > 0 && <a className="pr-link" href={prLink(ticket)} target="_blank" rel="noreferrer">PR #{ticket.pr_number}</a>}
-        <time className="ticket-meta" dateTime={ticket.updated_at}>{relativeTime(ticket.updated_at)}</time>
-      </li>)}</ul>
-    </Section>}
+    <div className="charts">
+      <DayChart title="Runs per day" days={days} series={runSeries} empty="No run has finished in this period" note={days.length > 0 && `${period}, by UTC day. Cancelled runs are left out.`} />
+      <DayChart title="Tokens per day" days={days} series={tokenSeries} format={formatTokens} axisFormat={formatCompact} empty="No tokens used in this period" note={days.length > 0 && `${period}, by UTC day.`} />
+    </div>
 
-    {(running.length > 0 || waiting) && <Section id="home-running" title="Running now" count={running.length}>
-      {waiting && <p className="page-note queue-note">{waiting}</p>}
-      {stalled(runners, queue) && <p className="page-warning" role="status">No runner is online, so waiting runs cannot start. See <a href="#/runners">Runners</a>.</p>}
-      {running.length > 0 && <ul className="plain-list">{running.map(job => <li key={job.run_id} className="queue-row">
-        <a href={ticketHref(job.ticket_id)}>{job.title || job.ticket_id}</a>
-        <span className="ticket-meta">{jobRole(job)}</span>
-        <span className="ticket-meta">{job.runner}</span>
-        <time className="ticket-meta" dateTime={job.started_at}>{elapsed(job.started_at)}</time>
-      </li>)}</ul>}
-    </Section>}
-
-    {finished.length > 0 && <Section id="home-finished" title="Recently finished">
-      <ul className="plain-list">{finished.map(ticket => <li key={ticket.id} className="queue-row">
-        <a href={ticketHref(ticket.id)}>{ticket.title || ticket.id}</a>
-        <State value={ticket.state} />
-        <time className="ticket-meta" dateTime={ticket.updated_at}>{relativeTime(ticket.updated_at)}</time>
-      </li>)}</ul>
-    </Section>}
+    <section className="recent" aria-labelledby="home-recent">
+      <div className="section-head"><h2 id="home-recent">Recent work</h2>{recent.length > 0 && <a href="#/work">All work</a>}</div>
+      {recent.length > 0 && <ul className="list">{recent.map(ticket => <WorkRow key={ticket.id} ticket={ticket} job={running.find(job => job.ticket_id === ticket.id)} onChanged={onChanged} />)}</ul>}
+      {loaded && !recent.length && <p className="empty">No work yet. Describe a job in the box above and an agent picks it up.</p>}
+    </section>
   </div>;
 }

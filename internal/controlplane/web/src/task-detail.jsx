@@ -27,7 +27,7 @@ export function RunActivity({ run }) {
 }
 
 function runIcon(status) {
-  if (status === "running" || status === "queued") return [LoaderCircle, "text-primary state-working"];
+  if (status === "running" || status === "queued") return [LoaderCircle, "text-info state-working"];
   return status === "succeeded" ? [Check, "text-success"] : [CircleAlert, "text-warning"];
 }
 
@@ -135,25 +135,26 @@ export function TicketView({ detail, onChanged, onCancel, onError, actionError }
   const pr = prLink(ticket);
   return <div className="chat-page">
     <header className="chat-header">
-      <a className="icon-button shrink-0" href="#/work" aria-label="Back to Work"><ArrowLeft className="size-4" aria-hidden="true" /></a>
-      <div className="chat-heading">
-        <h1>{ticket.title || ticket.id}</h1>
-        <div className="ticket-facts">
-          <State value={ticket.state} />
-          <span>{ticket.repo}</span>
-          {issue ? <a href={issue} target="_blank" rel="noreferrer">{ticketSource(ticket)}</a> : <span>{ticketSource(ticket)}</span>}
-          {pr && <a href={pr} target="_blank" rel="noreferrer">PR #{ticket.pr_number}</a>}
-          <span>From {ticket.created_by}</span>
-        </div>
-      </div>
-      <details className="chat-details">
-        <summary>Details</summary>
-        <dl>{ticketFigures(figures).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-      </details>
-      {isActive(ticket) && ticket.state !== "working" && <Button variant="outline" size="sm" onClick={onCancel}>Cancel ticket</Button>}
+      <a className="icon-button" href="#/work" aria-label="Back to Work"><ArrowLeft className="size-[18px]" aria-hidden="true" /></a>
+      <h1>{ticket.title || ticket.id}</h1>
     </header>
-    {actionError && <p className="form-error chat-error" role="alert">{actionError}</p>}
-    <TicketChat ticket={ticket} entries={entries} runs={runs} onChanged={onChanged} onCancel={onCancel} onError={onError} />
+    <div className="ticket-body">
+      <div className="ticket-main">
+        {actionError && <p className="form-error chat-error" role="alert">{actionError}</p>}
+        <TicketChat ticket={ticket} entries={entries} runs={runs} onChanged={onChanged} onCancel={onCancel} onError={onError} />
+      </div>
+      <aside className="ticket-details" aria-label="Details">
+        <dl className="detail-rows">
+          <div><dt>Status</dt><dd><State value={ticket.state} /></dd></div>
+          <div><dt>Repository</dt><dd>{ticket.repo}</dd></div>
+          <div><dt>Source</dt><dd>{issue ? <a href={issue} target="_blank" rel="noreferrer">{ticketSource(ticket)}</a> : ticketSource(ticket)}</dd></div>
+          {pr && <div><dt>Pull request</dt><dd><a href={pr} target="_blank" rel="noreferrer">PR #{ticket.pr_number}</a></dd></div>}
+          <div><dt>From</dt><dd>{ticket.created_by}</dd></div>
+        </dl>
+        <dl className="detail-rows detail-figures">{ticketFigures(figures).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+        {isActive(ticket) && ticket.state !== "working" && <Button variant="outline" size="sm" onClick={onCancel}>Cancel ticket</Button>}
+      </aside>
+    </div>
   </div>;
 }
 

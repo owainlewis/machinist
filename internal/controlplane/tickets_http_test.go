@@ -209,6 +209,24 @@ func TestLedgerRoute(t *testing.T) {
 	}
 }
 
+func TestUsageRoute(t *testing.T) {
+	f := newFixture(t)
+	response, body := f.call(t, http.MethodGet, "/api/v1/usage", f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	var usage tickets.Usage
+	if err := json.Unmarshal(body, &usage); err != nil {
+		t.Fatal(err)
+	}
+	if len(usage.Days) != 14 || usage.Days[13].Day != time.Now().UTC().Format(time.DateOnly) {
+		t.Fatalf("usage = %+v", usage)
+	}
+	if response, _ := f.call(t, http.MethodGet, "/api/v1/usage", "", nil); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+}
+
 func TestAutomationRoutes(t *testing.T) {
 	f := newFixture(t)
 	cron, err := triggers.ParseCron("0 9 * * *", "UTC")

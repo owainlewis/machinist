@@ -12,6 +12,11 @@ export function formatTokens(value) {
   return Math.round(value).toLocaleString("en-US");
 }
 
+// A large count in a few characters, for a tile or a chart axis.
+export function formatCompact(value) {
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
 export function formatCost(value) {
   return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "Not reported";
 }

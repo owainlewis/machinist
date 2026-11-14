@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Brand } from "@/components/ui/brand";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
 
@@ -21,7 +22,7 @@ export function SignIn({ onSignedIn }) {
   }
   return <main className="sign-in">
     <form onSubmit={submit}>
-      <span className="brand-wordmark">Machinist</span>
+      <Brand />
       <label className="field-label" htmlFor="token">Token</label>
       <input id="token" className="field-control" type="password" autoComplete="current-password" autoFocus value={token} onChange={event => setToken(event.target.value)} />
       {error && <p className="form-error" role="alert">{error}</p>}

@@ -22,11 +22,16 @@ export function AutomationsPage({ automations = [], loaded, error, onChanged }) 
     }
   }
   return <div className="page automations-page">
-    <h1>Automations</h1>
+    <header className="page-head">
+      <div>
+        <h1>Automations</h1>
+        <p className="page-sub">Jobs that start on a schedule.</p>
+      </div>
+    </header>
     {(error || failure) && <p className="form-error" role="alert">{error || failure}</p>}
     {!loaded && !error && <p className="page-note" role="status">Loading automations</p>}
-    {loaded && !automations.length && <p className="page-note">No automations yet. Add a file to <code>factory/automations</code>, then restart Machinist.</p>}
-    {automations.length > 0 && <ul className="plain-list">{automations.map(automation => {
+    {loaded && !automations.length && <p className="empty">No automations yet. Add a file to <code>factory/automations</code>, then restart Machinist.</p>}
+    {automations.length > 0 && <ul className="list">{automations.map(automation => {
       const outcome = automationOutcome(automation);
       return <li key={automation.name} className="automation">
         <div>
