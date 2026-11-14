@@ -715,6 +715,12 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 			return err
 		}
 	}
+	// The PR link goes first, so a question stays the newest thing Machinist said.
+	if transition.FirstPR != nil && transition.FirstPR.Link != "" {
+		if err := insertMessage(ctx, q, ticket, transition.PRNumber, transition.FirstPR.Link, nil, now); err != nil {
+			return err
+		}
+	}
 	if transition.Message != "" {
 		if err := insertMessage(ctx, q, ticket, transition.PRNumber, transition.Message, nil, now); err != nil {
 			return err
@@ -722,11 +728,6 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 	}
 	if transition.FirstPR == nil {
 		return nil
-	}
-	if transition.FirstPR.Link != "" {
-		if err := insertMessage(ctx, q, ticket, transition.PRNumber, transition.FirstPR.Link, nil, now); err != nil {
-			return err
-		}
 	}
 	for _, reviewer := range transition.FirstPR.Reviewers {
 		if _, err := queueRun(ctx, q, ticket.ID, RunKindReviewer, reviewer, transition.FirstPR.Harness, now); err != nil {

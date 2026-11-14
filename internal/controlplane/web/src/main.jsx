@@ -121,7 +121,7 @@ function App() {
     <main className="app-main">
       {route.view === "home" && <HomePage repositories={session.repositories} tickets={status.tickets} runners={status.runners} queue={status.queue} usage={status.usage} loaded={loaded} error={error} onChanged={refresh} />}
       {route.view === "work" && <WorkPage tickets={status.tickets} ledger={status.ledger} loaded={loaded} error={error} />}
-      {route.view === "ticket" && <TaskDetail ticketID={route.ticketID} onSignedOut={signedOut} onChanged={refresh} />}
+      {route.view === "ticket" && <TaskDetail key={route.ticketID} ticketID={route.ticketID} onSignedOut={signedOut} onChanged={refresh} />}
       {route.view === "automations" && <AutomationsPage automations={status.automations} loaded={loaded} error={error} onChanged={refresh} />}
       {route.view === "runners" && <RunnersPage runners={status.runners} queue={status.queue} loaded={loaded} error={error} />}
     </main>

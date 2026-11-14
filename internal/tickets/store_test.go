@@ -512,6 +512,22 @@ func TestAnswerOnlyWhenWaiting(t *testing.T) {
 	}
 }
 
+func TestQuestionAskedWithTheFirstPRIsStillTheWaitingQuestion(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:1")
+	transition := Transition{State: StateNeedsYou, Message: "Which database?", PRNumber: 7, FirstPR: &FirstPR{Link: "Opened a PR: https://github.com/owner/repo/pull/7"}}
+	if err := store.Apply(t.Context(), ticket.ID, StateWorking, transition); err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := store.Ticket(t.Context(), ticket.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if question, err := store.WaitingQuestion(t.Context(), ticket); err != nil || question != "Which database?" {
+		t.Fatalf("question = %q, err = %v", question, err)
+	}
+}
+
 func TestListTicketsLimitsToTheNewest(t *testing.T) {
 	store := openStore(t)
 	for index := range maxListedTickets + 2 {

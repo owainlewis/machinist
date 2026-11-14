@@ -158,6 +158,8 @@ export function TicketView({ detail, onChanged, onCancel, onError, actionError }
   </div>;
 }
 
+// The app keys this by ticket, so each ticket has its own instance. A reply that
+// arrives for a ticket someone has left can then never show under another one.
 export function TaskDetail({ ticketID, onSignedOut, onChanged }) {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
@@ -173,9 +175,6 @@ export function TaskDetail({ ticketID, onSignedOut, onChanged }) {
     }
   }, [ticketID, onSignedOut]);
   useEffect(() => {
-    setDetail(null);
-    setError("");
-    setActionError("");
     let stopped = false;
     let timer;
     const load = async () => {

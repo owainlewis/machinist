@@ -18,6 +18,7 @@ test("sign in, assign work, then follow it on Work", { timeout: 30000 }, async c
   const ticket = { id: "t_new", state: "working", repo: "owner/repo", title: "Add dark mode", created_by: "alice", updated_at: new Date().toISOString() };
   const tickets = [];
   const posts = [];
+  let releaseOld;
   const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
   globalThis.fetch = async (url, options = {}) => {
     if (url === "/api/v1/session" && options.method === "POST") {
@@ -34,6 +35,7 @@ test("sign in, assign work, then follow it on Work", { timeout: 30000 }, async c
     if (url === "/api/v1/automations") return reply(200, { automations: [] });
     if (url === "/api/v1/ledger") return reply(200, { merged_prs: 0 });
     if (url === "/api/v1/usage") return reply(200, { days: [] });
+    if (url === "/api/v1/tickets/t_old") return new Promise(resolve => { releaseOld = () => resolve(reply(200, { ticket: { ...ticket, id: "t_old", title: "An older job" }, entries: [], runs: [], figures: { questions: 0, feedback_rounds: 0, tokens: 0, elapsed: 0, merged: false } })); });
     if (url === "/api/v1/tickets/t_new") return reply(200, { ticket, entries: [], runs: [], figures: { questions: 0, feedback_rounds: 0, tokens: 0, elapsed: 0, merged: false } });
     throw new Error(`unexpected ${url}`);
   };
@@ -74,6 +76,14 @@ test("sign in, assign work, then follow it on Work", { timeout: 30000 }, async c
   await eventually(() => assert.ok(document.querySelector("table.jobs")));
   assert.ok(document.querySelector('a[href="#/work/t_new"]'));
   assert.equal(document.querySelector('nav a[aria-current="page"]').textContent, "Work");
+
+  // A reply for a ticket someone has left must not show under the next one.
+  await act(async () => { window.location.hash = "#/work/t_old"; });
+  await eventually(() => assert.ok(releaseOld));
+  await act(async () => { window.location.hash = "#/work/t_new"; });
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Add dark mode"));
+  await act(async () => { releaseOld(); await new Promise(resolve => setTimeout(resolve, 50)); });
+  assert.equal(document.querySelector("h1").textContent, "Add dark mode");
 
   signedIn = false;
   await eventually(() => assert.ok(document.querySelector("#token")), 300);
