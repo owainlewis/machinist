@@ -14,7 +14,7 @@ flowchart LR
     Foreman --> Host[Local or VM worker]
     Foreman --> Connector[Trusted Kubernetes connector]
     Host --> CLI[Native coding CLI]
-    Connector --> Job[gVisor Job and native Codex CLI]
+    Connector --> Job[gVisor Job and native Codex or Claude Code CLI]
     Job -->|bounded Git bundle| Connector
     Connector -->|validated branch and PR| GitHub
 ```
@@ -106,23 +106,33 @@ are non-root, with a read-only root filesystem, dropped capabilities, bounded
 resources, no host mounts, and no service-account token. Triage and Review source
 is mounted read-only. An enforced NetworkPolicy permits cluster DNS and an
 allowlisted HTTPS CONNECT proxy. Credential-free preparation verifies denial of
-metadata, Kubernetes API, direct internet, and unapproved proxy destinations.
+metadata, Kubernetes API, direct internet, and unapproved proxy destinations,
+and that the proxy reaches the configured provider host (`chatgpt.com` or
+`api.anthropic.com`).
 
-The agent receives a dedicated native Codex account cache, never GitHub, worker,
-or cluster credentials. A ConfigMap lock serializes that account stream across
-attempts and connectors. Native refresh is written back to the Secret using a
-resource-version check. The CLI and code it runs can read the model credential;
-this is trusted personal automation, not a shared subscription service.
+Operator config `server.kubernetes.agent` fixes the cluster agent: `codex`
+(default) or `claude`. Worker executors must be `<agent>` or `<agent>-review`,
+onboarding rejects a mismatched agent, and Kubernetes project defaults reject
+`native-v1`. The agent receives one dedicated subscription credential, never
+GitHub, worker, or cluster credentials: a native Codex account cache, or a Claude
+token from `claude setup-token`. For Codex, a ConfigMap lock serializes that
+account stream across attempts and connectors, and native refresh is written
+back to the Secret using a resource-version check. Claude tokens do not refresh,
+so Claude runs take no lock and write nothing back. The CLI and code it runs can
+read the model credential; this is trusted personal automation, not a shared
+subscription service.
 
 The trusted connector imports a bounded returned Git bundle into a disposable
 bare repository, validates head and ancestry, and publishes only the assigned
 fast-forward branch and PR. It never runs candidate source in the publisher.
 Publication checks the active lease and reconciles uncertain remote writes.
 
-Cancellation asks the native process to stop, retains refreshed authentication
-when possible, then foreground-deletes the Job. Unlock requires confirmed Pod
-absence. Uncertain execution or cache persistence retains the lock for operator
-recovery. There are no automatic Pod retries or local/API billing fallbacks.
+Codex cancellation asks the native process to stop and retains refreshed
+authentication when possible. Every run then foreground-deletes the Job; without
+confirmed Pod absence it reports `cleanup_unconfirmed`. Codex unlock requires
+confirmed Pod absence and saved authentication; uncertain execution or cache
+persistence retains the lock for operator recovery. Claude has no lock to
+retain. There are no automatic Pod retries or local/API billing fallbacks.
 See [runner setup and recovery](docs/local-factory/kubernetes.md).
 
 The [GKE control plane](docs/local-factory/cloud-control-plane.md) uses one replica,
@@ -163,7 +173,9 @@ head completes a delivery. See [GitHub follow-ups](docs/local-factory/github-fol
 
 Transitions commit before dispatch or acknowledgement. Duplicate completions do
 not advance twice. Restart interrupts running work instead of replaying external
-side effects; retry requires proof the old process stopped. GitHub publication
+side effects; retry requires proof the old process stopped. After a
+`cleanup_unconfirmed` completion, retry, request-changes, and approve are
+rejected without `previous_process_stopped: true`. GitHub publication
 failures preserve durable results and remain visible. Missing or incomplete
 remote evidence fails closed.
 
@@ -205,17 +217,22 @@ See [native operation and checks](docs/native-agents.md).
 
 Factory polling serializes admission under the server mutex. Successful
 assignments rotate across eligible repository aliases; jobs within an alias use
-creation time and ID ordering. Live-lease replay precedes admission limits.
+creation time and ID ordering. Live-lease replay precedes connection-check
+claims and admission limits. Connection checks consume the same global,
+repository, and worker capacity as jobs.
 The optional `server.max_concurrent_jobs_per_repository` supplements the global
 limit without changing its default. Cancelled/interrupted attempts with
-unconfirmed shutdown retain admission occupancy from durable job history even
-when their cleanup-upload grant has expired. Conflicting repository and named
-worker work waits for stop confirmation.
+unconfirmed shutdown, and any attempt whose runner reported
+`cleanup_unconfirmed` (including one completed as failed), retain global,
+repository, and worker occupancy from durable job history, across restart and
+even when their cleanup-upload grant has expired. Conflicting repository and
+named worker work waits for stop confirmation.
 
 Status exposes additive capacity bounds and queued waiting reasons; worker
 capabilities are retained from polls for compatibility checks. These are
 observations and configured constraints, not credential-lock telemetry. The
 managed worker and a Kubernetes Codex credential stream each run serially;
-independent eligible workers may fill global capacity. Credential locking,
+Claude Kubernetes runs sharing a token take no credential lock.
+Independent eligible workers may fill global capacity. Credential locking,
 publication holds, authentication and sandbox boundaries remain in force.
 See [configuration](docs/configuration.md#factory-admission-and-capacity).
