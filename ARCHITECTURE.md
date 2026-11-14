@@ -219,10 +219,10 @@ Factory polling serializes admission under the server mutex. Successful
 assignments rotate across eligible repository aliases; jobs within an alias use
 creation time and ID ordering. Live-lease replay precedes connection-check
 claims and admission limits. Connection checks consume the same global,
-repository, and worker capacity as jobs.
+repository, and worker capacity as jobs, but only while their lease is live.
 The optional `server.max_concurrent_jobs_per_repository` supplements the global
 limit without changing its default. Cancelled/interrupted attempts with
-unconfirmed shutdown, and any attempt whose runner reported
+unconfirmed shutdown, and any job attempt whose runner reported
 `cleanup_unconfirmed` (including one completed as failed), retain global,
 repository, and worker occupancy from durable job history, across restart and
 even when their cleanup-upload grant has expired. Conflicting repository and
