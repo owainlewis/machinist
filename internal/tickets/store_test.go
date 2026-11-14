@@ -382,6 +382,20 @@ func TestCancelStopsQueuedRun(t *testing.T) {
 	}
 }
 
+func TestQueueRunRefusesATicketThatIsNotWorking(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:1")
+	if _, err := store.Cancel(t.Context(), ticket.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); !errors.Is(err, ErrNotWorking) {
+		t.Fatalf("err = %v", err)
+	}
+	if claim, _ := store.ClaimRun(t.Context(), "r", []string{"claude"}, time.Now()); claim != nil {
+		t.Fatal("a cancelled ticket got a run")
+	}
+}
+
 func TestTicketsAwaitingRunSkipsActiveRunsAndOtherStates(t *testing.T) {
 	store := openStore(t)
 	waiting := createTicket(t, store, "api:1")

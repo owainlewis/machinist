@@ -152,11 +152,10 @@ func (p *poll) route(ctx context.Context, repository string, comment ghclient.Co
 	if err != nil && !errors.Is(err, tickets.ErrNotFound) {
 		return err
 	}
-	if active && !mentioned && ticket.State != tickets.StateNeedsYou {
-		return nil
-	}
-	if !active && !mentioned {
-		return nil
+	// A plain comment counts only as the answer to a question that is open now. It is
+	// judged once: the read-back shows it again, and by then a question may have been asked.
+	if !mentioned && (!active || ticket.State != tickets.StateNeedsYou) {
+		return p.Store.IgnoreSourceKey(ctx, key)
 	}
 	if !active && comment.OnPR {
 		fmt.Fprintf(p.Log, "machinist: ignored mention by %s on %s#%d: the PR has no ticket\n", comment.Author, repository, comment.Number)

@@ -55,6 +55,7 @@ var (
 	ErrRunNotActive = errors.New("run is not active")
 	ErrTicketEnded  = errors.New("ticket has ended")
 	ErrNotWaiting   = errors.New("ticket is not waiting for an answer")
+	ErrNotWorking   = errors.New("ticket is not working")
 	ErrTokenExists  = errors.New("an active token with this name exists")
 )
 
@@ -80,6 +81,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_active_token_per_name ON tokens(name) WHER
 CREATE TABLE IF NOT EXISTS runners (
   name TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT '', harnesses TEXT NOT NULL DEFAULT '', slots INTEGER NOT NULL DEFAULT 1, last_contact TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS source_cursors (source TEXT NOT NULL, repo TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(source, repo));
+CREATE TABLE IF NOT EXISTS ignored_source_keys (key TEXT PRIMARY KEY, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_activity_events (run TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(run, sequence));
 CREATE TABLE IF NOT EXISTS run_stages (
   run TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '',
@@ -801,10 +803,18 @@ func (s *Store) LastReport(ctx context.Context, ticketID string) (string, error)
 	return body, err
 }
 
-// QueueRun adds an agent run for a working ticket.
+// QueueRun adds an agent run for a working ticket. The state is read in the same
+// transaction, so a ticket that was cancelled or merged a moment ago gets no run.
 func (s *Store) QueueRun(ctx context.Context, ticketID, harness string) (Run, error) {
 	var run Run
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		ticket, err := loadTicket(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		if ticket.State != StateWorking {
+			return ErrNotWorking
+		}
 		id, err := queueRun(ctx, tx, ticketID, RunKindAgent, "", harness, s.now())
 		if err != nil {
 			return err
@@ -1050,11 +1060,18 @@ func (s *Store) ActiveWithPR(ctx context.Context) ([]Ticket, error) {
 // HasSourceKey reports whether a piece of intake was already recorded.
 func (s *Store) HasSourceKey(ctx context.Context, key string) (bool, error) {
 	var found int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM ticket_entries WHERE source_key=?`, key).Scan(&found)
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM ticket_entries WHERE source_key=? UNION ALL SELECT 1 FROM ignored_source_keys WHERE key=? LIMIT 1`, key, key).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// IgnoreSourceKey records that something from a source was read and changed
+// nothing, so a later read of it is not judged again.
+func (s *Store) IgnoreSourceKey(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO ignored_source_keys(key,created_at) VALUES(?,?)`, key, stamp(s.now()))
+	return err
 }
 
 // Cursor returns a source's stored position. The bool is false on first use.

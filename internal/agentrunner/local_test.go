@@ -170,6 +170,25 @@ func TestLocalCancelledDuringSetupIsCancelled(t *testing.T) {
 	}
 }
 
+func TestLocalStalledSetupTimesOut(t *testing.T) {
+	local, _ := newLocal(t, config.Credential{Login: true})
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	request := localRequest()
+	request.TimeoutMillis = 300
+	started := time.Now()
+	result := local.Execute(t.Context(), request)
+	if result.State != runner.StateTimedOut || !strings.Contains(result.Error, "preparing the workspace timed out") {
+		t.Fatalf("result = %+v", result)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("setup held the slot for %s", elapsed)
+	}
+}
+
 func TestLocalMalformedReportFailsWithReason(t *testing.T) {
 	fakeClaude(t, `{"outcome":"complete","summary":"old format"}`)
 	local, _ := newLocal(t, config.Credential{Login: true})

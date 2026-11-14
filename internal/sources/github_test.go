@@ -307,6 +307,26 @@ func TestCommentRoutingOnActiveTicket(t *testing.T) {
 	}
 }
 
+func TestPlainCommentMadeBeforeAQuestionIsNotItsAnswer(t *testing.T) {
+	f := newFixture(t)
+	ticket := f.mention(t)
+	f.github.AddComment(fakegh.Comment{ID: 200, Author: "alice", Body: "nice work", Number: 5})
+	f.poll(t)
+	ticket = f.setState(t, ticket, tickets.StateNeedsYou, 0)
+	f.poll(t) // The read-back shows comment 200 again.
+	if got := f.mustActive(t, 5); got.State != tickets.StateNeedsYou {
+		t.Fatalf("state = %s", got.State)
+	}
+	if hasEntry(f.entries(t, ticket.ID), tickets.EntryComment, "nice work") {
+		t.Fatal("an earlier comment was taken as the answer")
+	}
+	f.github.AddComment(fakegh.Comment{ID: 201, Author: "alice", Body: "use postgres", Number: 5})
+	f.poll(t)
+	if got := f.mustActive(t, 5); got.State != tickets.StateWorking {
+		t.Fatalf("state = %s", got.State)
+	}
+}
+
 func TestCommentOnTheTicketsPRRoutes(t *testing.T) {
 	f := newFixture(t)
 	ticket := f.setState(t, f.mention(t), tickets.StatePRReady, 42)

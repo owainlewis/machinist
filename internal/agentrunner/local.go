@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/runner"
@@ -109,8 +110,14 @@ func (l *Local) Execute(ctx context.Context, request runner.RunRequest) runner.R
 	if err != nil {
 		return failure(err)
 	}
-	workspace, err := runner.PrepareWorkspace(ctx, options)
+	// Preparation has the run's time limit too, so a stalled clone or login cannot hold a slot.
+	prepare, cancel := context.WithTimeout(ctx, time.Duration(request.TimeoutMillis)*time.Millisecond)
+	defer cancel()
+	workspace, err := runner.PrepareWorkspace(prepare, options)
 	if err != nil {
+		if ctx.Err() == nil && errors.Is(prepare.Err(), context.DeadlineExceeded) {
+			return runner.RunResult{State: runner.StateTimedOut, Error: "preparing the workspace timed out: " + err.Error()}
+		}
 		return failure(err)
 	}
 	return runner.RunInWorkspace(ctx, request, workspace, l.config.DataDirectory)

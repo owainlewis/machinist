@@ -110,7 +110,10 @@ func (e *Engine) advance(ctx context.Context, ticket tickets.Ticket) error {
 	if !ok {
 		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: waitingState(ticket), Message: missingAgentMessage(ticket.Agent)})
 	}
-	_, err = e.Store.QueueRun(ctx, ticket.ID, job.Harness)
+	// The ticket can leave working between the listing and here. Then there is nothing to run.
+	if _, err = e.Store.QueueRun(ctx, ticket.ID, job.Harness); errors.Is(err, tickets.ErrNotWorking) {
+		return nil
+	}
 	return err
 }
 
