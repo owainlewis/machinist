@@ -51,6 +51,25 @@ func TestRenderLogKeepsTicketTextAndNewestEntriesWithinLimit(t *testing.T) {
 	}
 }
 
+func TestRenderLogCutsAnOversizedNewestEntryToFit(t *testing.T) {
+	request := logEntry(EntryRequest, "alice", strings.Repeat("r", 40<<10))
+	for name, answer := range map[string]string{
+		"plain":   "ANSWER-START " + strings.Repeat("a", 40<<10),
+		"escaped": "ANSWER-START " + strings.Repeat("<entry", 20<<10),
+	} {
+		rendered := RenderLog([]Entry{request, logEntry(EntryComment, "bob", "an earlier comment"), logEntry(EntryComment, "bob", answer)})
+		if len(rendered) > MaxLogBytes {
+			t.Fatalf("%s: log is %d bytes", name, len(rendered))
+		}
+		if !strings.Contains(rendered, "ANSWER-START") || strings.Count(rendered, "[truncated]") != 2 {
+			t.Fatalf("%s: the newest entry was left out or not marked", name)
+		}
+		if !strings.Contains(rendered, "[1 earlier entries omitted]") || strings.Count(rendered, "</entry>") != 2 {
+			t.Fatalf("%s: wrong entries kept", name)
+		}
+	}
+}
+
 func TestRenderLogTruncatesOversizedTicketText(t *testing.T) {
 	rendered := RenderLog([]Entry{logEntry(EntryRequest, "alice", strings.Repeat("é", 200<<10))})
 	if len(rendered) > MaxLogBytes || !strings.Contains(rendered, "[truncated]") || strings.ContainsRune(rendered, '�') {

@@ -15,15 +15,33 @@ func renderEntry(entry Entry, body string) string {
 	return fmt.Sprintf("<entry kind=%q author=%q time=%q untrusted=\"true\">\n%s\n</entry>\n", entry.Kind, entry.Author, stamp(entry.CreatedAt), body)
 }
 
+const truncatedNote = "\n[truncated]"
+
 func truncate(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
-	return strings.ToValidUTF8(value[:limit], "") + "\n[truncated]"
+	return strings.ToValidUTF8(value[:limit], "") + truncatedNote
+}
+
+// fitEntry renders an entry with its body cut to fit a size. It returns "" when
+// even the entry's frame does not fit.
+func fitEntry(entry Entry, limit int) string {
+	room := limit - len(renderEntry(entry, "")) - len(truncatedNote)
+	for room > 0 {
+		rendered := renderEntry(entry, truncate(entry.Body, room))
+		if len(rendered) <= limit {
+			return rendered
+		}
+		// Escaping made the text longer than its bytes.
+		room -= len(rendered) - limit
+	}
+	return ""
 }
 
 // RenderLog keeps the ticket text and the newest entries, within MaxLogBytes.
-// Outbound messages are not part of the log.
+// The newest entry is what the run was started for, so it is cut to fit and
+// never left out. Outbound messages are not part of the log.
 func RenderLog(entries []Entry) string {
 	log := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
@@ -41,6 +59,11 @@ func RenderLog(entries []Entry) string {
 	for index := len(log) - 1; index > 0; index-- {
 		rendered := renderEntry(log[index], log[index].Body)
 		if len(rendered) > remaining {
+			if len(newest) == 0 {
+				if cut := fitEntry(log[index], remaining); cut != "" {
+					newest = append(newest, cut)
+				}
+			}
 			break
 		}
 		remaining -= len(rendered)
