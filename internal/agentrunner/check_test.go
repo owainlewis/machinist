@@ -29,6 +29,12 @@ func TestCheckPrintsCredentialSourcePerHarness(t *testing.T) {
 		if !runner.ValidRunID(request.RunID) || request.Repository != "owner/repo" || !strings.HasPrefix(request.Branch, "machinist/check-") {
 			t.Fatalf("request = %+v", request)
 		}
+		if !strings.Contains(request.Prompt, `{"outcome":"no_change","summary":"ok"}`) {
+			t.Errorf("%s prompt is missing the report object: %q", request.Harness, request.Prompt)
+		}
+		if !strings.Contains(request.Prompt, "exactly one JSON object and nothing else") {
+			t.Errorf("%s prompt is missing the JSON-only instruction: %q", request.Harness, request.Prompt)
+		}
 	}
 }
 

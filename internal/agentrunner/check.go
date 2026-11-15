@@ -15,7 +15,9 @@ import (
 	"github.com/owainlewis/machinist/internal/runner"
 )
 
-const checkPrompt = "This is a setup check. Do not change anything. End with outcome no_change and summary ok."
+const checkPrompt = `This is a setup check. Do not change anything. End this run with exactly one JSON object and nothing else:
+
+{"outcome":"no_change","summary":"ok"}`
 
 // Check makes one real run per harness and prints the credential source each
 // harness reported, or the error.
