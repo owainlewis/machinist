@@ -10,6 +10,22 @@ the harnesses it has a credential for.
 Run `machinist runner check --repo owner/name` to see which credential source a harness
 actually used.
 
+## GitHub token scopes
+
+Local runners pass `GH_TOKEN` to every agent run. `machinist runner check` and
+`machinist runner start` print one warning if a classic token reports scopes beyond
+`repo` (private repositories) or `public_repo` (public repositories). Those scopes
+cover cloning, pushing a branch, and opening and commenting on pull requests.
+The warning names the extra scopes, such as `delete_repo` or `admin:public_key`:
+an agent can use these permissions too.
+
+Use a token limited to the repositories the bot works on. Fine-grained tokens do
+not report OAuth scopes, so they produce no scope warning. A missing warning is
+not a check of their repository permissions. The token value is never printed,
+and the warning does not stop the runner. If GitHub cannot report scopes, the
+runner continues without a scope warning. Kubernetes runners use the token in
+their job Secret, so this local token check does not apply to them.
+
 ## Which credential to use
 
 | Credential | Team runner | Own machine, own work | Notes |

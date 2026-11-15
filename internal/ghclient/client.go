@@ -3,11 +3,13 @@
 package ghclient
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os/exec"
 	"regexp"
@@ -530,4 +532,27 @@ func (c *Client) RepositoryAccess(ctx context.Context, repository string) (Acces
 		return Access{}, err
 	}
 	return Access{DefaultBranch: details.DefaultBranch, Protected: branch.Protected, Admin: details.Permissions.Admin}, nil
+}
+
+// TokenScopes returns the classic token scopes reported by GitHub. Fine-grained
+// tokens do not report scopes.
+func (c *Client) TokenScopes(ctx context.Context) ([]string, error) {
+	output, err := c.run(ctx, "read token scopes", nil, "api", "--method", "GET", "--include", "user")
+	if err != nil {
+		return nil, err
+	}
+	response, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(output)), nil)
+	if err != nil {
+		return nil, &Error{Kind: ErrorMalformed, Operation: "read token scopes", Detail: "invalid response headers"}
+	}
+	defer response.Body.Close()
+	var scopes []string
+	for _, value := range response.Header.Values("X-OAuth-Scopes") {
+		for _, scope := range strings.Split(value, ",") {
+			if scope = strings.TrimSpace(scope); scope != "" {
+				scopes = append(scopes, scope)
+			}
+		}
+	}
+	return scopes, nil
 }

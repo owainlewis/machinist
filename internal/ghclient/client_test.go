@@ -192,3 +192,28 @@ func TestInvalidRepositoryNeverRunsGh(t *testing.T) {
 		t.Fatalf("calls = %v", calls)
 	}
 }
+
+func TestTokenScopes(t *testing.T) {
+	for _, test := range []struct{ name, header, want string }{
+		{"wide", " repo , delete_repo, admin:public_key ", "repo,delete_repo,admin:public_key"},
+		{"narrow", "repo", "repo"},
+		{"fine-grained", "", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			github := fakegh.Install(t, "bot")
+			if test.header != "" {
+				github.SetScopes(test.header)
+			}
+			scopes, err := New().TokenScopes(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(scopes, ","); got != test.want {
+				t.Fatalf("scopes = %q, want %q", got, test.want)
+			}
+			if calls := github.Calls(); len(calls) != 1 || calls[0] != "api --method GET --include user" {
+				t.Fatalf("calls = %v", calls)
+			}
+		})
+	}
+}
