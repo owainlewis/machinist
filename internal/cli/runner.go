@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/owainlewis/machinist/internal/agentrunner"
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/controlplane"
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/ghclient"
 	"github.com/owainlewis/machinist/internal/tickets"
 	"github.com/spf13/cobra"
 )
@@ -49,7 +52,7 @@ func newRunnerCommand(options *commandOptions) *cobra.Command {
 		Short: "Start taking work from the control plane",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			runnerConfig, executor, err := loadRunner(options)
+			runnerConfig, executor, err := loadRunner(command.Context(), options)
 			if err != nil {
 				return err
 			}
@@ -67,7 +70,7 @@ func newRunnerCommand(options *commandOptions) *cobra.Command {
 		Short: "Make one real run per harness to prove this runner works",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			runnerConfig, executor, err := loadRunner(options)
+			runnerConfig, executor, err := loadRunner(command.Context(), options)
 			if err != nil {
 				return err
 			}
@@ -80,7 +83,7 @@ func newRunnerCommand(options *commandOptions) *cobra.Command {
 	return root
 }
 
-func loadRunner(options *commandOptions) (config.Runner, agentrunner.Executor, error) {
+func loadRunner(ctx context.Context, options *commandOptions) (config.Runner, agentrunner.Executor, error) {
 	runnerConfig, err := config.LoadRunner(options.configPath)
 	if err != nil {
 		return config.Runner{}, nil, err
@@ -90,5 +93,21 @@ func loadRunner(options *commandOptions) (config.Runner, agentrunner.Executor, e
 		return runnerConfig, executor, err
 	}
 	executor, err := agentrunner.NewLocal(runnerConfig)
+	if err == nil {
+		// A failed scope lookup must not prevent the runner from taking work.
+		scopes, scopeErr := ghclient.New().TokenScopes(ctx)
+		if scopeErr == nil {
+			var extra []string
+			for _, scope := range scopes {
+				// Classic tokens need repo for private repositories, or public_repo for public ones.
+				if scope != "repo" && scope != "public_repo" {
+					extra = append(extra, scope)
+				}
+			}
+			if len(extra) > 0 {
+				fmt.Fprintf(options.stderr, "machinist: warning: the GitHub token has extra scopes: %s; use a token limited to the repositories the bot works on\n", strings.Join(extra, ", "))
+			}
+		}
+	}
 	return runnerConfig, executor, err
 }

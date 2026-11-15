@@ -48,17 +48,25 @@ case "$1 $2" in
   printf '%%s\t%%s\n' "$number" "$body" >> "$dir/pr-comments"
   exit 0;;
 esac
+include=
 method=GET
 endpoint=
 while [ $# -gt 0 ]; do
   case "$1" in
+  --include) include=true;;
   --method) method=$2; shift;;
   repos/*|user|graphql) endpoint=$1;;
   esac
   shift
 done
 case "$method $endpoint" in
-"GET user") cat "$dir/user";;
+"GET user")
+  if [ "$include" = true ]; then
+    printf 'HTTP/2.0 200 OK\r\n'
+    if [ -f "$dir/scopes" ]; then printf 'X-OAuth-Scopes: %%s\r\n' "$(cat "$dir/scopes")"; fi
+    printf '\r\n'
+  fi
+  cat "$dir/user";;
 "GET repos/"*"/issues/comments?"*) show "$dir/comments" '[[]]';;
 "POST graphql")
   number=$(sed -n 's/.*"number":\([0-9]*\).*/\1/p')
@@ -336,4 +344,10 @@ func lines(text string) []string {
 		return nil
 	}
 	return strings.Split(strings.TrimRight(text, "\n"), "\n")
+}
+
+// SetScopes sets the classic token scopes reported in API response headers.
+func (g *GitHub) SetScopes(scopes string) {
+	g.t.Helper()
+	g.writeText("scopes", scopes)
 }

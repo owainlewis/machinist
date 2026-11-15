@@ -111,3 +111,74 @@ func TestRunnerCheckRequiresRepository(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
+
+// cancelOnConnect lets runner start finish without contacting a control plane.
+type cancelOnConnect struct {
+	bytes.Buffer
+	cancel context.CancelFunc
+}
+
+func (w *cancelOnConnect) Write(body []byte) (int, error) {
+	n, err := w.Buffer.Write(body)
+	if strings.Contains(w.String(), "runner connecting to") {
+		w.cancel()
+	}
+	return n, err
+}
+
+func TestRunnerTokenScopeWarning(t *testing.T) {
+	for _, command := range []string{"check", "start"} {
+		for _, test := range []struct{ name, scopes, want string }{
+			{"wide", "repo, delete_repo, admin:public_key", "machinist: warning: the GitHub token has extra scopes: delete_repo, admin:public_key; use a token limited to the repositories the bot works on\n"},
+			{"narrow", "repo", ""},
+			{"public", "public_repo", ""},
+			{"fine-grained", "", ""},
+			{"lookup-failure", "", ""},
+		} {
+			t.Run(command+"/"+test.name, func(t *testing.T) {
+				github := fakegh.Install(t, "bot")
+				if test.scopes != "" {
+					github.SetScopes(test.scopes)
+				}
+				token := "ghp_secretNeverPrintThis"
+				t.Setenv("GH_TOKEN", token)
+				if test.name == "lookup-failure" {
+					github.Fail("bad credentials: " + token)
+				}
+				directory := t.TempDir()
+				path := writeConfigFile(t, directory, "runner.toml", runnerConfigBody)
+				writeConfigFile(t, directory, "runner.token", "runner-token\n")
+				// Fail clone locally so check cannot reach GitHub or invoke a real harness.
+				git := writeConfigFile(t, directory, "bin/git", "#!/bin/sh\nexit 1\n")
+				if err := os.Chmod(git, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", filepath.Dir(git)+string(os.PathListSeparator)+os.Getenv("PATH"))
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				stderr := &cancelOnConnect{cancel: cancel}
+				var stdout bytes.Buffer
+				args := []string{"runner", command, "--config=" + path}
+				if command == "check" {
+					args = append(args, "--repo=owner/repo")
+				}
+				exitCode := Execute(ctx, args, strings.NewReader(""), &stdout, stderr, "test")
+				if command == "start" && exitCode != 0 {
+					t.Fatalf("exit = %d, stderr = %s", exitCode, stderr.String())
+				}
+				var warnings string
+				for _, line := range strings.Split(stderr.String(), "\n") {
+					if strings.Contains(line, "warning:") {
+						warnings += line + "\n"
+					}
+				}
+				if warnings != test.want {
+					t.Fatalf("warnings = %q, want %q", warnings, test.want)
+				}
+				if strings.Contains(stderr.String()+stdout.String(), token) {
+					t.Fatal("token printed")
+				}
+			})
+		}
+	}
+}
