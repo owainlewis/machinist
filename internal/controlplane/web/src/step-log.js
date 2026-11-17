@@ -1,6 +1,14 @@
 // A step keeps the end of its output, which is where a failure shows.
 export const outputLimit = 64 * 1024;
 
+// A step begins at step.started. Runs from before the steps runner marked
+// their stages with stage.started and "name=<name> kind=<kind>".
+function stepName(event) {
+  if (event.type === "step.started") return /^name=(.*)$/.exec(event.message || "")?.[1] || "step";
+  if (event.type === "stage.started") return /^name=(.*) kind=\w+$/.exec(event.message || "")?.[1] || "stage";
+  return null;
+}
+
 // steps turns a run's events into its steps, in the order they ran, with what
 // each one printed. stages, from the finished run, adds each step's result.
 // While the run is going, the last step that started is the one running.
@@ -9,8 +17,8 @@ export function steps(events = [], stages = [], runStatus = "") {
   const decoders = new Map();
   let current = null;
   for (const event of events) {
-    if (event.type === "step.started") {
-      const name = /^name=(.*)$/.exec(event.message || "")?.[1] || "step";
+    const name = stepName(event);
+    if (name !== null) {
       current = { name, output: "", started_at: event.time };
       found.push(current);
       decoders.clear();

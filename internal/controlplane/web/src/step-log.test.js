@@ -15,6 +15,12 @@ test("each step keeps what it printed", () => {
   ]);
 });
 
+test("a run from before the steps runner keeps its stage output", () => {
+  const events = [{ type: "stage.started", message: "name=unit tests kind=script" }, output("ok\n"), { type: "stage.started", message: "name=agent kind=agent" }, output("{}")];
+  const stages = [{ name: "unit tests", kind: "script", state: "succeeded" }, { name: "agent", kind: "agent", state: "succeeded" }];
+  assert.deepEqual(steps(events, stages, "succeeded").map(step => [step.name, step.output]), [["unit tests", "ok\n"], ["agent", "{}"]]);
+});
+
 test("while a run is going its last step is the one running", () => {
   const result = steps([started("checkout"), started("plan"), output("thinking")], [], "running");
   assert.deepEqual(result.map(step => [step.name, step.state]), [["checkout", "succeeded"], ["plan", "running"]]);

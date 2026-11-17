@@ -580,22 +580,11 @@ func (s *Store) TicketBySourceKey(ctx context.Context, key string) (Ticket, erro
 	return ticketForSourceKey(ctx, s.db, key)
 }
 
-// ListTickets returns the tickets that are still active, then the newest of the
-// rest, so the limit never hides work that needs someone. Empty filters match
-// every ticket.
+// ListTickets returns the newest tickets first, whatever their state, up to
+// maxListedTickets. Empty filters match every ticket.
 func (s *Store) ListTickets(ctx context.Context, state, repo string) ([]Ticket, error) {
-	return s.listTickets(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR state=?) AND (?='' OR repo=?)
-  ORDER BY state IN (?,?,?) DESC, created_at DESC, id DESC LIMIT ?`, state, state, repo, repo, StateWorking, StateNeedsYou, StatePRReady, maxListedTickets)
-}
-
-// RecentTickets lists the newest tickets first, whatever their state.
-func (s *Store) RecentTickets(ctx context.Context, repo string) ([]Ticket, error) {
-	return s.listTickets(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR repo=?)
-  ORDER BY created_at DESC, id DESC LIMIT ?`, repo, repo, maxListedTickets)
-}
-
-func (s *Store) listTickets(ctx context.Context, query string, arguments ...any) ([]Ticket, error) {
-	rows, err := s.db.QueryContext(ctx, query, arguments...)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR state=?) AND (?='' OR repo=?)
+  ORDER BY created_at DESC, id DESC LIMIT ?`, state, state, repo, repo, maxListedTickets)
 	if err != nil {
 		return nil, err
 	}
