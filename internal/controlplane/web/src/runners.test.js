@@ -17,27 +17,27 @@ test("Runners shows each runner and when it last made contact", async context =>
   const now = Date.parse("2026-10-15T20:00:00Z");
   assert.equal(runnerOnline({ last_contact: "2026-10-15T19:59:00Z" }, now), true);
   assert.equal(runnerOnline({ last_contact: "2026-10-15T19:58:00Z" }, now), false);
-  const html = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners: [{ name: "mac-mini", harnesses: ["claude", "codex"], last_contact: new Date().toISOString() }, { name: "lost", harnesses: ["claude"], last_contact: "2026-01-01T00:00:00Z" }] }));
-  for (const want of [/mac-mini/, /claude, codex/, /Online/, /Not responding/, /Last contact/, /1 of 2 online, 0 of 1 slot busy/]) assert.match(html, want);
+  const html = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners: [{ name: "mac-mini", last_contact: new Date().toISOString() }, { name: "lost", last_contact: "2026-01-01T00:00:00Z" }] }));
+  for (const want of [/mac-mini/, /Online/, /Not responding/, /Last contact/, /1 of 2 online, 0 of 1 slot busy/]) assert.match(html, want);
   assert.match(renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners: [] })), /machinist runner start/);
 });
 
 test("Runners shows where each runner runs, its slots and what it is doing", async context => {
   const { RunnersPage } = await load(context);
   const runners = [
-    { name: "cluster", kind: "kubernetes", harnesses: ["claude"], slots: 4, last_contact: ago(5), jobs: [
+    { name: "cluster", kind: "kubernetes", slots: 4, last_contact: ago(5), jobs: [
       { run_id: "r1", ticket_id: "t_1", title: "Add dark mode", kind: "agent", started_at: ago(120) },
-      { run_id: "r2", ticket_id: "t_2", title: "Fix login", kind: "reviewer", reviewer: "security", started_at: ago(30) },
+      { run_id: "r2", ticket_id: "t_2", title: "Fix login", kind: "agent", started_at: ago(30) },
     ] },
-    { name: "mac-mini", kind: "local", harnesses: ["codex"], slots: 1, last_contact: ago(5), jobs: [] },
+    { name: "mac-mini", kind: "local", slots: 1, last_contact: ago(5), jobs: [] },
   ];
   const html = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners, queue: { waiting: 3, oldest_queued_at: ago(250) } }));
-  for (const want of [/Kubernetes/, /Local/, /2 of 4 slots busy/, /0 of 1 slot busy/, /2 of 2 online, 2 of 5 slots busy/, /href="#\/work\/t_1"/, /Add dark mode/, /Reviewer: security/, /3 runs are waiting for a runner, the oldest for 4m 1\ds/]) assert.match(html, want);
+  for (const want of [/Kubernetes/, /Local/, /2 of 4 slots busy/, /0 of 1 slot busy/, /2 of 2 online, 2 of 5 slots busy/, /href="#\/jobs\/t_1"/, /Add dark mode/, /Fix login/, /3 runs are waiting for a runner, the oldest for 4m 1\ds/]) assert.match(html, want);
   assert.doesNotMatch(html, /cannot start/);
 });
 
 test("the queue line says how many runs wait and for how long", async context => {
-  const { queueLine, stalled, runningJobs } = await load(context);
+  const { queueLine, stalled } = await load(context);
   const now = Date.parse("2026-11-10T09:01:00Z");
   assert.equal(queueLine(undefined, now), "");
   assert.equal(queueLine({ waiting: 0 }, now), "");
@@ -47,6 +47,4 @@ test("the queue line says how many runs wait and for how long", async context =>
   assert.equal(stalled([{ last_contact: "2026-11-10T08:00:00Z" }], { waiting: 1 }, now), true);
   assert.equal(stalled([{ last_contact: "2026-11-10T09:00:30Z" }], { waiting: 1 }, now), false);
   assert.equal(stalled([], { waiting: 0 }, now), false);
-  const jobs = runningJobs([{ name: "a", jobs: [{ run_id: "new", started_at: "2026-11-10T09:00:30Z" }] }, { name: "b", jobs: [{ run_id: "old", started_at: "2026-11-10T08:00:00Z" }] }, { name: "c" }]);
-  assert.deepEqual(jobs.map(job => [job.run_id, job.runner]), [["old", "b"], ["new", "a"]]);
 });

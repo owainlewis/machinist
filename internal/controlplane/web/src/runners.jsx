@@ -1,6 +1,7 @@
 import React from "react";
-import { formatDurationMillis } from "./run-metrics.js";
-import { relativeTime } from "./task-display.jsx";
+import { relativeTime } from "./display.jsx";
+import { formatDuration } from "./jobs.js";
+import { jobHref } from "./routes.js";
 
 // A runner sends a heartbeat every 30 seconds while it is running work.
 const onlineWindowMillis = 90_000;
@@ -10,20 +11,8 @@ export function runnerOnline(runner, now = Date.now()) {
   return now - Date.parse(runner.last_contact) < onlineWindowMillis;
 }
 
-// Every run in progress, longest running first, with the runner that holds it.
-export function runningJobs(runners) {
-  return runners
-    .flatMap(runner => (runner.jobs || []).map(job => ({ ...job, runner: runner.name })))
-    .sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at));
-}
-
 export function elapsed(since, now = Date.now()) {
-  return formatDurationMillis(Math.max(0, now - Date.parse(since)));
-}
-
-export function jobRole(job) {
-  if (job.kind !== "reviewer") return "Agent";
-  return job.reviewer ? `Reviewer: ${job.reviewer}` : "Reviewer";
+  return formatDuration(Math.max(0, now - Date.parse(since)));
 }
 
 // Runs wait when no runner has a free slot for them.
@@ -65,14 +54,12 @@ function Runner({ runner }) {
   return <li>
     <div className="runner-row">
       <span className="runner-name"><strong>{runner.name}</strong>{kinds[runner.kind] && <span className="ticket-meta">{kinds[runner.kind]}</span>}</span>
-      <span className="ticket-meta">{(runner.harnesses || []).join(", ")}</span>
       <span className="ticket-meta">{jobs.length} of {slots} {slotWord(slots)} busy</span>
       <time className="ticket-meta" dateTime={runner.last_contact}>Last contact {relativeTime(runner.last_contact)}</time>
       <span className={online ? "pill pill-success" : "pill pill-warning"}>{online ? "Online" : "Not responding"}</span>
     </div>
     {jobs.length > 0 && <ul className="runner-jobs">{jobs.map(job => <li key={job.run_id}>
-      <a href={`#/work/${encodeURIComponent(job.ticket_id)}`}>{job.title || job.ticket_id}</a>
-      <span className="ticket-meta">{jobRole(job)}</span>
+      <a href={jobHref(job.ticket_id)}>{job.title || job.ticket_id}</a>
       <time className="ticket-meta" dateTime={job.started_at}>{elapsed(job.started_at)}</time>
     </li>)}</ul>}
   </li>;

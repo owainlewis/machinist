@@ -1,21 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { routeFromHash } from "./routes.js";
+import { jobHref, routeFromHash } from "./routes.js";
 
-test("the four pages are addressable", () => {
-  for (const view of ["home", "work", "automations", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, ticketID: "" });
+test("jobs and runners are addressable", () => {
+  for (const view of ["jobs", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
 });
 
-test("home is the default and unknown routes return to it", () => {
-  for (const hash of ["", "#/", "#/unknown", "#/runs", "#/assign"]) assert.deepEqual(routeFromHash(hash), { view: "home", ticketID: "" });
+test("jobs is the default and unknown routes return to it", () => {
+  for (const hash of ["", "#/", "#/unknown", "#/home", "#/work", "#/jobs/"]) assert.deepEqual(routeFromHash(hash), { view: "jobs", jobID: "" });
 });
 
-test("a ticket has its own route", () => {
-  assert.deepEqual(routeFromHash("#/work/t_123"), { view: "ticket", ticketID: "t_123" });
-  assert.deepEqual(routeFromHash("#/work/t%2F1"), { view: "ticket", ticketID: "t/1" });
+test("a job has its own route", () => {
+  assert.deepEqual(routeFromHash("#/jobs/t_123"), { view: "job", jobID: "t_123" });
+  assert.deepEqual(routeFromHash(jobHref("t/1")), { view: "job", jobID: "t/1" });
 });
 
-test("incomplete or malformed ticket routes open Work", () => {
-  assert.deepEqual(routeFromHash("#/work/"), { view: "home", ticketID: "" });
-  assert.deepEqual(routeFromHash("#/work/%E0%A4%A"), { view: "work", ticketID: "" });
+test("a malformed job route opens the list", () => {
+  assert.deepEqual(routeFromHash("#/jobs/%E0%A4%A"), { view: "jobs", jobID: "" });
 });

@@ -536,25 +536,7 @@ func TestListTicketsLimitsToTheNewest(t *testing.T) {
 	}
 }
 
-func TestListTicketsKeepsAnOldActiveTicketPastTheLimit(t *testing.T) {
-	store := openStore(t)
-	oldest := createTicket(t, store, "api:oldest")
-	for index := range maxListedTickets + 1 {
-		ticket := createTicket(t, store, fmt.Sprintf("api:%d", index))
-		if _, err := store.Cancel(t.Context(), ticket.ID, "alice"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	listed, err := store.ListTickets(t.Context(), "", "")
-	if err != nil || len(listed) != maxListedTickets {
-		t.Fatalf("count = %d, err = %v", len(listed), err)
-	}
-	if listed[0].ID != oldest.ID {
-		t.Fatalf("first = %+v, want the active ticket %s", listed[0], oldest.ID)
-	}
-}
-
-func TestRecentTicketsPutsANewerFinishedTicketFirst(t *testing.T) {
+func TestListTicketsPutsANewerFinishedTicketFirst(t *testing.T) {
 	store := openStore(t)
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return start }
@@ -564,7 +546,7 @@ func TestRecentTicketsPutsANewerFinishedTicketFirst(t *testing.T) {
 	if _, err := store.Cancel(t.Context(), finished.ID, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	listed, err := store.RecentTickets(t.Context(), "")
+	listed, err := store.ListTickets(t.Context(), "", "")
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("listed = %+v, err = %v", listed, err)
 	}

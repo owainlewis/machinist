@@ -2,9 +2,10 @@ export class SignedOutError extends Error {
   constructor() { super("Sign in to continue."); this.name = "SignedOutError"; }
 }
 
-export async function api(path, { method = "GET", body } = {}) {
+export async function api(path, { method = "GET", body, signal } = {}) {
   const response = await fetch(path, {
     method,
+    signal,
     headers: { Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
