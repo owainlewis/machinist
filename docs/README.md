@@ -7,8 +7,7 @@ Start with the [quick start](../README.md#quick-start).
 | Guide | Use it to |
 | --- | --- |
 | [Run API](run-api.md) | Start and follow jobs from any system |
-| [Factory files](factory.md) | Change agents and jobs, and add automations |
-| [Native agents](native-agents.md) | Understand subagents and the activity view |
+| [Factory files](factory.md) | Write presets and add automations |
 
 ## Run it
 
@@ -16,11 +15,11 @@ Start with the [quick start](../README.md#quick-start).
 | --- | --- |
 | [Configuration](configuration.md) | Look up every setting |
 | [Runners](runners.md) | Add local and Kubernetes runners |
-| [Credentials](credentials.md) | Choose a credential for each harness |
+| [Credentials](credentials.md) | Choose the credentials steps get |
 | [VM deployment](vm-deployment.md) | Run the control plane and a runner on a VM |
 | [Continuous deployment](local-factory/continuous-deployment.md) | Release to GKE |
 | [Architecture](../ARCHITECTURE.md) | See how the pieces fit |
-| [Security](../SECURITY.md) | Understand what an agent can do |
+| [Security](../SECURITY.md) | Understand what a step can do |
 
 ## Build it
 

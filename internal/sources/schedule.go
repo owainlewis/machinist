@@ -100,7 +100,7 @@ func (s *Schedule) create(ctx context.Context, automation factory.Automation, by
 		Repo:      automation.Repo,
 		Title:     automation.Name,
 		Body:      automation.Prompt,
-		Agent:     automation.Agent,
+		Agent:     automation.Preset,
 		CreatedBy: by,
 		SourceKey: "schedule:" + automation.Name + ":" + occurrence,
 	})
@@ -138,7 +138,7 @@ type AutomationStatus struct {
 func (s *Schedule) Status(ctx context.Context) ([]AutomationStatus, error) {
 	statuses := make([]AutomationStatus, 0, len(s.Automations))
 	for _, automation := range s.Automations {
-		status := AutomationStatus{Name: automation.Name, Repo: automation.Repo, Agent: automation.Agent, Schedule: automation.Cron.Expression(), Timezone: automation.Cron.Timezone()}
+		status := AutomationStatus{Name: automation.Name, Repo: automation.Repo, Agent: automation.Preset, Schedule: automation.Cron.Expression(), Timezone: automation.Cron.Timezone()}
 		base, found, err := s.base(ctx, automation)
 		if err != nil {
 			return nil, err

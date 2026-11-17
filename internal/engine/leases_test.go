@@ -29,7 +29,7 @@ func TestLostLeaseInterruptsRunAndQueuesANewOne(t *testing.T) {
 	if got := state(t, e, ticket.ID); got != tickets.StateWorking {
 		t.Fatalf("state = %s", got)
 	}
-	replacement, err := e.Assign(t.Context(), "runner-2", []string{"claude"})
+	replacement, err := e.Assign(t.Context(), "runner-2", []string{"steps"})
 	if err != nil || replacement == nil || replacement.RunID == lost.RunID || replacement.Branch != lost.Branch {
 		t.Fatalf("replacement = %+v, err = %v", replacement, err)
 	}
@@ -63,8 +63,8 @@ func TestLeasesSurviveControlPlaneRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agents := map[string]factory.Agent{"default": {Name: "default", Harness: "claude", Playbook: "P"}}
-	options := Options{Store: store, Factory: &factory.Factory{Agents: agents}, MaxTurns: 3, RunTimeout: time.Hour, Handle: "bot"}
+	presets := map[string]factory.Preset{"default": testPreset()}
+	options := Options{Store: store, Factory: &factory.Factory{Presets: presets}, MaxTurns: 3, RunTimeout: time.Hour, Handle: "bot"}
 	first := New(options)
 	if _, _, err = store.CreateTicket(t.Context(), tickets.NewTicket{Source: "api", Repo: "o/r", Title: "T", Body: "B", Agent: "default", CreatedBy: "a", SourceKey: "k"}); err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestLeasesSurviveControlPlaneRestart(t *testing.T) {
 	if err = first.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	request, err := first.Assign(t.Context(), "runner-1", []string{"claude"})
+	request, err := first.Assign(t.Context(), "runner-1", []string{"steps"})
 	if err != nil || request == nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}

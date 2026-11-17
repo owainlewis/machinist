@@ -1,7 +1,6 @@
 package agentrunner
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -118,7 +117,7 @@ func startFakeJob(state string) error {
 	if err := json.NewDecoder(os.Stdin).Decode(&job); err != nil {
 		return err
 	}
-	environment := []string{"MACHINIST_TEST_ROLE=sandbox", "FAKE_KUBE_STATE=" + state, "PATH=" + os.Getenv("PATH"), "FAKE_REMOTE=" + os.Getenv("FAKE_REMOTE")}
+	environment := []string{"MACHINIST_TEST_ROLE=sandbox", "FAKE_KUBE_STATE=" + state, "PATH=" + os.Getenv("PATH")}
 	for _, source := range job.Spec.Template.Spec.Containers[0].EnvFrom {
 		body, err := os.ReadFile(clusterPath(state, "secret-"+source.SecretRef.Name))
 		if err != nil {
@@ -170,13 +169,12 @@ func fakeSandbox() int {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	// The init container leaves this empty directory for the clone.
+	// The init container leaves this empty directory for the workspace.
 	if err := os.MkdirAll(clusterPath(state, "source/repository"), 0o700); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	remote := os.Getenv("FAKE_REMOTE")
-	err := kuberunner.Sandbox(ctx, exchange, clusterPath(state, "source"), clusterPath(state, "home"), func(string) string { return remote })
+	err := kuberunner.Sandbox(ctx, exchange, clusterPath(state, "source/repository"), clusterPath(state, "home"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -184,71 +182,26 @@ func fakeSandbox() int {
 	return 0
 }
 
-// harness installs fake claude and codex commands that behave as the prompt says.
-func harness(t *testing.T) string {
-	t.Helper()
-	bin := t.TempDir()
-	output := t.TempDir()
-	claude := `#!/bin/sh
-prompt=$(cat)
-env > ` + output + `/env
-ls -a .claude/agents > ` + output + `/agents
-printf '%s\n' '{"type":"system","subtype":"init","apiKeySource":"ANTHROPIC_API_KEY"}'
-printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Working"}]}}'
-case "$prompt" in
-*SLEEP*) echo $$ > ` + output + `/pid; exec sleep 120;;
-*CRASH*) echo broken >&2; exit 3;;
-esac
-git commit --quiet --allow-empty -m 'conformance run'
-git push --quiet origin HEAD
-printf '%s\n' '{"type":"result","is_error":false,"result":"done","total_cost_usd":0.5,"usage":{"input_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":4},"structured_output":{"outcome":"no_change","summary":"Finished"}}'
-`
-	codex := `#!/bin/sh
-if [ "$1" = login ]; then cat > ` + output + `/codex-key; exit 0; fi
-env > ` + output + `/env
-while IFS= read -r line; do
-case "$line" in
-*'"id":1,'*) echo '{"id":1,"result":{}}';;
-*'"id":2,'*) echo '{"id":2,"result":{"account":{"type":"apiKey"}}}';;
-*'"id":3,'*) echo '{"id":3,"result":{"data":[{"id":"fixture","model":"fixture","isDefault":true}]}}';;
-*'"id":4,'*) echo '{"id":4,"result":{"thread":{"id":"primary"}}}';;
-*'"id":5,'*) git commit --quiet --allow-empty -m 'codex conformance'; git push --quiet origin HEAD
-  echo '{"method":"item/completed","params":{"threadId":"primary","item":{"type":"agentMessage","text":"{\"outcome\":\"no_change\",\"summary\":\"Codex finished\"}"}}}'
-  echo '{"method":"turn/completed","params":{"threadId":"primary","turn":{"status":"completed"}}}';;
-esac
-done
-`
-	for name, body := range map[string]string{"claude": claude, "codex": codex} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return output
-}
-
 type runnerType struct {
 	name  string
-	build func(t *testing.T, remote, data string) Executor
+	build func(t *testing.T, data string) Executor
 }
 
-const secretValues = "GH_TOKEN=fixture-github\nANTHROPIC_API_KEY=fixture-anthropic\nOPENAI_API_KEY=fixture-openai\n"
+const secretValues = "GH_TOKEN=fixture-github\nANTHROPIC_API_KEY=fixture-anthropic\n"
 
-func buildLocal(t *testing.T, remote, data string) Executor {
+func buildLocal(t *testing.T, data string) Executor {
 	t.Helper()
 	t.Setenv("GH_TOKEN", "fixture-github")
 	t.Setenv("ANTHROPIC_API_KEY", "fixture-anthropic")
-	t.Setenv("OPENAI_API_KEY", "fixture-openai")
 	t.Setenv("MACHINIST_PARENT_SECRET", "must-not-leak")
-	local, err := NewLocal(config.Runner{DataDirectory: data, Slots: 1, Credentials: map[string]config.Credential{"claude": {Env: []string{"ANTHROPIC_API_KEY"}}, "codex": {Env: []string{"OPENAI_API_KEY"}}}})
+	local, err := NewLocal(config.Runner{DataDirectory: data, Slots: 1, Env: []string{"ANTHROPIC_API_KEY"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	local.CloneURL = func(string) string { return remote }
 	return local
 }
 
-func buildKubernetes(t *testing.T, remote, data string) Executor {
+func buildKubernetes(t *testing.T, data string) Executor {
 	t.Helper()
 	bin := t.TempDir()
 	state := t.TempDir()
@@ -256,7 +209,7 @@ func buildKubernetes(t *testing.T, remote, data string) Executor {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := fmt.Sprintf("#!/bin/sh\nMACHINIST_TEST_ROLE=kubectl FAKE_KUBE_STATE=%q FAKE_REMOTE=%q exec %q \"$@\"\n", state, remote, binary)
+	script := fmt.Sprintf("#!/bin/sh\nMACHINIST_TEST_ROLE=kubectl FAKE_KUBE_STATE=%q exec %q \"$@\"\n", state, binary)
 	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +224,7 @@ func buildKubernetes(t *testing.T, remote, data string) Executor {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { stopFakeJob(state) })
-	executor, err := NewKubernetes(config.Runner{DataDirectory: data, Credentials: map[string]config.Credential{"claude": {Env: []string{"ANTHROPIC_API_KEY"}}, "codex": {Env: []string{"OPENAI_API_KEY"}}}, Kubernetes: &config.Kubernetes{Context: "test", Namespace: "runners", Image: "example.test/runner@sha256:" + strings.Repeat("a", 64), Secret: "machinist-agent", ProxyURL: "http://egress:3128"}})
+	executor, err := NewKubernetes(config.Runner{DataDirectory: data, Kubernetes: &config.Kubernetes{Context: "test", Namespace: "runners", Image: "example.test/runner@sha256:" + strings.Repeat("a", 64), Secret: "machinist-agent", ProxyURL: "http://egress:3128"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,21 +233,25 @@ func buildKubernetes(t *testing.T, remote, data string) Executor {
 
 var runnerTypes = []runnerType{{"local", buildLocal}, {"kubernetes", buildKubernetes}}
 
-func conformanceRequest(prompt, harnessName string) runner.RunRequest {
+func conformanceRequest(steps ...runner.Step) runner.RunRequest {
 	return runner.RunRequest{
-		RunID: localRun, TicketID: "t_1", Repository: "owner/repo", Branch: "machinist/t_0123456789abcdef", Prompt: prompt, Harness: harnessName,
-		AgentFiles:    []runner.AgentFile{{Path: ".claude/agents/machinist-helper.md", Body: "helper"}},
+		RunID: localRun, TicketID: "t_1", Preset: "default", Repository: "owner/repo", Branch: "machinist/t_0123456789abcdef",
+		Vars: map[string]string{"repo": "owner/repo"}, Prompt: "Do the work", Steps: steps,
 		TimeoutMillis: time.Minute.Milliseconds(), GitName: "bot", GitEmail: "bot@example.test",
 	}
+}
+
+// cloneStep clones the fixture remote. Real presets clone from GitHub.
+func cloneStep(remote string) runner.Step {
+	return runner.Step{Name: "checkout", Run: fmt.Sprintf("git clone --quiet %q . && git switch --quiet -c \"$MACHINIST_BRANCH\"", remote)}
 }
 
 func eachRunner(t *testing.T, name string, test func(t *testing.T, executor Executor, remote, data, output string)) {
 	for _, target := range runnerTypes {
 		t.Run(target.name+"/"+name, func(t *testing.T) {
-			output := harness(t)
 			remote := bareRemote(t)
 			data := t.TempDir()
-			test(t, target.build(t, remote, data), remote, data, output)
+			test(t, target.build(t, data), remote, data, t.TempDir())
 		})
 	}
 }
@@ -320,30 +277,34 @@ func remoteLog(t *testing.T, remote, branch, format string) string {
 }
 
 func TestConformance(t *testing.T) {
-	eachRunner(t, "run and report", func(t *testing.T, executor Executor, remote, data, output string) {
-		request := conformanceRequest("Do the work", "claude")
+	eachRunner(t, "steps clone, push and report", func(t *testing.T, executor Executor, remote, data, output string) {
+		request := conformanceRequest(
+			cloneStep(remote),
+			runner.Step{Name: "work", Run: "env > " + output + "/env; cat > " + output + "/prompt; git commit --quiet --allow-empty -m 'conformance run' && git push --quiet origin HEAD"},
+			runner.Step{Name: "report", Run: `echo Finished > "$MACHINIST_DIR/result.md"`},
+		)
 		result := executor.Execute(t.Context(), request)
 		if result.State != runner.StateSucceeded || result.Report == nil || result.Report.Outcome != protocol.OutcomeNoChange || result.Report.Summary != "Finished" {
 			t.Fatalf("result = %+v", result)
 		}
-		if result.Tokens == nil || result.Cost == nil || *result.Cost != 0.5 || result.CredentialSource != "ANTHROPIC_API_KEY" {
-			t.Fatalf("result = %+v", result)
+		if len(result.Stages) != 3 || result.Stages[2].State != string(runner.StateSucceeded) {
+			t.Fatalf("stages = %+v", result.Stages)
 		}
 		if subject := remoteLog(t, remote, request.Branch, "%s %ae"); subject != "conformance run bot@example.test" {
 			t.Fatalf("pushed commit = %q", subject)
 		}
-		if agents := readOutput(t, output, "agents"); !strings.Contains(agents, "machinist-helper.md") {
-			t.Fatalf("agents = %q", agents)
+		if prompt := readOutput(t, output, "prompt"); prompt != "Do the work" {
+			t.Fatalf("prompt = %q", prompt)
 		}
 		environment := readOutput(t, output, "env")
-		for _, want := range []string{"ANTHROPIC_API_KEY=fixture-anthropic", "GH_TOKEN=fixture-github"} {
+		for _, want := range []string{"ANTHROPIC_API_KEY=fixture-anthropic", "GH_TOKEN=fixture-github", "MACHINIST_REPO=owner/repo"} {
 			if !strings.Contains(environment, want) {
 				t.Fatalf("missing %s in:\n%s", want, environment)
 			}
 		}
-		for _, unwanted := range []string{"must-not-leak", "fixture-openai"} {
+		for _, unwanted := range []string{"must-not-leak"} {
 			if strings.Contains(environment, unwanted) {
-				t.Fatalf("%s reached the agent:\n%s", unwanted, environment)
+				t.Fatalf("%s reached the step:\n%s", unwanted, environment)
 			}
 		}
 		if events, err := os.ReadFile(filepath.Join(data, "runs", request.RunID, "events.jsonl")); err != nil || len(events) == 0 {
@@ -351,38 +312,22 @@ func TestConformance(t *testing.T) {
 		}
 	})
 
-	eachRunner(t, "codex reports on a key", func(t *testing.T, executor Executor, remote, _, output string) {
-		request := conformanceRequest("Do the work", "codex")
-		result := executor.Execute(t.Context(), request)
-		if result.State != runner.StateSucceeded || result.Report == nil || result.Report.Summary != "Codex finished" {
+	eachRunner(t, "question", func(t *testing.T, executor Executor, _, _, _ string) {
+		result := executor.Execute(t.Context(), conformanceRequest(
+			runner.Step{Name: "ask", Run: `echo "Which database?" > "$MACHINIST_DIR/question.md"`},
+			runner.Step{Name: "after", Run: "true"},
+		))
+		if result.State != runner.StateSucceeded || result.Report == nil || result.Report.Outcome != protocol.OutcomeNeedsInput || result.Report.Question != "Which database?" {
 			t.Fatalf("result = %+v", result)
 		}
-		if key := readOutput(t, output, "codex-key"); key != "fixture-openai" {
-			t.Fatalf("key = %q", key)
-		}
-		if environment := readOutput(t, output, "env"); strings.Contains(environment, "fixture-openai") || strings.Contains(environment, "fixture-anthropic") {
-			t.Fatalf("a key reached the agent:\n%s", environment)
-		}
-		if subject := remoteLog(t, remote, request.Branch, "%s"); subject != "codex conformance" {
-			t.Fatalf("pushed commit = %q", subject)
-		}
 	})
 
-	// CUJ 7: one real run through this runner type, printing the credential source.
-	eachRunner(t, "runner check", func(t *testing.T, executor Executor, _, data, _ string) {
-		var printed bytes.Buffer
-		settings := config.Runner{DataDirectory: data, Credentials: map[string]config.Credential{"claude": {Env: []string{"ANTHROPIC_API_KEY"}}}}
-		if err := Check(t.Context(), executor, settings, "owner/repo", &printed); err != nil {
-			t.Fatalf("%v: %s", err, printed.String())
-		}
-		if got := printed.String(); got != "claude: ok, credential source: ANTHROPIC_API_KEY\n" {
-			t.Fatalf("printed = %q", got)
-		}
-	})
-
-	eachRunner(t, "harness failure", func(t *testing.T, executor Executor, _, _, _ string) {
-		result := executor.Execute(t.Context(), conformanceRequest("CRASH", "claude"))
-		if result.State != runner.StateFailed || result.Error == "" || result.Report != nil {
+	eachRunner(t, "failing step", func(t *testing.T, executor Executor, _, _, _ string) {
+		result := executor.Execute(t.Context(), conformanceRequest(
+			runner.Step{Name: "work", Run: "echo broken >&2; exit 3"},
+			runner.Step{Name: "after", Run: "true"},
+		))
+		if result.State != runner.StateFailed || !strings.HasPrefix(result.Error, "step work: ") || result.Report != nil {
 			t.Fatalf("result = %+v", result)
 		}
 	})
@@ -391,8 +336,8 @@ func TestConformance(t *testing.T) {
 		if err := os.RemoveAll(remote); err != nil {
 			t.Fatal(err)
 		}
-		result := executor.Execute(t.Context(), conformanceRequest("Do the work", "claude"))
-		if result.State != runner.StateFailed || !strings.Contains(result.Error, "git clone") {
+		result := executor.Execute(t.Context(), conformanceRequest(cloneStep(remote)))
+		if result.State != runner.StateFailed || !strings.HasPrefix(result.Error, "step checkout: ") {
 			t.Fatalf("result = %+v", result)
 		}
 	})
@@ -401,14 +346,16 @@ func TestConformance(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		finished := make(chan runner.RunResult, 1)
-		go func() { finished <- executor.Execute(ctx, conformanceRequest("SLEEP", "claude")) }()
+		go func() {
+			finished <- executor.Execute(ctx, conformanceRequest(runner.Step{Name: "wait", Run: "echo $$ > " + output + "/pid; exec sleep 120"}))
+		}()
 		pidPath := filepath.Join(output, "pid")
 		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 			if body, err := os.ReadFile(pidPath); err == nil && len(strings.TrimSpace(string(body))) > 0 {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatal("the agent never started")
+				t.Fatal("the step never started")
 			}
 		}
 		cancel()
@@ -424,13 +371,13 @@ func TestConformance(t *testing.T) {
 		pid, _ := strconv.Atoi(strings.TrimSpace(readOutput(t, output, "pid")))
 		for deadline := time.Now().Add(10 * time.Second); syscall.Kill(pid, 0) == nil; time.Sleep(10 * time.Millisecond) {
 			if time.Now().After(deadline) {
-				t.Fatalf("agent process %d is still running", pid)
+				t.Fatalf("step process %d is still running", pid)
 			}
 		}
 	})
 
 	eachRunner(t, "timeout", func(t *testing.T, executor Executor, _, _, _ string) {
-		request := conformanceRequest("SLEEP", "claude")
+		request := conformanceRequest(runner.Step{Name: "wait", Run: "sleep 120"})
 		request.TimeoutMillis = (3 * time.Second).Milliseconds()
 		result := executor.Execute(t.Context(), request)
 		if result.State != runner.StateTimedOut || result.Report != nil {

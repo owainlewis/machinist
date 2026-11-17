@@ -13,33 +13,23 @@ import (
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
-// maintainerScript merges the PRs its prompt allows and reports what GitHub said.
+// maintainerScript records its prompt and arguments, merges the PRs and prints what GitHub said.
 func maintainerScript(output string) string {
 	return `#!/bin/sh
-prompt=$(cat)
-printf '%s' "$prompt" >> ` + output + `/prompts
-result=
+cat >> ` + output + `/prompts
+printf '%s' "$*" >> ` + output + `/prompts
 for number in 11 12; do
-  if message=$(gh pr merge "$number" --squash 2>&1); then result="$result merged $number."; else result="$result refused $number: $message."; fi
+  if message=$(gh pr merge "$number" --squash 2>&1); then echo "merged $number."; else echo "refused $number: $message."; fi
 done
-printf '%s\n' '{"type":"system","subtype":"init","apiKeySource":"ANTHROPIC_API_KEY"}'
-printf '%s\n' "{\"type\":\"result\",\"is_error\":false,\"result\":\"done\",\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":1},\"structured_output\":{\"outcome\":\"no_change\",\"summary\":\"$result\"}}"
 `
 }
 
-// installStarterAutomation copies the shipped maintainer agent and merge template.
+// installStarterAutomation turns on the shipped merge template.
 func installStarterAutomation(t *testing.T, directory string) {
 	t.Helper()
 	files, err := fs.Sub(machinistexamples.Files, "factory")
 	if err != nil {
 		t.Fatal(err)
-	}
-	for _, name := range []string{"agents/maintainer/agent.toml", "agents/maintainer/playbook.md"} {
-		body, err := fs.ReadFile(files, name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeFile(t, filepath.Join(directory, filepath.FromSlash(name)), string(body), 0o600)
 	}
 	template, err := fs.ReadFile(files, "automation-templates/review-open-prs.md")
 	if err != nil {
@@ -54,7 +44,7 @@ func installStarterAutomation(t *testing.T, directory string) {
 
 // CUJ 6.
 func TestAutomationMergesWhatBranchProtectionAllows(t *testing.T) {
-	s := startWith(t, "claude", options{claude: maintainerScript, maxTurns: 5, factory: installStarterAutomation})
+	s := startWith(t, options{claude: maintainerScript, maxTurns: 5, factory: installStarterAutomation})
 	s.github.RefuseMerge(12, "Protected branch: review required")
 
 	request, err := http.NewRequest(http.MethodPost, "http://"+s.address+"/api/v1/automations/review-open-prs/run", bytes.NewReader(nil))
@@ -83,7 +73,7 @@ func TestAutomationMergesWhatBranchProtectionAllows(t *testing.T) {
 		t.Fatalf("merged = %v", merged)
 	}
 	runs, err := s.store.Runs(t.Context(), ticket.ID)
-	if err != nil || len(runs) != 1 || !strings.Contains(runs[0].Report.Summary, "refused 12: Protected branch") {
+	if err != nil || len(runs) != 1 || !strings.Contains(runs[0].Report.Summary, "merged 11.\nrefused 12: Protected branch") {
 		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
 	prompts := s.read(t, "prompts")

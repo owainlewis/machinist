@@ -6,86 +6,63 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/runner"
 )
 
-const codexKeyVariable = "OPENAI_API_KEY"
-
-// The only variables an agent inherits from the runner, besides its credential.
+// The only variables a step inherits from the runner, besides the runner's env.
 var environmentAllowlist = []string{"PATH", "LANG", "TMPDIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"}
 
-// A login run keeps the OS user's identity, so the harness can find its login.
+// A login run keeps the OS user's identity, so a tool can find its login.
 var loginAllowlist = []string{"USER", "LOGNAME"}
 
-// Local runs each agent as a process on this machine, in a private directory.
+// Local runs each step as a process on this machine, in a private directory.
 type Local struct {
 	config config.Runner
 	getenv func(string) string
-	// CloneURL maps a repository to the URL it is cloned from.
-	CloneURL func(string) string
 }
 
-// NewLocal checks that every credential this runner offers is present.
+// NewLocal checks that every variable this runner passes to steps is set.
 func NewLocal(runnerConfig config.Runner) (*Local, error) {
-	local := &Local{config: runnerConfig, getenv: os.Getenv, CloneURL: func(repository string) string {
-		return "https://github.com/" + repository + ".git"
-	}}
+	local := &Local{config: runnerConfig, getenv: os.Getenv}
 	if local.getenv("GH_TOKEN") == "" {
 		return nil, errors.New("GH_TOKEN is required")
 	}
-	for harness, credential := range runnerConfig.Credentials {
-		for _, name := range credential.Env {
-			if local.getenv(name) == "" {
-				return nil, fmt.Errorf("credentials.%s: %s is not set", harness, name)
-			}
+	for _, name := range runnerConfig.Env {
+		if local.getenv(name) == "" {
+			return nil, fmt.Errorf("env: %s is not set", name)
 		}
 	}
 	return local, nil
 }
 
-func (l *Local) environment(names []string, skip string) []string {
+func (l *Local) environment(names []string) []string {
 	environment := []string{}
 	for _, name := range names {
-		if value := l.getenv(name); value != "" && name != skip {
+		if value := l.getenv(name); value != "" {
 			environment = append(environment, name+"="+value)
 		}
 	}
 	return environment
 }
 
-func (l *Local) workspaceOptions(request runner.RunRequest, credential config.Credential, root string) (runner.WorkspaceOptions, error) {
-	options := runner.WorkspaceOptions{Request: request, Root: root, CloneURL: l.CloneURL(request.Repository), GitHubToken: l.getenv("GH_TOKEN"), Login: credential.Login}
-	options.Environment = l.environment(environmentAllowlist, "")
-	if credential.Login {
-		options.Environment = append(options.Environment, l.environment(loginAllowlist, "")...)
+func (l *Local) workspaceOptions(request runner.RunRequest, root string) (runner.WorkspaceOptions, error) {
+	options := runner.WorkspaceOptions{Request: request, Root: root, GitHubToken: l.getenv("GH_TOKEN"), Home: filepath.Join(root, "home")}
+	options.Environment = append(l.environment(environmentAllowlist), l.environment(l.config.Env)...)
+	if l.config.Login {
+		options.Environment = append(options.Environment, l.environment(loginAllowlist)...)
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return options, fmt.Errorf("find user home directory: %w", err)
 		}
 		options.Home = home
-		options.CodexHome = l.getenv("CODEX_HOME")
-		if options.CodexHome == "" {
-			options.CodexHome = filepath.Join(home, ".codex")
-		}
-		return options, nil
 	}
-	skip := ""
-	if request.Harness == runner.HarnessCodex && slices.Contains(credential.Env, codexKeyVariable) {
-		skip = codexKeyVariable
-		options.CodexAPIKey = l.getenv(codexKeyVariable)
-	}
-	options.Environment = append(options.Environment, l.environment(credential.Env, skip)...)
-	options.Home = filepath.Join(root, "home")
-	options.CodexHome = filepath.Join(options.Home, ".codex")
 	return options, nil
 }
 
-// Execute prepares a fresh clone, runs the harness and removes the clone and
-// private home, including any credential written there.
+// Execute prepares an empty workspace, runs the steps and removes the
+// workspace and private home, including anything a step wrote there.
 func (l *Local) Execute(ctx context.Context, request runner.RunRequest) runner.RunResult {
 	failure := func(err error) runner.RunResult {
 		state := runner.StateFailed
@@ -97,28 +74,18 @@ func (l *Local) Execute(ctx context.Context, request runner.RunRequest) runner.R
 	if !runner.ValidRunID(request.RunID) {
 		return failure(fmt.Errorf("invalid run ID %q", request.RunID))
 	}
-	credential, ok := l.config.Credentials[request.Harness]
-	if !ok {
-		return failure(fmt.Errorf("this runner has no credential for %q", request.Harness))
-	}
 	root := filepath.Join(l.config.DataDirectory, "work", request.RunID)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return failure(err)
 	}
 	defer os.RemoveAll(root)
-	options, err := l.workspaceOptions(request, credential, root)
+	options, err := l.workspaceOptions(request, root)
 	if err != nil {
 		return failure(err)
 	}
-	// Preparation has the run's time limit too, so a stalled clone or login cannot hold a slot.
-	prepare, cancel := context.WithTimeout(ctx, time.Duration(request.TimeoutMillis)*time.Millisecond)
-	defer cancel()
-	workspace, err := runner.PrepareWorkspace(prepare, options)
+	workspace, err := runner.PrepareWorkspace(options)
 	if err != nil {
-		if ctx.Err() == nil && errors.Is(prepare.Err(), context.DeadlineExceeded) {
-			return runner.RunResult{State: runner.StateTimedOut, Error: "preparing the workspace timed out: " + err.Error()}
-		}
 		return failure(err)
 	}
-	return runner.RunInWorkspace(ctx, request, workspace, l.config.DataDirectory)
+	return runner.RunSteps(ctx, request, workspace, l.config.DataDirectory)
 }

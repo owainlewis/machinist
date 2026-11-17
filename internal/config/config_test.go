@@ -25,7 +25,7 @@ func TestLoadConfigAppliesDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := loaded.Server
-	if server.Listen != "127.0.0.1:7331" || server.DefaultAgent != "default" || server.MaxTurnsWithoutHuman != 5 || server.RunDeadline() != time.Hour {
+	if server.Listen != "127.0.0.1:7331" || server.DefaultPreset != "default" || server.MaxTurnsWithoutHuman != 5 || server.RunDeadline() != time.Hour {
 		t.Fatalf("server = %+v", server)
 	}
 	if server.Database != filepath.Join(home, ".machinist", "server", "tickets.db") || server.Factory != filepath.Join(home, ".machinist", "factory") {
@@ -43,7 +43,7 @@ func TestLoadConfigReadsEveryKeyAndResolvesPaths(t *testing.T) {
 listen = "10.0.0.5:7331"
 database = "data/tickets.db"
 factory = "factory"
-default_agent = "maintainer"
+default_preset = "maintainer"
 max_turns_without_human = 2
 run_timeout = "15m"
 tls_cert = "tls.crt"
@@ -58,7 +58,7 @@ repositories = ["owner/one", "owner/two"]
 		t.Fatal(err)
 	}
 	server := loaded.Server
-	if server.Listen != "10.0.0.5:7331" || server.DefaultAgent != "maintainer" || server.MaxTurnsWithoutHuman != 2 || server.RunDeadline() != 15*time.Minute {
+	if server.Listen != "10.0.0.5:7331" || server.DefaultPreset != "maintainer" || server.MaxTurnsWithoutHuman != 2 || server.RunDeadline() != 15*time.Minute {
 		t.Fatalf("server = %+v", server)
 	}
 	for got, want := range map[string]string{server.Database: "data/tickets.db", server.Factory: "factory", server.TLSCert: "tls.crt", server.TLSKey: "tls.key"} {
@@ -110,7 +110,7 @@ func TestExampleConfigurationLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Server.DefaultAgent != "default" || loaded.GitHub.Handle == "" {
+	if loaded.Server.DefaultPreset != "default" || loaded.GitHub.Handle == "" {
 		t.Fatalf("example = %+v", loaded)
 	}
 }

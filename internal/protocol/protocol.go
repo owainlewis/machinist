@@ -1,7 +1,11 @@
 package protocol
 
-// PollRequest offers the harnesses this runner has a credential for. Kind and
-// Slots say where it runs and how many runs it does at once, for the fleet page.
+// StepsHarness is the one kind of run: a preset's steps. A runner that does not
+// offer it is an older runner that cannot run steps.
+const StepsHarness = "steps"
+
+// PollRequest offers the harnesses this runner can run. Kind and Slots say
+// where it runs and how many runs it does at once, for the fleet page.
 type PollRequest struct {
 	Harnesses []string `json:"harnesses"`
 	Kind      string   `json:"kind,omitempty"`

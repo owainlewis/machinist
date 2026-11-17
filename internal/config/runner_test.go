@@ -20,12 +20,7 @@ func loadRunnerBody(t *testing.T, body string) (Runner, string, error) {
 func TestLoadRunnerResolvesPathsAndListsHarnesses(t *testing.T) {
 	runner, directory, err := loadRunnerBody(t, runnerBase+`data_directory = "data"
 slots = 2
-
-[credentials.codex]
-env = ["OPENAI_API_KEY"]
-
-[credentials.claude]
-env = ["ANTHROPIC_API_KEY"]
+env = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
 
 [kubernetes]
 kubeconfig = "cluster/config"
@@ -44,7 +39,7 @@ allowed_hosts = ["proxy.golang.org"]
 	if runner.Kind() != "kubernetes" || (Runner{}).Kind() != "local" {
 		t.Fatalf("kind = %q", runner.Kind())
 	}
-	if got := strings.Join(runner.Harnesses(), ","); got != "claude,codex" {
+	if got := strings.Join(runner.Harnesses(), ",") + " " + strings.Join(runner.Env, ","); got != "steps ANTHROPIC_API_KEY,OPENAI_API_KEY" {
 		t.Fatalf("harnesses = %q", got)
 	}
 }
@@ -52,7 +47,7 @@ allowed_hosts = ["proxy.golang.org"]
 func TestLoadRunnerDefaultsSlotsAndDataDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	runner, _, err := loadRunnerBody(t, runnerBase+"[credentials.claude]\nlogin = true\n")
+	runner, _, err := loadRunnerBody(t, runnerBase+"login = true\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +57,7 @@ func TestLoadRunnerDefaultsSlotsAndDataDirectory(t *testing.T) {
 }
 
 func TestRunnerTokenReadsTrimmedFile(t *testing.T) {
-	runner, directory, err := loadRunnerBody(t, runnerBase+"[credentials.claude]\nlogin = true\n")
+	runner, directory, err := loadRunnerBody(t, runnerBase+"login = true\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +73,8 @@ func TestLoadRunnerNamesOldKeys(t *testing.T) {
 		{runnerBase + "[executors.codex]\ncommand = [\"codex\"]\n", "executors"},
 		{runnerBase + "[repositories.app]\npath = \"/srv/app\"\n", "repositories"},
 		{runnerBase + "name = \"worker\"\n", "name"},
-		{runnerBase + "[credentials.claude]\nlogin = true\n[kubernetes]\nauth_secret = \"old\"\n", "kubernetes.auth_secret"},
+		{runnerBase + "[kubernetes]\nauth_secret = \"old\"\n", "kubernetes.auth_secret"},
+		{runnerBase + "[credentials.claude]\nlogin = true\n", "credentials"},
 	} {
 		if _, _, err := loadRunnerBody(t, test.body); err == nil || !strings.Contains(err.Error(), "unknown key "+test.key) {
 			t.Fatalf("%q: error = %v", test.body, err)
@@ -87,19 +83,13 @@ func TestLoadRunnerNamesOldKeys(t *testing.T) {
 }
 
 func TestLoadRunnerRejectsInvalidConfiguration(t *testing.T) {
-	login := "[credentials.claude]\nlogin = true\n"
 	for _, test := range []struct{ body, want string }{
-		{"token_file = \"t\"\n" + login, "control_plane"},
-		{"control_plane = \"10.0.0.5:7331\"\ntoken_file = \"t\"\n" + login, "control_plane"},
-		{"control_plane = \"http://x\"\n" + login, "token_file"},
-		{runnerBase, "at least one"},
-		{runnerBase + "slots = -1\n" + login, "slots"},
-		{runnerBase + "[credentials.gemini]\nlogin = true\n", "harness must be"},
-		{runnerBase + "[credentials.claude]\n", "exactly one"},
-		{runnerBase + "[credentials.claude]\nlogin = true\nenv = [\"ANTHROPIC_API_KEY\"]\n", "exactly one"},
-		{runnerBase + "[credentials.claude]\nenv = [\"BAD=NAME\"]\n", "invalid environment variable"},
-		{runnerBase + login + "[kubernetes]\nsecret = \"s\"\n", "do not support login"},
-		{runnerBase + "slots = 2\n[credentials.codex]\nlogin = true\n", "slots = 1"},
+		{"token_file = \"t\"\n", "control_plane"},
+		{"control_plane = \"10.0.0.5:7331\"\ntoken_file = \"t\"\n", "control_plane"},
+		{"control_plane = \"http://x\"\n", "token_file"},
+		{runnerBase + "slots = -1\n", "slots"},
+		{runnerBase + "env = [\"BAD=NAME\"]\n", "invalid environment variable"},
+		{runnerBase + "login = true\n[kubernetes]\nsecret = \"s\"\n", "do not support login"},
 	} {
 		if _, _, err := loadRunnerBody(t, test.body); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Fatalf("%q: error = %v, want %q", test.body, err, test.want)

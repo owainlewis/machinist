@@ -23,7 +23,7 @@ func newEngine(t *testing.T) *Engine {
 	t.Cleanup(func() { _ = store.Close() })
 	return New(Options{
 		Store:      store,
-		Factory:    &factory.Factory{Agents: map[string]factory.Agent{"default": {Name: "default", Harness: "claude", Model: "sonnet", Playbook: "THE PLAYBOOK", Files: []runner.AgentFile{{Path: ".claude/agents/x.md", Body: "x"}}}}},
+		Factory:    &factory.Factory{Presets: map[string]factory.Preset{"default": testPreset()}},
 		MaxTurns:   3,
 		RunTimeout: time.Hour,
 		Handle:     "machinist-bot",
@@ -44,20 +44,21 @@ func assignRun(t *testing.T, e *Engine) *runner.RunRequest {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	request, err := e.Assign(t.Context(), "runner-1", []string{"claude"})
+	request, err := e.Assign(t.Context(), "runner-1", []string{"steps"})
 	if err != nil || request == nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
 	return request
 }
 
-// prompt is the prompt of a ticket run that has one agent stage.
+func testPreset() factory.Preset {
+	return factory.Preset{Name: "default", Steps: []runner.Step{{Name: "checkout", Run: "gh repo clone", TimeoutMillis: 1000}, {Name: "work", Run: "claude -p"}}}
+}
+
+// prompt is the prompt a run's steps receive: the ticket log.
 func prompt(t *testing.T, request *runner.RunRequest) string {
 	t.Helper()
-	if len(request.Stages) != 1 || request.Stages[0].Kind != runner.StageAgent {
-		t.Fatalf("stages = %+v", request.Stages)
-	}
-	return request.Stages[0].Prompt
+	return request.Prompt
 }
 
 func state(t *testing.T, e *Engine, id string) string {
@@ -91,27 +92,31 @@ func TestAssignBuildsTheRunRequest(t *testing.T) {
 	e := newEngine(t)
 	ticket := newTicket(t, e, "api")
 	request := assignRun(t, e)
-	if request.TicketID != ticket.ID || request.Repository != "owner/repo" || request.Branch != "machinist/"+ticket.ID || request.Harness != "claude" {
+	if request.TicketID != ticket.ID || request.Preset != "default" || request.Repository != "owner/repo" || request.Branch != "machinist/"+ticket.ID || request.Vars["repo"] != "owner/repo" {
 		t.Fatalf("request = %+v", request)
 	}
 	if request.TimeoutMillis != time.Hour.Milliseconds() || request.GitName != "machinist-bot" || request.GitEmail != "machinist-bot@users.noreply.github.com" {
 		t.Fatalf("request = %+v", request)
 	}
-	// An agent runs as a job with one stage that has its name.
-	if stage := request.Stages[0]; len(request.Stages) != 1 || stage.Name != "default" || stage.Model != "sonnet" || len(stage.AgentFiles) != 1 || request.Prompt != "" {
-		t.Fatalf("request = %+v", request)
+	if len(request.Steps) != 2 || request.Steps[0] != testPreset().Steps[0] {
+		t.Fatalf("steps = %+v", request.Steps)
 	}
 	if !runner.ValidRunID(request.RunID) {
 		t.Fatalf("run ID = %q", request.RunID)
 	}
-	order := []string{"THE PLAYBOOK", "machinist/" + ticket.ID, `"outcome"`, "THE REQUEST"}
-	position := -1
-	for _, part := range order {
-		next := strings.Index(prompt(t, request), part)
-		if next <= position {
-			t.Fatalf("%q is out of order in:\n%s", part, prompt(t, request))
-		}
-		position = next
+	if !strings.Contains(prompt(t, request), "THE REQUEST") {
+		t.Fatalf("prompt = %q", prompt(t, request))
+	}
+}
+
+func TestAPresetTimeoutReplacesTheRunDeadline(t *testing.T) {
+	e := newEngine(t)
+	preset := testPreset()
+	preset.Timeout = 2 * time.Minute
+	e.Factory.Presets["default"] = preset
+	newTicket(t, e, "api")
+	if request := assignRun(t, e); request.TimeoutMillis != (2 * time.Minute).Milliseconds() {
+		t.Fatalf("timeout = %d", request.TimeoutMillis)
 	}
 }
 
@@ -121,7 +126,7 @@ func TestAssignReturnsNothingWithoutMatchingWork(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"codex"}); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"claude"}); err != nil || request != nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
 }
@@ -332,10 +337,10 @@ func TestFollowUpRunSeesEarlierReportAndAnswer(t *testing.T) {
 	}
 }
 
-func TestMissingAgentAsksForAPerson(t *testing.T) {
+func TestMissingPresetAsksForAPerson(t *testing.T) {
 	e := newEngine(t)
 	ticket := newTicket(t, e, "api")
-	delete(e.Factory.Agents, "default")
+	delete(e.Factory.Presets, "default")
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -347,14 +352,14 @@ func TestMissingAgentAsksForAPerson(t *testing.T) {
 	}
 }
 
-func TestAgentRemovedAfterQueueingAsksForAPerson(t *testing.T) {
+func TestPresetRemovedAfterQueueingAsksForAPerson(t *testing.T) {
 	e := newEngine(t)
 	ticket := newTicket(t, e, "api")
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	delete(e.Factory.Agents, "default")
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"claude"}); err != nil || request != nil {
+	delete(e.Factory.Presets, "default")
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}); err != nil || request != nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
 	if got := state(t, e, ticket.ID); got != tickets.StateNeedsYou {
@@ -393,46 +398,5 @@ func TestRunStopsAtContextEnd(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("engine did not stop")
-	}
-}
-
-func TestAssignSendsTheStagesOfAJob(t *testing.T) {
-	e := newEngine(t)
-	e.Factory.Agents["reviewer"] = factory.Agent{Name: "reviewer", Harness: "claude", Model: "opus", Playbook: "THE REVIEW"}
-	e.Factory.Jobs = map[string]factory.Job{"ship": {Name: "ship", Harness: "claude", Stages: []factory.Stage{
-		{Name: "build", Agent: "default"}, {Name: "test", Script: "go test ./..."}, {Name: "review", Agent: "reviewer"},
-	}}}
-	ticket, _, err := e.Store.CreateTicket(t.Context(), tickets.NewTicket{Source: "api", Repo: "owner/repo", Title: "Title", Body: "THE REQUEST", Agent: "ship", CreatedBy: "alice", SourceKey: "key:ship"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := assignRun(t, e)
-	if request.Harness != "claude" || len(request.Stages) != 3 {
-		t.Fatalf("request = %+v", request)
-	}
-	build, test, review := request.Stages[0], request.Stages[1], request.Stages[2]
-	if build.Name != "build" || build.Kind != runner.StageAgent || build.Model != "sonnet" || len(build.AgentFiles) != 1 || !strings.Contains(build.Prompt, "THE PLAYBOOK") {
-		t.Fatalf("build = %+v", build)
-	}
-	if test.Name != "test" || test.Kind != runner.StageScript || test.Script != "go test ./..." || test.Prompt != "" {
-		t.Fatalf("test = %+v", test)
-	}
-	if review.Kind != runner.StageAgent || review.Model != "opus" || !strings.Contains(review.Prompt, "THE REVIEW") || !strings.Contains(review.Prompt, "THE REQUEST") {
-		t.Fatalf("review = %+v", review)
-	}
-
-	tokens := int64(7)
-	completion := succeed("pr_ready", "Built", "")
-	completion.Stages = []protocol.StageResult{
-		{Name: "build", Kind: runner.StageAgent, State: "succeeded", Outcome: "pr_ready", Tokens: &tokens, DurationMillis: 1200},
-		{Name: "test", Kind: runner.StageScript, State: "succeeded"},
-		{Name: "review", Kind: runner.StageAgent, State: "succeeded", Outcome: "no_change"},
-	}
-	if err := e.Complete(t.Context(), request.RunID, completion); err != nil {
-		t.Fatal(err)
-	}
-	runs, err := e.Store.Runs(t.Context(), ticket.ID)
-	if err != nil || len(runs) != 1 || len(runs[0].Stages) != 3 || runs[0].Stages[2].Outcome != "no_change" || *runs[0].Stages[0].Tokens != 7 {
-		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
 }

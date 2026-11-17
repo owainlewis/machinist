@@ -29,7 +29,7 @@ func newSchedule(t *testing.T, expression string) *clockedSchedule {
 	if err != nil {
 		t.Fatal(err)
 	}
-	automation := factory.Automation{Name: "nightly", Repo: "owner/repo", Agent: "maintainer", Prompt: "THE PROMPT", Cron: cron}
+	automation := factory.Automation{Name: "nightly", Repo: "owner/repo", Preset: "maintainer", Prompt: "THE PROMPT", Cron: cron}
 	c := &clockedSchedule{schedule: NewSchedule(store, []factory.Automation{automation}, nil), store: store, now: time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)}
 	c.schedule.now = func() time.Time { return c.now }
 	store.SetClock(c.schedule.now)

@@ -25,7 +25,7 @@ func configuration() config.Kubernetes {
 }
 
 func fixtureRequest() runner.RunRequest {
-	return runner.RunRequest{RunID: fixtureRun, Repository: "owner/repo", Branch: "machinist/t_1", Harness: "claude", TimeoutMillis: time.Minute.Milliseconds()}
+	return runner.RunRequest{RunID: fixtureRun, Repository: "owner/repo", Branch: "machinist/t_1", TimeoutMillis: time.Minute.Milliseconds()}
 }
 
 func TestReceiveAcceptsOneBoundedJSONRequest(t *testing.T) {
@@ -82,21 +82,16 @@ func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
 func TestSandboxRequiresGHToken(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
-	result := runRequest(t.Context(), fixtureRequest(), t.TempDir(), t.TempDir(), t.TempDir(), githubCloneURL)
+	result := runRequest(t.Context(), fixtureRequest(), t.TempDir(), t.TempDir(), t.TempDir())
 	if result.State != runner.StateFailed || !strings.Contains(result.Error, "GH_TOKEN") {
 		t.Fatalf("result = %+v", result)
 	}
 }
 
-func TestAgentEnvironmentKeepsOnlyWhatThisHarnessNeeds(t *testing.T) {
-	environ := []string{"PATH=/bin", "HOME=/x", "GH_TOKEN=g", "OPENAI_API_KEY=o", "ANTHROPIC_API_KEY=a", "AWS_REGION=r", "KUBERNETES_SERVICE_HOST=10.0.0.1", "GIT_DIR=/other"}
-	claude := strings.Join(agentEnvironment(environ, runner.HarnessClaude), " ")
-	if claude != "PATH=/bin ANTHROPIC_API_KEY=a AWS_REGION=r" {
-		t.Fatalf("claude = %s", claude)
-	}
-	codex := strings.Join(agentEnvironment(environ, runner.HarnessCodex), " ")
-	if codex != "PATH=/bin AWS_REGION=r" {
-		t.Fatalf("codex = %s", codex)
+func TestStepEnvironmentDropsHomeTokensAndClusterDetails(t *testing.T) {
+	environ := []string{"PATH=/bin", "HOME=/x", "GH_TOKEN=g", "GITHUB_TOKEN=g", "ANTHROPIC_API_KEY=a", "AWS_REGION=r", "KUBERNETES_SERVICE_HOST=10.0.0.1", "GIT_DIR=/other"}
+	if got := strings.Join(stepEnvironment(environ), " "); got != "PATH=/bin ANTHROPIC_API_KEY=a AWS_REGION=r" {
+		t.Fatalf("environment = %s", got)
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultListen        = "127.0.0.1:7331"
-	defaultAgent         = "default"
+	defaultPreset        = "default"
 	defaultMaxTurns      = 5
 	defaultRunTimeout    = 60 * time.Minute
 	maxConfigBytes       = 1 << 20
@@ -27,7 +27,7 @@ type Server struct {
 	Listen               string `toml:"listen"`
 	Database             string `toml:"database"`
 	Factory              string `toml:"factory"`
-	DefaultAgent         string `toml:"default_agent"`
+	DefaultPreset        string `toml:"default_preset"`
 	MaxTurnsWithoutHuman int    `toml:"max_turns_without_human"`
 	RunTimeout           string `toml:"run_timeout"`
 	TLSCert              string `toml:"tls_cert"`
@@ -121,8 +121,8 @@ func applyServerDefaults(server Server) (Server, error) {
 	if server.Listen == "" {
 		server.Listen = defaultListen
 	}
-	if server.DefaultAgent == "" {
-		server.DefaultAgent = defaultAgent
+	if server.DefaultPreset == "" {
+		server.DefaultPreset = defaultPreset
 	}
 	if server.MaxTurnsWithoutHuman == 0 {
 		server.MaxTurnsWithoutHuman = defaultMaxTurns

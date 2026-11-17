@@ -2,164 +2,166 @@ package runner
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/owainlewis/machinist/internal/protocol"
 )
 
-func workspaceGit(t *testing.T, directory string, args ...string) string {
-	t.Helper()
-	command := exec.Command("git", args...)
-	command.Dir = directory
-	command.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.test", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.test")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, output)
+const testRunID = "run_0123456789abcdef01234567"
+
+func stepsRequest(steps ...Step) RunRequest {
+	return RunRequest{
+		RunID:         testRunID,
+		TicketID:      "t_1",
+		Preset:        "coding",
+		Repository:    "owner/repo",
+		Branch:        "machinist/t_1",
+		Vars:          map[string]string{"repo": "owner/repo"},
+		Prompt:        "THE PROMPT",
+		Steps:         steps,
+		TimeoutMillis: time.Minute.Milliseconds(),
+		GitName:       "machinist-bot",
+		GitEmail:      "machinist-bot@users.noreply.github.com",
 	}
-	return strings.TrimSpace(string(output))
 }
 
-func newRemote(t *testing.T) string {
-	t.Helper()
-	root := t.TempDir()
-	remote := filepath.Join(root, "origin.git")
-	workspaceGit(t, root, "init", "--quiet", "--bare", "--initial-branch=main", remote)
-	seed := filepath.Join(root, "seed")
-	workspaceGit(t, root, "init", "--quiet", "--initial-branch=main", seed)
-	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("fixture\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	workspaceGit(t, seed, "add", ".")
-	workspaceGit(t, seed, "commit", "--quiet", "-m", "init")
-	workspaceGit(t, seed, "push", "--quiet", remote, "main")
-	return remote
-}
-
-func workspaceOptions(t *testing.T, remote, harness string) WorkspaceOptions {
+func prepare(t *testing.T, request RunRequest) Workspace {
 	t.Helper()
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	return WorkspaceOptions{
-		Request:     RunRequest{Repository: "owner/repo", Branch: "machinist/t_0123456789abcdef", Harness: harness, GitName: "machinist-bot", GitEmail: "machinist-bot@users.noreply.github.com"},
-		Root:        root,
-		CloneURL:    remote,
-		GitHubToken: "fixture-token",
-		Environment: []string{"PATH=" + os.Getenv("PATH")},
-		Home:        home,
-		CodexHome:   filepath.Join(home, ".codex"),
-	}
-}
-
-func TestPrepareWorkspaceStartsNewBranchWithIdentityAndHiddenAgents(t *testing.T) {
-	options := workspaceOptions(t, newRemote(t), HarnessClaude)
-	options.Request.AgentFiles = []AgentFile{{Path: ".claude/agents/machinist-review.md", Body: "review"}, {Path: ".codex/agents/machinist-review.toml", Body: "name = \"x\""}}
-	workspace, err := PrepareWorkspace(t.Context(), options)
+	workspace, err := PrepareWorkspace(WorkspaceOptions{Request: request, Root: root, GitHubToken: "token", Environment: []string{"PATH=" + os.Getenv("PATH")}, Home: filepath.Join(root, "home")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository := workspace.Repository
-	if branch := workspaceGit(t, repository, "branch", "--show-current"); branch != options.Request.Branch {
-		t.Fatalf("branch = %q", branch)
+	return workspace
+}
+
+func run(t *testing.T, request RunRequest) (RunResult, Workspace) {
+	t.Helper()
+	workspace := prepare(t, request)
+	return RunSteps(t.Context(), request, workspace, t.TempDir()), workspace
+}
+
+func TestPrepareWorkspaceIsEmptyAndThePromptIsBesideIt(t *testing.T) {
+	workspace := prepare(t, stepsRequest())
+	entries, err := os.ReadDir(workspace.Directory)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("entries = %v, err = %v", entries, err)
 	}
-	if name := workspaceGit(t, repository, "config", "user.name"); name != "machinist-bot" {
-		t.Fatalf("name = %q", name)
-	}
-	if body, err := os.ReadFile(filepath.Join(repository, ".claude", "agents", "machinist-review.md")); err != nil || string(body) != "review" {
-		t.Fatalf("agent file = %q, %v", body, err)
-	}
-	if status := workspaceGit(t, repository, "status", "--porcelain"); status != "" {
-		t.Fatalf("agent files are visible to Git: %q", status)
-	}
-	joined := strings.Join(workspace.Environment, "\n")
-	for _, want := range []string{"HOME=" + options.Home, "CODEX_HOME=" + options.CodexHome, "GH_TOKEN=fixture-token", "GIT_CONFIG_GLOBAL=/dev/null"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("missing %s in %s", want, joined)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(options.CodexHome, "config.toml")); !os.IsNotExist(err) {
-		t.Fatalf("Claude run wrote Codex configuration: %v", err)
+	prompt, err := os.ReadFile(filepath.Join(workspace.Control, "prompt.md"))
+	if err != nil || string(prompt) != "THE PROMPT" {
+		t.Fatalf("prompt = %q, err = %v", prompt, err)
 	}
 }
 
-func TestPrepareWorkspaceResumesPushedBranch(t *testing.T) {
-	remote := newRemote(t)
-	options := workspaceOptions(t, remote, HarnessClaude)
-	seed := t.TempDir()
-	workspaceGit(t, seed, "clone", "--quiet", remote, "work")
-	work := filepath.Join(seed, "work")
-	workspaceGit(t, work, "checkout", "--quiet", "-b", options.Request.Branch)
-	workspaceGit(t, work, "commit", "--quiet", "--allow-empty", "-m", "earlier work")
-	workspaceGit(t, work, "push", "--quiet", "origin", options.Request.Branch)
-
-	workspace, err := PrepareWorkspace(t.Context(), options)
-	if err != nil {
-		t.Fatal(err)
+func TestStepsShareTheWorkspaceAndSeeTheJob(t *testing.T) {
+	result, workspace := run(t, stepsRequest(
+		Step{Name: "plan", Run: `printf '%s|%s|%s|%s|%s' "$MACHINIST_JOB_ID" "$MACHINIST_PRESET" "$MACHINIST_REPO" "$MACHINIST_BRANCH" "$GIT_AUTHOR_NAME" > PLAN.md`},
+		Step{Name: "build", Run: `cat PLAN.md > out; printf '|' >> out; cat >> out`},
+	))
+	if result.State != StateSucceeded || result.Report == nil || result.Report.Outcome != protocol.OutcomeNoChange || result.Report.Summary != defaultSummary {
+		t.Fatalf("result = %+v", result)
 	}
-	if subject := workspaceGit(t, workspace.Repository, "log", "-1", "--format=%s"); subject != "earlier work" {
-		t.Fatalf("head = %q", subject)
+	out, err := os.ReadFile(filepath.Join(workspace.Directory, "out"))
+	if err != nil || string(out) != "t_1|coding|owner/repo|machinist/t_1|machinist-bot|THE PROMPT" {
+		t.Fatalf("out = %q, err = %v", out, err)
+	}
+	if len(result.Stages) != 2 || result.Stages[0].State != string(StateSucceeded) || result.Stages[1].Kind != "step" {
+		t.Fatalf("stages = %+v", result.Stages)
 	}
 }
 
-func TestPrepareWorkspaceRejectsUnsafeAgentFiles(t *testing.T) {
-	for _, path := range []string{"../escape.md", ".claude/agents/../../escape.md", "src/main.go", "/etc/passwd", ".claude/settings.json"} {
-		options := workspaceOptions(t, newRemote(t), HarnessClaude)
-		options.Request.AgentFiles = []AgentFile{{Path: path, Body: "x"}}
-		if _, err := PrepareWorkspace(t.Context(), options); err == nil || !strings.Contains(err.Error(), "invalid agent file") {
-			t.Fatalf("%s: error = %v", path, err)
-		}
+func TestResultFileIsTheSummary(t *testing.T) {
+	result, _ := run(t, stepsRequest(Step{Name: "ship", Run: `printf 'Opened https://example.test/pull/1\n' > "$MACHINIST_DIR/result.md"`}))
+	if result.Report == nil || result.Report.Summary != "Opened https://example.test/pull/1" {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
-func TestPrepareWorkspaceTrustsCloneAndLogsInToCodex(t *testing.T) {
-	bin := t.TempDir()
-	received := filepath.Join(bin, "received")
-	script := "#!/bin/sh\ntest \"$1 $2\" = 'login --with-api-key' || exit 9\ncat > " + received + "\necho \"$CODEX_HOME\" >> " + received + "\n"
-	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+func TestFailingStepStopsTheRun(t *testing.T) {
+	result, workspace := run(t, stepsRequest(
+		Step{Name: "test", Run: "exit 3"},
+		Step{Name: "ship", Run: "touch shipped"},
+	))
+	if result.State != StateFailed || result.Report != nil || !strings.Contains(result.Error, "step test: command exited with status 3") {
+		t.Fatalf("result = %+v", result)
 	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	options := workspaceOptions(t, newRemote(t), HarnessCodex)
-	options.CodexAPIKey = "sk-fixture"
-	options.Environment = []string{"PATH=" + os.Getenv("PATH")}
-	workspace, err := PrepareWorkspace(t.Context(), options)
-	if err != nil {
-		t.Fatal(err)
+	if result.Stages[1].State != protocol.StageSkipped {
+		t.Fatalf("stages = %+v", result.Stages)
 	}
-	body, err := os.ReadFile(filepath.Join(options.CodexHome, "config.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`cli_auth_credentials_store = "file"`, `[projects."` + workspace.Repository + `"]`, `trust_level = "trusted"`} {
-		if !strings.Contains(string(body), want) {
-			t.Fatalf("missing %s in %s", want, body)
-		}
-	}
-	login, err := os.ReadFile(received)
-	if err != nil || string(login) != "sk-fixture"+options.CodexHome+"\n" {
-		t.Fatalf("login input = %q, %v", login, err)
-	}
-	if strings.Contains(strings.Join(workspace.Environment, "\n"), "sk-fixture") {
-		t.Fatal("key entered the agent environment")
+	if _, err := os.Stat(filepath.Join(workspace.Directory, "shipped")); !os.IsNotExist(err) {
+		t.Fatal("a step after the failure ran")
 	}
 }
 
-func TestPrepareWorkspaceLoginAppendsToExistingCodexConfig(t *testing.T) {
-	options := workspaceOptions(t, newRemote(t), HarnessCodex)
-	options.Login = true
-	if err := os.MkdirAll(options.CodexHome, 0o700); err != nil {
+func TestAFailingCommandFailsItsStep(t *testing.T) {
+	result, workspace := run(t, stepsRequest(Step{Name: "test", Run: "false\ntouch after"}))
+	if result.State != StateFailed || !strings.Contains(result.Error, "step test: command exited with status 1") {
+		t.Fatalf("result = %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Directory, "after")); !os.IsNotExist(err) {
+		t.Fatal("the step went on after a failing command")
+	}
+}
+
+func TestAStepMayIgnoreThePrompt(t *testing.T) {
+	request := stepsRequest(Step{Name: "skip", Run: "true"}, Step{Name: "again", Run: "true"})
+	request.Prompt = strings.Repeat("a long prompt ", 1<<16)
+	if result, _ := run(t, request); result.State != StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestQuestionEndsTheRunAsNeedsInput(t *testing.T) {
+	result, _ := run(t, stepsRequest(
+		Step{Name: "plan", Run: `printf 'Which database?\n' > "$MACHINIST_DIR/question.md"`},
+		Step{Name: "build", Run: "exit 1"},
+	))
+	if result.State != StateSucceeded || result.Report == nil || result.Report.Outcome != protocol.OutcomeNeedsInput || result.Report.Question != "Which database?" {
+		t.Fatalf("result = %+v", result)
+	}
+	if err := result.Report.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(options.CodexHome, "config.toml")
-	if err := os.WriteFile(path, []byte("model = \"mine\"\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if result.Stages[1].State != protocol.StageSkipped {
+		t.Fatalf("stages = %+v", result.Stages)
 	}
-	workspace, err := PrepareWorkspace(t.Context(), options)
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestStepTimeoutAndRunTimeout(t *testing.T) {
+	step := Step{Name: "slow", Run: "sleep 30", TimeoutMillis: 200}
+	result, _ := run(t, stepsRequest(step))
+	if result.State != StateTimedOut || result.Stages[0].State != string(StateTimedOut) {
+		t.Fatalf("result = %+v", result)
 	}
-	body, _ := os.ReadFile(path)
-	if !strings.HasPrefix(string(body), "model = \"mine\"\n") || !strings.Contains(string(body), workspace.Repository) || strings.Contains(string(body), "cli_auth_credentials_store") {
-		t.Fatalf("config = %s", body)
+	request := stepsRequest(Step{Name: "slow", Run: "sleep 30"})
+	request.TimeoutMillis = 200
+	if result, _ := run(t, request); result.State != StateTimedOut {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestControlFilesMustBeSmallRegularFiles(t *testing.T) {
+	result, _ := run(t, stepsRequest(Step{Name: "link", Run: `ln -s /etc/passwd "$MACHINIST_DIR/result.md"`}))
+	if result.State != StateFailed || !strings.Contains(result.Error, "not a regular file") {
+		t.Fatalf("result = %+v", result)
+	}
+	result, _ = run(t, stepsRequest(Step{Name: "big", Run: `head -c 70000 /dev/zero | tr '\0' x > "$MACHINIST_DIR/question.md"`}))
+	if result.State != StateFailed || !strings.Contains(result.Error, "larger than") {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestRunStepsRejectsNoStepsAndBadVars(t *testing.T) {
+	if result, _ := run(t, stepsRequest()); result.State != StateFailed || result.Error != "the preset has no steps" {
+		t.Fatalf("result = %+v", result)
+	}
+	request := stepsRequest(Step{Name: "x", Run: "true"})
+	request.Vars = map[string]string{"PATH": "/evil"}
+	root := t.TempDir()
+	if _, err := PrepareWorkspace(WorkspaceOptions{Request: request, Root: root, GitHubToken: "token", Home: filepath.Join(root, "home")}); err == nil {
+		t.Fatal("bad var name accepted")
 	}
 }

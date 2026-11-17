@@ -19,7 +19,7 @@ func newIntake(t *testing.T) (*Intake, *fakegh.GitHub) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	return &Intake{Client: ghclient.New(), Store: store, DefaultAgent: "default", Repositories: []string{"owner/repo"}}, github
+	return &Intake{Client: ghclient.New(), Store: store, DefaultPreset: "default", Repositories: []string{"owner/repo"}}, github
 }
 
 func TestAssignFromTextHasNoIssue(t *testing.T) {

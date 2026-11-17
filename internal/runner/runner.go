@@ -11,21 +11,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
-
-	"github.com/owainlewis/machinist/internal/config"
-	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 const (
-	outputChunkBytes       = 32 << 10
-	outputDrainGrace       = time.Second
-	tokenUsageFileName     = "token_usage"
-	tokenUsageEnvironment  = "MACHINIST_TOKEN_USAGE_PATH"
-	maxTokenUsageFileBytes = 64
+	outputChunkBytes = 32 << 10
+	outputDrainGrace = time.Second
 )
 
 type State string
@@ -37,40 +31,40 @@ const (
 	StateTimedOut  State = "timed_out"
 )
 
+// Command is one process to start: a step's shell command, or a test's program.
+type Command struct {
+	Name    string
+	Args    []string
+	Timeout time.Duration
+}
+
 type Options struct {
-	Environment   []string
+	Environment []string
+	// Prompt is written to the process's stdin.
 	Prompt        string
-	JobID         string
 	RunID         string
-	Command       config.ResolvedCommand
-	Repository    string
+	Command       Command
+	Directory     string
 	DataDirectory string
 	Stdout        io.Writer
 	Stderr        io.Writer
 
-	// log is the open event log of a run with stages. Execute appends to it
-	// and leaves it open, so every stage writes to one file.
+	// log is the open event log of a run with steps. Execute appends to it
+	// and leaves it open, so every step writes to one file.
 	log *eventLog
 }
 
 type Result struct {
-	ProcessStopped   bool             `json:"process_stopped"`
-	Report           *protocol.Report `json:"report,omitempty"`
-	Cost             *float64         `json:"cost,omitempty"`
-	CredentialSource string           `json:"credential_source,omitempty"`
-	ID               string           `json:"id"`
-	Command          string           `json:"command"`
-	CommandHash      string           `json:"command_hash"`
-	Definition       string           `json:"definition"`
-	Repository       string           `json:"repository"`
-	State            State            `json:"state"`
-	ExitCode         int              `json:"exit_code"`
-	StartedAt        time.Time        `json:"started_at"`
-	CompletedAt      time.Time        `json:"completed_at"`
-	DurationMillis   int64            `json:"duration_millis"`
-	TokenUsage       *int64           `json:"token_usage,omitempty"`
-	FinalMessage     string           `json:"final_message,omitempty"`
-	EventsPath       string           `json:"events_path"`
+	ProcessStopped bool      `json:"process_stopped"`
+	ID             string    `json:"id"`
+	Command        string    `json:"command"`
+	Directory      string    `json:"directory"`
+	State          State     `json:"state"`
+	ExitCode       int       `json:"exit_code"`
+	StartedAt      time.Time `json:"started_at"`
+	CompletedAt    time.Time `json:"completed_at"`
+	DurationMillis int64     `json:"duration_millis"`
+	EventsPath     string    `json:"events_path"`
 
 	CleanupUnconfirmed bool `json:"cleanup_unconfirmed,omitempty"`
 }
@@ -104,14 +98,16 @@ type processWait struct {
 	err   error
 }
 
+// Execute starts one process in a directory, sends it the prompt on stdin,
+// records its output and stops its whole process tree on timeout or cancel.
 func Execute(ctx context.Context, options Options) (result Result, returnErr error) {
 	if options.Stdout == nil || options.Stderr == nil {
 		return Result{}, errors.New("stdout and stderr are required")
 	}
-	if err := CheckRestrictedClaude(ctx, options.Command.Command); err != nil {
-		return Result{}, err
+	if len(options.Command.Args) == 0 {
+		return Result{}, errors.New("command is required")
 	}
-	repository, err := ResolveRepository(options.Repository)
+	directory, err := resolveDirectory(options.Directory)
 	if err != nil {
 		return Result{}, err
 	}
@@ -142,53 +138,23 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		}()
 	}
 
-	startedAt := time.Now().UTC()
 	result = Result{
 		ProcessStopped: true,
 		ID:             runID,
 		Command:        options.Command.Name,
-		CommandHash:    options.Command.Hash,
-		Definition:     options.Command.Definition,
-		Repository:     repository,
+		Directory:      directory,
 		State:          StateFailed,
 		ExitCode:       1,
-		StartedAt:      startedAt,
+		StartedAt:      time.Now().UTC(),
 		EventsPath:     eventsPath,
 	}
-	if err := log.append("run.started", "", fmt.Sprintf("command=%s repository=%s", options.Command.Name, repository)); err != nil {
+	if err := log.append("run.started", "", fmt.Sprintf("command=%s", options.Command.Name)); err != nil {
 		return result, &RuntimeError{Cause: err}
 	}
-	executorCommand := structuredCommand(options.Command.Executor, options.Command.Command)
-	native := options.Command.Adapter == "claude-stream" || options.Command.Adapter == "codex-app-server"
-	if native {
-		executorCommand, err = nativeCommand(options.Command)
-		if err != nil {
-			return completeFailure(&result, log, runDirectory, err)
-		}
-		if options.Command.Adapter == "codex-app-server" {
-			canonical, canonicalErr := filepath.EvalSymlinks(repository)
-			if canonicalErr != nil {
-				return completeFailure(&result, log, runDirectory, canonicalErr)
-			}
-			repository = canonical
 
-		}
-	}
-	_, claudeAgent := claudeCommandInfo(options.Command.Executor, executorCommand)
-	agentExecutor := native || codexExecIndex(options.Command.Executor, executorCommand) >= 1 || claudeAgent
-	tokenUsagePath := filepath.Join(runDirectory, tokenUsageFileName)
-	if err := os.Remove(tokenUsagePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return completeFailure(&result, log, runDirectory, fmt.Errorf("reset executor token usage report: %w", err))
-	}
-
-	command := exec.Command(executorCommand[0], executorCommand[1:]...)
-	command.Dir = repository
-	command.Env = append(append([]string(nil), options.Environment...), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
-	if native {
-		if err := nativeProvenance(runDirectory, repository, options.Command, options.Prompt); err != nil {
-			return completeFailure(&result, log, runDirectory, err)
-		}
-	}
+	command := exec.Command(options.Command.Args[0], options.Command.Args[1:]...)
+	command.Dir = directory
+	command.Env = append(append([]string(nil), options.Environment...), "MACHINIST_RUN_ID="+runID)
 	processOwner, err := randomID("owner", 16)
 	if err != nil {
 		return completeFailure(&result, log, runDirectory, err)
@@ -220,7 +186,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 
 	if err := command.Start(); err != nil {
 		closeFiles(stdinReader, stdinWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter)
-		return completeFailure(&result, log, runDirectory, fmt.Errorf("start command %q: %w", executorCommand[0], err))
+		return completeFailure(&result, log, runDirectory, fmt.Errorf("start command %q: %w", options.Command.Args[0], err))
 	}
 	result.ProcessStopped = false
 	closeFiles(stdinReader, stdoutWriter, stderrWriter)
@@ -233,30 +199,12 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	}
 
 	inputResult := make(chan error, 1)
-	var nativeOutput *nativeStream
-	if native {
-		nativeOutput = &nativeStream{adapter: options.Command.Adapter, log: log, stdin: stdinWriter, model: options.Command.Model, cwd: repository, prompt: options.Prompt}
-	}
-	if options.Command.Adapter == "codex-app-server" {
-		go func() { inputResult <- nativeOutput.start() }()
-	} else {
-		go writePrompt(stdinWriter, options.Prompt, inputResult)
-	}
+	go writePrompt(stdinWriter, options.Prompt, inputResult)
 	streamErrors := make(chan error, 2)
 	var streams sync.WaitGroup
 	streams.Add(2)
-	usageCollector := newUsageCollector(options.Command.Executor, executorCommand)
-	diagnostics := &startupDiagnostics{}
-	stdoutDestination := options.Stdout
-	if usageCollector != nil {
-		usageCollector.diagnostics = diagnostics
-		stdoutDestination = io.MultiWriter(options.Stdout, usageCollector)
-	}
-	if nativeOutput != nil {
-		stdoutDestination = io.MultiWriter(stdoutDestination, nativeOutput)
-	}
-	go pumpStream(&streams, stdoutReader, stdoutDestination, "stdout", log, streamErrors)
-	go pumpStream(&streams, stderrReader, io.MultiWriter(options.Stderr, diagnostics), "stderr", log, streamErrors)
+	go pumpStream(&streams, stdoutReader, options.Stdout, "stdout", log, streamErrors)
+	go pumpStream(&streams, stderrReader, options.Stderr, "stderr", log, streamErrors)
 	streamsDone := make(chan struct{})
 	go func() {
 		streams.Wait()
@@ -270,52 +218,11 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 
 	closeInput := func() { _ = stdinWriter.Close() }
 	closeStreams := func() { closeFiles(stdoutReader, stderrReader) }
-	state, exitCode, outcome := supervise(ctx, command.Process, processOwner, options.Command.Timeout, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr, nativeOutput)
+	state, exitCode, outcome := supervise(ctx, command.Process, processOwner, options.Command.Timeout, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr)
 	var cleanupFailure *processCleanupError
 	result.CleanupUnconfirmed = errors.As(outcome, &cleanupFailure)
 	result.ProcessStopped = !result.CleanupUnconfirmed
-	if nativeOutput != nil {
-		if err := nativeOutput.finish(state != StateSucceeded); err != nil && state == StateSucceeded {
-			state, exitCode, outcome = StateFailed, 1, err
-		}
-		if state == StateSucceeded && !nativeOutput.completed {
-			state, exitCode, outcome = StateFailed, 1, errors.New("native harness exited before primary completion")
-		}
-	}
-	if usageCollector != nil {
-		usageCollector.flush()
-	}
-	if state == StateFailed && outcome != nil && agentExecutor {
-		if hint := diagnostics.message(); hint != "" {
-			outcome = fmt.Errorf("%s (%w)", hint, outcome)
-		}
-	}
-	if nativeOutput != nil {
-		result.Cost = nativeOutput.cost
-		result.CredentialSource = nativeOutput.credentialSource
-		if state == StateSucceeded {
-			report, err := parseNativeResult(nativeOutput.lastMessage())
-			if err != nil {
-				state, exitCode, outcome = StateFailed, 1, err
-			} else {
-				result.Report = report
-			}
-		}
-	}
-	var collectedTokenUsage *int64
-	collectedTokenUsageIsAuthoritative := usageCollector != nil
-	if usageCollector != nil {
-		collectedTokenUsage = usageCollector.tokenUsage()
-		result.FinalMessage = usageCollector.lastMessage()
-	}
-	if nativeOutput != nil {
-		result.FinalMessage = nativeOutput.lastMessage()
-		if options.Command.Adapter == "codex-app-server" {
-			collectedTokenUsage = nativeOutput.usage
-			collectedTokenUsageIsAuthoritative = true
-		}
-	}
-	if err := finish(&result, log, runDirectory, state, exitCode, outcome, collectedTokenUsage, collectedTokenUsageIsAuthoritative); err != nil {
+	if err := finish(&result, log, runDirectory, state, exitCode, outcome); err != nil {
 		if outcome != nil {
 			return result, &OutcomeError{State: state, ExitCode: exitCode, Cause: errors.Join(outcome, err)}
 		}
@@ -338,11 +245,6 @@ func supervise(ctx context.Context, process *os.Process, processOwner string, ti
 	// process result so callers can decide how to report the failure.
 	abort := func() processWait {
 		setOutputDeadline(time.Now(), outputWriters...)
-		for _, writer := range outputWriters {
-			if stop, ok := writer.(interface{ BeforeProcessStop() }); ok {
-				stop.BeforeProcessStop()
-			}
-		}
 		cleanupErr := terminateProcessTree(process, processOwner)
 		closeInput()
 		closeStreams()
@@ -450,32 +352,22 @@ func operationFailure(waited processWait, failure error) (State, int, error) {
 	return StateFailed, 1, failure
 }
 
-func ResolveRepository(value string) (string, error) {
+func resolveDirectory(value string) (string, error) {
 	if strings.TrimSpace(value) == "" {
 		value = "."
 	}
 	absPath, err := filepath.Abs(value)
 	if err != nil {
-		return "", fmt.Errorf("resolve repository path: %w", err)
+		return "", fmt.Errorf("resolve directory: %w", err)
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return "", fmt.Errorf("inspect repository path %q: %w", absPath, err)
+		return "", fmt.Errorf("inspect directory %q: %w", absPath, err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("repository path %q is not a directory", absPath)
+		return "", fmt.Errorf("%q is not a directory", absPath)
 	}
-	command := exec.Command("git", "-C", absPath, "rev-parse", "--show-toplevel")
-	command.Env = SanitizedEnvironment(os.Environ())
-	output, err := command.Output()
-	if err != nil {
-		return "", fmt.Errorf("repository path %q is not inside a Git worktree", absPath)
-	}
-	root := strings.TrimSpace(string(output))
-	if root == "" {
-		return "", fmt.Errorf("Git returned an empty repository root for %q", absPath)
-	}
-	return filepath.Clean(root), nil
+	return filepath.EvalSymlinks(absPath)
 }
 
 func pumpStream(group *sync.WaitGroup, source *os.File, destination io.Writer, stream string, log *eventLog, errorsChannel chan<- error) {
@@ -509,13 +401,15 @@ func pumpStream(group *sync.WaitGroup, source *os.File, destination io.Writer, s
 	}
 }
 
+// writePrompt writes the prompt to the command's stdin. A step need not read
+// it, since the prompt is also in a file, so a closed pipe is not an error.
 func writePrompt(destination io.WriteCloser, prompt string, result chan<- error) {
-	written, writeErr := io.WriteString(destination, prompt)
-	if writeErr == nil && written != len(prompt) {
-		writeErr = io.ErrShortWrite
+	_, writeErr := io.WriteString(destination, prompt)
+	if errors.Is(writeErr, syscall.EPIPE) || errors.Is(writeErr, os.ErrClosed) {
+		writeErr = nil
 	}
 	closeErr := destination.Close()
-	if written == len(prompt) && errors.Is(closeErr, os.ErrClosed) {
+	if errors.Is(closeErr, os.ErrClosed) {
 		closeErr = nil
 	}
 	result <- errors.Join(writeErr, closeErr)
@@ -537,13 +431,13 @@ func completeFailure(result *Result, log *eventLog, runDirectory string, outcome
 }
 
 func completeOutcome(result *Result, log *eventLog, runDirectory string, state State, exitCode int, outcome error) (Result, error) {
-	if err := finish(result, log, runDirectory, state, exitCode, outcome, nil, false); err != nil {
+	if err := finish(result, log, runDirectory, state, exitCode, outcome); err != nil {
 		outcome = errors.Join(outcome, err)
 	}
 	return *result, &OutcomeError{State: state, ExitCode: exitCode, Cause: outcome}
 }
 
-func finish(result *Result, log *eventLog, runDirectory string, state State, exitCode int, outcome error, collectedTokenUsage *int64, collectedTokenUsageIsAuthoritative bool) error {
+func finish(result *Result, log *eventLog, runDirectory string, state State, exitCode int, outcome error) error {
 	message := ""
 	if outcome != nil {
 		message = outcome.Error()
@@ -559,32 +453,10 @@ func finish(result *Result, log *eventLog, runDirectory string, state State, exi
 	result.ExitCode = exitCode
 	result.CompletedAt = completedAt
 	result.DurationMillis = completedAt.Sub(result.StartedAt).Milliseconds()
-	if collectedTokenUsageIsAuthoritative {
-		result.TokenUsage = collectedTokenUsage
-	} else {
-		result.TokenUsage = readTokenUsage(filepath.Join(runDirectory, tokenUsageFileName))
-	}
 	if err := writeResult(filepath.Join(runDirectory, "result.json"), *result); err != nil {
 		return err
 	}
 	return nil
-}
-
-func readTokenUsage(path string) *int64 {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, maxTokenUsageFileBytes+1))
-	if err != nil || len(body) > maxTokenUsageFileBytes {
-		return nil
-	}
-	value, err := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
-	if err != nil || value < 0 {
-		return nil
-	}
-	return &value
 }
 
 func writeResult(path string, result Result) error {

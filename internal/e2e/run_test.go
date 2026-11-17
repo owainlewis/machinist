@@ -1,12 +1,15 @@
-// Package e2e proves the whole run path with fake harnesses and a local Git remote.
+// Package e2e proves the whole run path with fake claude and gh commands and a local Git remote.
 package e2e
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,11 +18,13 @@ import (
 	"testing"
 	"time"
 
+	machinistexamples "github.com/owainlewis/machinist/examples"
 	"github.com/owainlewis/machinist/internal/agentrunner"
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/controlplane"
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/fakegh"
+	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -57,6 +62,7 @@ func (b *lockedBuffer) String() string {
 
 // options changes what start builds.
 type options struct {
+	// claude is the fake claude command that the shipped presets run.
 	claude   func(output string) string
 	maxTurns int
 	// factory, when set, adds files to the factory before it is loaded.
@@ -97,64 +103,61 @@ func newRemote(t *testing.T) string {
 	return remote
 }
 
-// claudeScript commits and pushes, then reports needs_input until it sees the answer.
+// claudeScript asks which database to use, then commits once it has the answer.
 func claudeScript(output string) string {
 	return `#!/bin/sh
 env > ` + output + `/env
 cat > ` + output + `/prompt
-ls .claude/agents > ` + output + `/agents
 git status --porcelain > ` + output + `/status
-git log --format=%s > ` + output + `/log-before
 if grep -q 'Use Postgres' ` + output + `/prompt; then
-  git commit --quiet --allow-empty -m 'second run'
-  report='{"outcome":"no_change","summary":"Finished with Postgres"}'
+  git commit --quiet --allow-empty -m 'use postgres'
 else
-  git commit --quiet --allow-empty -m 'first run'
-  report='{"outcome":"needs_input","summary":"Stuck","question":"Which database?"}'
+  echo 'Which database?' > "$MACHINIST_DIR/question.md"
 fi
-git push --quiet origin HEAD
-printf '%s\n' '{"type":"system","subtype":"init","apiKeySource":"ANTHROPIC_API_KEY"}'
-printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Working"}]}}'
-printf '%s\n' "{\"type\":\"result\",\"is_error\":false,\"result\":\"done\",\"total_cost_usd\":0.5,\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":5},\"structured_output\":$report}"
 `
 }
 
-func codexScript(output string) string {
-	return `#!/bin/sh
-if [ "$1" = login ]; then
-  cat > ` + output + `/codex-key
-  exit 0
-fi
-env > ` + output + `/env
-cp "$CODEX_HOME/config.toml" ` + output + `/codex-config
-while IFS= read -r line; do
-case "$line" in
-*'"id":1,'*) echo '{"id":1,"result":{}}';;
-*'"id":2,'*) echo '{"id":2,"result":{"account":{"type":"apiKey"}}}';;
-*'"id":3,'*) echo '{"id":3,"result":{"data":[{"id":"fixture","model":"fixture","isDefault":true}]}}';;
-*'"id":4,'*) pwd > ` + output + `/pwd; echo '{"id":4,"result":{"thread":{"id":"primary"}}}';;
-*'"id":5,'*) git commit --quiet --allow-empty -m 'codex run'; git push --quiet origin HEAD
-  echo '{"method":"item/completed","params":{"threadId":"primary","item":{"type":"agentMessage","text":"{\"outcome\":\"no_change\",\"summary\":\"Codex finished\"}"}}}'
-  echo '{"method":"turn/completed","params":{"threadId":"primary","turn":{"status":"completed"}}}';;
-esac
-done
-`
-}
-
-// start runs a real control plane and a real local runner against fake harnesses.
-func start(t *testing.T, harness string) *system {
+// shippedFactory copies the presets that ship in examples/factory.
+func shippedFactory(t *testing.T, directory string) {
 	t.Helper()
-	return startWith(t, harness, options{claude: claudeScript, maxTurns: 5})
+	files, err := fs.Sub(machinistexamples.Files, "factory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fs.WalkDir(files, "presets", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		body, err := fs.ReadFile(files, name)
+		if err != nil {
+			return err
+		}
+		writeFile(t, filepath.Join(directory, filepath.FromSlash(name)), string(body), 0o600)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
-func startWith(t *testing.T, harness string, chosen options) *system {
+// start runs a real control plane and a real local runner. The shipped default
+// preset runs against a fake claude, a fake gh and a local Git remote.
+func start(t *testing.T) *system {
+	t.Helper()
+	return startWith(t, options{claude: claudeScript, maxTurns: 5})
+}
+
+func startWith(t *testing.T, chosen options) *system {
 	t.Helper()
 	root := t.TempDir()
 	output := t.TempDir()
 	github := fakegh.Install(t, "machinist-bot")
+	remote := newRemote(t)
+	github.SetRemote(remote)
 	bin := filepath.Join(root, "bin")
-	writeFile(t, filepath.Join(bin, "claude"), chosen.claude(output), 0o700)
-	writeFile(t, filepath.Join(bin, "codex"), codexScript(output), 0o700)
+	if chosen.claude != nil {
+		writeFile(t, filepath.Join(bin, "claude"), chosen.claude(output), 0o700)
+	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GH_TOKEN", "fixture-github")
 	t.Setenv("ANTHROPIC_API_KEY", "fixture-anthropic")
@@ -162,9 +165,7 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 	t.Setenv("MACHINIST_PARENT_SECRET", "must-not-leak")
 
 	factoryDirectory := filepath.Join(root, "factory")
-	writeFile(t, filepath.Join(factoryDirectory, "agents/default/agent.toml"), fmt.Sprintf("harness = %q\n", harness), 0o600)
-	writeFile(t, filepath.Join(factoryDirectory, "agents/default/playbook.md"), "THE PLAYBOOK\n", 0o600)
-	writeFile(t, filepath.Join(factoryDirectory, "agents/default/.claude/agents/machinist-helper.md"), "helper\n", 0o600)
+	shippedFactory(t, factoryDirectory)
 	if chosen.factory != nil {
 		chosen.factory(t, factoryDirectory)
 	}
@@ -201,7 +202,7 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 	}
 	writeFile(t, filepath.Join(root, "runner.token"), token+"\n", 0o600)
 	runnerPath := filepath.Join(root, "runner.toml")
-	writeFile(t, runnerPath, fmt.Sprintf("control_plane = \"http://%s\"\ntoken_file = \"runner.token\"\ndata_directory = \"runner-data\"\n\n[credentials.claude]\nenv = [\"ANTHROPIC_API_KEY\"]\n\n[credentials.codex]\nenv = [\"OPENAI_API_KEY\"]\n", address), 0o600)
+	writeFile(t, runnerPath, fmt.Sprintf("control_plane = \"http://%s\"\ntoken_file = \"runner.token\"\ndata_directory = \"runner-data\"\nenv = [\"ANTHROPIC_API_KEY\"]\n", address), 0o600)
 	runnerConfig, err := config.LoadRunner(runnerPath)
 	if err != nil {
 		t.Fatal(err)
@@ -210,8 +211,6 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 	if err != nil {
 		t.Fatal(err)
 	}
-	remote := newRemote(t)
-	local.CloneURL = func(string) string { return remote }
 	s := &system{}
 	daemon, err := agentrunner.NewDaemon(runnerConfig, local, io.Discard)
 	if err != nil {
@@ -254,6 +253,30 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 		go func() { serverDone <- next.Serve(serverContext, nil) }()
 	}
 	return s
+}
+
+// call sends a request to the control plane with the runner's token.
+func (s *system) call(t *testing.T, method, path string, body any) (int, []byte) {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(method, "http://"+s.address+path, bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+s.token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	reply, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, reply
 }
 
 func (s *system) createTicket(t *testing.T) tickets.Ticket {
@@ -310,41 +333,66 @@ func (s *system) waitForCleanup(t *testing.T, runID string) {
 	}
 }
 
-func TestTicketRunsToReportAndContinuesAfterAnAnswer(t *testing.T) {
-	s := start(t, "claude")
-	ticket := s.createTicket(t)
+type jobView struct {
+	ID       string `json:"id"`
+	State    string `json:"state"`
+	Question string `json:"question"`
+	PRNumber int    `json:"pr_number"`
+}
 
-	asked := s.waitForState(t, ticket.ID, tickets.StateNeedsYou)
-	runs, err := s.store.Runs(t.Context(), ticket.ID)
+func (s *system) job(t *testing.T, id string) jobView {
+	t.Helper()
+	status, body := s.call(t, http.MethodGet, "/machinist/jobs/"+id, nil)
+	var view jobView
+	if err := json.Unmarshal(body, &view); err != nil || status != http.StatusOK {
+		t.Fatalf("status = %d: %s", status, body)
+	}
+	return view
+}
+
+// The whole path: a run request, the shipped default preset, a question, an
+// answer, and a pull request.
+func TestRunAsksAQuestionThenOpensAPullRequest(t *testing.T) {
+	s := start(t)
+	status, body := s.call(t, http.MethodPost, "/machinist/run", map[string]any{
+		"key": "linear:ENG-1", "preset": "default", "vars": map[string]string{"repo": "owner/repo"}, "prompt": "Add a thing\n\nTHE REQUEST",
+	})
+	var created jobView
+	if err := json.Unmarshal(body, &created); err != nil || status != http.StatusCreated {
+		t.Fatalf("status = %d: %s", status, body)
+	}
+
+	asked := s.waitForState(t, created.ID, tickets.StateNeedsYou)
+	if view := s.job(t, created.ID); view.State != "needs_input" || view.Question != "Which database?" {
+		t.Fatalf("job = %+v", view)
+	}
+	runs, err := s.store.Runs(t.Context(), created.ID)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
 	first := runs[0]
-	if first.Status != tickets.RunSucceeded || first.Runner != "runner-1" || first.Report.Question != "Which database?" || *first.Cost != 0.5 || first.Tokens == nil {
+	if first.Status != tickets.RunSucceeded || first.Runner != "runner-1" || first.Harness != protocol.StepsHarness || first.Report.Question != "Which database?" {
 		t.Fatalf("first run = %+v", first)
 	}
-	prompt := s.read(t, "prompt")
-	for _, want := range []string{"THE PLAYBOOK", asked.Branch(), "THE REQUEST", `"outcome"`} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("missing %q in:\n%s", want, prompt)
-		}
+	if got := stepStates(first); got != "checkout=succeeded work=succeeded publish=skipped" {
+		t.Fatalf("steps = %s", got)
 	}
-	if strings.TrimSpace(s.read(t, "agents")) != "machinist-helper.md" || s.read(t, "status") != "" {
-		t.Fatalf("agents = %q, status = %q", s.read(t, "agents"), s.read(t, "status"))
+	if prompt := s.read(t, "prompt"); !strings.Contains(prompt, "THE REQUEST") || !strings.Contains(prompt, "untrusted") {
+		t.Fatalf("prompt:\n%s", prompt)
+	}
+	if status := s.read(t, "status"); status != "" {
+		t.Fatalf("the workspace was not a clean clone: %q", status)
 	}
 	environment := s.read(t, "env")
-	for _, want := range []string{"ANTHROPIC_API_KEY=fixture-anthropic", "GH_TOKEN=fixture-github"} {
+	for _, want := range []string{"ANTHROPIC_API_KEY=fixture-anthropic", "GH_TOKEN=fixture-github", "MACHINIST_REPO=owner/repo", "MACHINIST_BRANCH=" + asked.Branch()} {
 		if !strings.Contains(environment, want) {
 			t.Fatalf("missing %s in:\n%s", want, environment)
 		}
 	}
 	for _, unwanted := range []string{"must-not-leak", "fixture-openai"} {
 		if strings.Contains(environment, unwanted) {
-			t.Fatalf("%s reached the agent:\n%s", unwanted, environment)
+			t.Fatalf("%s reached a step:\n%s", unwanted, environment)
 		}
-	}
-	if author := git(t, s.remote, "log", "-1", "--format=%ae", asked.Branch()); author != "machinist-bot@users.noreply.github.com" {
-		t.Fatalf("author = %s", author)
 	}
 	page, err := s.store.RunEvents(t.Context(), first.ID, 0)
 	if err != nil || len(page.Events) == 0 {
@@ -352,49 +400,35 @@ func TestTicketRunsToReportAndContinuesAfterAnAnswer(t *testing.T) {
 	}
 	s.waitForCleanup(t, first.ID)
 
-	if _, _, err := s.store.AddInput(t.Context(), ticket.ID, tickets.Input{Kind: tickets.EntryComment, Author: "alice", Body: "Use Postgres", SourceKey: "api:answer"}); err != nil {
-		t.Fatal(err)
+	if status, body := s.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/input", map[string]string{"text": "Use Postgres"}); status != http.StatusOK {
+		t.Fatalf("status = %d: %s", status, body)
 	}
-	finished := s.waitForState(t, ticket.ID, tickets.StateDone)
-	if !strings.Contains(s.read(t, "log-before"), "first run") {
-		t.Fatalf("second run did not resume the branch: %s", s.read(t, "log-before"))
+	finished := s.waitForState(t, created.ID, tickets.StateDone)
+	if finished.PRNumber != 7 {
+		t.Fatalf("ticket = %+v", finished)
 	}
-	history := git(t, s.remote, "log", "--format=%s", finished.Branch())
-	if !strings.HasPrefix(history, "second run\nfirst run") {
-		t.Fatalf("history = %q", history)
+	if view := s.job(t, created.ID); view.State != "done" || view.PRNumber != 7 {
+		t.Fatalf("job = %+v", view)
 	}
-	prompt = s.read(t, "prompt")
+	if author := git(t, s.remote, "log", "-1", "--format=%s %ae", finished.Branch()); author != "use postgres machinist-bot@users.noreply.github.com" {
+		t.Fatalf("pushed commit = %s", author)
+	}
+	prompt := s.read(t, "prompt")
 	for _, want := range []string{"THE REQUEST", "Which database?", "Use Postgres"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("missing %q in second prompt:\n%s", want, prompt)
 		}
 	}
-	entries, err := s.store.Entries(t.Context(), ticket.ID)
-	if err != nil || entries[len(entries)-1].Body != "Finished with Postgres" {
+	entries, err := s.store.Entries(t.Context(), created.ID)
+	if err != nil || entries[len(entries)-1].Body != "https://github.com/owner/repo/pull/7" {
 		t.Fatalf("entries = %+v, err = %v", entries, err)
 	}
 }
 
-func TestCodexTicketRunsToReportOnAKeyCredential(t *testing.T) {
-	s := start(t, "codex")
-	ticket := s.createTicket(t)
-	finished := s.waitForState(t, ticket.ID, tickets.StateDone)
-
-	runs, err := s.store.Runs(t.Context(), ticket.ID)
-	if err != nil || len(runs) != 1 || runs[0].Report.Summary != "Codex finished" || runs[0].Harness != "codex" {
-		t.Fatalf("runs = %+v, err = %v", runs, err)
+func stepStates(run tickets.Run) string {
+	states := []string{}
+	for _, stage := range run.Stages {
+		states = append(states, stage.Name+"="+stage.State)
 	}
-	if key := s.read(t, "codex-key"); key != "fixture-openai" {
-		t.Fatalf("key = %q", key)
-	}
-	if environment := s.read(t, "env"); strings.Contains(environment, "fixture-openai") {
-		t.Fatalf("key reached the agent environment:\n%s", environment)
-	}
-	if !strings.Contains(s.read(t, "codex-config"), `[projects."`+strings.TrimSpace(s.read(t, "pwd"))+`"]`) {
-		t.Fatalf("clone not trusted: %s", s.read(t, "codex-config"))
-	}
-	if subject := git(t, s.remote, "log", "-1", "--format=%s", finished.Branch()); subject != "codex run" {
-		t.Fatalf("subject = %q", subject)
-	}
-	s.waitForCleanup(t, runs[0].ID)
+	return strings.Join(states, " ")
 }

@@ -23,6 +23,18 @@ if [ -f "$dir/fail-on" ]; then
 fi
 show() { if [ -f "$1" ]; then cat "$1"; else echo "$2"; fi; }
 case "$1 $2" in
+"repo clone")
+  # gh repo clone REPO DIR -- GIT-FLAGS clones the remote the test set.
+  target=$4
+  shift 4
+  if [ "$1" = -- ]; then shift; fi
+  exec git clone "$@" "$(cat "$dir/remote")" "$target";;
+"pr view")
+  file="$dir/prlist-$(printf %%s "$3" | tr / _)"
+  number=$(sed -n 's/.*"number":\([0-9]*\).*/\1/p' "$file" 2>/dev/null)
+  if [ -z "$number" ]; then echo "no pull requests found for branch \"$3\"" >&2; exit 1; fi
+  echo "https://github.com/owner/repo/pull/$number"
+  exit 0;;
 "pr list")
   head=
   while [ $# -gt 0 ]; do if [ "$1" = --head ]; then head=$2; fi; shift; done
@@ -301,6 +313,12 @@ func (g *GitHub) Recover() {
 			g.t.Fatal(err)
 		}
 	}
+}
+
+// SetRemote makes gh repo clone clone this Git remote.
+func (g *GitHub) SetRemote(remote string) {
+	g.t.Helper()
+	g.writeText("remote", remote)
 }
 
 // Calls returns each gh command line so far.

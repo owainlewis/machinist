@@ -1,23 +1,22 @@
 # Machinist
 
-A job runner for coding agents. Your team assigns work in one place, and agents run it on
-machines you control: a laptop, a VM or Kubernetes. Everyone can see what is running, what
-is waiting on a person and what it cost. It is early-access, open-source software.
+A job runner for coding agents. Your team assigns work in one place, and every job runs the
+same predefined steps on machines you control: a laptop, a VM or Kubernetes. Everyone can
+see what is running and what is waiting on a person. It is early-access, open-source
+software.
 
 - **One place for the team.** One control plane holds every job. Anyone signed in can see
   what each agent is doing, answer its questions and open its pull request.
 - **Runs anywhere.** A runner is a small daemon that asks the control plane for work. Start
   one on a Mac, a VM or a Kubernetes cluster. The control plane treats them all the same.
-- **Your agents.** An agent is a folder of plain files: a playbook, a model, and the
-  subagents and skills it can use. It runs on Claude Code or Codex.
-- **A pipeline you define.** A job is a list of stages: an agent, another agent, a script.
-  A script stage is a gate an agent cannot skip.
-- **Usage you can see.** Runs, pass rate, tokens and cost for the last two weeks, and the
-  figures for every job.
+- **A workflow you define.** A preset is a list of shell steps: clone, plan, build, test,
+  review, open a pull request. A step can run Claude Code, Codex or any command. A test
+  step is a gate an agent cannot skip.
+- **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.
 
 Type the work into a box, send it to the [run API](docs/run-api.md), or let an automation
-start it. An agent works on its own branch and opens one pull request. When the agent needs
-a decision, it asks and waits.
+start it. The job works on its own branch, and the default preset opens one pull request.
+When a step needs a decision, it asks and the job waits.
 
 Machinist is moving to one generic workflow runner. See [Direction](docs/direction.md) for where
 it is going and how far the code has got.
@@ -26,7 +25,7 @@ it is going and how far the code has got.
 
 ## Quick start
 
-You need Go 1.26.6, Git, the GitHub CLI and Claude Code or Codex. You also need a GitHub
+You need Go 1.26.6, Git, the GitHub CLI and Claude Code. You also need a GitHub
 account for the bot, with write access to the repositories it will work on.
 
 ```sh
@@ -41,7 +40,7 @@ factory and a token for a local runner.
 
 1.  In `~/.machinist/config.toml`, set `github.handle` to the bot's login and list your
     repositories.
-2.  In `~/.machinist/runner.toml`, choose a credential for each harness. See
+2.  In `~/.machinist/runner.toml`, list the variables your steps need in `env`. See
     [Credentials](docs/credentials.md).
 3.  Start the control plane with the bot's token:
 
@@ -49,7 +48,7 @@ factory and a token for a local runner.
     GH_TOKEN=<bot token> ./bin/machinist start
     ```
 
-4.  With the bot's token and your harness credential set, prove the runner works, then
+4.  With the bot's token and those variables set, prove the runner works, then
     start it:
 
     ```sh
@@ -77,12 +76,12 @@ The production UI is committed, so this build does not need Node.
 | Automations | Your scheduled jobs, when each is next due and what it last did |
 | Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
 
-Machinist never merges a pull request unless you add an automation that uses an agent allowed to. See
-[Security](SECURITY.md) for what an agent can do.
+Machinist never merges a pull request unless you add an automation that uses a preset allowed
+to. See [Security](SECURITY.md) for what a step can do.
 
 ## How it fits together
 
-One control plane holds tickets and talks to GitHub. It never starts an agent. Any number
+One control plane holds jobs and presets. It never runs a step. Any number
 of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
 [Architecture](ARCHITECTURE.md).
 
@@ -93,7 +92,7 @@ of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
 | [Documentation](docs/README.md) | The full list |
 | [Direction](docs/direction.md) | What Machinist is for, and what is missing |
 | [Run API](docs/run-api.md) | Starting jobs from any system |
-| [Factory files](docs/factory.md) | Agents, jobs and automations |
+| [Factory files](docs/factory.md) | Presets and automations |
 | [Runners](docs/runners.md) | Adding local and Kubernetes runners |
 | [Credentials](docs/credentials.md) | Which credential to use, and why |
 | [Configuration](docs/configuration.md) | Every setting |
