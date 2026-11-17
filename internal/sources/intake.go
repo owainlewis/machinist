@@ -24,12 +24,14 @@ type AssignRequest struct {
 	Body        string `json:"body,omitempty"`
 }
 
-// Intake is the one way the Assign box and the API create tickets.
+// Intake is the one way the Assign box, the run API and schedules create tickets.
 type Intake struct {
 	Client       *ghclient.Client
 	Store        *tickets.Store
 	DefaultAgent string
 	Repositories []string
+	// Presets reports whether a preset exists.
+	Presets func(name string) bool
 }
 
 func invalid(format string, arguments ...any) error {

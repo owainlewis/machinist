@@ -48,7 +48,8 @@ The full state table is in the
 
 ## Intake
 
-Work comes from the Assign box, `POST /api/v1/tickets` and automation schedules. Each
+Work comes from the Assign box, the [run API](docs/run-api.md) at `POST /machinist/run` and
+automation schedules. The run API shows tickets as jobs. Each
 request has a unique source key, so sending one twice has no effect. Machinist does not read
 GitHub comments or follow pull requests. A ticket stays `pr_ready` once its pull request is
 open.
