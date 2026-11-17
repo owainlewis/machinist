@@ -106,7 +106,7 @@ func (s *Server) runJob(w http.ResponseWriter, r *http.Request, tokenName string
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request, _ string) {
-	found, err := s.store.ListTickets(r.Context(), "", r.URL.Query().Get("repo"))
+	found, err := s.store.RecentTickets(r.Context(), r.URL.Query().Get("repo"))
 	if err != nil {
 		writeTicketError(w, err)
 		return

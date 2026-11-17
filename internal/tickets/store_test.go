@@ -554,6 +554,25 @@ func TestListTicketsKeepsAnOldActiveTicketPastTheLimit(t *testing.T) {
 	}
 }
 
+func TestRecentTicketsPutsANewerFinishedTicketFirst(t *testing.T) {
+	store := openStore(t)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return start }
+	active := createTicket(t, store, "api:active")
+	store.now = func() time.Time { return start.Add(time.Minute) }
+	finished := createTicket(t, store, "api:finished")
+	if _, err := store.Cancel(t.Context(), finished.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.RecentTickets(t.Context(), "")
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("listed = %+v, err = %v", listed, err)
+	}
+	if listed[0].ID != finished.ID || listed[1].ID != active.ID {
+		t.Fatalf("order = %s, %s, want %s first", listed[0].ID, listed[1].ID, finished.ID)
+	}
+}
+
 func TestTokenNamesAreUniqueWhileActive(t *testing.T) {
 	store := openStore(t)
 	token, err := store.CreateToken(t.Context(), "alice")
