@@ -27,8 +27,7 @@ const (
 	StateFailed    = "failed"
 	StateCancelled = "cancelled"
 
-	RunKindAgent    = "agent"
-	RunKindReviewer = "reviewer"
+	RunKindAgent = "agent"
 
 	RunQueued      = "queued"
 	RunRunning     = "running"
@@ -168,9 +167,7 @@ type Input struct {
 
 // FirstPR is what happens the first time a ticket has a PR.
 type FirstPR struct {
-	Link      string
-	Harness   string
-	Reviewers []string
+	Link string
 }
 
 // Transition is the result of one row of the ticket state table.
@@ -655,47 +652,6 @@ func cancelQueuedRuns(ctx context.Context, q querier, ticketID string, now time.
 	return err
 }
 
-// PRMerged ends a ticket whose PR merged. A queued run stops here. A running run
-// is told to stop by its next heartbeat.
-func (s *Store) PRMerged(ctx context.Context, ticketID string, humanCommits int, mergedAt time.Time) error {
-	return s.inTx(ctx, func(tx *sql.Tx) error {
-		ticket, err := loadTicket(ctx, tx, ticketID)
-		if err != nil || !activeState(ticket.State) {
-			return err
-		}
-		now := s.now()
-		if err = cancelQueuedRuns(ctx, tx, ticketID, now); err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,human_commits=?,merged_at=?,updated_at=? WHERE id=?`, StateDone, humanCommits, stamp(mergedAt), stamp(now), ticketID)
-		return err
-	})
-}
-
-// PRClosed records a PR closed without merging. The key makes each close count
-// once, so a reply to the message can continue the ticket on the closed PR.
-func (s *Store) PRClosed(ctx context.Context, ticketID, key, next, message string) error {
-	return s.inTx(ctx, func(tx *sql.Tx) error {
-		ticket, err := loadTicket(ctx, tx, ticketID)
-		if err != nil || !activeState(ticket.State) {
-			return err
-		}
-		if _, err = ticketForSourceKey(ctx, tx, key); err == nil {
-			return nil
-		} else if !errors.Is(err, ErrNotFound) {
-			return err
-		}
-		now := s.now()
-		if err = cancelQueuedRuns(ctx, tx, ticketID, now); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,updated_at=? WHERE id=?`, next, stamp(now), ticketID); err != nil {
-			return err
-		}
-		return insertMessage(ctx, tx, ticket, 0, message, key, now)
-	})
-}
-
 func queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness string, now time.Time) (string, error) {
 	id, err := randomHex(12)
 	if err != nil {
@@ -723,14 +679,6 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 	}
 	if transition.Message != "" {
 		if err := insertMessage(ctx, q, ticket, transition.PRNumber, transition.Message, nil, now); err != nil {
-			return err
-		}
-	}
-	if transition.FirstPR == nil {
-		return nil
-	}
-	for _, reviewer := range transition.FirstPR.Reviewers {
-		if _, err := queueRun(ctx, q, ticket.ID, RunKindReviewer, reviewer, transition.FirstPR.Harness, now); err != nil {
 			return err
 		}
 	}
@@ -785,16 +733,6 @@ func turnsSinceHuman(ctx context.Context, q querier, ticketID string) (int, erro
 // TurnsSinceHuman counts agent runs since the last human input.
 func (s *Store) TurnsSinceHuman(ctx context.Context, ticketID string) (int, error) {
 	return turnsSinceHuman(ctx, s.db, ticketID)
-}
-
-// WaitingCI returns the newest CI signal no run has read yet.
-func (s *Store) WaitingCI(ctx context.Context, ticketID string) (string, error) {
-	var body string
-	err := s.db.QueryRowContext(ctx, `SELECT body FROM ticket_entries WHERE ticket_id=? AND kind=? AND consumed_by_run IS NULL ORDER BY id DESC LIMIT 1`, ticketID, EntryCI).Scan(&body)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return body, err
 }
 
 // LastReport returns the text of the ticket's newest agent report.
@@ -1041,41 +979,6 @@ func (s *Store) RunEvents(ctx context.Context, runID string, after int64) (proto
 // ActiveTicketFor finds the active ticket on an issue or PR number.
 func (s *Store) ActiveTicketFor(ctx context.Context, repo string, number int) (Ticket, error) {
 	return scanTicket(s.db.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND (issue_number=? OR pr_number=?) AND state IN (?,?,?) ORDER BY created_at DESC LIMIT 1`, repo, number, number, StateWorking, StateNeedsYou, StatePRReady))
-}
-
-// ActiveWithPR lists the active tickets that have a PR.
-func (s *Store) ActiveWithPR(ctx context.Context) ([]Ticket, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE pr_number IS NOT NULL AND state IN (?,?,?) ORDER BY created_at`, StateWorking, StateNeedsYou, StatePRReady)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	tickets := []Ticket{}
-	for rows.Next() {
-		ticket, err := scanTicket(rows)
-		if err != nil {
-			return nil, err
-		}
-		tickets = append(tickets, ticket)
-	}
-	return tickets, rows.Err()
-}
-
-// HasSourceKey reports whether a piece of intake was already recorded.
-func (s *Store) HasSourceKey(ctx context.Context, key string) (bool, error) {
-	var found int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM ticket_entries WHERE source_key=? UNION ALL SELECT 1 FROM ignored_source_keys WHERE key=? LIMIT 1`, key, key).Scan(&found)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
-// IgnoreSourceKey records that something from a source was read and changed
-// nothing, so a later read of it is not judged again.
-func (s *Store) IgnoreSourceKey(ctx context.Context, key string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO ignored_source_keys(key,created_at) VALUES(?,?)`, key, stamp(s.now()))
-	return err
 }
 
 // Cursor returns a source's stored position. The bool is false on first use.

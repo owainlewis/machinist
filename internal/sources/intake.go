@@ -24,7 +24,7 @@ type AssignRequest struct {
 	Body        string `json:"body,omitempty"`
 }
 
-// Intake is the one way the Assign box and MCP create tickets.
+// Intake is the one way the Assign box and the API create tickets.
 type Intake struct {
 	Client       *ghclient.Client
 	Store        *tickets.Store

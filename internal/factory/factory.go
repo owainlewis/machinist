@@ -1,4 +1,4 @@
-// Package factory loads a team's agents, jobs, reviewers and automations from files.
+// Package factory loads a team's agents, jobs and automations from files.
 package factory
 
 import (
@@ -43,11 +43,6 @@ type Job struct {
 	Stages  []Stage
 }
 
-type Reviewer struct {
-	Name   string
-	Prompt string
-}
-
 type Automation struct {
 	Name   string
 	Repo   string
@@ -59,7 +54,6 @@ type Automation struct {
 type Factory struct {
 	Agents      map[string]Agent
 	Jobs        map[string]Job
-	Reviewers   []Reviewer
 	Automations []Automation
 }
 
@@ -89,15 +83,6 @@ func Load(directory string) (*Factory, error) {
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("job: %w", err)
-	}
-	if err := eachFile(filepath.Join(directory, "reviewers"), "*.md", func(name, body string) error {
-		if strings.TrimSpace(body) == "" {
-			return errors.New("prompt is empty")
-		}
-		factory.Reviewers = append(factory.Reviewers, Reviewer{Name: name, Prompt: body})
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("reviewer: %w", err)
 	}
 	if err := eachFile(filepath.Join(directory, "automations"), "*.md", func(name, body string) error {
 		automation, err := parseAutomation(name, body)

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/owainlewis/machinist/internal/mcpserver"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -219,8 +218,4 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 		status = http.StatusCreated
 	}
 	s.writeTicket(w, r, status, ticket)
-}
-
-func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, tokenName string) {
-	s.mcp.ServeHTTP(w, r.WithContext(mcpserver.WithCaller(r.Context(), tokenName)))
 }

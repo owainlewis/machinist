@@ -70,12 +70,11 @@ real control plane and a real local runner. `internal/agentrunner/conformance_te
 suite on both runner types. On Kubernetes only `kubectl` is fake. It reads the real Job manifest
 and starts the real sandbox code.
 
-The live tests spend real money and write to a real repository, so they are opt-in. They need
-a disposable repository, a bot and a person with write access, and a key for each harness.
-`internal/e2e/live_test.go` lists every variable.
+The live harness tests spend real money, so they are opt-in. They need a key for each
+harness. `internal/runner/native_live_test.go` lists every variable.
 
 ```sh
-MACHINIST_NATIVE_LIVE=1 go test ./internal/runner ./internal/e2e -run Live -v -count=1 -timeout 60m
+MACHINIST_NATIVE_LIVE=1 go test ./internal/runner -run Live -v -count=1 -timeout 60m
 ```
 
 ## Project layout

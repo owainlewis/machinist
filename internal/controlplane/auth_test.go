@@ -27,8 +27,6 @@ func TestEveryRouteRequiresAValidToken(t *testing.T) {
 		{http.MethodGet, "/api/v1/repositories"},
 		{http.MethodGet, "/api/v1/automations"},
 		{http.MethodPost, "/api/v1/automations/x/run"},
-		{http.MethodPost, "/mcp"},
-		{http.MethodGet, "/mcp"},
 	} {
 		for _, token := range []string{"", "wrong"} {
 			response, body := f.call(t, route.method, route.path, token, protocol.PollRequest{})

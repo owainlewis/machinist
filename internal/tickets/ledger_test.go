@@ -38,13 +38,13 @@ func TestLedgerAveragesMergedHumanTickets(t *testing.T) {
 		t.Fatal(err)
 	}
 	finishRun(t, store, first.ID, &protocol.Report{Outcome: "pr_ready", Summary: "s"}, 300, &cost)
-	if err := store.PRMerged(ctx, first.ID, 3, merged); err != nil {
+	if err := markMerged(store, first.ID, 3, merged); err != nil {
 		t.Fatal(err)
 	}
 
 	second := createTicket(t, store, "api:second")
 	finishRun(t, store, second.ID, &protocol.Report{Outcome: "pr_ready", Summary: "s"}, 200, nil)
-	if err := store.PRMerged(ctx, second.ID, 1, merged.Add(time.Hour)); err != nil {
+	if err := markMerged(store, second.ID, 1, merged.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,7 +52,7 @@ func TestLedgerAveragesMergedHumanTickets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PRMerged(ctx, scheduled.ID, 9, merged); err != nil {
+	if err := markMerged(store, scheduled.ID, 9, merged); err != nil {
 		t.Fatal(err)
 	}
 	createTicket(t, store, "api:unmerged")
@@ -78,4 +78,10 @@ func TestLedgerAveragesMergedHumanTickets(t *testing.T) {
 	if _, err := store.TicketFigures(ctx, "t_missing"); err != ErrNotFound {
 		t.Fatalf("error = %v", err)
 	}
+}
+
+// markMerged records a merged PR the way the GitHub follow-ups used to.
+func markMerged(store *Store, ticketID string, humanCommits int, mergedAt time.Time) error {
+	_, err := store.db.Exec(`UPDATE tickets SET state=?,human_commits=?,merged_at=? WHERE id=?`, StateDone, humanCommits, stamp(mergedAt), ticketID)
+	return err
 }

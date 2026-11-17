@@ -125,9 +125,6 @@ func TestOneActiveAgentRunPerTicket(t *testing.T) {
 	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); err == nil {
 		t.Fatal("second active agent run accepted")
 	}
-	if _, err := queueRun(t.Context(), store.db, ticket.ID, RunKindReviewer, "review", "claude", time.Now()); err != nil {
-		t.Fatalf("reviewer run blocked: %v", err)
-	}
 }
 
 func TestClaimRunGivesOldestMatchingHarnessAndConsumesInput(t *testing.T) {

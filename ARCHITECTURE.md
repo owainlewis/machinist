@@ -1,15 +1,13 @@
 # Architecture
 
 Machinist has one Go control plane with an embedded React UI, and any number of runners.
-The control plane owns tickets, the ledger, GitHub polling, the UI and MCP. It never starts
+The control plane owns tickets, the ledger, schedules and the UI. It never starts
 an agent. Runners do, and they dial out, so a runner behind a firewall needs no inbound
 route.
 
 ```mermaid
 flowchart LR
-    Mention[GitHub mention] --> Intake
-    Assign[Assign box] --> Intake
-    MCP[MCP tool] --> Intake
+    Assign[Assign box or API] --> Intake
     Schedule[Automation file] --> Intake
     Intake --> Store[(SQLite tickets.db)]
     Store --> Engine[Ticket engine]
@@ -26,8 +24,8 @@ flowchart LR
 
 A ticket is one piece of work with one fixed branch, `machinist/<ticket id>`. Every run
 starts from a fresh clone and checks out that branch if it exists. The only state carried
-between runs is the pushed branch and the ticket log: the request, agent reports, human
-comments and pointers to CI failures. The agent reads the detail with `gh`.
+between runs is the pushed branch and the ticket log: the request, agent reports and human
+answers. The agent reads anything else with `gh`.
 
 Each run ends with one report: `pr_ready`, `needs_input`, `no_change` or `failed`. After a
 run, the control plane looks up the branch's pull request. The agent does not report it,
@@ -38,7 +36,7 @@ so a crash or lost runner cannot create a second one.
 | `working` | An agent is running or about to |
 | `needs_you` | Waiting for a person |
 | `pr_ready` | A pull request is open and nothing is running |
-| `done` | Merged, or finished with no pull request needed |
+| `done` | Finished with no pull request needed |
 | `failed` | An automation's run failed. Automations never wait for a person |
 | `cancelled` | Someone cancelled it. Its pull request stays open |
 
@@ -48,19 +46,12 @@ input. Each run has a deadline. Provider spend limits cap total cost.
 The full state table is in the
 [design](docs/designs/machinist-redesign.md#ticket-states), and every row has a test.
 
-## Reviewers
-
-On a ticket's first pull request, the engine queues one run per file in
-`factory/reviewers`. A reviewer gets a fresh clone and no subagents, and posts one comment
-with `gh`. It is advice. Its result changes no ticket state, and comments by the bot never
-start a run.
-
 ## Intake
 
-Polling is used because the control plane has a private address that webhooks cannot reach.
-Once a minute per repository it reads new comments, and for each open ticket it reads the
-pull request's state, reviews and checks. Every piece of intake has a unique source key, so
-processing one twice has no effect.
+Work comes from the Assign box, `POST /api/v1/tickets` and automation schedules. Each
+request has a unique source key, so sending one twice has no effect. Machinist does not read
+GitHub comments or follow pull requests. A ticket stays `pr_ready` once its pull request is
+open.
 
 Only the control plane posts Machinist's own messages, from rows it has stored. A crash
 between posting and recording can post a message twice.
@@ -94,11 +85,10 @@ token that is not the bot's, and warns about an unprotected default branch or ad
 ```text
 internal/tickets       tickets, runs, tokens, ledger, in SQLite
 internal/engine        the state table, run queue, leases and posted messages
-internal/sources       GitHub polling, schedules and the one intake path
+internal/sources       schedules and the one intake path
 internal/ghclient      gh, with no shell
-internal/factory       loads agents, reviewers and automations from files
+internal/factory       loads agents, jobs and automations from files
 internal/controlplane  HTTP routes, sign-in and the embedded UI
-internal/mcpserver     the five MCP tools
 internal/agentrunner   the runner daemon, and the local and Kubernetes executors
 internal/kuberunner    gVisor Jobs, egress proxy and the code that runs in the Job
 internal/runner        fresh clones, the fixed harness commands and event parsing

@@ -20,8 +20,8 @@ requires it.
 ## Trust model
 
 **An agent can do whatever the GitHub login allows.** Issue text, PR comments and repository
-files can be written by outsiders, and that text can steer an agent. A mention requires
-write access, but that limits who starts work, not what an issue says. The real limits are
+files can be written by outsiders, and that text can steer an agent. Only signed-in users
+start work, but that limits who starts work, not what an issue says. The real limits are
 the login's permissions and branch protection. On a repository that accepts outside pull
 requests, automatic merging needs branch protection with human review.
 

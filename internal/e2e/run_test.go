@@ -57,9 +57,8 @@ func (b *lockedBuffer) String() string {
 
 // options changes what start builds.
 type options struct {
-	claude    func(output string) string
-	maxTurns  int
-	reviewers bool
+	claude   func(output string) string
+	maxTurns int
 	// factory, when set, adds files to the factory before it is loaded.
 	factory func(t *testing.T, directory string)
 }
@@ -166,9 +165,6 @@ func startWith(t *testing.T, harness string, chosen options) *system {
 	writeFile(t, filepath.Join(factoryDirectory, "agents/default/agent.toml"), fmt.Sprintf("harness = %q\n", harness), 0o600)
 	writeFile(t, filepath.Join(factoryDirectory, "agents/default/playbook.md"), "THE PLAYBOOK\n", 0o600)
 	writeFile(t, filepath.Join(factoryDirectory, "agents/default/.claude/agents/machinist-helper.md"), "helper\n", 0o600)
-	if chosen.reviewers {
-		writeFile(t, filepath.Join(factoryDirectory, "reviewers/review.md"), "THE REVIEWER PROMPT\n", 0o600)
-	}
 	if chosen.factory != nil {
 		chosen.factory(t, factoryDirectory)
 	}
