@@ -97,41 +97,46 @@ There are no hooks and no built-in clone: checking out a repository is a step li
 other.
 
 ```toml
-name = "coding"
-vars = ["repo"]
 timeout = "90m"
 
 [[steps]]
 name = "checkout"
-run = "gh repo clone \"$MACHINIST_REPO\" . && git switch -c \"machinist/$MACHINIST_JOB_ID\""
+run = 'gh repo clone "$MACHINIST_REPO" . && git switch -c "$MACHINIST_BRANCH"'
 timeout = "5m"
 
 [[steps]]
 name = "plan"
-run = "claude -p \"$(cat .machinist/prompt.md)\" --append-system-prompt-file .machinist/steps/plan.md"
+run = 'claude -p "Write a plan to PLAN.md." < "$MACHINIST_DIR/prompt.md"'
 
 [[steps]]
 name = "test"
 run = "just test"
 ```
 
-Each step runs in the job's workspace with:
+The preset's file name is its name. Each step runs with `sh -e` in the job's workspace,
+with:
 
 | Name | Value |
 | --- | --- |
 | `MACHINIST_JOB_ID` | The job ID |
 | `MACHINIST_PRESET` | The preset name |
+| `MACHINIST_BRANCH` | `machinist/<job id>` |
 | `MACHINIST_<VAR>` | Each var, upper-cased, such as `MACHINIST_REPO` |
-| `.machinist/prompt.md` | The prompt, and any questions and answers |
+| `MACHINIST_DIR` | A control directory outside the workspace |
+| stdin and `$MACHINIST_DIR/prompt.md` | The prompt, and any questions and answers |
+
+The control directory is outside the workspace so that `gh repo clone .` gets an empty
+directory and a commit never picks up Machinist's files.
 
 Steps hand work to each other through files in the workspace, such as `PLAN.md` and
 `REVIEW.md`. Two files have a meaning to Machinist:
 
-*   A step that writes `.machinist/question.md` and exits 0 ends the job as `needs_input`.
-*   The last step can write `.machinist/result.md`. The job shows it, for example a pull
+*   A step that writes `$MACHINIST_DIR/question.md` and exits 0 ends the job as
+    `needs_input`.
+*   The last step can write `$MACHINIST_DIR/result.md`. The job shows it, for example a pull
     request link.
 
-A step that exits non-zero fails the job, and no later step runs. A step with no timeout
+A command that fails fails its step and the job, and no later step runs. A step with no timeout
 gets the preset's remaining time.
 
 ## Runners
@@ -173,7 +178,7 @@ The first preset, tested on `owainlewis/airtime`:
 5.  Review the diff, writing `REVIEW.md`.
 6.  Fix what the review found.
 7.  Run the tests again.
-8.  Push, open a pull request and write its link to `.machinist/result.md`.
+8.  Push, open a pull request and write its link to `$MACHINIST_DIR/result.md`.
 
 ## What goes
 
