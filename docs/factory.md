@@ -103,7 +103,8 @@ The prompt goes here.
 `repo` must be in `github.repositories`, and `preset` must name a preset. Missed runs
 collapse into one, and no job starts while the automation's last one is active. An
 automation never waits for a person: anything that would ask one fails the job instead, so
-one bad run cannot stop its schedule. The Automations page has a Run now button.
+one bad run cannot stop its schedule. To run one now, call
+`POST /api/v1/automations/<name>/run` with a token.
 
 `init` installs `factory/automation-templates/review-open-prs.md`, which merges pull requests
 that are ready. It is off by default. To use it, copy it to `factory/automations/`, set

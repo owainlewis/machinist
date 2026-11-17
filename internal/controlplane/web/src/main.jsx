@@ -1,27 +1,25 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/inter";
-import { Clock3, House, LogOut, Moon, Rows3, Server, Sun } from "lucide-react";
+import { LogOut, Moon, Rows3, Server, Sun } from "lucide-react";
 import { Brand } from "@/components/ui/brand";
 import { cn } from "@/lib/utils";
 import { routeFromHash } from "@/routes";
 import { createStatusLoader } from "@/status-loader";
 import { api, SignedOutError } from "./api.js";
-import { AutomationsPage } from "./automations.jsx";
-import { HomePage } from "./home.jsx";
+import { JobPage } from "./job-page.jsx";
+import { JobsPage } from "./jobs-page.jsx";
 import { RunnersPage } from "./runners.jsx";
 import { SignIn } from "./sign-in.jsx";
-import { TaskDetail } from "./task-detail.jsx";
-import { WorkPage } from "./work.jsx";
 import "./styles.css";
 
 const pollMillis = 2000;
-const emptyStatus = { tickets: [], runners: [], queue: null, automations: [], ledger: null, usage: null };
-const navigation = [["home", House, "Home"], ["work", Rows3, "Work"], ["automations", Clock3, "Automations"], ["runners", Server, "Runners"]];
+const emptyStatus = { tickets: [], runners: [], queue: null };
+const navigation = [["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"]];
 
 async function loadStatus() {
-  const [tickets, runners, automations, ledger, usage] = await Promise.all([api("/api/v1/tickets"), api("/api/v1/runners"), api("/api/v1/automations"), api("/api/v1/ledger"), api("/api/v1/usage")]);
-  return { tickets: tickets.tickets, runners: runners.runners, queue: runners.queue, automations: automations.automations, ledger, usage };
+  const [tickets, runners] = await Promise.all([api("/api/v1/tickets"), api("/api/v1/runners")]);
+  return { tickets: tickets.tickets, runners: runners.runners, queue: runners.queue };
 }
 
 // A theme someone chose wins. Until they choose, the app follows the system.
@@ -34,14 +32,14 @@ function readTheme() {
 }
 
 function App() {
-  const [session, setSession] = useState({ checked: false, signedIn: false, repositories: [] });
+  const [session, setSession] = useState({ checked: false, signedIn: false });
   const [status, setStatus] = useState(emptyStatus);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [dark, setDark] = useState(readTheme);
   const [route, setRoute] = useState(() => routeFromHash(window.location.hash));
   const signedOut = useCallback(() => {
-    setSession({ checked: true, signedIn: false, repositories: [] });
+    setSession({ checked: true, signedIn: false });
     setStatus(emptyStatus);
     setLoaded(false);
   }, []);
@@ -60,11 +58,11 @@ function App() {
 
   const checkSession = useCallback(async () => {
     try {
-      const { repositories } = await api("/api/v1/repositories");
-      setSession({ checked: true, signedIn: true, repositories });
+      await api("/api/v1/repositories");
+      setSession({ checked: true, signedIn: true });
     } catch (failure) {
       if (failure instanceof SignedOutError) signedOut();
-      else { setSession({ checked: true, signedIn: false, repositories: [] }); setError(failure.message); }
+      else { setSession({ checked: true, signedIn: false }); setError(failure.message); }
     }
   }, [signedOut]);
   useEffect(() => { checkSession(); }, [checkSession]);
@@ -103,8 +101,7 @@ function App() {
 
   if (!session.checked) return null;
   if (!session.signedIn) return <SignIn onSignedIn={checkSession} />;
-  const refresh = () => loader.current.refresh();
-  const active = route.view === "ticket" ? "work" : route.view;
+  const active = route.view === "job" ? "jobs" : route.view;
   const ThemeIcon = dark ? Sun : Moon;
   const themeLabel = dark ? "Light mode" : "Dark mode";
   return <div className="app-shell">
@@ -119,10 +116,8 @@ function App() {
       </div>
     </aside>
     <main className="app-main">
-      {route.view === "home" && <HomePage repositories={session.repositories} tickets={status.tickets} runners={status.runners} queue={status.queue} usage={status.usage} loaded={loaded} error={error} onChanged={refresh} />}
-      {route.view === "work" && <WorkPage tickets={status.tickets} ledger={status.ledger} loaded={loaded} error={error} />}
-      {route.view === "ticket" && <TaskDetail key={route.ticketID} ticketID={route.ticketID} onSignedOut={signedOut} onChanged={refresh} />}
-      {route.view === "automations" && <AutomationsPage automations={status.automations} loaded={loaded} error={error} onChanged={refresh} />}
+      {route.view === "jobs" && <JobsPage tickets={status.tickets} runners={status.runners} loaded={loaded} error={error} />}
+      {route.view === "job" && <JobPage key={route.jobID} jobID={route.jobID} onSignedOut={signedOut} />}
       {route.view === "runners" && <RunnersPage runners={status.runners} queue={status.queue} loaded={loaded} error={error} />}
     </main>
   </div>;

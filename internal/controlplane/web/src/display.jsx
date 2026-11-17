@@ -1,22 +1,22 @@
 import React from "react";
-import { Ban, Check, CircleHelp, GitPullRequest, LoaderCircle, X } from "lucide-react";
+import { Ban, Check, CircleHelp, Clock3, LoaderCircle, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { stateLabels } from "./task-presentation.js";
+import { stateLabels } from "./jobs.js";
 
 const glyphs = {
-  working: [LoaderCircle, "pill-info"],
-  needs_you: [CircleHelp, "pill-warning"],
-  pr_ready: [GitPullRequest, "pill-review"],
+  queued: [Clock3, ""],
+  running: [LoaderCircle, "pill-info"],
+  needs_input: [CircleHelp, "pill-warning"],
   done: [Check, "pill-success"],
   failed: [X, "pill-danger"],
   cancelled: [Ban, ""],
 };
 
-export function State({ value, label = true }) {
+export function State({ value }) {
   const [Icon, tone] = glyphs[value] || glyphs.cancelled;
   return <span className={cn("pill", tone)}>
-    <Icon className={cn("size-3.5", value === "working" && "state-working")} aria-hidden="true" />
-    {label ? <span>{stateLabels[value] || value}</span> : <span className="sr-only">{stateLabels[value] || value}</span>}
+    <Icon className={cn("size-3.5", value === "running" && "state-working")} aria-hidden="true" />
+    <span>{stateLabels[value] || value}</span>
   </span>;
 }
 
@@ -31,8 +31,4 @@ export function relativeTime(value, now = Date.now()) {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
-}
-
-export function formatTimestamp(value) {
-  return Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString() : "Unavailable";
 }

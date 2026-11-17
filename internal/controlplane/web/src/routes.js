@@ -1,13 +1,18 @@
-const pages = new Set(["home", "work", "automations", "runners"]);
+const pages = new Set(["jobs", "runners"]);
 
+// #/jobs lists jobs, #/jobs/<id> opens one and #/runners lists runners.
 export function routeFromHash(hash) {
   const value = hash.replace(/^#\//, "");
-  if (value.startsWith("work/") && value.slice(5)) {
+  if (value.startsWith("jobs/") && value.slice(5)) {
     try {
-      return { view: "ticket", ticketID: decodeURIComponent(value.slice(5)) };
+      return { view: "job", jobID: decodeURIComponent(value.slice(5)) };
     } catch {
-      return { view: "work", ticketID: "" };
+      return { view: "jobs", jobID: "" };
     }
   }
-  return { view: pages.has(value) ? value : "home", ticketID: "" };
+  return { view: pages.has(value) ? value : "jobs", jobID: "" };
+}
+
+export function jobHref(id) {
+  return `#/jobs/${encodeURIComponent(id)}`;
 }
