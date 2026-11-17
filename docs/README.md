@@ -6,6 +6,7 @@ Start with the [quick start](../README.md#quick-start).
 
 | Guide | Use it to |
 | --- | --- |
+| [Run API](run-api.md) | Start and follow jobs from any system |
 | [Factory files](factory.md) | Change agents and jobs, and add automations |
 | [Native agents](native-agents.md) | Understand subagents and the activity view |
 

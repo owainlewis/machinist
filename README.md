@@ -15,9 +15,9 @@ is waiting on a person and what it cost. It is early-access, open-source softwar
 - **Usage you can see.** Runs, pass rate, tokens and cost for the last two weeks, and the
   figures for every job.
 
-Type the work into a box, send it to the API, or let an automation start it. An agent works
-on its own branch and opens one pull request. When the agent needs a decision, it asks and
-waits.
+Type the work into a box, send it to the [run API](docs/run-api.md), or let an automation
+start it. An agent works on its own branch and opens one pull request. When the agent needs
+a decision, it asks and waits.
 
 See [Direction](docs/direction.md) for where this is going and what is missing today.
 
@@ -91,6 +91,7 @@ of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
 | --- | --- |
 | [Documentation](docs/README.md) | The full list |
 | [Direction](docs/direction.md) | What Machinist is for, and what is missing |
+| [Run API](docs/run-api.md) | Starting jobs from any system |
 | [Factory files](docs/factory.md) | Agents, jobs and automations |
 | [Runners](docs/runners.md) | Adding local and Kubernetes runners |
 | [Credentials](docs/credentials.md) | Which credential to use, and why |
