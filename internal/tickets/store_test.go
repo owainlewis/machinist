@@ -580,3 +580,56 @@ func TestTokenNamesAreUniqueWhileActive(t *testing.T) {
 		t.Fatalf("tokens = %+v, err = %v", tokens, err)
 	}
 }
+
+func TestAnAutomationTicketWithAPullRequestDoesNotHoldItsSchedule(t *testing.T) {
+	store := openStore(t)
+	scheduled := func(key string) NewTicket {
+		ticket := request(key)
+		ticket.Source = "schedule:nightly"
+		return ticket
+	}
+	first, created, err := store.CreateTicket(t.Context(), scheduled("schedule:nightly:1"))
+	if err != nil || !created {
+		t.Fatalf("created = %v, err = %v", created, err)
+	}
+	if again, created, err := store.CreateTicket(t.Context(), scheduled("schedule:nightly:2")); err != nil || created || again.ID != first.ID {
+		t.Fatalf("a second ticket started while the first works: %+v, %v, %v", again, created, err)
+	}
+	completeRun(t, store, claimRun(t, store, first).Run.ID, StatePRReady)
+	if next, created, err := store.CreateTicket(t.Context(), scheduled("schedule:nightly:3")); err != nil || !created || next.ID == first.ID {
+		t.Fatalf("next = %+v, created = %v, err = %v", next, created, err)
+	}
+}
+
+func TestOpenCancelsQueuedReviewerRunsFromBefore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tickets.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket, _, err := store.CreateTicket(t.Context(), request("k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.QueueRun(t.Context(), ticket.ID, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE runs SET kind='reviewer' WHERE id=?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now().Add(time.Minute)); err != nil || claim != nil {
+		t.Fatalf("a runner claimed a reviewer run: %+v, %v", claim, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got, err := reopened.Run(t.Context(), run.ID); err != nil || got.Status != RunCancelled {
+		t.Fatalf("run = %+v, err = %v", got, err)
+	}
+}

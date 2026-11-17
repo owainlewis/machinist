@@ -215,6 +215,11 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// Reviewer runs are gone. Cancel any a database from before still queues.
+	if _, err = db.Exec(`UPDATE runs SET status='cancelled' WHERE status='queued' AND kind<>'agent'`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err = os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, err
@@ -478,8 +483,9 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 			}
 		}
 		if strings.HasPrefix(request.Source, sourceSchedulePrefix) {
-			// An automation runs one ticket at a time.
-			existing, err = scanTicket(tx.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? AND state IN ('working','needs_you','pr_ready') LIMIT 1`, request.Source))
+			// An automation runs one ticket at a time. Machinist no longer
+			// follows pull requests, so an open one does not hold the schedule.
+			existing, err = scanTicket(tx.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? AND state IN ('working','needs_you') LIMIT 1`, request.Source))
 			if err == nil {
 				ticket = existing
 				return nil
@@ -780,7 +786,7 @@ func (s *Store) ClaimRun(ctx context.Context, runner string, harnesses []string,
 	}
 	var claim *Claim
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		run, err := scanRun(tx.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE status=? AND harness IN (`+placeholders+`) ORDER BY rowid LIMIT 1`, arguments...))
+		run, err := scanRun(tx.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE status=? AND kind='agent' AND harness IN (`+placeholders+`) ORDER BY rowid LIMIT 1`, arguments...))
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}
