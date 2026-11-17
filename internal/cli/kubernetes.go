@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"path/filepath"
-
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/kuberunner"
 	"github.com/spf13/cobra"
@@ -30,7 +28,7 @@ func newSandboxCommand(options *commandOptions) *cobra.Command {
 		return kuberunner.Prepare(cmd.Context(), "/exchange", kuberunner.SourceDirectory)
 	}})
 	root.AddCommand(&cobra.Command{Use: "run", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		return kuberunner.Sandbox(cmd.Context(), "/exchange", filepath.Dir(kuberunner.SourceDirectory), "/home/agent", nil)
+		return kuberunner.Sandbox(cmd.Context(), "/exchange", kuberunner.SourceDirectory, "/home/agent")
 	}})
 	var allowed []string
 	proxy := &cobra.Command{Use: "proxy", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {

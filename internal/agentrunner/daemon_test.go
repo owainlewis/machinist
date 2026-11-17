@@ -54,7 +54,7 @@ func (f *fakeControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		id := f.queue[0]
 		f.queue = f.queue[1:]
-		_ = json.NewEncoder(w).Encode(runner.RunRequest{RunID: id, Harness: "claude"})
+		_ = json.NewEncoder(w).Encode(runner.RunRequest{RunID: id, Preset: "default"})
 	case strings.HasSuffix(r.URL.Path, "/heartbeat"):
 		status, body := f.heartbeat()
 		w.WriteHeader(status)
@@ -94,7 +94,7 @@ func startDaemon(t *testing.T, plane *fakeControlPlane, slots int, executor Exec
 	server := httptest.NewServer(plane)
 	t.Cleanup(server.Close)
 	daemon := &Daemon{
-		config:            config.Runner{DataDirectory: t.TempDir(), Slots: slots, Credentials: map[string]config.Credential{"claude": {Login: true}, "codex": {Login: true}}},
+		config:            config.Runner{DataDirectory: t.TempDir(), Slots: slots},
 		client:            NewClient(server.URL, "runner-token"),
 		executor:          executor,
 		log:               io.Discard,
@@ -130,19 +130,18 @@ func waitDone(t *testing.T, plane *fakeControlPlane) string {
 
 func TestDaemonRunsAndReportsResult(t *testing.T) {
 	plane := newFakeControlPlane(fixtureRun)
-	tokens, cost := int64(99), 1.5
 	daemon, _ := startDaemon(t, plane, 1, executorFunc(func(context.Context, runner.RunRequest) runner.RunResult {
-		return runner.RunResult{State: runner.StateSucceeded, Report: &protocol.Report{Outcome: "no_change", Summary: "Done"}, Tokens: &tokens, Cost: &cost}
+		return runner.RunResult{State: runner.StateSucceeded, Report: &protocol.Report{Outcome: "no_change", Summary: "Done"}}
 	}))
 	waitDone(t, plane)
 	completion := plane.completion(fixtureRun)
-	if completion.State != "succeeded" || completion.Report.Summary != "Done" || *completion.Tokens != 99 || *completion.Cost != 1.5 {
+	if completion.State != "succeeded" || completion.Report.Summary != "Done" {
 		t.Fatalf("completion = %+v", completion)
 	}
 	plane.mu.Lock()
 	token, poll := plane.token, plane.poll
 	plane.mu.Unlock()
-	if token != "Bearer runner-token" || strings.Join(poll.Harnesses, ",") != "claude,codex" || poll.Kind != "local" || poll.Slots != 1 {
+	if token != "Bearer runner-token" || strings.Join(poll.Harnesses, ",") != protocol.StepsHarness || poll.Kind != "local" || poll.Slots != 1 {
 		t.Fatalf("token = %q, poll = %+v", token, poll)
 	}
 	deadline := time.Now().Add(5 * time.Second)

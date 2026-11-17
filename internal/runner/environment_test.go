@@ -6,8 +6,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/owainlewis/machinist/internal/config"
 )
 
 func TestExecuteUsesOnlyTheGivenEnvironment(t *testing.T) {
@@ -16,8 +14,8 @@ func TestExecuteUsesOnlyTheGivenEnvironment(t *testing.T) {
 	_, err := Execute(t.Context(), Options{
 		Environment:   []string{"PATH=" + os.Getenv("PATH"), "GH_TOKEN=for-the-agent", "GIT_CONFIG_COUNT=1"},
 		Prompt:        testPrompt,
-		Command:       config.ResolvedCommand{Name: "plan", Command: []string{"/bin/sh", "-c", "cat >/dev/null; env"}, Timeout: testTimeout},
-		Repository:    newGitRepository(t),
+		Command:       Command{Name: "plan", Args: []string{"/bin/sh", "-c", "cat >/dev/null; env"}, Timeout: testTimeout},
+		Directory:     newGitRepository(t),
 		DataDirectory: t.TempDir(),
 		Stdout:        &stdout,
 		Stderr:        io.Discard,

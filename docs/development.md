@@ -65,17 +65,11 @@ Never put runtime archives or authentication files in build contexts.
 
 ## Tests
 
-New tests use a fake harness and a fake `gh` from `internal/fakegh`. `internal/e2e` runs the
-real control plane and a real local runner. `internal/agentrunner/conformance_test.go` runs one
+New tests use fake `claude` and `gh` commands. `internal/fakegh` is the fake `gh`.
+`internal/e2e` runs the real control plane and a real local runner, with the shipped
+presets. `internal/agentrunner/conformance_test.go` runs one
 suite on both runner types. On Kubernetes only `kubectl` is fake. It reads the real Job manifest
 and starts the real sandbox code.
-
-The live harness tests spend real money, so they are opt-in. They need a key for each
-harness. `internal/runner/native_live_test.go` lists every variable.
-
-```sh
-MACHINIST_NATIVE_LIVE=1 go test ./internal/runner -run Live -v -count=1 -timeout 60m
-```
 
 ## Project layout
 

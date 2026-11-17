@@ -226,7 +226,7 @@ func TestAutomationRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.server.schedule.Automations = []factory.Automation{{Name: "nightly", Repo: "owner/repo", Agent: "default", Prompt: "Do the nightly work", Cron: cron}}
+	f.server.schedule.Automations = []factory.Automation{{Name: "nightly", Repo: "owner/repo", Preset: "default", Prompt: "Do the nightly work", Cron: cron}}
 	response, body := f.call(t, http.MethodGet, "/api/v1/automations", f.token, nil)
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"next_due"`) || strings.Contains(string(body), "last_ticket") {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)

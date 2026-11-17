@@ -7,28 +7,24 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 )
 
 const defaultRunnerDirName = ".machinist/runner"
 
 var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// Credential names the variables a harness already reads, passed through from
-// the runner's own environment, or uses the OS user's existing login.
-type Credential struct {
-	Env   []string `toml:"env"`
-	Login bool     `toml:"login"`
-}
-
-// Runner is the configuration of one machine or cluster that runs agents.
+// Runner is the configuration of one machine or cluster that runs steps.
 type Runner struct {
-	Kubernetes    *Kubernetes           `toml:"kubernetes"`
-	Credentials   map[string]Credential `toml:"credentials"`
-	ControlPlane  string                `toml:"control_plane"`
-	TokenFile     string                `toml:"token_file"`
-	DataDirectory string                `toml:"data_directory"`
-	Slots         int                   `toml:"slots"`
+	Kubernetes *Kubernetes `toml:"kubernetes"`
+	// Env names the variables passed from the runner's own environment to
+	// every step, such as ANTHROPIC_API_KEY or LINEAR_API_KEY.
+	Env []string `toml:"env"`
+	// Login gives steps the OS user's home, so a tool can use an existing login.
+	Login         bool   `toml:"login"`
+	ControlPlane  string `toml:"control_plane"`
+	TokenFile     string `toml:"token_file"`
+	DataDirectory string `toml:"data_directory"`
+	Slots         int    `toml:"slots"`
 	configDir     string
 }
 
@@ -63,15 +59,8 @@ func (r Runner) Kind() string {
 	return "local"
 }
 
-// Harnesses lists the harnesses this runner has a credential for.
-func (r Runner) Harnesses() []string {
-	names := make([]string, 0, len(r.Credentials))
-	for name := range r.Credentials {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
-}
+// Harnesses lists what this runner runs: a preset's steps.
+func (r Runner) Harnesses() []string { return []string{"steps"} }
 
 func applyRunnerDefaults(runner Runner) (Runner, error) {
 	address, err := url.Parse(runner.ControlPlane)
@@ -102,13 +91,13 @@ func applyRunnerDefaults(runner Runner) (Runner, error) {
 	if err != nil {
 		return Runner{}, fmt.Errorf("resolve data_directory: %w", err)
 	}
-	if len(runner.Credentials) == 0 {
-		return Runner{}, errors.New("at least one of [credentials.claude] or [credentials.codex] is required")
-	}
-	for harness, credential := range runner.Credentials {
-		if err := validateCredential(runner, harness, credential); err != nil {
-			return Runner{}, err
+	for _, name := range runner.Env {
+		if !environmentName.MatchString(name) {
+			return Runner{}, fmt.Errorf("env: invalid environment variable name %q", name)
 		}
+	}
+	if runner.Login && runner.Kubernetes != nil {
+		return Runner{}, errors.New("login: Kubernetes runners do not support login")
 	}
 	if runner.Kubernetes != nil && runner.Kubernetes.Kubeconfig != "" {
 		runner.Kubernetes.Kubeconfig, err = resolveConfigPath(runner.Kubernetes.Kubeconfig, runner.configDir)
@@ -117,26 +106,4 @@ func applyRunnerDefaults(runner Runner) (Runner, error) {
 		}
 	}
 	return runner, nil
-}
-
-func validateCredential(runner Runner, harness string, credential Credential) error {
-	if harness != "claude" && harness != "codex" {
-		return fmt.Errorf("credentials.%s: harness must be claude or codex", harness)
-	}
-	if credential.Login == (len(credential.Env) > 0) {
-		return fmt.Errorf("credentials.%s: set exactly one of env or login", harness)
-	}
-	for _, name := range credential.Env {
-		if !environmentName.MatchString(name) {
-			return fmt.Errorf("credentials.%s: invalid environment variable name %q", harness, name)
-		}
-	}
-	if credential.Login && runner.Kubernetes != nil {
-		return fmt.Errorf("credentials.%s: Kubernetes runners do not support login", harness)
-	}
-	// A ChatGPT login refreshes its token on disk, so runs must not share one.
-	if credential.Login && harness == "codex" && runner.Slots != 1 {
-		return errors.New("credentials.codex: login requires slots = 1")
-	}
-	return nil
 }

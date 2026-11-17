@@ -45,7 +45,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if machinistConfig.GitHub.Handle == "" {
 		return nil, errors.New("github.handle is required")
 	}
-	if err := loaded.Validate(machinistConfig.Server.DefaultAgent, machinistConfig.GitHub.Repositories); err != nil {
+	if err := loaded.Validate(machinistConfig.Server.DefaultPreset, machinistConfig.GitHub.Repositories); err != nil {
 		return nil, err
 	}
 	client := ghclient.New()
@@ -60,12 +60,12 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		Log:        log,
 	})
 	intake := &sources.Intake{
-		Client:       client,
-		Store:        store,
-		DefaultAgent: machinistConfig.Server.DefaultAgent,
-		Repositories: machinistConfig.GitHub.Repositories,
+		Client:        client,
+		Store:         store,
+		DefaultPreset: machinistConfig.Server.DefaultPreset,
+		Repositories:  machinistConfig.GitHub.Repositories,
 		Presets: func(name string) bool {
-			_, ok := loaded.Job(name)
+			_, ok := loaded.Preset(name)
 			return ok
 		},
 	}

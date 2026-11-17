@@ -1,4 +1,4 @@
-// Package factory loads a team's agents, jobs and automations from files.
+// Package factory loads a team's presets and automations from files.
 package factory
 
 import (
@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/runner"
@@ -20,69 +21,43 @@ const maxFileBytes = 1 << 20
 
 var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
-type Agent struct {
-	Name     string
-	Harness  string
-	Model    string
-	Playbook string
-	Files    []runner.AgentFile
-}
-
-// Stage is one step of a job: an agent of the factory, or a shell script.
-type Stage struct {
-	Name   string `toml:"name"`
-	Agent  string `toml:"agent"`
-	Script string `toml:"script"`
-}
-
-// Job is a list of stages that run in order in one workspace. Every agent
-// stage of a job uses Harness.
-type Job struct {
-	Name    string
-	Harness string
-	Stages  []Stage
+// Preset is a straight list of steps. Every job of a preset runs the same
+// steps, in order, in one empty workspace.
+type Preset struct {
+	Name string
+	// Timeout covers all steps together. Zero means the server's run deadline.
+	Timeout time.Duration
+	Steps   []runner.Step
 }
 
 type Automation struct {
 	Name   string
 	Repo   string
-	Agent  string
+	Preset string
 	Prompt string
 	Cron   *triggers.Cron
 }
 
 type Factory struct {
-	Agents      map[string]Agent
-	Jobs        map[string]Job
+	Presets     map[string]Preset
 	Automations []Automation
 }
 
 // Load reads and validates a factory directory.
 func Load(directory string) (*Factory, error) {
-	factory := &Factory{Agents: map[string]Agent{}, Jobs: map[string]Job{}}
-	agents, err := subdirectories(filepath.Join(directory, "agents"))
-	if err != nil {
-		return nil, fmt.Errorf("read agents: %w", err)
-	}
-	for _, name := range agents {
-		agent, err := loadAgent(filepath.Join(directory, "agents", name), name)
-		if err != nil {
-			return nil, fmt.Errorf("agent %s: %w", name, err)
-		}
-		factory.Agents[name] = agent
-	}
-	if len(factory.Agents) == 0 {
-		return nil, fmt.Errorf("factory %s has no agents", directory)
-	}
-	if err := eachFile(filepath.Join(directory, "jobs"), "*.toml", func(name, body string) error {
-		job, err := factory.parseJob(name, body)
+	factory := &Factory{Presets: map[string]Preset{}}
+	if err := eachFile(filepath.Join(directory, "presets"), "*.toml", func(name, body string) error {
+		preset, err := parsePreset(name, body)
 		if err != nil {
 			return err
 		}
-		factory.Jobs[name] = job
+		factory.Presets[name] = preset
 		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("job: %w", err)
+		return nil, fmt.Errorf("preset: %w", err)
+	}
+	if len(factory.Presets) == 0 {
+		return nil, fmt.Errorf("factory %s has no presets", directory)
 	}
 	if err := eachFile(filepath.Join(directory, "automations"), "*.md", func(name, body string) error {
 		automation, err := parseAutomation(name, body)
@@ -97,46 +72,78 @@ func Load(directory string) (*Factory, error) {
 	return factory, nil
 }
 
-// Job finds what a ticket runs by name. An agent is also a job with one stage.
-func (f *Factory) Job(name string) (Job, bool) {
-	if job, ok := f.Jobs[name]; ok {
-		return job, true
+// Preset finds a preset by name.
+func (f *Factory) Preset(name string) (Preset, bool) {
+	preset, ok := f.Presets[name]
+	return preset, ok
+}
+
+func parseDuration(field, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
 	}
-	agent, ok := f.Agents[name]
-	if !ok {
-		return Job{}, false
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration such as 30m, not %q", field, value)
 	}
-	return Job{Name: name, Harness: agent.Harness, Stages: []Stage{{Name: name, Agent: name}}}, true
+	return duration, nil
+}
+
+func parsePreset(name, body string) (Preset, error) {
+	var settings struct {
+		Timeout string `toml:"timeout"`
+		Steps   []struct {
+			Name    string `toml:"name"`
+			Run     string `toml:"run"`
+			Timeout string `toml:"timeout"`
+		} `toml:"steps"`
+	}
+	if err := config.DecodeStrict(name, []byte(body), &settings); err != nil {
+		return Preset{}, err
+	}
+	timeout, err := parseDuration("timeout", settings.Timeout)
+	if err != nil {
+		return Preset{}, err
+	}
+	preset := Preset{Name: name, Timeout: timeout}
+	if len(settings.Steps) == 0 {
+		return Preset{}, errors.New("a preset needs at least one step")
+	}
+	names := map[string]bool{}
+	for index, step := range settings.Steps {
+		if !validName.MatchString(step.Name) {
+			return Preset{}, fmt.Errorf("step %d: invalid name %q", index+1, step.Name)
+		}
+		if names[step.Name] {
+			return Preset{}, fmt.Errorf("step %s is listed twice", step.Name)
+		}
+		names[step.Name] = true
+		if strings.TrimSpace(step.Run) == "" {
+			return Preset{}, fmt.Errorf("step %s: run is empty", step.Name)
+		}
+		stepTimeout, err := parseDuration("step "+step.Name+": timeout", step.Timeout)
+		if err != nil {
+			return Preset{}, err
+		}
+		preset.Steps = append(preset.Steps, runner.Step{Name: step.Name, Run: step.Run, TimeoutMillis: stepTimeout.Milliseconds()})
+	}
+	return preset, nil
 }
 
 // Validate checks what depends on the control plane's own configuration.
-func (f *Factory) Validate(defaultAgent string, repositories []string) error {
-	if _, ok := f.Job(defaultAgent); !ok {
-		return fmt.Errorf("default_agent %q is not in the factory", defaultAgent)
+func (f *Factory) Validate(defaultPreset string, repositories []string) error {
+	if _, ok := f.Presets[defaultPreset]; !ok {
+		return fmt.Errorf("default_preset %q is not in the factory", defaultPreset)
 	}
 	for _, automation := range f.Automations {
-		if _, ok := f.Job(automation.Agent); !ok {
-			return fmt.Errorf("automation %s: agent %q is not in the factory", automation.Name, automation.Agent)
+		if _, ok := f.Presets[automation.Preset]; !ok {
+			return fmt.Errorf("automation %s: preset %q is not in the factory", automation.Name, automation.Preset)
 		}
 		if !slices.Contains(repositories, automation.Repo) {
 			return fmt.Errorf("automation %s: repository %q is not in github.repositories", automation.Name, automation.Repo)
 		}
 	}
 	return nil
-}
-
-func subdirectories(path string) ([]string, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, err
-	}
-	names := []string{}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			names = append(names, entry.Name())
-		}
-	}
-	return names, nil
 }
 
 func readFile(path string) (string, error) {
@@ -174,93 +181,6 @@ func eachFile(directory, pattern string, visit func(name, body string) error) er
 	return nil
 }
 
-func loadAgent(directory, name string) (Agent, error) {
-	if !validName.MatchString(name) {
-		return Agent{}, errors.New("invalid agent name")
-	}
-	path := filepath.Join(directory, "agent.toml")
-	body, err := readFile(path)
-	if err != nil {
-		return Agent{}, err
-	}
-	var settings struct {
-		Harness string `toml:"harness"`
-		Model   string `toml:"model"`
-	}
-	if err := config.DecodeStrict(path, []byte(body), &settings); err != nil {
-		return Agent{}, err
-	}
-	if settings.Harness != runner.HarnessClaude && settings.Harness != runner.HarnessCodex {
-		return Agent{}, fmt.Errorf("harness must be claude or codex, not %q", settings.Harness)
-	}
-	playbook, err := readFile(filepath.Join(directory, "playbook.md"))
-	if err != nil {
-		return Agent{}, err
-	}
-	if strings.TrimSpace(playbook) == "" {
-		return Agent{}, errors.New("playbook.md is empty")
-	}
-	agent := Agent{Name: name, Harness: settings.Harness, Model: settings.Model, Playbook: playbook}
-	for _, source := range []struct{ relative, pattern string }{{".claude/agents", "*.md"}, {".codex/agents", "*.toml"}} {
-		paths, err := filepath.Glob(filepath.Join(directory, filepath.FromSlash(source.relative), source.pattern))
-		if err != nil {
-			return Agent{}, err
-		}
-		sort.Strings(paths)
-		for _, path := range paths {
-			body, err := readFile(path)
-			if err != nil {
-				return Agent{}, err
-			}
-			agent.Files = append(agent.Files, runner.AgentFile{Path: source.relative + "/" + filepath.Base(path), Body: body})
-		}
-	}
-	return agent, nil
-}
-
-// parseJob reads a job file. Its agent stages must name agents of the factory
-// that all use one harness, because a run has one harness and one credential.
-func (f *Factory) parseJob(name, body string) (Job, error) {
-	if _, ok := f.Agents[name]; ok {
-		return Job{}, errors.New("an agent already has this name")
-	}
-	var settings struct {
-		Stages []Stage `toml:"stages"`
-	}
-	if err := config.DecodeStrict(name, []byte(body), &settings); err != nil {
-		return Job{}, err
-	}
-	job := Job{Name: name, Stages: settings.Stages}
-	names := map[string]bool{}
-	for index, stage := range job.Stages {
-		if !validName.MatchString(stage.Name) {
-			return Job{}, fmt.Errorf("stage %d: invalid name %q", index+1, stage.Name)
-		}
-		if names[stage.Name] {
-			return Job{}, fmt.Errorf("stage %s is listed twice", stage.Name)
-		}
-		names[stage.Name] = true
-		if (stage.Agent == "") == (strings.TrimSpace(stage.Script) == "") {
-			return Job{}, fmt.Errorf("stage %s: set agent or script, and not both", stage.Name)
-		}
-		if stage.Agent == "" {
-			continue
-		}
-		agent, ok := f.Agents[stage.Agent]
-		if !ok {
-			return Job{}, fmt.Errorf("stage %s: agent %q is not in the factory", stage.Name, stage.Agent)
-		}
-		if job.Harness != "" && agent.Harness != job.Harness {
-			return Job{}, fmt.Errorf("stage %s: agent %q uses %s, but an earlier stage uses %s", stage.Name, stage.Agent, agent.Harness, job.Harness)
-		}
-		job.Harness = agent.Harness
-	}
-	if job.Harness == "" {
-		return Job{}, errors.New("a job needs at least one agent stage")
-	}
-	return job, nil
-}
-
 const frontMatterFence = "+++\n"
 
 func parseAutomation(name, body string) (Automation, error) {
@@ -275,13 +195,13 @@ func parseAutomation(name, body string) (Automation, error) {
 		Schedule string `toml:"schedule"`
 		Timezone string `toml:"timezone"`
 		Repo     string `toml:"repo"`
-		Agent    string `toml:"agent"`
+		Preset   string `toml:"preset"`
 	}
 	if err := config.DecodeStrict(name, []byte(front), &settings); err != nil {
 		return Automation{}, err
 	}
-	if settings.Repo == "" || settings.Agent == "" {
-		return Automation{}, errors.New("repo and agent are required")
+	if settings.Repo == "" || settings.Preset == "" {
+		return Automation{}, errors.New("repo and preset are required")
 	}
 	if strings.TrimSpace(prompt) == "" {
 		return Automation{}, errors.New("prompt is empty")
@@ -290,5 +210,5 @@ func parseAutomation(name, body string) (Automation, error) {
 	if err != nil {
 		return Automation{}, err
 	}
-	return Automation{Name: name, Repo: settings.Repo, Agent: settings.Agent, Prompt: strings.TrimSpace(prompt), Cron: cron}, nil
+	return Automation{Name: name, Repo: settings.Repo, Preset: settings.Preset, Prompt: strings.TrimSpace(prompt), Cron: cron}, nil
 }

@@ -28,10 +28,7 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 	installed := regularFiles(t, directory)
 	for _, name := range []string{
 		"config.toml", "runner.toml", "runner.token",
-		"factory/agents/default/agent.toml", "factory/agents/default/playbook.md",
-		"factory/agents/default/.claude/agents/machinist-reviewer.md",
-		"factory/agents/default/.codex/agents/machinist-reviewer.toml",
-		"factory/agents/maintainer/playbook.md",
+		"factory/presets/default.toml", "factory/presets/maintainer.toml",
 		"factory/automation-templates/review-open-prs.md",
 	} {
 		if !slices.Contains(installed, name) {
@@ -147,7 +144,7 @@ func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
 	if err := loaded.Validate("default", nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Agents["default"].Files) != 6 || len(loaded.Automations) != 0 {
+	if len(loaded.Presets["default"].Steps) != 3 || len(loaded.Presets) != 2 || len(loaded.Automations) != 0 {
 		t.Fatalf("factory = %+v", loaded)
 	}
 	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.toml"))

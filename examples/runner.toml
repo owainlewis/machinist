@@ -5,17 +5,17 @@ data_directory = "~/.machinist/runner"
 slots = 2
 
 # The runner also needs GH_TOKEN, for a GitHub login that belongs to the bot.
+# Steps get it as GH_TOKEN, scoped to the job's repository.
 
-[credentials.claude]
+# Variables passed from the runner's environment to every step.
 env = ["ANTHROPIC_API_KEY"]
 
-# Use one or both harnesses. A login is for your own machine only, and a Codex
-# login needs slots = 1.
-# [credentials.codex]
-# env = ["OPENAI_API_KEY"]
+# Give steps your home directory, so a tool can use a login you already have.
+# This is for your own machine only.
 # login = true
 
-# Add this table to make this a Kubernetes runner.
+# Add this table to make this a Kubernetes runner. Every variable in the
+# Secret reaches the steps.
 # [kubernetes]
 # context = "my-cluster"
 # namespace = "machinist"

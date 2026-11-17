@@ -13,7 +13,7 @@ import (
 
 func TestPollReturnsNoContentWithoutWork(t *testing.T) {
 	f := newFixture(t)
-	response, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{Harnesses: []string{"claude"}})
+	response, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}})
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("%d: %s", response.StatusCode, body)
 	}
@@ -27,7 +27,7 @@ func TestPollRecordsRunnerAndNamesRunAfterToken(t *testing.T) {
 		t.Fatalf("run = %+v, err = %v", stored, err)
 	}
 	response, body := f.call(t, http.MethodGet, "/api/v1/runners", f.token, nil)
-	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"name":"runner-1"`) || !strings.Contains(string(body), `"harnesses":["claude"]`) {
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"name":"runner-1"`) || !strings.Contains(string(body), `"harnesses":["steps"]`) {
 		t.Fatalf("%d: %s", response.StatusCode, body)
 	}
 }
@@ -35,7 +35,7 @@ func TestPollRecordsRunnerAndNamesRunAfterToken(t *testing.T) {
 func TestRunnersListShowsSlotsJobsAndQueue(t *testing.T) {
 	f := newFixture(t)
 	run := f.queueRun(t)
-	request := protocol.PollRequest{Harnesses: []string{"claude"}, Kind: "kubernetes", Slots: 4}
+	request := protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}, Kind: "kubernetes", Slots: 4}
 	if response, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, request); response.StatusCode != http.StatusNoContent {
 		t.Fatalf("%d: %s", response.StatusCode, body)
 	}

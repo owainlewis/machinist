@@ -65,7 +65,7 @@ func initializeMachinist(ctx context.Context, output io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(output, "Machinist configuration is ready in %s\n", directory)
-	fmt.Fprintln(output, "Set github.handle and repositories in config.toml, and credentials in runner.toml.")
+	fmt.Fprintln(output, "Set github.handle and repositories in config.toml, and env in runner.toml.")
 	return nil
 }
 

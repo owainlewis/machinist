@@ -19,14 +19,14 @@ requires it.
 
 ## Trust model
 
-**An agent can do whatever the GitHub login allows.** Issue text, PR comments and repository
-files can be written by outsiders, and that text can steer an agent. Only signed-in users
+**A step can do whatever the GitHub login allows.** Issue text, PR comments and repository
+files can be written by outsiders, and that text can steer an agent in a step. Only signed-in users
 start work, but that limits who starts work, not what an issue says. The real limits are
 the login's permissions and branch protection. On a repository that accepts outside pull
 requests, automatic merging needs branch protection with human review.
 
-**Agents can read their credentials.** An agent can read its model credential and GitHub
-token. Use dedicated service accounts with narrow scopes and provider spend limits. Every
+**Steps can read their credentials.** Every step can read `GH_TOKEN` and every variable
+in the runner's `env`. Use dedicated service accounts with narrow scopes and provider spend limits. Every
 `GH_TOKEN` should be fine-grained, limited to connected repositories, without admin rights,
 and belong to the bot.
 
@@ -34,7 +34,7 @@ and belong to the bot.
 other repository the token covers. Run one deployment per trust domain.
 
 **Machinist tokens are powerful.** Any token holder can read run history, claim runs, and
-assign work that tells an agent to reveal its credentials. Treat a token as equal to the
+assign work that tells an agent to reveal its runner's credentials. Treat a token as equal to the
 GitHub login and the model credential. Give each person and runner their own, so it can be
 revoked with `machinist token revoke`. Tokens are stored as hashes.
 

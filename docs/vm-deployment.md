@@ -11,7 +11,7 @@ As root, on Ubuntu or Debian, with the release you want:
 MACHINIST_VERSION=v0.2.0 bash scripts/setup-vm.sh
 ```
 
-It installs Machinist, Git, the GitHub CLI and both harnesses, runs `machinist init` as the
+It installs Machinist, Git, the GitHub CLI, Claude Code and Codex, runs `machinist init` as the
 `machinist` user, and installs the systemd services. It prints the remaining steps.
 
 ## Credentials
@@ -21,7 +21,7 @@ Secrets go in two files that only root can read. systemd passes them to the serv
 | File | Holds |
 | --- | --- |
 | `/etc/machinist/control-plane.env` | `GH_TOKEN` for the bot |
-| `/etc/machinist/runner.env` | `GH_TOKEN` for the bot and the harness credentials |
+| `/etc/machinist/runner.env` | `GH_TOKEN` for the bot and the variables in `env` |
 
 See [Credentials](credentials.md).
 

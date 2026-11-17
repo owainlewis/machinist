@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/owainlewis/machinist/internal/runner"
 )
 
 func writeFiles(t *testing.T, files map[string]string) string {
@@ -22,34 +25,58 @@ func writeFiles(t *testing.T, files map[string]string) string {
 	return root
 }
 
+const defaultPreset = `timeout = "30m"
+
+[[steps]]
+name = "checkout"
+run = "gh repo clone \"$MACHINIST_REPO\" ."
+timeout = "5m"
+
+[[steps]]
+name = "test"
+run = '''
+go test ./...
+'''
+`
+
 func validFactory() map[string]string {
 	return map[string]string{
-		"agents/default/agent.toml":                     "harness = \"claude\"\nmodel = \"sonnet\"\n",
-		"agents/default/playbook.md":                    "Do good work.\n",
-		"agents/default/.claude/agents/machinist-x.md":  "claude agent",
-		"agents/default/.codex/agents/machinist-x.toml": "name = \"x\"",
-		"automations/nightly.md":                        "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nrepo = \"owner/repo\"\nagent = \"default\"\n+++\nCheck the repo.\n",
+		"presets/default.toml":   defaultPreset,
+		"automations/nightly.md": "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nrepo = \"owner/repo\"\npreset = \"default\"\n+++\nCheck the repo.\n",
 	}
 }
 
-func TestLoadReadsAgentsAndAutomations(t *testing.T) {
+func TestLoadReadsPresetsAndAutomations(t *testing.T) {
 	factory, err := Load(writeFiles(t, validFactory()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := factory.Agents["default"]
-	if agent.Harness != "claude" || agent.Model != "sonnet" || agent.Playbook != "Do good work.\n" {
-		t.Fatalf("agent = %+v", agent)
+	preset, ok := factory.Preset("default")
+	if !ok || preset.Name != "default" || preset.Timeout != 30*time.Minute || len(preset.Steps) != 2 {
+		t.Fatalf("preset = %+v", preset)
 	}
-	if len(agent.Files) != 2 || agent.Files[0].Path != ".claude/agents/machinist-x.md" || agent.Files[1].Path != ".codex/agents/machinist-x.toml" || agent.Files[0].Body != "claude agent" {
-		t.Fatalf("files = %+v", agent.Files)
+	if preset.Steps[0] != (runner.Step{Name: "checkout", Run: `gh repo clone "$MACHINIST_REPO" .`, TimeoutMillis: (5 * time.Minute).Milliseconds()}) || preset.Steps[1] != (runner.Step{Name: "test", Run: "go test ./...\n"}) {
+		t.Fatalf("steps = %+v", preset.Steps)
+	}
+	if _, ok := factory.Preset("missing"); ok {
+		t.Fatal("found a preset that is not in the factory")
 	}
 	automation := factory.Automations[0]
-	if automation.Name != "nightly" || automation.Repo != "owner/repo" || automation.Prompt != "Check the repo." || automation.Cron == nil {
+	if automation.Name != "nightly" || automation.Repo != "owner/repo" || automation.Preset != "default" || automation.Prompt != "Check the repo." || automation.Cron == nil {
 		t.Fatalf("automation = %+v", automation)
 	}
 	if err := factory.Validate("default", []string{"owner/repo"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPresetTimeoutIsOptional(t *testing.T) {
+	factory, err := Load(writeFiles(t, map[string]string{"presets/quick.toml": "[[steps]]\nname = \"only\"\nrun = \"true\"\n"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preset := factory.Presets["quick"]; preset.Timeout != 0 || preset.Steps[0].TimeoutMillis != 0 {
+		t.Fatalf("preset = %+v", preset)
 	}
 }
 
@@ -63,52 +90,57 @@ func TestLoadAllowsNoAutomations(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidFactories(t *testing.T) {
+	step := func(body string) string { return "[[steps]]\n" + body + "\n" }
 	for _, test := range []struct {
 		name, want string
 		change     func(map[string]string)
 	}{
-		{"no agents", "", func(files map[string]string) {
-			for name := range files {
-				if strings.HasPrefix(name, "agents/") {
-					delete(files, name)
-				}
-			}
+		{"no presets", "no presets", func(files map[string]string) { delete(files, "presets/default.toml") }},
+		{"no steps", "at least one step", func(files map[string]string) { files["presets/default.toml"] = "timeout = \"5m\"\n" }},
+		{"bad step name", "invalid name", func(files map[string]string) {
+			files["presets/default.toml"] = step("name = \"Build It\"\nrun = \"true\"")
 		}},
-		{"unknown harness", "harness must be", func(files map[string]string) { files["agents/default/agent.toml"] = "harness = \"gemini\"\n" }},
-		{"old key", "unknown key command", func(files map[string]string) {
-			files["agents/default/agent.toml"] = "harness = \"claude\"\ncommand = [\"x\"]\n"
+		{"step twice", "listed twice", func(files map[string]string) {
+			files["presets/default.toml"] = step("name = \"build\"\nrun = \"true\"") + step("name = \"build\"\nrun = \"true\"")
 		}},
-		{"missing playbook", "playbook.md", func(files map[string]string) { delete(files, "agents/default/playbook.md") }},
-		{"empty playbook", "playbook.md is empty", func(files map[string]string) { files["agents/default/playbook.md"] = " \n" }},
+		{"empty run", "run is empty", func(files map[string]string) { files["presets/default.toml"] = step("name = \"build\"\nrun = \" \"") }},
+		{"bad timeout", "positive duration", func(files map[string]string) {
+			files["presets/default.toml"] = "timeout = \"soon\"\n" + step("name = \"b\"\nrun = \"true\"")
+		}},
+		{"bad step timeout", "step b: timeout", func(files map[string]string) {
+			files["presets/default.toml"] = step("name = \"b\"\nrun = \"true\"\ntimeout = \"-1m\"")
+		}},
+		{"unknown key", "unknown key", func(files map[string]string) {
+			files["presets/default.toml"] = step("name = \"b\"\nrun = \"true\"\nneeds = \"a\"")
+		}},
 		{"no front matter", "front matter", func(files map[string]string) { files["automations/nightly.md"] = "Just a prompt\n" }},
 		{"unclosed front matter", "not closed", func(files map[string]string) { files["automations/nightly.md"] = "+++\nrepo = \"x\"\n" }},
 		{"bad cron", "", func(files map[string]string) {
-			files["automations/nightly.md"] = "+++\nschedule = \"nope\"\ntimezone = \"UTC\"\nrepo = \"o/r\"\nagent = \"default\"\n+++\nGo.\n"
+			files["automations/nightly.md"] = "+++\nschedule = \"nope\"\ntimezone = \"UTC\"\nrepo = \"o/r\"\npreset = \"default\"\n+++\nGo.\n"
 		}},
-		{"no repo", "repo and agent", func(files map[string]string) {
-			files["automations/nightly.md"] = "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nagent = \"default\"\n+++\nGo.\n"
+		{"no repo", "repo and preset", func(files map[string]string) {
+			files["automations/nightly.md"] = "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\npreset = \"default\"\n+++\nGo.\n"
+		}},
+		{"old agent key", "unknown key agent", func(files map[string]string) {
+			files["automations/nightly.md"] = "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nrepo = \"o/r\"\nagent = \"default\"\n+++\nGo.\n"
 		}},
 		{"empty automation prompt", "prompt is empty", func(files map[string]string) {
-			files["automations/nightly.md"] = "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nrepo = \"o/r\"\nagent = \"default\"\n+++\n\n"
+			files["automations/nightly.md"] = "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nrepo = \"o/r\"\npreset = \"default\"\n+++\n\n"
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			files := validFactory()
 			test.change(files)
-			root := writeFiles(t, files)
-			if err := os.MkdirAll(filepath.Join(root, "agents"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := Load(root); err == nil || !strings.Contains(err.Error(), test.want) {
+			if _, err := Load(writeFiles(t, files)); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 		})
 	}
 }
 
-func TestLoadRejectsSymlinkedPlaybook(t *testing.T) {
+func TestLoadRejectsSymlinkedPreset(t *testing.T) {
 	root := writeFiles(t, validFactory())
-	path := filepath.Join(root, "agents", "default", "playbook.md")
+	path := filepath.Join(root, "presets", "default.toml")
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -125,97 +157,14 @@ func TestValidateChecksConfigurationReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := factory.Validate("missing", []string{"owner/repo"}); err == nil || !strings.Contains(err.Error(), "default_agent") {
+	if err := factory.Validate("missing", []string{"owner/repo"}); err == nil || !strings.Contains(err.Error(), "default_preset") {
 		t.Fatalf("error = %v", err)
 	}
 	if err := factory.Validate("default", []string{"owner/other"}); err == nil || !strings.Contains(err.Error(), "github.repositories") {
 		t.Fatalf("error = %v", err)
 	}
-	factory.Automations[0].Agent = "ghost"
+	factory.Automations[0].Preset = "ghost"
 	if err := factory.Validate("default", []string{"owner/repo"}); err == nil || !strings.Contains(err.Error(), "ghost") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-// jobFactory is validFactory with a second agent and a job of three stages.
-func jobFactory() map[string]string {
-	files := validFactory()
-	files["agents/reviewer/agent.toml"] = "harness = \"claude\"\nmodel = \"opus\"\n"
-	files["agents/reviewer/playbook.md"] = "Review the branch.\n"
-	files["jobs/ship.toml"] = `[[stages]]
-name = "build"
-agent = "default"
-
-[[stages]]
-name = "test"
-script = "go test ./..."
-
-[[stages]]
-name = "review"
-agent = "reviewer"
-`
-	return files
-}
-
-func TestLoadReadsJobs(t *testing.T) {
-	factory, err := Load(writeFiles(t, jobFactory()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	job, ok := factory.Job("ship")
-	if !ok || job.Harness != "claude" || len(job.Stages) != 3 {
-		t.Fatalf("job = %+v", job)
-	}
-	if job.Stages[0] != (Stage{Name: "build", Agent: "default"}) || job.Stages[1] != (Stage{Name: "test", Script: "go test ./..."}) || job.Stages[2].Agent != "reviewer" {
-		t.Fatalf("stages = %+v", job.Stages)
-	}
-	if err := factory.Validate("ship", []string{"owner/repo"}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestAnAgentIsAJobWithOneStage(t *testing.T) {
-	factory, err := Load(writeFiles(t, validFactory()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	job, ok := factory.Job("default")
-	if !ok || job.Harness != "claude" || len(job.Stages) != 1 || job.Stages[0] != (Stage{Name: "default", Agent: "default"}) {
-		t.Fatalf("job = %+v", job)
-	}
-	if _, ok := factory.Job("missing"); ok {
-		t.Fatal("found a job that is not in the factory")
-	}
-}
-
-func TestLoadRejectsInvalidJobs(t *testing.T) {
-	stage := func(body string) string { return "[[stages]]\n" + body + "\n" }
-	for _, test := range []struct {
-		name, want, job string
-	}{
-		{"no stages", "at least one agent stage", ""},
-		{"only scripts", "at least one agent stage", stage(`name = "test"` + "\n" + `script = "true"`)},
-		{"agent and script", "agent or script", stage(`name = "build"` + "\n" + `agent = "default"` + "\n" + `script = "true"`)},
-		{"neither", "agent or script", stage(`name = "build"`)},
-		{"bad stage name", "invalid name", stage(`name = "Build It"` + "\n" + `agent = "default"`)},
-		{"stage twice", "listed twice", stage(`name = "build"`+"\n"+`agent = "default"`) + stage(`name = "build"`+"\n"+`script = "true"`)},
-		{"unknown agent", `agent "ghost" is not in the factory`, stage(`name = "build"` + "\n" + `agent = "ghost"`)},
-		{"two harnesses", "an earlier stage uses claude", stage(`name = "build"`+"\n"+`agent = "default"`) + stage(`name = "review"`+"\n"+`agent = "other"`)},
-		{"unknown key", "unknown key", stage(`name = "build"` + "\n" + `agent = "default"` + "\n" + `needs = "test"`)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			files := validFactory()
-			files["agents/other/agent.toml"] = "harness = \"codex\"\n"
-			files["agents/other/playbook.md"] = "Review.\n"
-			files["jobs/ship.toml"] = test.job
-			if _, err := Load(writeFiles(t, files)); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
-		})
-	}
-	files := validFactory()
-	files["jobs/default.toml"] = stage(`name = "build"` + "\n" + `agent = "default"`)
-	if _, err := Load(writeFiles(t, files)); err == nil || !strings.Contains(err.Error(), "an agent already has this name") {
 		t.Fatalf("error = %v", err)
 	}
 }

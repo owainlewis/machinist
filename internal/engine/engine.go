@@ -106,12 +106,11 @@ func (e *Engine) advance(ctx context.Context, ticket tickets.Ticket) error {
 		}
 		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: waitingState(ticket), Message: message})
 	}
-	job, ok := e.Factory.Job(ticket.Agent)
-	if !ok {
-		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: waitingState(ticket), Message: missingAgentMessage(ticket.Agent)})
+	if _, ok := e.Factory.Preset(ticket.Agent); !ok {
+		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: waitingState(ticket), Message: missingPresetMessage(ticket.Agent)})
 	}
 	// The ticket can leave working between the listing and here. Then there is nothing to run.
-	if _, err = e.Store.QueueRun(ctx, ticket.ID, job.Harness); errors.Is(err, tickets.ErrNotWorking) {
+	if _, err = e.Store.QueueRun(ctx, ticket.ID, protocol.StepsHarness); errors.Is(err, tickets.ErrNotWorking) {
 		return nil
 	}
 	return err
@@ -130,8 +129,8 @@ func (e *Engine) turnLimitMessage(ctx context.Context, ticketID string) (string,
 	return strings.Join(parts, "\n\n"), nil
 }
 
-func missingAgentMessage(agent string) string {
-	return fmt.Sprintf("Agent %q is not in the factory.", agent)
+func missingPresetMessage(preset string) string {
+	return fmt.Sprintf("Preset %q is not in the factory.", preset)
 }
 
 // waitingState is where a ticket goes when it needs a person. An automation
@@ -150,53 +149,30 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 	if err != nil || claim == nil {
 		return nil, err
 	}
-	job, ok := e.Factory.Job(claim.Ticket.Agent)
+	preset, ok := e.Factory.Preset(claim.Ticket.Agent)
 	if !ok {
-		message := missingAgentMessage(claim.Ticket.Agent)
+		message := missingPresetMessage(claim.Ticket.Agent)
 		return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, e.MaxTurns, func(ticket tickets.Ticket, _ string) tickets.Transition {
 			return tickets.Transition{State: waitingState(ticket), Message: message}
 		})
 	}
-	request := &runner.RunRequest{
+	timeout := e.RunTimeout
+	if preset.Timeout > 0 {
+		timeout = preset.Timeout
+	}
+	return &runner.RunRequest{
 		RunID:         claim.Run.ID,
 		TicketID:      claim.Ticket.ID,
+		Preset:        preset.Name,
 		Repository:    claim.Ticket.Repo,
 		Branch:        claim.Ticket.Branch(),
-		Harness:       claim.Run.Harness,
-		TimeoutMillis: e.RunTimeout.Milliseconds(),
+		Vars:          map[string]string{"repo": claim.Ticket.Repo},
+		Prompt:        tickets.RenderLog(claim.Entries),
+		Steps:         preset.Steps,
+		TimeoutMillis: timeout.Milliseconds(),
 		GitName:       e.Handle,
 		GitEmail:      BotEmail(e.Handle),
-	}
-	request.Stages = e.stages(job, request.Branch, tickets.RenderLog(claim.Entries))
-	return request, nil
-}
-
-// stages turns a job into what the runner starts. Every agent stage gets the
-// same ticket log, and sees the work of earlier stages only in the clone.
-func (e *Engine) stages(job factory.Job, branch, log string) []runner.Stage {
-	stages := make([]runner.Stage, 0, len(job.Stages))
-	for _, stage := range job.Stages {
-		if stage.Agent == "" {
-			stages = append(stages, runner.Stage{Name: stage.Name, Kind: runner.StageScript, Script: stage.Script})
-			continue
-		}
-		agent := e.Factory.Agents[stage.Agent]
-		stages = append(stages, runner.Stage{Name: stage.Name, Kind: runner.StageAgent, Prompt: renderPrompt(agent.Playbook, branch, log), Model: agent.Model, AgentFiles: agent.Files})
-	}
-	return stages
-}
-
-const reportFormat = `End this run with one JSON object and nothing else:
-
-{"outcome": "pr_ready|needs_input|no_change|failed", "summary": "...", "question": "..."}
-
-- pr_ready: the work is pushed and a pull request is open for this branch.
-- needs_input: you need a person to decide. Put what you need in question.
-- no_change: the work needed no pull request. The summary is the answer.
-- failed: you could not do the work. Say why in summary.`
-
-func renderPrompt(playbook, branch, log string) string {
-	return playbook + "\n\n# Branch\n\nYou are on branch `" + branch + "`. Push it often, because unpushed work is lost if this run stops.\n\n# Report\n\n" + reportFormat + "\n\n# Ticket log\n\n" + log
+	}, nil
 }
 
 // Heartbeat renews a run's lease and reports whether the runner should stop it.

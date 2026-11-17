@@ -6,66 +6,79 @@ factory stops startup with a message that names the problem.
 
 ```text
 factory/
-  agents/<agent>/
-    agent.toml              harness, model
-    playbook.md             instructions for the agent
-    .claude/agents/*.md     Claude Code subagents, in its own format
-    .codex/agents/*.toml    Codex custom agents, in its own format
-  jobs/<name>.toml          a list of stages
+  presets/<name>.toml       a list of steps
   automations/<name>.md     TOML front matter and a prompt
 ```
 
-## Agents
+## Presets
+
+A preset is a list of shell steps. A job names one preset, and every job of that preset runs
+the same steps in the same order. `default_preset` in `config.toml` picks the preset for
+jobs that do not name one.
 
 ```toml
-harness = "claude"   # or "codex"
-model = ""           # empty uses the harness default
-```
+# presets/default.toml
+timeout = "60m"            # all steps together; optional
 
-The prompt for each run is the playbook, the branch name, the report format and the ticket
-log, in that order. `default_agent` in `config.toml` picks the agent for new tickets.
+[[steps]]
+name = "checkout"
+timeout = "5m"             # this step; optional
+run = '''
+gh repo clone "$MACHINIST_REPO" . -- --quiet
+git switch "$MACHINIST_BRANCH" 2> /dev/null || git switch -c "$MACHINIST_BRANCH"
+'''
 
-Subagent files are written into each fresh clone and listed in `.git/info/exclude`, so they
-never appear in a pull request. Machinist does not read or translate them. The harness finds
-them the normal way. Give yours `machinist-` names so they do not replace a repository's
-own.
-
-## Jobs
-
-A job is a list of stages that run in order, in one clone, on one runner. A stage is an
-agent of the factory or a shell script.
-
-```toml
-# jobs/ship.toml
-[[stages]]
-name = "build"
-agent = "default"
-
-[[stages]]
+[[steps]]
 name = "test"
-script = "go test ./..."
-
-[[stages]]
-name = "review"
-agent = "reviewer"
+run = "go test ./..."
 ```
 
-Each stage is a new process. An agent stage starts with a fresh context and the same ticket
-log, and sees the work of earlier stages only in the clone. A script stage runs with `sh` in
-the clone, with the same environment as the agent stages, and passes on exit code 0.
+Each step runs with `sh -e` in one workspace on one runner. The workspace starts empty,
+so cloning the repository is a step like any other. Steps run in order. The first command
+that fails ends its step and the job, and the steps after it are skipped. There are no
+branches, loops or parallel steps. To review and then fix, write the review step and then
+the fix step.
 
-The run stops at the first stage that fails, and the stages after it are skipped. An agent
-stage also stops the run when it reports `failed` or `needs_input`, which is how a review
-stage rejects the work. There are no branches, loops or parallel stages. The run's time
-limit covers all stages together.
+Each step is a new process. Steps hand work on through files in the workspace.
 
-The error of a failed script stage gives only its exit status. What the script printed is
-on the run in the web app.
+Step names are letters, digits, hyphens and underscores, and are unique in a preset.
 
-Every agent is also a job with one stage, so a job cannot share a name with an agent. All
-agent stages of a job must use the same harness, and a job needs at least one agent stage.
-To use a job, name it where an agent name goes: `default_agent` in `config.toml`, or `agent`
-in an automation.
+### What a step gets
+
+| Variable | Value |
+| --- | --- |
+| `MACHINIST_REPO` | The job's repository, as `owner/name` |
+| `MACHINIST_BRANCH` | `machinist/<job id>`, the branch for the job's work |
+| `MACHINIST_JOB_ID` | The job's ID |
+| `MACHINIST_PRESET` | The preset's name |
+| `MACHINIST_DIR` | The control directory, outside the workspace |
+| `GH_TOKEN` | The runner's GitHub token, for `gh` and `git` |
+| `GIT_AUTHOR_*`, `GIT_COMMITTER_*` | The bot's name and email |
+
+A step also gets the variables in the runner's `env` list. See
+[Runners](runners.md#what-steps-can-use).
+
+The prompt is the job's log: the request, then each question and answer. It is on stdin and
+in `$MACHINIST_DIR/prompt.md`. A step need not read it.
+
+### Control files
+
+Steps talk to Machinist through files in `$MACHINIST_DIR`. It is outside the workspace,
+so a commit never picks them up. Each file must be a regular file of at most 64 KiB.
+
+| File | Effect |
+| --- | --- |
+| `question.md` | When a step leaves it non-empty, the job stops after that step and waits for an answer. The answer starts the preset again from the first step |
+| `result.md` | When every step passes, its text is the job's result. Without it the result is "Every step passed." |
+
+Work that a step did not push is lost when the job stops, so ask before doing the work, or
+push first.
+
+After a job ends, Machinist looks for an open pull request on `MACHINIST_BRANCH` and records
+its number on the job.
+
+`init` installs two presets. `default` clones the repository, runs Claude Code on the prompt
+and opens one pull request. `maintainer` looks after open pull requests and may merge them.
 
 ## Automations
 
@@ -74,17 +87,17 @@ in an automation.
 schedule = "0 9 * * 1-5"
 timezone = "UTC"
 repo = "owner/name"
-agent = "maintainer"
+preset = "maintainer"
 +++
 The prompt goes here.
 ```
 
-`repo` must be in `github.repositories`, and `agent` must be an agent or a job. Missed runs collapse into
-one, and no ticket starts while the automation's last one is active. An automation never
-waits for a person: anything that would ask one fails the ticket instead, so one bad run
-cannot stop its schedule. The Automations page has a Run now button.
+`repo` must be in `github.repositories`, and `preset` must name a preset. Missed runs
+collapse into one, and no job starts while the automation's last one is active. An
+automation never waits for a person: anything that would ask one fails the job instead, so
+one bad run cannot stop its schedule. The Automations page has a Run now button.
 
 `init` installs `factory/automation-templates/review-open-prs.md`, which merges pull requests
 that are ready. It is off by default. To use it, copy it to `factory/automations/`, set
-`repo` and restart. It uses the `maintainer` agent, because the default playbook forbids
-merging. GitHub refuses any merge that branch protection does not allow.
+`repo` and restart. It uses the `maintainer` preset, because the default preset never
+merges. GitHub refuses any merge that branch protection does not allow.

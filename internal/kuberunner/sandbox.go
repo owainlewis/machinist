@@ -1,4 +1,4 @@
-// Package kuberunner runs one coding agent per Kubernetes Job.
+// Package kuberunner runs the steps of one job per Kubernetes Job.
 package kuberunner
 
 import (
@@ -20,16 +20,9 @@ const (
 	maxRequest = 8 << 20
 )
 
-// SourceDirectory is the clone. The emptyDir mount above it is root-owned, so
-// the non-root init container creates this child for Git's ownership check.
+// SourceDirectory holds the workspace. The emptyDir mount above it is
+// root-owned, so the non-root init container creates this child.
 const SourceDirectory = "/source/repository"
-
-// otherHarness lists credentials that only the other harness needs. One Secret
-// serves every run, so each run drops what it has no use for.
-var otherHarness = map[string][]string{
-	runner.HarnessClaude: {"OPENAI_API_KEY"},
-	runner.HarnessCodex:  {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"},
-}
 
 // Receive stores the run request sent on stdin. It carries no secrets.
 func Receive(input io.Reader, directory string) error {
@@ -88,13 +81,10 @@ func readRequest(exchange string) (runner.RunRequest, error) {
 	return request, err
 }
 
-// agentEnvironment is the Pod's environment, less what the workspace sets
-// itself and what this harness has no use for.
-func agentEnvironment(environ []string, harness string) []string {
-	skip := append([]string{"HOME", "CODEX_HOME", "GH_TOKEN", "GITHUB_TOKEN"}, otherHarness[harness]...)
-	if harness == runner.HarnessCodex {
-		skip = append(skip, "OPENAI_API_KEY") // Codex receives it through codex login.
-	}
+// stepEnvironment is the Pod's environment, less what the workspace sets
+// itself. Every variable of the Secret reaches the steps.
+func stepEnvironment(environ []string) []string {
+	skip := []string{"HOME", "GH_TOKEN", "GITHUB_TOKEN"}
 	kept := []string{}
 next:
 	for _, entry := range runner.SanitizedEnvironment(environ) {
@@ -112,19 +102,14 @@ next:
 	return kept
 }
 
-func githubCloneURL(repository string) string { return "https://github.com/" + repository + ".git" }
-
 // Sandbox runs in the agent container. It writes the result and then stays
 // alive until the connector has read it and deletes the Job.
-func Sandbox(ctx context.Context, exchange, root, home string, cloneURL func(string) string) error {
-	if cloneURL == nil {
-		cloneURL = githubCloneURL
-	}
+func Sandbox(ctx context.Context, exchange, root, home string) error {
 	request, err := readRequest(exchange)
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(runRequest(ctx, request, exchange, root, home, cloneURL))
+	body, err := json.Marshal(runRequest(ctx, request, exchange, root, home))
 	if err != nil {
 		return err
 	}
@@ -138,7 +123,7 @@ func Sandbox(ctx context.Context, exchange, root, home string, cloneURL func(str
 	return nil
 }
 
-func runRequest(ctx context.Context, request runner.RunRequest, exchange, root, home string, cloneURL func(string) string) runner.RunResult {
+func runRequest(ctx context.Context, request runner.RunRequest, exchange, root, home string) runner.RunResult {
 	failure := func(err error) runner.RunResult {
 		state := runner.StateFailed
 		if ctx.Err() != nil {
@@ -150,23 +135,17 @@ func runRequest(ctx context.Context, request runner.RunRequest, exchange, root, 
 	if token == "" {
 		return failure(fmt.Errorf("the agent Secret must hold GH_TOKEN"))
 	}
-	options := runner.WorkspaceOptions{
+	workspace, err := runner.PrepareWorkspace(runner.WorkspaceOptions{
 		Request:     request,
 		Root:        root,
-		CloneURL:    cloneURL(request.Repository),
 		GitHubToken: token,
-		Environment: agentEnvironment(os.Environ(), request.Harness),
+		Environment: stepEnvironment(os.Environ()),
 		Home:        home,
-		CodexHome:   filepath.Join(home, ".codex"),
-	}
-	if request.Harness == runner.HarnessCodex {
-		options.CodexAPIKey = os.Getenv("OPENAI_API_KEY")
-	}
-	workspace, err := runner.PrepareWorkspace(ctx, options)
+	})
 	if err != nil {
 		return failure(err)
 	}
-	return runner.RunInWorkspace(ctx, request, workspace, filepath.Join(exchange, "runtime"))
+	return runner.RunSteps(ctx, request, workspace, filepath.Join(exchange, "runtime"))
 }
 
 type limitedWriter struct {

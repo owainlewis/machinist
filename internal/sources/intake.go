@@ -26,10 +26,10 @@ type AssignRequest struct {
 
 // Intake is the one way the Assign box, the run API and schedules create tickets.
 type Intake struct {
-	Client       *ghclient.Client
-	Store        *tickets.Store
-	DefaultAgent string
-	Repositories []string
+	Client        *ghclient.Client
+	Store         *tickets.Store
+	DefaultPreset string
+	Repositories  []string
 	// Presets reports whether a preset exists.
 	Presets func(name string) bool
 }
@@ -67,7 +67,7 @@ func (i *Intake) Assign(ctx context.Context, request AssignRequest, by string) (
 		return tickets.Ticket{}, false, invalid("send either issue_number, or both title and body")
 	}
 	key := "api:" + request.RequestID
-	ticket := tickets.NewTicket{Source: "api", Repo: repository, Title: request.Title, Body: request.Body, Agent: i.DefaultAgent, CreatedBy: by, SourceKey: key}
+	ticket := tickets.NewTicket{Source: "api", Repo: repository, Title: request.Title, Body: request.Body, Agent: i.DefaultPreset, CreatedBy: by, SourceKey: key}
 	if request.IssueNumber > 0 {
 		if existing, found, err := i.existing(ctx, key, repository, request.IssueNumber); err != nil || found {
 			return existing, false, err

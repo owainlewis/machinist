@@ -15,40 +15,34 @@ import (
 	"github.com/owainlewis/machinist/internal/runner"
 )
 
-const checkPrompt = `This is a setup check. Do not change anything. End this run with exactly one JSON object and nothing else:
+// checkStep proves a step can reach the repository with the runner's token.
+const checkStep = `git ls-remote "https://github.com/$MACHINIST_REPO.git" HEAD > /dev/null`
 
-{"outcome":"no_change","summary":"ok"}`
-
-// Check makes one real run per harness and prints the credential source each
-// harness reported, or the error.
+// Check runs one real step on this runner and prints whether it worked.
 func Check(ctx context.Context, executor Executor, runnerConfig config.Runner, repository string, output io.Writer) error {
-	failed := false
-	for _, harness := range runnerConfig.Harnesses() {
-		random := make([]byte, 12)
-		if _, err := rand.Read(random); err != nil {
-			return err
-		}
-		runID := "run_" + hex.EncodeToString(random)
-		result := executor.Execute(ctx, runner.RunRequest{
-			RunID:         runID,
-			Repository:    repository,
-			Branch:        "machinist/check-" + hex.EncodeToString(random[:4]),
-			Prompt:        checkPrompt,
-			Harness:       harness,
-			TimeoutMillis: (5 * time.Minute).Milliseconds(),
-			GitName:       "machinist-check",
-			GitEmail:      "machinist-check@users.noreply.github.com",
-		})
-		_ = os.RemoveAll(filepath.Join(runnerConfig.DataDirectory, "runs", runID))
-		if result.State != runner.StateSucceeded || result.Report == nil {
-			failed = true
-			fmt.Fprintf(output, "%s: failed: %s\n", harness, result.Error)
-			continue
-		}
-		fmt.Fprintf(output, "%s: ok, credential source: %s\n", harness, result.CredentialSource)
+	random := make([]byte, 12)
+	if _, err := rand.Read(random); err != nil {
+		return err
 	}
-	if failed {
+	runID := "run_" + hex.EncodeToString(random)
+	result := executor.Execute(ctx, runner.RunRequest{
+		RunID:         runID,
+		TicketID:      "check",
+		Preset:        "check",
+		Repository:    repository,
+		Branch:        "machinist/check-" + hex.EncodeToString(random[:4]),
+		Vars:          map[string]string{"repo": repository},
+		Prompt:        "This is a setup check.",
+		Steps:         []runner.Step{{Name: "reach-repository", Run: checkStep}},
+		TimeoutMillis: time.Minute.Milliseconds(),
+		GitName:       "machinist-check",
+		GitEmail:      "machinist-check@users.noreply.github.com",
+	})
+	_ = os.RemoveAll(filepath.Join(runnerConfig.DataDirectory, "runs", runID))
+	if result.State != runner.StateSucceeded {
+		fmt.Fprintf(output, "failed: %s\n", result.Error)
 		return errors.New("runner check failed")
 	}
+	fmt.Fprintf(output, "ok: a step reached %s, with %d variables from env\n", repository, len(runnerConfig.Env))
 	return nil
 }

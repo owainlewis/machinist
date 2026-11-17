@@ -2,7 +2,7 @@
 listen = "127.0.0.1:7331"
 database = "~/.machinist/server/tickets.db"
 factory = "~/.machinist/factory"
-default_agent = "default"
+default_preset = "default"
 max_turns_without_human = 5
 run_timeout = "60m"
 # tls_cert = "/etc/machinist/tls.crt"

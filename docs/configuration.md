@@ -14,7 +14,7 @@ or startup stops.
 listen = "127.0.0.1:7331"
 database = "~/.machinist/server/tickets.db"
 factory = "~/.machinist/factory"
-default_agent = "default"
+default_preset = "default"
 max_turns_without_human = 5
 run_timeout = "60m"
 # tls_cert = "/etc/machinist/tls.crt"
@@ -30,9 +30,9 @@ repositories = ["owner/name"]
 | `listen` | Address for the UI, API and runners. Keep it private |
 | `database` | The SQLite file. Back this up |
 | `factory` | The factory directory |
-| `default_agent` | The agent new tickets use |
-| `max_turns_without_human` | Agent runs allowed since a person last said something |
-| `run_timeout` | The deadline for one run |
+| `default_preset` | The preset a job uses when it names none |
+| `max_turns_without_human` | Runs allowed since a person last said something |
+| `run_timeout` | The deadline for one run, when its preset sets none |
 | `tls_cert`, `tls_key` | Serve HTTPS, and mark the sign-in cookie Secure |
 | `github.handle` | The bot's login. Use a dedicated account |
 | `github.repositories` | The repositories Machinist serves |
@@ -45,10 +45,10 @@ See [Runners](runners.md) for each type.
 | --- | --- |
 | `control_plane` | The control plane's address |
 | `token_file` | A file holding this runner's token |
-| `data_directory` | Clones and activity, removed after each run |
+| `data_directory` | Workspaces and activity, removed after each run |
 | `slots` | How many runs at once |
-| `credentials.<harness>.env` | Variable names the harness reads. See [Credentials](credentials.md) |
-| `credentials.<harness>.login` | Use the OS user's existing login. Local runners only |
+| `env` | Variables passed from the runner's environment to every step. See [Runners](runners.md#what-steps-can-use) |
+| `login` | Give steps the OS user's home, so a tool can use its login. Local runners only |
 | `kubernetes.*` | Makes this a Kubernetes runner |
 
 ## Tokens

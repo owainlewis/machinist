@@ -1,23 +1,26 @@
 # Credentials
 
-Credentials live on runners. The control plane never holds an agent credential.
+Credentials live on runners. The control plane never holds a credential a step uses.
 
-A credential is the list of environment variable names the harness already reads, passed
-through unchanged. So keys, service accounts, federation and cloud providers need no special
-handling. On a Kubernetes runner the same variables live in one Secret. A runner offers only
-the harnesses it has a credential for.
+A credential is a list of environment variable names that a tool already reads, passed
+through unchanged with `env` in `runner.toml`. So keys, service accounts, federation and
+cloud providers need no special handling. On a Kubernetes runner the same variables live in
+one Secret. See [Runners](runners.md#what-steps-can-use).
 
-Run `machinist runner check --repo owner/name` to see which credential source a harness
-actually used.
+```toml
+env = ["ANTHROPIC_API_KEY", "LINEAR_API_KEY"]
+```
+
+Every step of every preset on that runner gets these variables. Run presets that need
+different credentials on different runners.
 
 ## GitHub token scopes
 
-Local runners pass `GH_TOKEN` to every agent run. `machinist runner check` and
-`machinist runner start` print one warning if a classic token reports scopes beyond
-`repo` (private repositories) or `public_repo` (public repositories). Those scopes
-cover cloning, pushing a branch, and opening and commenting on pull requests.
-The warning names the extra scopes, such as `delete_repo` or `admin:public_key`:
-an agent can use these permissions too.
+Steps get `GH_TOKEN`, so `gh` and `git` can clone, push and open pull requests.
+`machinist runner check` and `machinist runner start` print one warning if a classic token
+reports scopes beyond `repo` (private repositories) or `public_repo` (public repositories).
+The warning names the extra scopes, such as `delete_repo` or `admin:public_key`: any step
+can use these permissions too.
 
 Use a token limited to the repositories the bot works on. Fine-grained tokens do
 not report OAuth scopes, so they produce no scope warning. A missing warning is
@@ -32,8 +35,7 @@ their job Secret, so this local token check does not apply to them.
 | --- | --- | --- | --- |
 | Anthropic API key, `ANTHROPIC_API_KEY` | Yes | Yes | Billed to the key owner |
 | Bedrock, Google Cloud or Foundry variables | Yes | Yes | Billed through the provider |
-| OpenAI API key, `OPENAI_API_KEY` | Yes | Yes | The runner runs `codex login --with-api-key` for each run |
-| Codex access token, `CODEX_ACCESS_TOKEN` | Business or Enterprise only | Business or Enterprise only | Acts as the person who created it. Not yet tested here |
+| OpenAI API key, `OPENAI_API_KEY` | Yes | Yes | A Codex step runs `codex login --with-api-key` itself |
 | Claude login, `login = true` | No | Yes | Local runners only |
 | Claude `setup-token`, `CLAUDE_CODE_OAUTH_TOKEN` | No | Yes | Local or Kubernetes |
 | ChatGPT login, `login = true` | No | Yes | Local runners only, with `slots = 1` |
@@ -53,28 +55,13 @@ agreement with each provider.
 
 Run on 2026-11-09 on macOS with Claude Code 2.1.319 and Codex 0.157.1. Credential tests
 used fake values against a local server that recorded the headers and returned 401, so
-they show what each harness sends, not a completed model turn.
+they show what each tool sends, not a completed model turn.
 
 | Test | Result |
 | --- | --- |
 | `codex app-server` with `OPENAI_API_KEY`, private home | No credentials sent, `account` is null |
-| `codex app-server` with `CODEX_API_KEY`, private home | No credentials sent, `account` is null |
-| `codex app-server` with a fake `CODEX_ACCESS_TOKEN` | No credentials sent. Inconclusive, because Codex needs a valid token format |
 | `codex login --with-api-key` into a private home, then `codex app-server` | `Authorization: Bearer` with the key, account type `apiKey` |
-| Claude spec command with `ANTHROPIC_API_KEY`, private home | Sent as `x-api-key` |
-| Claude spec command with `CLAUDE_CODE_OAUTH_TOKEN`, private home | Sent as `Authorization: Bearer` |
-| Codex, clone not listed as trusted, full access | Sends the "until the project is trusted" `configWarning`, then trusts the folder and loads project config |
-| Codex, trust written to private `config.toml` first | No warning, project config loaded |
-| Codex, trust passed with `-c` | Warning still sent |
+| Claude with `ANTHROPIC_API_KEY`, private home | Sent as `x-api-key` |
+| Claude with `CLAUDE_CODE_OAUTH_TOKEN`, private home | Sent as `Authorization: Bearer` |
 | `claude auth status` with a private `HOME` on a logged-in Mac | Not logged in |
 | `codex login status` with a private `CODEX_HOME` on a logged-in Mac | Not logged in. The directory must exist first |
-
-### Continuing a stopped run
-
-One real Claude run on a local fixture repository with a stub `gh`. The agent pushed all
-its work in one push, and it was then stopped before it reported. A second run in a fresh
-clone received only the ticket log. It read the review and the CI failure through `gh`,
-fixed both, kept the earlier commits, passed the tests and returned a valid report.
-
-**Not tested:** continuing a branch where the requested work is unfinished, a real GitHub
-pull request, and any of this with Codex.

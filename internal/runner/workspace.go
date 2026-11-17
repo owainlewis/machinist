@@ -6,108 +6,120 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/githubauth"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
-const agentFileLimit = 1 << 20
+const (
+	maxControlFile = 64 << 10
+	defaultSummary = "Every step passed."
+)
+
+var varName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // WorkspaceOptions describes the private directory and credentials of one run.
 type WorkspaceOptions struct {
 	Request     RunRequest
 	Root        string
-	CloneURL    string
 	GitHubToken string
-	// Environment is the base environment: allowlist and credential variables.
+	// Environment is the base environment: the allowlist and the runner's env.
 	Environment []string
-	// Home and CodexHome are private to the run unless Login is set.
-	Home      string
-	CodexHome string
-	Login     bool
-	// CodexAPIKey is piped to codex login, because app-server ignores it in the environment.
-	CodexAPIKey string
+	// Home is private to the run unless the runner shares the user's login.
+	Home string
 }
 
-// Workspace is a prepared clone and the complete environment of its agent.
+// Workspace is an empty directory, the control directory beside it and the
+// complete environment of the steps. The control directory holds prompt.md,
+// and a step can leave question.md or result.md there. It is outside the
+// workspace, so a clone into the workspace never commits it.
 type Workspace struct {
-	Repository  string
+	Directory   string
+	Control     string
 	Environment []string
 }
 
-// PrepareWorkspace makes a fresh clone on the ticket's branch and sets up what
-// the harness needs to run in it. Both runner types use it.
-func PrepareWorkspace(ctx context.Context, options WorkspaceOptions) (Workspace, error) {
-	if !options.Login {
-		for _, directory := range []string{options.Home, options.CodexHome} {
-			if err := os.MkdirAll(directory, 0o700); err != nil {
-				return Workspace{}, err
-			}
-		}
+// PrepareWorkspace makes an empty workspace and writes the prompt beside it.
+// Nothing is cloned: checking out a repository is a step like any other.
+func PrepareWorkspace(options WorkspaceOptions) (Workspace, error) {
+	request := options.Request
+	if err := os.MkdirAll(options.Home, 0o700); err != nil {
+		return Workspace{}, err
 	}
-	github, err := githubauth.GitHubEnvironment(options.GitHubToken, options.Request.Repository)
+	var paths [2]string
+	for index, name := range []string{"workspace", "control"} {
+		directory := filepath.Join(options.Root, name)
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return Workspace{}, err
+		}
+		canonical, err := filepath.EvalSymlinks(directory)
+		if err != nil {
+			return Workspace{}, err
+		}
+		paths[index] = canonical
+	}
+	workspace := Workspace{Directory: paths[0], Control: paths[1]}
+	if err := os.WriteFile(filepath.Join(workspace.Control, "prompt.md"), []byte(request.Prompt), 0o600); err != nil {
+		return Workspace{}, err
+	}
+	environment, err := stepEnvironment(options, workspace.Control)
 	if err != nil {
 		return Workspace{}, err
 	}
-	environment := append([]string(nil), options.Environment...)
-	environment = append(environment, "HOME="+options.Home, "CODEX_HOME="+options.CodexHome, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
-	environment = append(environment, github...)
-
-	repository := filepath.Join(options.Root, "repository")
-	if err := runGit(ctx, options.Root, environment, "clone", "--quiet", options.CloneURL, repository); err != nil {
-		return Workspace{}, err
-	}
-	if err := checkoutBranch(ctx, repository, environment, options.Request.Branch); err != nil {
-		return Workspace{}, err
-	}
-	for _, setting := range [][2]string{{"user.name", options.Request.GitName}, {"user.email", options.Request.GitEmail}} {
-		if err := runGit(ctx, repository, environment, "config", setting[0], setting[1]); err != nil {
-			return Workspace{}, err
-		}
-	}
-	if err := writeAgentFiles(repository, options.Request.AgentFiles); err != nil {
-		return Workspace{}, err
-	}
-	canonical, err := filepath.EvalSymlinks(repository)
-	if err != nil {
-		return Workspace{}, err
-	}
-	if options.Request.Harness == HarnessCodex {
-		if err := writeCodexConfig(options.CodexHome, canonical, options.Login); err != nil {
-			return Workspace{}, err
-		}
-		if options.CodexAPIKey != "" {
-			if err := codexLogin(ctx, options.Root, environment, options.CodexAPIKey); err != nil {
-				return Workspace{}, err
-			}
-		}
-	}
-	return Workspace{Repository: canonical, Environment: environment}, nil
+	workspace.Environment = environment
+	return workspace, nil
 }
 
-// RunInWorkspace runs the stages of a request in order in a prepared workspace.
-// Each stage is a new process, and only the workspace carries over. The run
-// ends at the first stage that fails, or at an agent stage that reports failed
-// or needs_input. The run timeout covers all stages together.
-func RunInWorkspace(ctx context.Context, request RunRequest, workspace Workspace, dataDirectory string) RunResult {
-	stages := request.Stages
-	if len(stages) == 0 {
-		// PrepareWorkspace already wrote the agent files of the request.
-		stages = []Stage{{Name: request.Harness, Kind: StageAgent, Prompt: request.Prompt, Model: request.Model}}
+func stepEnvironment(options WorkspaceOptions, control string) ([]string, error) {
+	request := options.Request
+	environment := append([]string(nil), options.Environment...)
+	environment = append(environment,
+		"HOME="+options.Home,
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME="+request.GitName, "GIT_COMMITTER_NAME="+request.GitName,
+		"GIT_AUTHOR_EMAIL="+request.GitEmail, "GIT_COMMITTER_EMAIL="+request.GitEmail,
+		"MACHINIST_JOB_ID="+request.TicketID,
+		"MACHINIST_PRESET="+request.Preset,
+		"MACHINIST_BRANCH="+request.Branch,
+		"MACHINIST_DIR="+control,
+	)
+	for name, value := range request.Vars {
+		if !varName.MatchString(name) {
+			return nil, fmt.Errorf("invalid var name %q", name)
+		}
+		environment = append(environment, "MACHINIST_"+strings.ToUpper(name)+"="+value)
 	}
+	if request.Repository != "" {
+		github, err := githubauth.GitHubEnvironment(options.GitHubToken, request.Repository)
+		if err != nil {
+			return nil, err
+		}
+		environment = append(environment, github...)
+	}
+	return environment, nil
+}
+
+// RunSteps runs the steps of a request in order in a prepared workspace. Each
+// step is a new process, and only the workspace carries over. The run ends at
+// the first step that exits non-zero or times out, or at a step that writes
+// question.md in the control directory. The run timeout covers all steps together.
+func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, dataDirectory string) RunResult {
 	if !ValidRunID(request.RunID) {
 		return RunResult{State: StateFailed, Error: fmt.Sprintf("invalid run ID %q", request.RunID)}
+	}
+	if len(request.Steps) == 0 {
+		return RunResult{State: StateFailed, Error: "the preset has no steps"}
 	}
 	runDirectory := filepath.Join(dataDirectory, "runs", request.RunID)
 	if err := createDurableDirectory(runDirectory); err != nil {
 		return RunResult{State: StateFailed, Error: fmt.Sprintf("create run directory: %v", err)}
 	}
-	// Every stage appends to one event log, so the sequence numbers stay
+	// Every step appends to one event log, so the sequence numbers stay
 	// continuous for the whole run.
 	log, err := newEventLog(filepath.Join(runDirectory, "events.jsonl"))
 	if err != nil {
@@ -115,187 +127,109 @@ func RunInWorkspace(ctx context.Context, request RunRequest, workspace Workspace
 	}
 
 	output := RunResult{State: StateSucceeded}
-	results := make([]protocol.StageResult, len(stages))
-	for index, stage := range stages {
-		results[index] = protocol.StageResult{Name: stage.Name, Kind: stage.Kind, State: protocol.StageSkipped}
+	results := make([]protocol.StageResult, len(request.Steps))
+	for index, step := range request.Steps {
+		results[index] = protocol.StageResult{Name: step.Name, Kind: "step", State: protocol.StageSkipped}
 	}
 	deadline := time.Now().Add(time.Duration(request.TimeoutMillis) * time.Millisecond)
-	for index, stage := range stages {
-		result, err := runStage(ctx, request, stage, workspace, dataDirectory, log, time.Until(deadline))
+	for index, step := range request.Steps {
+		result, err := runStep(ctx, request, step, workspace, dataDirectory, log, time.Until(deadline))
 		if result.State == "" {
 			result.State = StateFailed
 		}
 		entry := &results[index]
 		entry.State = string(result.State)
-		entry.Tokens = result.TokenUsage
-		entry.Cost = result.Cost
 		entry.DurationMillis = result.DurationMillis
-		if result.TokenUsage != nil {
-			if output.Tokens == nil {
-				output.Tokens = new(int64)
-			}
-			*output.Tokens += *result.TokenUsage
-		}
-		if result.Cost != nil {
-			if output.Cost == nil {
-				output.Cost = new(float64)
-			}
-			*output.Cost += *result.Cost
-		}
-		if result.CredentialSource != "" {
-			output.CredentialSource = result.CredentialSource
-		}
 		if result.State != StateSucceeded {
 			output.State = result.State
-			output.Report = nil
 			if err != nil {
 				entry.Error = err.Error()
-				output.Error = entry.Error
-				if len(stages) > 1 {
-					output.Error = fmt.Sprintf("stage %s: %s", stage.Name, entry.Error)
-				}
 			}
+			output.Error = fmt.Sprintf("step %s: %s", step.Name, entry.Error)
 			break
 		}
-		report := result.Report
-		if report == nil {
-			continue
-		}
-		entry.Outcome = report.Outcome
-		// A later stage that changed nothing does not hide a pull request an
-		// earlier stage made ready.
-		if output.Report == nil || report.Outcome != protocol.OutcomeNoChange || output.Report.Outcome == protocol.OutcomeNoChange {
-			output.Report = report
-		}
-		if report.Outcome == protocol.OutcomeFailed || report.Outcome == protocol.OutcomeNeedsInput {
+		question, err := readControlFile(workspace.Control, "question.md")
+		if err != nil {
+			output.State, entry.Error = StateFailed, err.Error()
+			output.Error = fmt.Sprintf("step %s: %s", step.Name, entry.Error)
 			break
+		}
+		if question != "" {
+			entry.Outcome = protocol.OutcomeNeedsInput
+			output.Report = &protocol.Report{Outcome: protocol.OutcomeNeedsInput, Summary: "Step " + step.Name + " asked a question.", Question: question}
+			break
+		}
+	}
+	if output.State == StateSucceeded && output.Report == nil {
+		output.Report, err = finalReport(workspace.Control)
+		if err != nil {
+			output.State, output.Error = StateFailed, err.Error()
 		}
 	}
 	if err := log.close(); err != nil && output.Error == "" {
 		output.Error = err.Error()
 	}
-	if len(request.Stages) > 0 {
-		output.Stages = results
-	}
+	output.Stages = results
 	return output
 }
 
-// runStage starts one stage and waits for it. An agent stage is the harness
-// command. A script stage is sh, with no prompt and no report.
-func runStage(ctx context.Context, request RunRequest, stage Stage, workspace Workspace, dataDirectory string, log *eventLog, remaining time.Duration) (Result, error) {
+// finalReport is the run's result: result.md, or a plain summary.
+func finalReport(directory string) (*protocol.Report, error) {
+	summary, err := readControlFile(directory, "result.md")
+	if err != nil {
+		return nil, err
+	}
+	if summary == "" {
+		summary = defaultSummary
+	}
+	return &protocol.Report{Outcome: protocol.OutcomeNoChange, Summary: summary}, nil
+}
+
+// readControlFile reads a file a step left for Machinist. A missing file is empty.
+func readControlFile(directory, name string) (string, error) {
+	path := filepath.Join(directory, name)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", name)
+	}
+	if info.Size() > maxControlFile {
+		return "", fmt.Errorf("%s is larger than %d bytes", name, maxControlFile)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(body)), nil
+}
+
+// runStep starts one step with sh -c and waits for it. The step gets the
+// prompt on stdin too, so a command such as claude -p can read it there.
+func runStep(ctx context.Context, request RunRequest, step Step, workspace Workspace, dataDirectory string, log *eventLog, remaining time.Duration) (Result, error) {
 	if remaining <= 0 {
-		return Result{State: StateTimedOut}, errors.New("the run timed out before this stage started")
+		return Result{State: StateTimedOut}, errors.New("the run timed out before this step started")
 	}
-	var command config.ResolvedCommand
-	switch stage.Kind {
-	case StageAgent:
-		if err := writeAgentFiles(workspace.Repository, stage.AgentFiles); err != nil {
-			return Result{}, err
-		}
-		var err error
-		command, err = HarnessCommand(request.Harness, stage.Model, remaining)
-		if err != nil {
-			return Result{}, err
-		}
-	case StageScript:
-		command = config.ResolvedCommand{Name: stage.Name, Executor: "sh", Command: []string{"sh", "-c", stage.Script}, Timeout: remaining}
-	default:
-		return Result{}, fmt.Errorf("unknown stage kind %q", stage.Kind)
+	timeout := remaining
+	if step.TimeoutMillis > 0 {
+		timeout = min(timeout, time.Duration(step.TimeoutMillis)*time.Millisecond)
 	}
-	if err := log.append("stage.started", "", fmt.Sprintf("name=%s kind=%s", stage.Name, stage.Kind)); err != nil {
+	if err := log.append("step.started", "", "name="+step.Name); err != nil {
 		return Result{}, err
 	}
 	return Execute(ctx, Options{
 		Environment:   workspace.Environment,
-		Prompt:        stage.Prompt,
+		Prompt:        request.Prompt,
 		RunID:         request.RunID,
-		Command:       command,
-		Repository:    workspace.Repository,
+		Command:       Command{Name: step.Name, Args: []string{"sh", "-e", "-c", step.Run}, Timeout: timeout},
+		Directory:     workspace.Directory,
 		DataDirectory: dataDirectory,
 		Stdout:        io.Discard,
 		Stderr:        io.Discard,
 		log:           log,
 	})
-}
-
-func runGit(ctx context.Context, directory string, environment []string, args ...string) error {
-	command := exec.CommandContext(ctx, "git", args...)
-	command.Dir = directory
-	command.Env = environment
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git %s: %w: %.2048s", args[0], err, output)
-	}
-	return nil
-}
-
-// checkoutBranch resumes the ticket's branch if it was pushed, or starts it
-// from the default branch.
-func checkoutBranch(ctx context.Context, repository string, environment []string, branch string) error {
-	remote := "refs/remotes/origin/" + branch
-	if runGit(ctx, repository, environment, "rev-parse", "--quiet", "--verify", remote) == nil {
-		return runGit(ctx, repository, environment, "checkout", "--quiet", "-B", branch, "origin/"+branch)
-	}
-	return runGit(ctx, repository, environment, "checkout", "--quiet", "-b", branch)
-}
-
-func validAgentFilePath(path string) bool {
-	if !strings.HasPrefix(path, ".claude/agents/") && !strings.HasPrefix(path, ".codex/agents/") {
-		return false
-	}
-	return filepath.ToSlash(filepath.Clean(path)) == path
-}
-
-func writeAgentFiles(repository string, files []AgentFile) error {
-	if len(files) == 0 {
-		return nil
-	}
-	excludes := []string{}
-	for _, file := range files {
-		if !validAgentFilePath(file.Path) || len(file.Body) > agentFileLimit {
-			return fmt.Errorf("invalid agent file %q", file.Path)
-		}
-		path := filepath.Join(repository, filepath.FromSlash(file.Path))
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(path, []byte(file.Body), 0o600); err != nil {
-			return err
-		}
-		excludes = append(excludes, "/"+file.Path)
-	}
-	exclude, err := os.OpenFile(filepath.Join(repository, ".git", "info", "exclude"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	_, writeErr := exclude.WriteString(strings.Join(excludes, "\n") + "\n")
-	return errors.Join(writeErr, exclude.Close())
-}
-
-// writeCodexConfig marks the clone trusted before Codex starts. Otherwise Codex
-// sends a configWarning that fails the run. A login run appends to the user's
-// own file, which is what Codex itself does when it trusts a folder.
-func writeCodexConfig(codexHome, repository string, login bool) error {
-	settings := ""
-	if !login {
-		settings = "cli_auth_credentials_store = \"file\"\n"
-	}
-	settings += fmt.Sprintf("\n[projects.%q]\ntrust_level = \"trusted\"\n", repository)
-	file, err := os.OpenFile(filepath.Join(codexHome, "config.toml"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	_, writeErr := file.WriteString(settings)
-	return errors.Join(writeErr, file.Close())
-}
-
-func codexLogin(ctx context.Context, directory string, environment []string, key string) error {
-	command := exec.CommandContext(ctx, "codex", "login", "--with-api-key")
-	command.Dir = directory
-	command.Env = environment
-	command.Stdin = strings.NewReader(key)
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("codex login: %w: %.2048s", err, output)
-	}
-	return nil
 }

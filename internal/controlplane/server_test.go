@@ -52,14 +52,14 @@ func newFixture(t *testing.T) *fixture {
 func testConfig() config.Config {
 	var loaded config.Config
 	loaded.Server.Listen = "127.0.0.1:0"
-	loaded.Server.DefaultAgent = "default"
+	loaded.Server.DefaultPreset = "default"
 	loaded.Server.MaxTurnsWithoutHuman = 3
 	loaded.GitHub.Handle = "machinist-bot"
 	return loaded
 }
 
 func testFactory() *factory.Factory {
-	return &factory.Factory{Agents: map[string]factory.Agent{"default": {Name: "default", Harness: "claude", Playbook: "P"}}}
+	return &factory.Factory{Presets: map[string]factory.Preset{"default": {Name: "default", Steps: []runner.Step{{Name: "work", Run: "true"}}}}}
 }
 
 func (f *fixture) call(t *testing.T, method, path, token string, body any) (*http.Response, []byte) {
@@ -92,7 +92,7 @@ func (f *fixture) queueRun(t *testing.T) runner.RunRequest {
 	if err := f.server.engine.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	response, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{Harnesses: []string{"claude"}})
+	response, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("poll = %d: %s", response.StatusCode, body)
 	}
@@ -111,15 +111,15 @@ func TestHealthzIsOpenAndReturnsVersion(t *testing.T) {
 	}
 }
 
-func TestNewRejectsMissingHandleAndUnknownDefaultAgent(t *testing.T) {
+func TestNewRejectsMissingHandleAndUnknownDefaultPreset(t *testing.T) {
 	loaded := testConfig()
 	loaded.GitHub.Handle = ""
 	if _, err := New(loaded, nil, testFactory(), "v", io.Discard); err == nil || !strings.Contains(err.Error(), "handle") {
 		t.Fatalf("error = %v", err)
 	}
 	loaded = testConfig()
-	loaded.Server.DefaultAgent = "ghost"
-	if _, err := New(loaded, nil, testFactory(), "v", io.Discard); err == nil || !strings.Contains(err.Error(), "default_agent") {
+	loaded.Server.DefaultPreset = "ghost"
+	if _, err := New(loaded, nil, testFactory(), "v", io.Discard); err == nil || !strings.Contains(err.Error(), "default_preset") {
 		t.Fatalf("error = %v", err)
 	}
 }

@@ -28,8 +28,7 @@ func writeConfigFile(t *testing.T, directory, name, body string) string {
 func writeStartConfig(t *testing.T) string {
 	t.Helper()
 	directory := t.TempDir()
-	writeConfigFile(t, directory, "factory/agents/default/agent.toml", "harness = \"claude\"\n")
-	writeConfigFile(t, directory, "factory/agents/default/playbook.md", "Do the work.\n")
+	writeConfigFile(t, directory, "factory/presets/default.toml", "[[steps]]\nname = \"work\"\nrun = \"true\"\n")
 	return writeConfigFile(t, directory, "config.toml", "[server]\nlisten = \"127.0.0.1:0\"\ndatabase = \"tickets.db\"\nfactory = \"factory\"\n\n[github]\nhandle = \"machinist-bot\"\n")
 }
 
@@ -69,10 +68,10 @@ func TestStartRejectsInvalidFactory(t *testing.T) {
 	}
 }
 
-const runnerConfigBody = "control_plane = \"http://127.0.0.1:1\"\ntoken_file = \"runner.token\"\n\n[credentials.claude]\nlogin = true\n"
+const runnerConfigBody = "control_plane = \"http://127.0.0.1:1\"\ntoken_file = \"runner.token\"\nlogin = true\n"
 
 func TestKubernetesRunnerValidatesItsConfiguration(t *testing.T) {
-	path := writeConfigFile(t, t.TempDir(), "runner.toml", "control_plane = \"http://127.0.0.1:1\"\ntoken_file = \"runner.token\"\n\n[credentials.claude]\nenv = [\"ANTHROPIC_API_KEY\"]\n\n[kubernetes]\nsecret = \"s\"\n")
+	path := writeConfigFile(t, t.TempDir(), "runner.toml", "control_plane = \"http://127.0.0.1:1\"\ntoken_file = \"runner.token\"\nenv = [\"ANTHROPIC_API_KEY\"]\n\n[kubernetes]\nsecret = \"s\"\n")
 	var stderr bytes.Buffer
 	if exitCode := Execute(t.Context(), []string{"runner", "start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "explicit context") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
@@ -148,7 +147,7 @@ func TestRunnerTokenScopeWarning(t *testing.T) {
 				directory := t.TempDir()
 				path := writeConfigFile(t, directory, "runner.toml", runnerConfigBody)
 				writeConfigFile(t, directory, "runner.token", "runner-token\n")
-				// Fail clone locally so check cannot reach GitHub or invoke a real harness.
+				// Fail git locally so check cannot reach GitHub.
 				git := writeConfigFile(t, directory, "bin/git", "#!/bin/sh\nexit 1\n")
 				if err := os.Chmod(git, 0o700); err != nil {
 					t.Fatal(err)

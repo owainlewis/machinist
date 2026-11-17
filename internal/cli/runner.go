@@ -67,7 +67,7 @@ func newRunnerCommand(options *commandOptions) *cobra.Command {
 	var repository string
 	check := &cobra.Command{
 		Use:   "check",
-		Short: "Make one real run per harness to prove this runner works",
+		Short: "Run one step that reaches a repository, to prove this runner works",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			runnerConfig, executor, err := loadRunner(command.Context(), options)
@@ -77,7 +77,7 @@ func newRunnerCommand(options *commandOptions) *cobra.Command {
 			return agentrunner.Check(command.Context(), executor, runnerConfig, repository, options.stdout)
 		},
 	}
-	check.Flags().StringVar(&repository, "repo", "", "repository to clone, as owner/name")
+	check.Flags().StringVar(&repository, "repo", "", "repository to reach, as owner/name")
 	_ = check.MarkFlagRequired("repo")
 	root.AddCommand(check)
 	return root
