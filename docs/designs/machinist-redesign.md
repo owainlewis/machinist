@@ -1,7 +1,7 @@
 # Machinist Redesign: Assign Work, Get Pull Requests
 
 *   **Author:** Owain Lewis
-*   **Status:** Proposed
+*   **Status:** Superseded by [One Workflow, Any Trigger](generic-runner.md)
 *   **Date:** 2026-11-09
 
 --------------------------------------------------------------------------------
