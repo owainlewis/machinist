@@ -584,8 +584,18 @@ func (s *Store) TicketBySourceKey(ctx context.Context, key string) (Ticket, erro
 // rest, so the limit never hides work that needs someone. Empty filters match
 // every ticket.
 func (s *Store) ListTickets(ctx context.Context, state, repo string) ([]Ticket, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR state=?) AND (?='' OR repo=?)
+	return s.listTickets(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR state=?) AND (?='' OR repo=?)
   ORDER BY state IN (?,?,?) DESC, created_at DESC, id DESC LIMIT ?`, state, state, repo, repo, StateWorking, StateNeedsYou, StatePRReady, maxListedTickets)
+}
+
+// RecentTickets lists the newest tickets first, whatever their state.
+func (s *Store) RecentTickets(ctx context.Context, repo string) ([]Ticket, error) {
+	return s.listTickets(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR repo=?)
+  ORDER BY created_at DESC, id DESC LIMIT ?`, repo, repo, maxListedTickets)
+}
+
+func (s *Store) listTickets(ctx context.Context, query string, arguments ...any) ([]Ticket, error) {
+	rows, err := s.db.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}
