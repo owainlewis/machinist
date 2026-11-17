@@ -6,6 +6,7 @@
 - `runner.toml` configures a local runner.
 - `factory/presets/` holds the presets. A preset is a list of shell steps:
   - `default` clones the repository, runs Claude Code and opens a pull request. It never merges.
+  - `coding` plans, implements, tests, reviews, fixes and tests again, then opens a draft pull request.
   - `maintainer` may merge, and is used by the merge automation.
 
 `factory/automation-templates/` holds automations that are not switched on. To
