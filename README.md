@@ -18,7 +18,8 @@ Type the work into a box, send it to the [run API](docs/run-api.md), or let an a
 start it. The job works on its own branch, and the default preset opens one pull request.
 When a step needs a decision, it asks and the job waits.
 
-See [Direction](docs/direction.md) for where this is going and what is missing today.
+Machinist is moving to one generic workflow runner. See [Direction](docs/direction.md) for where
+it is going and how far the code has got.
 
 <a id="quick-start"></a>
 
