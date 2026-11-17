@@ -27,7 +27,7 @@ repositories = ["owner/name"]
 
 | Key | Meaning |
 | --- | --- |
-| `listen` | Address for the UI, API, MCP and runners. Keep it private |
+| `listen` | Address for the UI, API and runners. Keep it private |
 | `database` | The SQLite file. Back this up |
 | `factory` | The factory directory |
 | `default_agent` | The agent new tickets use |

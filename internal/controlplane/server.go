@@ -11,14 +11,12 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/ghclient"
-	"github.com/owainlewis/machinist/internal/mcpserver"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -37,10 +35,8 @@ type Server struct {
 	store    *tickets.Store
 	engine   *engine.Engine
 	client   *ghclient.Client
-	github   *sources.GitHub
 	intake   *sources.Intake
 	schedule *sources.Schedule
-	mcp      http.Handler
 	version  string
 	log      io.Writer
 }
@@ -76,18 +72,8 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		client:   client,
 		intake:   intake,
 		schedule: sources.NewSchedule(store, loaded.Automations, log),
-		mcp:      mcpserver.New(store, intake, version),
 		version:  version,
 		log:      log,
-		github: sources.NewGitHub(sources.Options{
-			Client:       client,
-			Store:        store,
-			Engine:       ticketEngine,
-			Handle:       machinistConfig.GitHub.Handle,
-			Repositories: machinistConfig.GitHub.Repositories,
-			DefaultAgent: machinistConfig.Server.DefaultAgent,
-			Log:          log,
-		}),
 	}, nil
 }
 
@@ -101,35 +87,9 @@ func findPR(client *ghclient.Client) engine.PRFinder {
 	}
 }
 
-// SetPollInterval changes how often GitHub and schedules are polled. Tests use it.
+// SetPollInterval changes how often schedules are checked. Tests use it.
 func (s *Server) SetPollInterval(interval time.Duration) {
-	s.github.Interval, s.schedule.Interval = interval, interval
-}
-
-// checkGitHub refuses a token that is not the bot's, because Machinist would
-// then read its own messages as human replies and start runs on them. Other
-// findings only warn, so that a GitHub outage cannot stop a restart.
-func (s *Server) checkGitHub(ctx context.Context) error {
-	login, err := s.client.CurrentUser(ctx)
-	if err != nil {
-		fmt.Fprintf(s.log, "machinist: warning: could not check the GitHub login: %v\n", err)
-	} else if !strings.EqualFold(login, s.config.GitHub.Handle) {
-		return fmt.Errorf("the GitHub token belongs to %s, but github.handle is %s; set GH_TOKEN to a token for the bot account", login, s.config.GitHub.Handle)
-	}
-	for _, repository := range s.config.GitHub.Repositories {
-		access, err := s.client.RepositoryAccess(ctx, repository)
-		if err != nil {
-			fmt.Fprintf(s.log, "machinist: warning: could not check %s: %v\n", repository, err)
-			continue
-		}
-		if !access.Protected {
-			fmt.Fprintf(s.log, "machinist: warning: %s branch %s has no protection\n", repository, access.DefaultBranch)
-		}
-		if access.Admin {
-			fmt.Fprintf(s.log, "machinist: warning: the GitHub login has admin rights on %s\n", repository)
-		}
-	}
-	return nil
+	s.schedule.Interval = interval
 }
 
 // Handler returns the routes of the control plane.
@@ -146,7 +106,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.requireToken(s.runEvents))
 	mux.HandleFunc("GET /api/v1/ledger", s.requireToken(s.ledger))
 	mux.HandleFunc("GET /api/v1/usage", s.requireToken(s.usage))
-	mux.HandleFunc("/mcp", s.requireToken(s.serveMCP))
 	mux.HandleFunc("POST /api/v1/runners/poll", s.requireToken(s.poll))
 	mux.HandleFunc("GET /api/v1/runners", s.requireToken(s.listRunners))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.requireToken(s.heartbeat))
@@ -182,9 +141,6 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 // Serve runs the API and the engine until ctx ends.
 func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
-	if err := s.checkGitHub(ctx); err != nil {
-		return err
-	}
 	listener, err := net.Listen("tcp", s.config.Server.Listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.config.Server.Listen, err)
@@ -206,8 +162,6 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	defer stopEngine()
 	engineDone := make(chan struct{})
 	go func() { s.engine.Run(engineContext); close(engineDone) }()
-	githubDone := make(chan struct{})
-	go func() { s.github.Run(engineContext); close(githubDone) }()
 	scheduleDone := make(chan struct{})
 	go func() { s.schedule.Run(engineContext); close(scheduleDone) }()
 
@@ -220,7 +174,6 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	}
 	stopEngine()
 	<-engineDone
-	<-githubDone
 	<-scheduleDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

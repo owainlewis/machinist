@@ -6,8 +6,7 @@ Start with the [quick start](../README.md#quick-start).
 
 | Guide | Use it to |
 | --- | --- |
-| [Factory files](factory.md) | Change agents and reviewers, and add automations |
-| [MCP](mcp.md) | Assign work from Claude Code or Codex |
+| [Factory files](factory.md) | Change agents and jobs, and add automations |
 | [Native agents](native-agents.md) | Understand subagents and the activity view |
 
 ## Run it

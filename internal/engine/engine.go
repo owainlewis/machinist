@@ -117,21 +117,15 @@ func (e *Engine) advance(ctx context.Context, ticket tickets.Ticket) error {
 	return err
 }
 
-// turnLimitMessage says what the last run reported and what it left unfixed.
+// turnLimitMessage says what the last run reported.
 func (e *Engine) turnLimitMessage(ctx context.Context, ticketID string) (string, error) {
 	report, err := e.Store.LastReport(ctx, ticketID)
 	if err != nil {
 		return "", err
 	}
-	waitingCI, err := e.Store.WaitingCI(ctx, ticketID)
-	if err != nil {
-		return "", err
-	}
 	parts := []string{fmt.Sprintf("Reached the limit of %d runs without human input.", e.MaxTurns)}
-	for _, part := range []string{report, waitingCI} {
-		if part != "" {
-			parts = append(parts, part)
-		}
+	if report != "" {
+		parts = append(parts, report)
 	}
 	return strings.Join(parts, "\n\n"), nil
 }
@@ -173,16 +167,6 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		GitName:       e.Handle,
 		GitEmail:      BotEmail(e.Handle),
 	}
-	if claim.Run.Kind == tickets.RunKindReviewer {
-		reviewer, ok := e.reviewer(claim.Run.Reviewer)
-		if !ok {
-			// Its failure changes no ticket state, so nothing here decides a transition.
-			return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, e.MaxTurns, nil)
-		}
-		request.Prompt = renderReviewerPrompt(reviewer.Prompt, claim.Ticket.Repo, claim.Ticket.PRNumber)
-		request.Model = e.reviewerModel(job)
-		return request, nil
-	}
 	request.Stages = e.stages(job, request.Branch, tickets.RenderLog(claim.Entries))
 	return request, nil
 }
@@ -202,25 +186,6 @@ func (e *Engine) stages(job factory.Job, branch, log string) []runner.Stage {
 	return stages
 }
 
-// reviewerModel is the model of the job's first agent stage.
-func (e *Engine) reviewerModel(job factory.Job) string {
-	for _, stage := range job.Stages {
-		if stage.Agent != "" {
-			return e.Factory.Agents[stage.Agent].Model
-		}
-	}
-	return ""
-}
-
-func (e *Engine) reviewer(name string) (factory.Reviewer, bool) {
-	for _, reviewer := range e.Factory.Reviewers {
-		if reviewer.Name == name {
-			return reviewer, true
-		}
-	}
-	return factory.Reviewer{}, false
-}
-
 const reportFormat = `End this run with one JSON object and nothing else:
 
 {"outcome": "pr_ready|needs_input|no_change|failed", "summary": "...", "question": "..."}
@@ -232,11 +197,6 @@ const reportFormat = `End this run with one JSON object and nothing else:
 
 func renderPrompt(playbook, branch, log string) string {
 	return playbook + "\n\n# Branch\n\nYou are on branch `" + branch + "`. Push it often, because unpushed work is lost if this run stops.\n\n# Report\n\n" + reportFormat + "\n\n# Ticket log\n\n" + log
-}
-
-// A reviewer's report is ignored, but the harness still needs one to finish.
-func renderReviewerPrompt(prompt, repository string, number int) string {
-	return fmt.Sprintf("%s\n\n# Pull request\n\nRepository `%s`, PR #%d.\n\n# Report\n\n%s\n\nReport no_change once your review is posted.", prompt, repository, number, reportFormat)
 }
 
 // Heartbeat renews a run's lease and reports whether the runner should stop it.
@@ -272,25 +232,11 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 }
 
 func (e *Engine) firstPR(ticket tickets.Ticket, number int) *tickets.FirstPR {
-	job, _ := e.Factory.Job(ticket.Agent)
-	first := &tickets.FirstPR{Harness: job.Harness}
+	first := &tickets.FirstPR{}
 	if ticket.IssueNumber != 0 {
 		first.Link = fmt.Sprintf("Opened a PR: https://github.com/%s/pull/%d", ticket.Repo, number)
 	}
-	for _, reviewer := range e.Factory.Reviewers {
-		first.Reviewers = append(first.Reviewers, reviewer.Name)
-	}
 	return first
-}
-
-// PRMerged ends a ticket whose PR merged.
-func (e *Engine) PRMerged(ctx context.Context, ticket tickets.Ticket, humanCommits int, mergedAt time.Time) error {
-	return e.Store.PRMerged(ctx, ticket.ID, humanCommits, mergedAt)
-}
-
-// PRClosed stops work on a ticket whose PR closed without merging.
-func (e *Engine) PRClosed(ctx context.Context, ticket tickets.Ticket, key string) error {
-	return e.Store.PRClosed(ctx, ticket.ID, key, waitingState(ticket), "The PR was closed. Reply to continue or cancel.")
 }
 
 // findPR looks up the ticket's PR after an agent run. An error is returned to

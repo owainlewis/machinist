@@ -12,7 +12,6 @@ factory/
     .claude/agents/*.md     Claude Code subagents, in its own format
     .codex/agents/*.toml    Codex custom agents, in its own format
   jobs/<name>.toml          a list of stages
-  reviewers/<name>.md       reviewer prompts
   automations/<name>.md     TOML front matter and a prompt
 ```
 
@@ -67,16 +66,6 @@ Every agent is also a job with one stage, so a job cannot share a name with an a
 agent stages of a job must use the same harness, and a job needs at least one agent stage.
 To use a job, name it where an agent name goes: `default_agent` in `config.toml`, or `agent`
 in an automation.
-
-## Reviewers
-
-Each file in `reviewers/` runs once, on a ticket's first pull request, with the ticket's
-harness and model. The prompt is the file, then the repository and pull request number. The
-reviewer gets no subagents and posts its findings with `gh pr comment`. To turn reviews off,
-delete the files.
-
-A reviewer is advice. If it fails, the failure shows on the ticket and is not retried,
-because a retry could post twice.
 
 ## Automations
 

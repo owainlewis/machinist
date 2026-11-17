@@ -13,7 +13,7 @@ import (
 
 func newIntake(t *testing.T) (*Intake, *fakegh.GitHub) {
 	t.Helper()
-	github := fakegh.Install(t, bot)
+	github := fakegh.Install(t, "machinist-bot")
 	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
 	if err != nil {
 		t.Fatal(err)

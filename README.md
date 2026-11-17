@@ -15,10 +15,9 @@ is waiting on a person and what it cost. It is early-access, open-source softwar
 - **Usage you can see.** Runs, pass rate, tokens and cost for the last two weeks, and the
   figures for every job.
 
-Mention the bot on a GitHub issue, type the work into a box, or send it from a coding
-session over MCP. An agent works on its own branch and opens one pull request. A fresh
-reviewer comments on it. If a person asks for changes or CI fails, the same job continues
-on the same pull request. When the agent needs a decision, it asks and waits.
+Type the work into a box, send it to the API, or let an automation start it. An agent works
+on its own branch and opens one pull request. When the agent needs a decision, it asks and
+waits.
 
 Machinist is moving to one generic workflow runner. See [Direction](docs/direction.md) for where
 it is going and how far the code has got.
@@ -78,8 +77,7 @@ The production UI is committed, so this build does not need Node.
 | Automations | Your scheduled jobs, when each is next due and what it last did |
 | Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
 
-A mention counts only from someone with write access. Machinist never merges a pull
-request unless you add an automation that uses an agent allowed to. See
+Machinist never merges a pull request unless you add an automation that uses an agent allowed to. See
 [Security](SECURITY.md) for what an agent can do.
 
 ## How it fits together
@@ -94,10 +92,9 @@ of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
 | --- | --- |
 | [Documentation](docs/README.md) | The full list |
 | [Direction](docs/direction.md) | What Machinist is for, and what is missing |
-| [Factory files](docs/factory.md) | Agents, jobs, reviewers and automations |
+| [Factory files](docs/factory.md) | Agents, jobs and automations |
 | [Runners](docs/runners.md) | Adding local and Kubernetes runners |
 | [Credentials](docs/credentials.md) | Which credential to use, and why |
-| [MCP](docs/mcp.md) | Assigning work from Claude Code or Codex |
 | [Configuration](docs/configuration.md) | Every setting |
 | [Development](docs/development.md) | Build, test and contribute |
 

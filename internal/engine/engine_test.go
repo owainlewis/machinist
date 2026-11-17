@@ -294,9 +294,6 @@ func TestTurnLimitMessageIsTheLastReport(t *testing.T) {
 	e.MaxTurns = 1
 	ticket := newTicket(t, e, "api")
 	request := assignRun(t, e)
-	if _, _, err := e.Store.AddInput(t.Context(), ticket.ID, tickets.Input{Kind: tickets.EntryCI, Author: "github", Body: "CI failed", SourceKey: "ci:1"}); err != nil {
-		t.Fatal(err)
-	}
 	if err := e.Store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateWorking, Report: "failed: Could not build"}); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +304,7 @@ func TestTurnLimitMessageIsTheLastReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	message := lastMessage(t, e, ticket.ID)
-	for _, want := range []string{"limit of 1 runs", "failed: Could not build", "CI failed"} {
+	for _, want := range []string{"limit of 1 runs", "failed: Could not build"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("missing %q in %q", want, message)
 		}

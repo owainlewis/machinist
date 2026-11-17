@@ -28,12 +28,11 @@ func validFactory() map[string]string {
 		"agents/default/playbook.md":                    "Do good work.\n",
 		"agents/default/.claude/agents/machinist-x.md":  "claude agent",
 		"agents/default/.codex/agents/machinist-x.toml": "name = \"x\"",
-		"reviewers/review.md":                           "Review the PR.\n",
 		"automations/nightly.md":                        "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nrepo = \"owner/repo\"\nagent = \"default\"\n+++\nCheck the repo.\n",
 	}
 }
 
-func TestLoadReadsAgentsReviewersAndAutomations(t *testing.T) {
+func TestLoadReadsAgentsAndAutomations(t *testing.T) {
 	factory, err := Load(writeFiles(t, validFactory()))
 	if err != nil {
 		t.Fatal(err)
@@ -45,9 +44,6 @@ func TestLoadReadsAgentsReviewersAndAutomations(t *testing.T) {
 	if len(agent.Files) != 2 || agent.Files[0].Path != ".claude/agents/machinist-x.md" || agent.Files[1].Path != ".codex/agents/machinist-x.toml" || agent.Files[0].Body != "claude agent" {
 		t.Fatalf("files = %+v", agent.Files)
 	}
-	if len(factory.Reviewers) != 1 || factory.Reviewers[0].Name != "review" {
-		t.Fatalf("reviewers = %+v", factory.Reviewers)
-	}
 	automation := factory.Automations[0]
 	if automation.Name != "nightly" || automation.Repo != "owner/repo" || automation.Prompt != "Check the repo." || automation.Cron == nil {
 		t.Fatalf("automation = %+v", automation)
@@ -57,12 +53,11 @@ func TestLoadReadsAgentsReviewersAndAutomations(t *testing.T) {
 	}
 }
 
-func TestLoadAllowsNoReviewersOrAutomations(t *testing.T) {
+func TestLoadAllowsNoAutomations(t *testing.T) {
 	files := validFactory()
-	delete(files, "reviewers/review.md")
 	delete(files, "automations/nightly.md")
 	factory, err := Load(writeFiles(t, files))
-	if err != nil || len(factory.Reviewers) != 0 || len(factory.Automations) != 0 {
+	if err != nil || len(factory.Automations) != 0 {
 		t.Fatalf("factory = %+v, err = %v", factory, err)
 	}
 }
@@ -85,7 +80,6 @@ func TestLoadRejectsInvalidFactories(t *testing.T) {
 		}},
 		{"missing playbook", "playbook.md", func(files map[string]string) { delete(files, "agents/default/playbook.md") }},
 		{"empty playbook", "playbook.md is empty", func(files map[string]string) { files["agents/default/playbook.md"] = " \n" }},
-		{"empty reviewer", "prompt is empty", func(files map[string]string) { files["reviewers/review.md"] = "\n" }},
 		{"no front matter", "front matter", func(files map[string]string) { files["automations/nightly.md"] = "Just a prompt\n" }},
 		{"unclosed front matter", "not closed", func(files map[string]string) { files["automations/nightly.md"] = "+++\nrepo = \"x\"\n" }},
 		{"bad cron", "", func(files map[string]string) {
