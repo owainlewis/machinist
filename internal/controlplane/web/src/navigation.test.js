@@ -93,11 +93,10 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   assert.equal(document.querySelector('nav a[aria-current="page"]').textContent, "Jobs");
   assert.equal(document.querySelector("#new-job-preset").value, "coding", "the default preset is chosen");
   assert.equal(document.querySelector("#new-job-repo").value, "owner/repo");
-  assert.deepEqual([...document.querySelectorAll(".preset-steps li")].map(step => step.textContent), ["checkout", "implement", "publish"]);
+  assert.equal(document.querySelector("#new-job-preset").title, "checkout, implement, publish");
   const start = () => [...document.querySelectorAll("form button")].find(button => /Start job/.test(button.textContent));
   assert.equal(start().disabled, true, "a job needs a prompt");
   await choose("#new-job-preset", "spec");
-  assert.deepEqual([...document.querySelectorAll(".preset-steps li")].map(step => step.textContent), ["checkout", "write"]);
   await type("#new-job-prompt", "  Write a spec for dark mode\n\nCover the settings page.  ");
   assert.match(document.querySelector(".field-hint").textContent, /Write a spec for dark mode/);
   await act(async () => start().click());

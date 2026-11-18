@@ -60,8 +60,7 @@ The shipped scripts:
 | --- | --- |
 | `checkout.sh` | Clones the repository and switches to the job's branch |
 | `agent.sh <prompt>` | Runs Claude Code with `prompts/rules.md` and `prompts/<prompt>.md` as the system prompt and the job's prompt as the message |
-| `test.sh` | Runs `npm test`, `go test ./...`, `cargo test` or `pytest`, by the files the repository has |
-| `publish.sh` | Pushes the branch and opens one draft pull request, with `plan.md`, `assumptions.md` and `review.md` as its body when they exist |
+| `publish.sh` | Pushes the branch and opens one draft pull request, with `assumptions.md` as its body when it exists |
 
 To use another agent, change `agent.sh`. To change what a step asks for, edit its prompt.
 
@@ -101,21 +100,9 @@ control directory. `publish.sh` adds that list to the pull request under **Assum
 After a job ends, Machinist looks for an open pull request on `MACHINIST_BRANCH` and records
 its number on the job.
 
-`init` installs five presets:
-
-| Preset | Steps |
-| --- | --- |
-| `default` | Clone, run Claude Code on the prompt, open one pull request |
-| `coding` | Clone, plan, implement, test, review, fix, test again, open one draft pull request with the plan and the review |
-| `maintainer` | Clone, look after open pull requests, and merge the ready ones |
-| `spec` | Clone, then write a spec for the request as the job's result. It opens no pull request |
-| `hello` | Print the job and its prompt, then finish. A smoke test with no clone and no agent |
-
-The `coding` preset's test steps run `test.sh`. Change that script for anything else.
-
-For work that needs decisions from a person, run `spec` first. Its result lists the open
-decisions with a recommended answer for each. Edit the spec and send it as the prompt of a
-`coding` job.
+`init` installs one preset, `default`: clone, run Claude Code on the prompt, open one
+pull request. A job that names no preset uses it. Add a preset only when a kind of job
+needs different steps, such as a separate test or review step.
 
 ## Automations
 
@@ -124,7 +111,7 @@ decisions with a recommended answer for each. Edit the spec and send it as the p
 schedule: "0 9 * * 1-5"
 timezone: UTC
 repo: owner/name
-preset: maintainer
+preset: default
 ---
 The prompt goes here.
 ```
@@ -136,8 +123,3 @@ collapse into one, and no job starts while the automation's last one is active. 
 automation never waits for a person: anything that would ask one fails the job instead, so
 one bad run cannot stop its schedule. To run one now, call
 `POST /api/v1/automations/<name>/run` with a token.
-
-`init` installs `factory/automation-templates/review-open-prs.md`, which merges pull requests
-that are ready. It is off by default. To use it, copy it to `factory/automations/`, set
-`repo` and restart. It uses the `maintainer` preset, because the default preset never
-merges. GitHub refuses any merge that branch protection does not allow.
