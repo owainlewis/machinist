@@ -3,7 +3,7 @@ import test from "node:test";
 import { jobHref, routeFromHash } from "./routes.js";
 
 test("jobs and runners are addressable", () => {
-  for (const view of ["jobs", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
+  for (const view of ["dashboard", "jobs", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
 });
 
 test("jobs is the default and unknown routes return to it", () => {

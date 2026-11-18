@@ -114,6 +114,7 @@ automation. The web app is read-only:
 | Page | What it does |
 | --- | --- |
 | Jobs | The newest jobs, with each one's repository, preset, pull request and state |
+| Dashboard | Jobs and runs over 7, 14 or 30 days: success rate, run and wait times, tokens, runs per day, and each preset and repository |
 | Job | One job: its result, its prompt, and every attempt with the output of each step |
 | Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
 

@@ -32,6 +32,12 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
     if (!signedIn) return reply(401, { error: "a token is required" });
     if (url === "/api/v1/repositories") return reply(200, { repositories: ["owner/repo"], name: "alice" });
     if (url === "/api/v1/tickets") return reply(200, { tickets: [older, ticket] });
+    if (url.startsWith("/api/v1/stats?days=")) {
+      const days = Number(url.split("=")[1]);
+      const daily = Array.from({ length: days }, (_, index) => ({ day: `2026-11-${String(index + 1).padStart(2, "0")}`, jobs: 1, succeeded: index % 2, failed: 1, cancelled: 0 }));
+      const group = { name: "coding", jobs: { total: 3, active: 1, done: 1, failed: 1, cancelled: 0 }, run_millis: 90000 };
+      return reply(200, { days, jobs: { total: 3, active: 1, done: 1, failed: 1, cancelled: 0 }, runs: { total: 4, succeeded: 3, failed: 1, cancelled: 0 }, success_rate: 0.75, run_millis: { median: 90000, p90: 300000 }, wait_millis: { median: 2000, p90: 9000 }, tokens: 12345, cost: 1.5, daily, presets: [group], repos: [{ ...group, name: "owner/repo" }] });
+    }
     if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
     if (url === "/api/v1/tickets/t_old") return new Promise(resolve => { releaseOld = () => resolve(reply(200, { ticket: older, entries: [], runs: [] })); });
     if (url === "/api/v1/tickets/t_new") return reply(200, { ticket, entries: [{ id: 1, kind: "request", author: "alice", body: "Center the toasts\n\nThey sit off to the right.", created_at: now }], runs: [run] });
@@ -63,7 +69,7 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
 
   await eventually(() => assert.ok(document.querySelector("table.jobs tbody tr")));
   assert.equal(document.querySelector("h1").textContent, "Jobs");
-  assert.deepEqual([...document.querySelectorAll("nav a")].map(link => link.textContent), ["Jobs", "Runners"]);
+  assert.deepEqual([...document.querySelectorAll("nav a")].map(link => link.textContent), ["Jobs", "Dashboard", "Runners"]);
   assert.deepEqual([...document.querySelectorAll(".job-title")].map(cell => cell.textContent), ["Center the toasts", "An older job"]);
   assert.equal(document.querySelector('nav a[aria-current="page"]').textContent, "Jobs");
 
@@ -77,6 +83,16 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   await act(async () => document.querySelector('.step[data-state="succeeded"] .step-row').click());
   await eventually(() => assert.ok([...document.querySelectorAll(".step-output")].some(pane => /Cloning into/.test(pane.textContent))));
   assert.equal(document.querySelector('.step[data-state="skipped"] .step-row').disabled, true);
+
+  await act(async () => { window.location.hash = "#/dashboard"; });
+  await eventually(() => assert.equal(document.querySelector(".stat-tile:nth-child(3) .stat-value")?.textContent, "75%"));
+  assert.equal(document.querySelector("h1").textContent, "Dashboard");
+  assert.equal(document.querySelectorAll('[aria-labelledby="runs-chart"] .chart-column').length, 14);
+  assert.match(document.querySelector("#presets-table").parentElement.textContent, /coding.*50%.*1m 30s/);
+  await act(async () => document.querySelector('.range button:nth-child(1)').click());
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-labelledby="runs-chart"] .chart-column').length, 7));
+  await act(async () => document.querySelector(".chart-column").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true })));
+  await eventually(() => assert.match(document.querySelector(".chart-tooltip")?.textContent || "", /Nov 1.*Succeeded 0.*Failed 1/));
 
   // A reply for a job someone has left must not show under the next one.
   await act(async () => { window.location.hash = "#/jobs/t_old"; });

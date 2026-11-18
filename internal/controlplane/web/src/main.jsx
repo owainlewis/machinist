@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/inter";
-import { LogOut, Moon, Rows3, Server, Sun } from "lucide-react";
+import { ChartColumn, LogOut, Moon, Rows3, Server, Sun } from "lucide-react";
 import { Brand } from "@/components/ui/brand";
 import { cn } from "@/lib/utils";
 import { routeFromHash } from "@/routes";
 import { createStatusLoader } from "@/status-loader";
 import { api, SignedOutError } from "./api.js";
+import { DashboardPage } from "./dashboard-page.jsx";
 import { JobPage } from "./job-page.jsx";
 import { JobsPage } from "./jobs-page.jsx";
 import { RunnersPage } from "./runners.jsx";
@@ -15,7 +16,7 @@ import "./styles.css";
 
 const pollMillis = 2000;
 const emptyStatus = { tickets: [], runners: [], queue: null };
-const navigation = [["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"]];
+const navigation = [["jobs", Rows3, "Jobs"], ["dashboard", ChartColumn, "Dashboard"], ["runners", Server, "Runners"]];
 
 async function loadStatus() {
   const [tickets, runners] = await Promise.all([api("/api/v1/tickets"), api("/api/v1/runners")]);
@@ -118,6 +119,7 @@ function App() {
     <main className="app-main">
       {route.view === "jobs" && <JobsPage tickets={status.tickets} runners={status.runners} loaded={loaded} error={error} />}
       {route.view === "job" && <JobPage key={route.jobID} jobID={route.jobID} onSignedOut={signedOut} />}
+      {route.view === "dashboard" && <DashboardPage onSignedOut={signedOut} />}
       {route.view === "runners" && <RunnersPage runners={status.runners} queue={status.queue} loaded={loaded} error={error} />}
     </main>
   </div>;

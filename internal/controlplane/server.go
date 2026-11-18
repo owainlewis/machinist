@@ -108,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.requireToken(s.runEvents))
 	mux.HandleFunc("GET /api/v1/ledger", s.requireToken(s.ledger))
 	mux.HandleFunc("GET /api/v1/usage", s.requireToken(s.usage))
+	mux.HandleFunc("GET /api/v1/stats", s.requireToken(s.stats))
 	mux.HandleFunc("POST /machinist/run", s.requireToken(s.runJob))
 	mux.HandleFunc("GET /machinist/jobs", s.requireToken(s.listJobs))
 	mux.HandleFunc("GET /machinist/jobs/{id}", s.requireToken(s.getJob))
