@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
-import { canStart, initialPreset, newJobKey, offersPresetChoice, runRequest, titleOf } from "./new-job.js";
+import { canStart, initialPreset, keyFor, offersPresetChoice, runRequest, titleOf } from "./new-job.js";
 import { jobHref } from "./routes.js";
 
 // NewJobPage starts a job through the run API, like curl or a tracker would.
@@ -13,7 +13,9 @@ export function NewJobPage({ onSignedOut }) {
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  const key = useMemo(() => newJobKey(), []);
+  const lastKey = useRef(null);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   useEffect(() => {
     let stopped = false;
@@ -36,10 +38,13 @@ export function NewJobPage({ onSignedOut }) {
     if (!ready) return;
     setPending(true);
     setError("");
+    const fields = { preset, repo, prompt };
+    lastKey.current = keyFor(lastKey.current, fields);
     try {
-      const job = await api("/machinist/run", { method: "POST", body: runRequest({ key, preset, repo, prompt }) });
-      window.location.hash = jobHref(job.id);
+      const job = await api("/machinist/run", { method: "POST", body: runRequest({ key: lastKey.current.key, ...fields }) });
+      if (mounted.current) window.location.hash = jobHref(job.id);
     } catch (failure) {
+      if (!mounted.current) return;
       if (failure instanceof SignedOutError) onSignedOut();
       else setError(failure.message);
       setPending(false);

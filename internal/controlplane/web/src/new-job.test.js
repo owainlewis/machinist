@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canStart, initialPreset, newJobKey, offersPresetChoice, runRequest, titleOf } from "./new-job.js";
+import { canStart, initialPreset, keyFor, newJobKey, offersPresetChoice, runRequest, titleOf } from "./new-job.js";
 
 test("a new job is a run API request with a key of its own", () => {
   assert.equal(newJobKey(() => "abc"), "ui-abc");
@@ -33,4 +33,13 @@ test("the title is the prompt's first line, cut like the server cuts it", () => 
 test("the form asks for a preset only when there is more than one", () => {
   assert.equal(offersPresetChoice([{ name: "default" }]), false);
   assert.equal(offersPresetChoice([{ name: "default" }, { name: "review" }]), true);
+});
+
+test("a retry of the same fields keeps its key and an edit gets a new one", () => {
+  let count = 0;
+  const make = () => `ui-${++count}`;
+  const first = keyFor(null, { repo: "owner/repo", prompt: "Fix it" }, make);
+  assert.equal(first.key, "ui-1");
+  assert.equal(keyFor(first, { repo: "owner/repo", prompt: "Fix it" }, make), first);
+  assert.equal(keyFor(first, { repo: "owner/repo", prompt: "Fix it better" }, make).key, "ui-2");
 });
