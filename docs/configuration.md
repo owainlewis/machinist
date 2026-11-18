@@ -56,6 +56,7 @@ github:
 | `tls_cert`, `tls_key` | Serve HTTPS, and mark the sign-in cookie Secure |
 | `github.handle` | The bot's login. Use a dedicated account |
 | `github.repositories` | The repositories Machinist serves |
+| `linear.*` | Start jobs from Linear issues. Off unless `linear.teams` is set. See [Linear](linear.md) |
 
 ## Runner: runner.yaml
 

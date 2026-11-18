@@ -48,9 +48,41 @@ type GitHub struct {
 	Repositories []string `yaml:"repositories"`
 }
 
+// Linear starts jobs from a Linear webhook. It is off until teams lists at
+// least one team. The signing secret comes from LINEAR_WEBHOOK_SECRET, never
+// from this file, so the file can live in git.
+type Linear struct {
+	// TriggerLabel starts a job when it is added to an issue.
+	TriggerLabel string `yaml:"trigger_label"`
+	// AppUserID starts a job when an issue is assigned to this Linear user,
+	// usually the Machinist app.
+	AppUserID string `yaml:"app_user_id"`
+	// Preset is the preset Linear jobs use. It defaults to server.default_preset.
+	Preset string `yaml:"preset"`
+	// Teams maps a Linear team key, such as ENG, to the repository its jobs
+	// work in. Issues from any other team are ignored.
+	Teams map[string]string `yaml:"teams"`
+	// MaxJobsPerHour caps the jobs Linear can start in any hour.
+	MaxJobsPerHour int `yaml:"max_jobs_per_hour"`
+	// Secret signs every webhook request. It is read from the environment.
+	Secret string `yaml:"-"`
+}
+
+// Enabled reports whether the Linear webhook is switched on.
+func (l Linear) Enabled() bool { return len(l.Teams) > 0 }
+
+// LinearSecretEnv names the variable that holds the webhook signing secret.
+const LinearSecretEnv = "LINEAR_WEBHOOK_SECRET"
+
+const (
+	defaultLinearJobsPerHour = 20
+	minLinearSecretBytes     = 16
+)
+
 type Config struct {
 	Server Server `yaml:"server"`
 	GitHub GitHub `yaml:"github"`
+	Linear Linear `yaml:"linear"`
 	path   string
 }
 
@@ -86,6 +118,10 @@ func LoadConfig(path string) (Config, error) {
 	}
 	machinistConfig.Server.configDir = filepath.Dir(absPath)
 	machinistConfig.Server, err = applyServerDefaults(machinistConfig.Server)
+	if err != nil {
+		return Config{}, err
+	}
+	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv(LinearSecretEnv))
 	if err != nil {
 		return Config{}, err
 	}
@@ -180,6 +216,34 @@ func applyServerDefaults(server Server) (Server, error) {
 		}
 	}
 	return server, nil
+}
+
+func applyLinearDefaults(linear Linear, secret string) (Linear, error) {
+	if !linear.Enabled() {
+		if linear.TriggerLabel != "" || linear.AppUserID != "" || linear.Preset != "" {
+			return Linear{}, errors.New("linear: set teams to switch the webhook on, or remove the linear section")
+		}
+		return linear, nil
+	}
+	if len(strings.TrimSpace(secret)) < minLinearSecretBytes {
+		return Linear{}, fmt.Errorf("linear: %s must hold the webhook's signing secret, at least %d characters", LinearSecretEnv, minLinearSecretBytes)
+	}
+	linear.Secret = strings.TrimSpace(secret)
+	if strings.TrimSpace(linear.TriggerLabel) == "" && strings.TrimSpace(linear.AppUserID) == "" {
+		return Linear{}, errors.New("linear: set trigger_label, app_user_id or both, so only chosen issues start jobs")
+	}
+	for team, repository := range linear.Teams {
+		if strings.TrimSpace(team) == "" || strings.TrimSpace(repository) == "" {
+			return Linear{}, errors.New("linear: each team needs a key and a repository")
+		}
+	}
+	if linear.MaxJobsPerHour < 0 {
+		return Linear{}, errors.New("linear: max_jobs_per_hour must be positive")
+	}
+	if linear.MaxJobsPerHour == 0 {
+		linear.MaxJobsPerHour = defaultLinearJobsPerHour
+	}
+	return linear, nil
 }
 
 func resolveConfigPath(path, base string) (string, error) {

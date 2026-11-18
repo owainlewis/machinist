@@ -53,8 +53,10 @@ The full state table is in the
 
 ## Intake
 
-Work comes from the Assign box, the [run API](docs/run-api.md) at `POST /machinist/run` and
-automation schedules. The run API shows tickets as jobs. Each
+Work comes from the Assign box, the [run API](docs/run-api.md) at `POST /machinist/run`,
+automation schedules and the [Linear webhook](docs/linear.md) at `POST /webhooks/linear`. The
+webhook is the one route without a Machinist token: it checks Linear's signature and
+timestamp instead. The run API shows tickets as jobs. Each
 request has a unique source key, so sending one twice has no effect. Machinist does not read
 GitHub comments or follow pull requests. A ticket stays `pr_ready` once its pull request is
 open.

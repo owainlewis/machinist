@@ -11,6 +11,8 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
@@ -39,6 +41,10 @@ type Server struct {
 	schedule *sources.Schedule
 	version  string
 	log      io.Writer
+	// linearRules and linearCap serve the Linear webhook, when it is on.
+	linearRules sources.LinearRules
+	linearCap   *hourlyCap
+	now         func() time.Time
 }
 
 func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Factory, version string, log io.Writer) (*Server, error) {
@@ -68,16 +74,45 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 			return ok
 		},
 	}
+	linearRules, err := linearRules(machinistConfig, loaded)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
-		config:   machinistConfig,
-		store:    store,
-		engine:   ticketEngine,
-		client:   client,
-		intake:   intake,
-		schedule: sources.NewSchedule(store, loaded.Automations, log),
-		version:  version,
-		log:      log,
+		linearRules: linearRules,
+		linearCap:   &hourlyCap{limit: machinistConfig.Linear.MaxJobsPerHour},
+		now:         time.Now,
+		config:      machinistConfig,
+		store:       store,
+		engine:      ticketEngine,
+		client:      client,
+		intake:      intake,
+		schedule:    sources.NewSchedule(store, loaded.Automations, log),
+		version:     version,
+		log:         log,
 	}, nil
+}
+
+// linearRules checks the Linear section against the factory and the connected
+// repositories, so a mistake stops startup instead of dropping webhooks.
+func linearRules(machinistConfig config.Config, loaded *factory.Factory) (sources.LinearRules, error) {
+	linear := machinistConfig.Linear
+	if !linear.Enabled() {
+		return sources.LinearRules{}, nil
+	}
+	preset := linear.Preset
+	if preset == "" {
+		preset = machinistConfig.Server.DefaultPreset
+	}
+	if _, ok := loaded.Preset(preset); !ok {
+		return sources.LinearRules{}, fmt.Errorf("linear.preset %q is not in the factory", preset)
+	}
+	for team, repository := range linear.Teams {
+		if !slices.ContainsFunc(machinistConfig.GitHub.Repositories, func(connected string) bool { return strings.EqualFold(connected, repository) }) {
+			return sources.LinearRules{}, fmt.Errorf("linear.teams.%s: %s is not in github.repositories", team, repository)
+		}
+	}
+	return sources.LinearRules{Secret: linear.Secret, TriggerLabel: linear.TriggerLabel, AppUserID: linear.AppUserID, Preset: preset, Teams: linear.Teams}, nil
 }
 
 func findPR(client *ghclient.Client) engine.PRFinder {
@@ -109,6 +144,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/ledger", s.requireToken(s.ledger))
 	mux.HandleFunc("GET /api/v1/usage", s.requireToken(s.usage))
 	mux.HandleFunc("POST /machinist/run", s.requireToken(s.runJob))
+	if s.config.Linear.Enabled() {
+		mux.HandleFunc("POST /webhooks/linear", s.linearWebhook)
+	}
 	mux.HandleFunc("GET /machinist/jobs", s.requireToken(s.listJobs))
 	mux.HandleFunc("GET /machinist/jobs/{id}", s.requireToken(s.getJob))
 	mux.HandleFunc("POST /machinist/jobs/{id}/cancel", s.requireToken(s.cancelJob))

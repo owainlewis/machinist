@@ -13,3 +13,13 @@ server:
 github:
   handle: machinist-bot
   repositories: []
+
+# Start jobs from Linear. Off until teams is set. The signing secret is read
+# from LINEAR_WEBHOOK_SECRET. See docs/linear.md.
+# linear:
+#   trigger_label: machinist
+#   # app_user_id: <the Machinist app's Linear user ID>
+#   preset: coding
+#   teams:
+#     ENG: owner/name
+#   max_jobs_per_hour: 20

@@ -137,3 +137,42 @@ func TestLoadConfigExplainsAnOldTOMLFile(t *testing.T) {
 		}
 	}
 }
+
+func TestLinearIsOffUntilTeamsAreSet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, path, "github:\n  handle: machinist-bot\n")
+	loaded, err := LoadConfig(path)
+	if err != nil || loaded.Linear.Enabled() {
+		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
+	}
+	writeTestFile(t, path, "linear:\n  trigger_label: machinist\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "set teams") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLinearNeedsASecretAndATrigger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, path, "linear:\n  trigger_label: machinist\n  teams:\n    ENG: owner/repo\n")
+	t.Setenv(LinearSecretEnv, "")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), LinearSecretEnv) {
+		t.Fatalf("no secret: error = %v", err)
+	}
+	t.Setenv(LinearSecretEnv, "short")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "at least") {
+		t.Fatalf("short secret: error = %v", err)
+	}
+	t.Setenv(LinearSecretEnv, "lin_wh_0123456789abcdef")
+	loaded, err := LoadConfig(path)
+	if err != nil || loaded.Linear.Secret != "lin_wh_0123456789abcdef" || loaded.Linear.MaxJobsPerHour != 20 {
+		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
+	}
+	writeTestFile(t, path, "linear:\n  teams:\n    ENG: owner/repo\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "trigger_label") {
+		t.Fatalf("no trigger: error = %v", err)
+	}
+	writeTestFile(t, path, "linear:\n  secret: in-the-file\n  teams:\n    ENG: owner/repo\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown key secret") {
+		t.Fatalf("secret in the file: error = %v", err)
+	}
+}
