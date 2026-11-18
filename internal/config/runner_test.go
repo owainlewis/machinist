@@ -44,14 +44,12 @@ allowed_hosts = ["proxy.golang.org"]
 	}
 }
 
-func TestLoadRunnerDefaultsSlotsAndDataDirectory(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	runner, _, err := loadRunnerBody(t, runnerBase+"login = true\n")
+func TestLoadRunnerDefaultsSlotsTokenAndDataDirectory(t *testing.T) {
+	runner, directory, err := loadRunnerBody(t, "control_plane = \"http://10.0.0.5:7331\"\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runner.Slots != 1 || runner.DataDirectory != filepath.Join(home, ".machinist", "runner") {
+	if runner.Slots != 1 || runner.DataDirectory != filepath.Join(directory, ".machinist", "runner") || runner.TokenFile != filepath.Join(directory, ".machinist", "runner.token") {
 		t.Fatalf("runner = %+v", runner)
 	}
 }
@@ -86,7 +84,6 @@ func TestLoadRunnerRejectsInvalidConfiguration(t *testing.T) {
 	for _, test := range []struct{ body, want string }{
 		{"token_file = \"t\"\n", "control_plane"},
 		{"control_plane = \"10.0.0.5:7331\"\ntoken_file = \"t\"\n", "control_plane"},
-		{"control_plane = \"http://x\"\n", "token_file"},
 		{runnerBase + "slots = -1\n", "slots"},
 		{runnerBase + "env = [\"BAD=NAME\"]\n", "invalid environment variable"},
 		{runnerBase + "login = true\n[kubernetes]\nsecret = \"s\"\n", "do not support login"},

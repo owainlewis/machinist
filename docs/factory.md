@@ -1,7 +1,7 @@
 # Factory files
 
-The factory is a directory of plain files on the control plane, normally
-`~/.machinist/factory`. It is read at startup. A change needs a restart, and an invalid
+The factory is a directory of plain files on the control plane, normally `factory/` beside
+`config.toml`, in the same git repository. It is read at startup. A change needs a restart, and an invalid
 factory stops startup with a message that names the problem.
 
 ```text

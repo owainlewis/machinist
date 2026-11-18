@@ -1,7 +1,9 @@
 [server]
 listen = "127.0.0.1:7331"
-database = "~/.machinist/server/tickets.db"
-factory = "~/.machinist/factory"
+# Relative paths are read from this file's directory. Machinist writes its
+# state under .machinist/, which init adds to .gitignore.
+database = ".machinist/tickets.db"
+factory = "factory"
 default_preset = "default"
 max_turns_without_human = 5
 run_timeout = "60m"

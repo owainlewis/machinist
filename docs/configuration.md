@@ -1,8 +1,27 @@
 # Configuration
 
 There are three places to configure Machinist: [factory files](factory.md), the control
-plane's `config.toml` and each runner's `runner.toml`. `machinist init` installs commented
-copies in `~/.machinist`. An unknown key stops startup and names the key.
+plane's `config.toml` and each runner's `runner.toml`. An unknown key stops startup and
+names the key.
+
+Machinist reads `config.toml` or `runner.toml` from the current directory, or the file
+`--config` names. Keep that directory in git with the factory, and start Machinist from it.
+`machinist init [directory]` writes commented copies there.
+
+Relative paths in either file are read from the file's own directory. By default
+everything Machinist writes goes under `.machinist/` beside the config: the database, the
+runner token and run workspaces. `init` adds `.machinist/` to `.gitignore`. Point
+`database` or `data_directory` elsewhere, such as `/var/lib/machinist`, to keep state off
+the checkout. Secrets never go in these files: tokens come from the environment or a token
+file.
+
+```text
+my-machinist/          a git repository
+  config.toml          the control plane
+  runner.toml          a runner
+  factory/presets/     presets
+  .machinist/          state, ignored by git
+```
 
 ## Control plane: config.toml
 
@@ -12,8 +31,8 @@ or startup stops.
 ```toml
 [server]
 listen = "127.0.0.1:7331"
-database = "~/.machinist/server/tickets.db"
-factory = "~/.machinist/factory"
+database = ".machinist/tickets.db"
+factory = "factory"
 default_preset = "default"
 max_turns_without_human = 5
 run_timeout = "60m"

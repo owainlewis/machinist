@@ -19,8 +19,8 @@ run and an environment built from an allowlist. Use a dedicated OS account.
 
 ```toml
 control_plane = "http://10.0.0.5:7331"
-token_file = "~/.machinist/runner.token"
-data_directory = "~/.machinist/runner"
+token_file = ".machinist/runner.token"
+data_directory = ".machinist/runner"
 slots = 2
 env = ["ANTHROPIC_API_KEY"]
 ```

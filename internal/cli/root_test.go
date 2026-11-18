@@ -14,9 +14,17 @@ import (
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
+// inTempDirectory runs the test from an empty directory, with an empty home.
+func inTempDirectory(t *testing.T) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	directory := t.TempDir()
+	t.Chdir(directory)
+	return directory
+}
+
 func TestInitInstallsDefaultConfiguration(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	directory := inTempDirectory(t)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -24,10 +32,9 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
-	directory := filepath.Join(home, ".machinist")
 	installed := regularFiles(t, directory)
 	for _, name := range []string{
-		"config.toml", "runner.toml", "runner.token",
+		"config.toml", "runner.toml", ".machinist/runner.token", ".gitignore",
 		"factory/presets/default.toml", "factory/presets/coding.toml", "factory/presets/maintainer.toml", "factory/presets/hello.toml",
 		"factory/automation-templates/review-open-prs.md",
 	} {
@@ -55,14 +62,15 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode for %s = %o, want 600", path, info.Mode().Perm())
 	}
-	for _, path := range []string{directory, filepath.Join(directory, "server")} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0o700 {
-			t.Fatalf("mode for %s = %o, want 700", path, info.Mode().Perm())
-		}
+	state := filepath.Join(directory, ".machinist")
+	if info, err := os.Stat(state); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("state directory = %v, err = %v, want mode 700", info, err)
+	}
+	if ignore, err := os.ReadFile(filepath.Join(directory, ".gitignore")); err != nil || string(ignore) != "/.machinist/\n" {
+		t.Fatalf(".gitignore = %q, err = %v", ignore, err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "tickets.db")); err != nil {
+		t.Fatalf("database is not in the state directory: %v", err)
 	}
 	if _, err := config.LoadConfig(path); err != nil {
 		t.Fatalf("load installed configuration: %v", err)
@@ -73,8 +81,8 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 }
 
 func TestInitLeavesLegacyFactoryDirectoryUntouched(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	directory := inTempDirectory(t)
+	home := os.Getenv("HOME")
 	legacyDirectory := filepath.Join(home, ".factory")
 	if err := os.Mkdir(legacyDirectory, 0o700); err != nil {
 		t.Fatal(err)
@@ -96,18 +104,17 @@ func TestInitLeavesLegacyFactoryDirectoryUntouched(t *testing.T) {
 	if !bytes.Equal(got, legacyBody) {
 		t.Fatalf("legacy configuration changed: %q", got)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".machinist", "config.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(directory, "config.toml")); err != nil {
 		t.Fatalf("Machinist configuration was not created: %v", err)
 	}
 }
 
 func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	directory := inTempDirectory(t)
 	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
 		t.Fatalf("first init exit code = %d", exitCode)
 	}
-	path := filepath.Join(home, ".machinist", "config.toml")
+	path := filepath.Join(directory, "config.toml")
 	if err := os.WriteFile(path, []byte("custom config\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -156,14 +163,14 @@ func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	token, err := os.ReadFile(filepath.Join(directory, "runner.token"))
+	token, err := os.ReadFile(filepath.Join(directory, ".machinist", "runner.token"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if name, err := store.TokenName(t.Context(), strings.TrimSpace(string(token))); err != nil || name != "local" {
 		t.Fatalf("name = %q, err = %v", name, err)
 	}
-	info, err := os.Stat(filepath.Join(directory, "runner.token"))
+	info, err := os.Stat(filepath.Join(directory, ".machinist", "runner.token"))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("info = %v, err = %v", info, err)
 	}
@@ -173,20 +180,19 @@ func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
 }
 
 func TestInitReplacesALostRunnerToken(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	directory := inTempDirectory(t)
 	for range 2 {
 		if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
 			t.Fatalf("exit code = %d", exitCode)
 		}
-		if err := os.Remove(filepath.Join(home, ".machinist", "runner.token")); err != nil {
+		if err := os.Remove(filepath.Join(directory, ".machinist", "runner.token")); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
 		t.Fatalf("exit code = %d", exitCode)
 	}
-	assertStarterFactoryAndTokenWork(t, filepath.Join(home, ".machinist"))
+	assertStarterFactoryAndTokenWork(t, directory)
 }
 
 func regularFiles(t *testing.T, root string) []string {
@@ -237,12 +243,7 @@ func TestInitRejectsExistingNonFile(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			directory := filepath.Join(home, ".machinist")
-			if err := os.MkdirAll(directory, 0o700); err != nil {
-				t.Fatal(err)
-			}
+			directory := inTempDirectory(t)
 			test.setup(t, filepath.Join(directory, "config.toml"))
 
 			var stdout bytes.Buffer
@@ -259,14 +260,9 @@ func TestInitRejectsExistingNonFile(t *testing.T) {
 }
 
 func TestInitRejectsSymlinkedSetupDirectories(t *testing.T) {
-	for _, name := range []string{".machinist", ".machinist/server"} {
+	for _, name := range []string{".machinist"} {
 		t.Run(name, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			path := filepath.Join(home, filepath.FromSlash(name))
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			path := filepath.Join(inTempDirectory(t), name)
 			external := t.TempDir()
 			if err := os.Symlink(external, path); err != nil {
 				t.Fatal(err)
@@ -286,6 +282,62 @@ func TestInitRejectsSymlinkedSetupDirectories(t *testing.T) {
 				t.Fatalf("init wrote outside its setup directory: %#v", entries)
 			}
 		})
+	}
+}
+
+func TestInitWritesToTheNamedDirectory(t *testing.T) {
+	working := inTempDirectory(t)
+	var stdout bytes.Buffer
+	if exitCode := Execute(t.Context(), []string{"init", "deploy/machinist"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("exit code = %d, stdout = %q", exitCode, stdout.String())
+	}
+	directory := filepath.Join(working, "deploy", "machinist")
+	assertStarterFactoryAndTokenWork(t, directory)
+	if _, err := os.Stat(filepath.Join(working, "config.toml")); err == nil {
+		t.Fatal("init wrote to the current directory instead of the named one")
+	}
+}
+
+func TestInitAddsTheStateDirectoryToAnExistingGitignoreOnce(t *testing.T) {
+	directory := inTempDirectory(t)
+	path := filepath.Join(directory, ".gitignore")
+	if err := os.WriteFile(path, []byte("node_modules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+			t.Fatalf("exit code = %d", exitCode)
+		}
+	}
+	if got, _ := os.ReadFile(path); string(got) != "node_modules\n/.machinist/\n" {
+		t.Fatalf(".gitignore = %q", got)
+	}
+}
+
+func TestCommandsReadConfigurationFromTheCurrentDirectory(t *testing.T) {
+	inTempDirectory(t)
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
+		t.Fatalf("init exit code = %d", exitCode)
+	}
+	var stdout, stderr bytes.Buffer
+	if exitCode := Execute(t.Context(), []string{"token", "create", "someone"}, strings.NewReader(""), &stdout, &stderr, "test"); exitCode != 0 {
+		t.Fatalf("token create exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestCommandsExplainAMissingConfiguration(t *testing.T) {
+	inTempDirectory(t)
+	old := filepath.Join(os.Getenv("HOME"), ".machinist")
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "config.toml"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	exitCode := Execute(t.Context(), []string{"token", "create", "someone"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
+	if exitCode == 0 || !strings.Contains(stderr.String(), "no config.toml in") || !strings.Contains(stderr.String(), "machinist init") || !strings.Contains(stderr.String(), "--config "+filepath.Join(old, "config.toml")) {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
 

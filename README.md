@@ -31,13 +31,19 @@ GitHub CLI signed in with `gh auth login`, and Claude Code signed in.
 git clone https://github.com/owainlewis/machinist.git
 cd machinist
 go build -o ./bin/machinist ./cmd/machinist
-./bin/machinist init
+export PATH="$PWD/bin:$PATH"
+mkdir ../my-machinist && cd ../my-machinist
+git init
+machinist init
 ```
 
-`init` creates `~/.machinist` with a control plane config, a runner config, four presets
-and a token for a local runner.
+Machinist runs from the directory that holds its configuration, so keep that directory in
+git and start Machinist there. `init` writes a control plane config, a runner config and
+four presets, all meant to be committed. It also makes `.machinist/`, which holds the
+database and a token for a local runner, and adds it to `.gitignore`. Run every command
+below from this directory, or pass `--config`.
 
-1.  In `~/.machinist/config.toml`, set `handle` to the GitHub login that owns your token,
+1.  In `config.toml`, set `handle` to the GitHub login that owns your token,
     which `gh api user --jq .login` prints, and list the repositories jobs may work on.
     Commits are made under that handle:
 
@@ -46,24 +52,24 @@ and a token for a local runner.
     repositories = ["owner/name"]
     ```
 
-2.  In `~/.machinist/runner.toml`, set `env = []` and uncomment `login = true`, so steps
+2.  In `runner.toml`, set `env = []` and uncomment `login = true`, so steps
     use your own Claude Code login. To use an API key instead, keep
     `env = ["ANTHROPIC_API_KEY"]` and set it in the runner's environment. See
     [Credentials](docs/credentials.md).
 3.  Start the control plane in one terminal and the runner in another:
 
     ```sh
-    GH_TOKEN=$(gh auth token) ./bin/machinist start
+    GH_TOKEN=$(gh auth token) machinist start
     ```
 
     ```sh
-    GH_TOKEN=$(gh auth token) ./bin/machinist runner start
+    GH_TOKEN=$(gh auth token) machinist runner start
     ```
 
 4.  Create a token for yourself:
 
     ```sh
-    TOKEN=$(./bin/machinist token create "$USER" | tail -n 1)
+    TOKEN=$(machinist token create "$USER" | tail -n 1)
     ```
 
 5.  Start a job with the `hello` preset. It clones nothing and runs no agent, so it proves

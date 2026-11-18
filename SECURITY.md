@@ -54,5 +54,6 @@ an allowed service, such as a push to another repository on `github.com`.
 
 ## Local data
 
-Machinist state defaults to `~/.machinist`. Protect this directory. It holds the ticket
-database, run history and the runner token.
+Machinist state defaults to `.machinist/` beside its config. Protect this directory and keep
+it out of git, which `machinist init` does with `.gitignore`. It holds the ticket database,
+run history and the runner token.

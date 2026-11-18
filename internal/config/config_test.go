@@ -16,9 +16,8 @@ func writeTestFile(t *testing.T, path, body string) {
 }
 
 func TestLoadConfigAppliesDefaults(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	path := filepath.Join(t.TempDir(), "config.toml")
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.toml")
 	writeTestFile(t, path, "")
 	loaded, err := LoadConfig(path)
 	if err != nil {
@@ -28,11 +27,24 @@ func TestLoadConfigAppliesDefaults(t *testing.T) {
 	if server.Listen != "127.0.0.1:7331" || server.DefaultPreset != "default" || server.MaxTurnsWithoutHuman != 5 || server.RunDeadline() != time.Hour {
 		t.Fatalf("server = %+v", server)
 	}
-	if server.Database != filepath.Join(home, ".machinist", "server", "tickets.db") || server.Factory != filepath.Join(home, ".machinist", "factory") {
+	if server.Database != filepath.Join(directory, ".machinist", "tickets.db") || server.Factory != filepath.Join(directory, "factory") {
 		t.Fatalf("paths = %q, %q", server.Database, server.Factory)
 	}
 	if loaded.Path() != path {
 		t.Fatalf("path = %q", loaded.Path())
+	}
+}
+
+func TestLoadConfigReadsTheCurrentDirectoryByDefault(t *testing.T) {
+	directory := t.TempDir()
+	t.Chdir(directory)
+	writeTestFile(t, filepath.Join(directory, "config.toml"), "[github]\nhandle = \"bot\"\n")
+	loaded, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Path() != filepath.Join(directory, "config.toml") || loaded.GitHub.Handle != "bot" {
+		t.Fatalf("loaded %q with handle %q", loaded.Path(), loaded.GitHub.Handle)
 	}
 }
 

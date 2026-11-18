@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,14 +14,17 @@ import (
 )
 
 const (
-	defaultListen        = "127.0.0.1:7331"
-	defaultPreset        = "default"
-	defaultMaxTurns      = 5
-	defaultRunTimeout    = 60 * time.Minute
-	maxConfigBytes       = 1 << 20
-	maxTokenBytes        = 8 << 10
-	defaultServerDirName = ".machinist/server"
-	defaultFactoryDir    = ".machinist/factory"
+	defaultListen     = "127.0.0.1:7331"
+	defaultPreset     = "default"
+	defaultMaxTurns   = 5
+	defaultRunTimeout = 60 * time.Minute
+	maxConfigBytes    = 1 << 20
+	maxTokenBytes     = 8 << 10
+	// StateDir holds what Machinist writes at run time, next to the
+	// configuration. It is kept out of git.
+	StateDir          = ".machinist"
+	defaultDatabase   = StateDir + "/tickets.db"
+	defaultFactoryDir = "factory"
 )
 
 type Server struct {
@@ -144,16 +148,13 @@ func applyServerDefaults(server Server) (Server, error) {
 	if (server.TLSCert == "") != (server.TLSKey == "") {
 		return Server{}, errors.New("tls_cert and tls_key must be set together")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return Server{}, fmt.Errorf("find user home directory: %w", err)
-	}
 	if server.Database == "" {
-		server.Database = filepath.Join(home, filepath.FromSlash(defaultServerDirName), "tickets.db")
+		server.Database = filepath.FromSlash(defaultDatabase)
 	}
 	if server.Factory == "" {
-		server.Factory = filepath.Join(home, filepath.FromSlash(defaultFactoryDir))
+		server.Factory = defaultFactoryDir
 	}
+	var err error
 	for _, path := range []*string{&server.Database, &server.Factory, &server.TLSCert, &server.TLSKey} {
 		if *path == "" {
 			continue
@@ -193,12 +194,28 @@ func readToken(path string) (string, error) {
 	return token, nil
 }
 
+// defaultConfigPath is the named file in the current directory. Machinist runs
+// from the directory that holds its configuration, usually a git repository.
 func defaultConfigPath(name string) (string, error) {
-	home, err := os.UserHomeDir()
+	path, err := filepath.Abs(name)
 	if err != nil {
-		return "", fmt.Errorf("find user home directory: %w", err)
+		return "", fmt.Errorf("resolve %s: %w", name, err)
 	}
-	return filepath.Join(home, ".machinist", name), nil
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return "", missingConfigError(name, filepath.Dir(path))
+	}
+	return path, nil
+}
+
+func missingConfigError(name, directory string) error {
+	message := fmt.Sprintf("no %s in %s. Run Machinist from the directory that holds its configuration, create one there with machinist init, or pass --config", name, directory)
+	if home, err := os.UserHomeDir(); err == nil {
+		old := filepath.Join(home, ".machinist", name)
+		if _, err := os.Stat(old); err == nil {
+			message += fmt.Sprintf(". Older versions kept it in %s; move that directory's files here or pass --config %s", filepath.Dir(old), old)
+		}
+	}
+	return errors.New(message)
 }
 
 func expandHome(path string) (string, error) {

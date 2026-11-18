@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	machinistexamples "github.com/owainlewis/machinist/examples"
 	"github.com/owainlewis/machinist/internal/config"
@@ -17,8 +18,10 @@ import (
 
 const (
 	starterFactory  = "factory"
-	runnerTokenFile = "runner.token"
+	runnerTokenFile = config.StateDir + "/runner.token"
 	localRunnerName = "local"
+	gitignoreFile   = ".gitignore"
+	gitignoreEntry  = "/" + config.StateDir + "/"
 )
 
 var initialFiles = []string{
@@ -28,25 +31,34 @@ var initialFiles = []string{
 
 func newInitCommand(options *commandOptions) *cobra.Command {
 	return &cobra.Command{
-		Use:   "init",
-		Short: "Create the default Machinist configuration",
-		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			return initializeMachinist(command.Context(), options.stdout)
+		Use:   "init [directory]",
+		Short: "Create the default Machinist configuration in a directory, the current one by default",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			directory := "."
+			if len(args) == 1 {
+				directory = args[0]
+			}
+			return initializeMachinist(command.Context(), directory, options.stdout)
 		},
 	}
 }
 
-func initializeMachinist(ctx context.Context, output io.Writer) error {
-	home, err := os.UserHomeDir()
+// initializeMachinist writes the configuration and factory, which belong in
+// git, and the state directory, which does not.
+func initializeMachinist(ctx context.Context, directory string, output io.Writer) error {
+	directory, err := filepath.Abs(directory)
 	if err != nil {
-		return fmt.Errorf("find user home directory: %w", err)
+		return fmt.Errorf("resolve %s: %w", directory, err)
 	}
-	directory := filepath.Join(home, ".machinist")
-	for _, path := range []string{directory, filepath.Join(directory, "server")} {
-		if err := ensureDirectory(path); err != nil {
-			return err
-		}
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return fmt.Errorf("create directory %s: %w", directory, err)
+	}
+	if err := ensureDirectory(filepath.Join(directory, config.StateDir)); err != nil {
+		return err
+	}
+	if err := ignoreStateDirectory(directory, output); err != nil {
+		return err
 	}
 
 	for _, name := range initialFiles {
@@ -65,7 +77,33 @@ func initializeMachinist(ctx context.Context, output io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(output, "Machinist configuration is ready in %s\n", directory)
+	fmt.Fprintf(output, "Commit config.toml, runner.toml and factory/. %s/ holds the database and tokens and stays out of git.\n", config.StateDir)
 	fmt.Fprintln(output, "Set github.handle and repositories in config.toml, and env in runner.toml.")
+	return nil
+}
+
+// ignoreStateDirectory adds the state directory to .gitignore, so the database
+// and tokens are never committed with the configuration.
+func ignoreStateDirectory(directory string, output io.Writer) error {
+	path := filepath.Join(directory, gitignoreFile)
+	body, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", gitignoreFile, err)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		switch strings.TrimSpace(line) {
+		case gitignoreEntry, strings.TrimPrefix(gitignoreEntry, "/"), strings.Trim(gitignoreEntry, "/"), "/" + config.StateDir:
+			return nil
+		}
+	}
+	if len(body) > 0 && !strings.HasSuffix(string(body), "\n") {
+		body = append(body, '\n')
+	}
+	body = append(body, gitignoreEntry+"\n"...)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", gitignoreFile, err)
+	}
+	fmt.Fprintf(output, "added %s to %s\n", gitignoreEntry, gitignoreFile)
 	return nil
 }
 

@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 )
 
-const defaultRunnerDirName = ".machinist/runner"
+const (
+	defaultRunnerData  = StateDir + "/runner"
+	defaultRunnerToken = StateDir + "/runner.token"
+)
 
 var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -68,7 +70,7 @@ func applyRunnerDefaults(runner Runner) (Runner, error) {
 		return Runner{}, errors.New("control_plane must be an http or https URL")
 	}
 	if runner.TokenFile == "" {
-		return Runner{}, errors.New("token_file is required")
+		runner.TokenFile = filepath.FromSlash(defaultRunnerToken)
 	}
 	runner.TokenFile, err = resolveConfigPath(runner.TokenFile, runner.configDir)
 	if err != nil {
@@ -81,11 +83,7 @@ func applyRunnerDefaults(runner Runner) (Runner, error) {
 		return Runner{}, errors.New("slots must be positive")
 	}
 	if runner.DataDirectory == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return Runner{}, fmt.Errorf("find user home directory: %w", err)
-		}
-		runner.DataDirectory = filepath.Join(home, filepath.FromSlash(defaultRunnerDirName))
+		runner.DataDirectory = filepath.FromSlash(defaultRunnerData)
 	}
 	runner.DataDirectory, err = resolveConfigPath(runner.DataDirectory, runner.configDir)
 	if err != nil {

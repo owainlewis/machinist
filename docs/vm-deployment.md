@@ -12,7 +12,14 @@ MACHINIST_VERSION=v0.2.0 bash scripts/setup-vm.sh
 ```
 
 It installs Machinist, Git, the GitHub CLI, Claude Code and Codex, runs `machinist init` as the
-`machinist` user, and installs the systemd services. It prints the remaining steps.
+`machinist` user in `/home/machinist`, and installs the systemd services, which run from that
+directory. It prints the remaining steps. To keep the config in git, make `/home/machinist`
+a checkout of your repository before running the script; `init` keeps files that exist.
+
+An install from before this layout keeps its config in `~/.machinist`. Move
+`config.toml`, `runner.toml` and `factory/` to `/home/machinist`, and either move the state
+too (`server/tickets.db` to `.machinist/tickets.db`, `runner.token` and `runner/` to
+`.machinist/`) or keep the old absolute paths in the moved files.
 
 ## Credentials
 
@@ -44,6 +51,6 @@ On the other machine, set `control_plane` and `token_file` in `runner.toml`. See
 
 ## Back up
 
-Back up `~/.machinist/server/tickets.db` with a consistent SQLite copy, and your factory
+Back up `.machinist/tickets.db` with a consistent SQLite copy, and your factory
 directory. GitHub holds branches and pull requests, but not ticket history or the ledger.
 Run one control plane per database.

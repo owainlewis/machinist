@@ -1,6 +1,6 @@
 # Examples
 
-`machinist init` copies these files to `~/.machinist`:
+`machinist init [directory]` copies these files to the current directory, or the one named:
 
 - `config.toml` configures the control plane.
 - `runner.toml` configures a local runner.
