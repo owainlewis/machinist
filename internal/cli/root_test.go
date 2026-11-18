@@ -108,7 +108,8 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 		t.Fatalf("first init exit code = %d", exitCode)
 	}
 	path := filepath.Join(home, ".machinist", "config.toml")
-	if err := os.WriteFile(path, []byte("custom config\n"), 0o600); err != nil {
+	custom := "# custom\n[github]\nhandle = \"our-bot\"\nrepositories = [\"owner/repo\"]\n"
+	if err := os.WriteFile(path, []byte(custom), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,7 +117,7 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, "test"); exitCode != 0 {
 		t.Fatalf("second init exit code = %d", exitCode)
 	}
-	if got, _ := os.ReadFile(path); string(got) != "custom config\n" {
+	if got, _ := os.ReadFile(path); string(got) != custom {
 		t.Fatalf("init changed the existing file: %q", got)
 	}
 	if !strings.Contains(stdout.String(), "kept config.toml") {
@@ -133,6 +134,40 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	if !strings.Contains(stdout.String(), "created config.toml") {
 		t.Fatalf("missing default not restored: %q", stdout.String())
 	}
+}
+
+// A config from an older Machinist is set aside, never deleted, and a fresh one
+// takes its place, so init finishes and says what to copy across.
+func TestInitSetsAsideConfigFromAnOlderVersion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	directory := filepath.Join(home, ".machinist")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldConfig := "[server.listen]\nhost = \"127.0.0.1\"\n"
+	oldRunner := "default_agent = \"default\"\n"
+	for name, body := range map[string]string{"config.toml": oldConfig, "config.toml.old": "an earlier copy\n", "runner.toml": oldRunner} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &stdout, &stderr, "test"); exitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+	for name, want := range map[string]string{"config.toml.old.1": oldConfig, "config.toml.old": "an earlier copy\n", "runner.toml.old": oldRunner} {
+		if got, err := os.ReadFile(filepath.Join(directory, name)); err != nil || string(got) != want {
+			t.Fatalf("%s = %q, err = %v", name, got, err)
+		}
+	}
+	for _, want := range []string{"moved config.toml to config.toml.old.1", "moved runner.toml to runner.toml.old", "unknown key default_agent", "created config.toml", "created runner.toml"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout is missing %q:\n%s", want, stdout.String())
+		}
+	}
+	assertStarterFactoryAndTokenWork(t, directory)
 }
 
 func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {

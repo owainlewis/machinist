@@ -54,6 +54,9 @@ func initializeMachinist(ctx context.Context, output io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("read default %s: %w", name, err)
 		}
+		if err := setAsideUnreadable(directory, name, output); err != nil {
+			return err
+		}
 		if err := installFile(directory, name, body, output); err != nil {
 			return err
 		}
@@ -66,6 +69,51 @@ func initializeMachinist(ctx context.Context, output io.Writer) error {
 	}
 	fmt.Fprintf(output, "Machinist configuration is ready in %s\n", directory)
 	fmt.Fprintln(output, "Set github.handle and repositories in config.toml, and env in runner.toml.")
+	return nil
+}
+
+// setAsideUnreadable renames a config file this version cannot read, usually one
+// from an older Machinist, so init can write a fresh one beside it. Nothing is
+// deleted: the old file keeps its settings for someone to copy across.
+func setAsideUnreadable(directory, name string, output io.Writer) error {
+	path := filepath.Join(directory, name)
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect existing %s: %w", name, err)
+	}
+	if !info.Mode().IsRegular() {
+		// installFile refuses it with a clearer message.
+		return nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read existing %s: %w", name, err)
+	}
+	var target any = &config.Config{}
+	if name == "runner.toml" {
+		target = &config.Runner{}
+	}
+	decodeErr := config.DecodeStrict(path, body, target)
+	if decodeErr == nil {
+		return nil
+	}
+	aside := path + ".old"
+	for number := 1; ; number++ {
+		if _, err := os.Lstat(aside); errors.Is(err, fs.ErrNotExist) {
+			break
+		} else if err != nil {
+			return fmt.Errorf("inspect %s: %w", aside, err)
+		}
+		aside = fmt.Sprintf("%s.old.%d", path, number)
+	}
+	if err := os.Rename(path, aside); err != nil {
+		return fmt.Errorf("set aside %s: %w", name, err)
+	}
+	fmt.Fprintf(output, "moved %s to %s, because this version cannot read it: %v\n", name, filepath.Base(aside), decodeErr)
+	fmt.Fprintf(output, "  Copy any settings you need from %s into the new %s.\n", filepath.Base(aside), name)
 	return nil
 }
 
