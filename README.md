@@ -6,7 +6,7 @@ see what is running and what is waiting on a person. It is early-access, open-so
 software.
 
 - **One place for the team.** One control plane holds every job. Anyone signed in can see
-  what each agent is doing, answer its questions and open its pull request.
+  what each job is doing, step by step, and open its pull request.
 - **Runs anywhere.** A runner is a small daemon that asks the control plane for work. Start
   one on a Mac, a VM or a Kubernetes cluster. The control plane treats them all the same.
 - **A workflow you define.** A preset is a list of shell steps: clone, plan, build, test,
@@ -14,8 +14,7 @@ software.
   step is a gate an agent cannot skip.
 - **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.
 
-Type the work into a box, send it to the [run API](docs/run-api.md), or let an automation
-start it. The job works on its own branch, and the default preset opens one pull request.
+Send the work to the [run API](docs/run-api.md), or let an automation start it. The job works on its own branch, and the default preset opens one pull request.
 When a step needs a decision, it asks and the job waits.
 
 Machinist is moving to one generic workflow runner. See [Direction](docs/direction.md) for where
@@ -25,8 +24,8 @@ it is going and how far the code has got.
 
 ## Quick start
 
-You need Go 1.26.6, Git, the GitHub CLI and Claude Code. You also need a GitHub
-account for the bot, with write access to the repositories it will work on.
+This runs the control plane and one runner on your machine. You need Go 1.26.6, Git, the
+GitHub CLI signed in with `gh auth login`, and Claude Code signed in.
 
 ```sh
 git clone https://github.com/owainlewis/machinist.git
@@ -35,46 +34,82 @@ go build -o ./bin/machinist ./cmd/machinist
 ./bin/machinist init
 ```
 
-`init` creates `~/.machinist` with a control plane config, a runner config, a starter
-factory and a token for a local runner.
+`init` creates `~/.machinist` with a control plane config, a runner config, four presets
+and a token for a local runner.
 
-1.  In `~/.machinist/config.toml`, set `github.handle` to the bot's login and list your
-    repositories.
-2.  In `~/.machinist/runner.toml`, list the variables your steps need in `env`. See
+1.  In `~/.machinist/config.toml`, list the repositories jobs may work on:
+
+    ```toml
+    repositories = ["owner/name"]
+    ```
+
+2.  In `~/.machinist/runner.toml`, set `env = []` and uncomment `login = true`, so steps
+    use your own Claude Code login. To use an API key instead, keep
+    `env = ["ANTHROPIC_API_KEY"]` and set it in the runner's environment. See
     [Credentials](docs/credentials.md).
-3.  Start the control plane with the bot's token:
+3.  Start the control plane in one terminal and the runner in another:
 
     ```sh
-    GH_TOKEN=<bot token> ./bin/machinist start
-    ```
-
-4.  With the bot's token and those variables set, prove the runner works, then
-    start it:
-
-    ```sh
-    GH_TOKEN=<bot token> ANTHROPIC_API_KEY=<key> ./bin/machinist runner check --repo owner/name
+    GH_TOKEN=$(gh auth token) ./bin/machinist start
     ```
 
     ```sh
-    GH_TOKEN=<bot token> ANTHROPIC_API_KEY=<key> ./bin/machinist runner start
+    GH_TOKEN=$(gh auth token) ./bin/machinist runner start
     ```
 
-5.  Create a token for yourself and sign in at `http://127.0.0.1:7331`:
+4.  Create a token for yourself:
 
     ```sh
-    ./bin/machinist token create "$USER"
+    TOKEN=$(./bin/machinist token create "$USER" | tail -n 1)
     ```
+
+5.  Start a job with the `hello` preset. It clones nothing and runs no agent, so it proves
+    the runner works in a few seconds:
+
+    ```sh
+    curl -sS -X POST http://127.0.0.1:7331/machinist/run \
+      -H "Authorization: Bearer $TOKEN" \
+      -d '{"key":"hello-1","preset":"hello","vars":{"repo":"owner/name"},"prompt":"Say hello"}'
+    ```
+
+6.  Open `http://127.0.0.1:7331`, sign in with the token and open the job. It should be
+    Done, with each step's output.
+7.  Now give it real work with the `coding` preset. It opens a draft pull request:
+
+    ```sh
+    curl -sS -X POST http://127.0.0.1:7331/machinist/run \
+      -H "Authorization: Bearer $TOKEN" \
+      -d '{"key":"fix-1","preset":"coding","vars":{"repo":"owner/name"},"prompt":"Fix the toast position"}'
+    ```
+
+The pull request comes from whoever owns `GH_TOKEN`. For a team, give the control plane
+and runners a bot account's token instead, and set `github.handle` to its login.
 
 The production UI is committed, so this build does not need Node.
 
 ## Using it
 
+Jobs start through the [run API](docs/run-api.md), from `curl`, a tracker, a webhook or an
+automation. The web app is read-only:
+
 | Page | What it does |
 | --- | --- |
-| Home | One box to assign work: write it, or paste an issue number or link. Under it, what is running now, what needs you, the pass rate and tokens for the last 14 days, and a list of recent work where you can answer a question in place |
-| Work | One table of jobs with a status on each row, and tabs to filter it. Open a job to follow it and reply, like a chat, with its details at the side |
-| Automations | Your scheduled jobs, when each is next due and what it last did |
+| Jobs | The newest jobs, with each one's repository, preset, pull request and state |
+| Job | One job: its question if it is waiting, its result, its prompt, and every attempt with the output of each step |
 | Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
+
+To answer a job's question, `POST /machinist/jobs/{id}/input`. To stop it,
+`POST /machinist/jobs/{id}/cancel`.
+
+## Testing Machinist itself
+
+```sh
+go test ./...
+cd internal/controlplane/web && npm ci && npm test
+```
+
+The Go tests run whole jobs end to end with fake `claude` and `gh` commands and a local
+Git remote. See [Development](docs/development.md).
 
 Machinist never merges a pull request unless you add an automation that uses a preset allowed
 to. See [Security](SECURITY.md) for what a step can do.
