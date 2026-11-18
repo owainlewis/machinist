@@ -49,13 +49,13 @@ func TestDeliverUsesThePRWhenThereIsNoIssue(t *testing.T) {
 	posts := recordPosts(e)
 	ticket := newTicket(t, e, "api")
 	request := assignRun(t, e)
-	if err := e.Complete(t.Context(), request.RunID, succeed("needs_input", "Stuck", "Which?")); err != nil {
+	if err := e.Complete(t.Context(), request.RunID, succeed("failed", "Stuck")); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Deliver(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if len(*posts) != 1 || (*posts)[0].number != 42 || (*posts)[0].body != "Which?" {
+	if len(*posts) != 1 || (*posts)[0].number != 42 || (*posts)[0].body != "Stuck" {
 		t.Fatalf("posts = %+v", *posts)
 	}
 	if got, _ := e.Store.Ticket(t.Context(), ticket.ID); got.PRNumber != 42 {
@@ -68,21 +68,11 @@ func TestDeliverKeepsMessagesWithNoDestinationInMachinist(t *testing.T) {
 	posts := recordPosts(e)
 	ticket := newTicket(t, e, "api")
 	request := assignRun(t, e)
-	if err := e.Complete(t.Context(), request.RunID, succeed("needs_input", "Stuck", "Which?")); err != nil {
+	if err := e.Complete(t.Context(), request.RunID, succeed("failed", "Stuck")); err != nil {
 		t.Fatal(err)
 	}
-	if message := lastMessage(t, e, ticket.ID); message != "Which?" {
+	if message := lastMessage(t, e, ticket.ID); message != "Stuck" {
 		t.Fatalf("message = %q", message)
-	}
-
-	// The old question must not appear on a PR found later.
-	if _, _, err := e.Store.AddInput(t.Context(), ticket.ID, tickets.Input{Kind: tickets.EntryComment, Author: "alice", Body: "Use v2"}); err != nil {
-		t.Fatal(err)
-	}
-	withPR(e)
-	second := assignRun(t, e)
-	if err := e.Complete(t.Context(), second.RunID, succeed("pr_ready", "Opened", "")); err != nil {
-		t.Fatal(err)
 	}
 	if err := e.Deliver(t.Context()); err != nil {
 		t.Fatal(err)
@@ -146,7 +136,7 @@ func TestDeliverTruncatesLongMessages(t *testing.T) {
 	e := newEngine(t)
 	posts := recordPosts(e)
 	ticket := newIssueTicket(t, e)
-	if err := e.Store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateNeedsYou, Message: strings.Repeat("é", maxPostBytes)}); err != nil {
+	if err := e.Store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: strings.Repeat("é", maxPostBytes)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Deliver(t.Context()); err != nil {

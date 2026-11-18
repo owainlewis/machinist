@@ -18,7 +18,6 @@ import (
 const (
 	defaultListen     = "127.0.0.1:7331"
 	defaultPreset     = "default"
-	defaultMaxTurns   = 5
 	defaultRunTimeout = 60 * time.Minute
 	maxConfigBytes    = 1 << 20
 	maxTokenBytes     = 8 << 10
@@ -30,16 +29,15 @@ const (
 )
 
 type Server struct {
-	Listen               string `yaml:"listen"`
-	Database             string `yaml:"database"`
-	Factory              string `yaml:"factory"`
-	DefaultPreset        string `yaml:"default_preset"`
-	MaxTurnsWithoutHuman int    `yaml:"max_turns_without_human"`
-	RunTimeout           string `yaml:"run_timeout"`
-	TLSCert              string `yaml:"tls_cert"`
-	TLSKey               string `yaml:"tls_key"`
-	runTimeout           time.Duration
-	configDir            string
+	Listen        string `yaml:"listen"`
+	Database      string `yaml:"database"`
+	Factory       string `yaml:"factory"`
+	DefaultPreset string `yaml:"default_preset"`
+	RunTimeout    string `yaml:"run_timeout"`
+	TLSCert       string `yaml:"tls_cert"`
+	TLSKey        string `yaml:"tls_key"`
+	runTimeout    time.Duration
+	configDir     string
 }
 
 // RunDeadline is the longest one run may last.
@@ -150,12 +148,6 @@ func applyServerDefaults(server Server) (Server, error) {
 	}
 	if server.DefaultPreset == "" {
 		server.DefaultPreset = defaultPreset
-	}
-	if server.MaxTurnsWithoutHuman == 0 {
-		server.MaxTurnsWithoutHuman = defaultMaxTurns
-	}
-	if server.MaxTurnsWithoutHuman < 0 {
-		return Server{}, errors.New("max_turns_without_human must be positive")
 	}
 	server.runTimeout = defaultRunTimeout
 	if server.RunTimeout != "" {

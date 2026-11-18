@@ -2,7 +2,8 @@
 
 Machinist has one Go control plane with an embedded React UI, and any number of runners.
 The UI is read-only: a list of jobs, a page for each job with every step's output, and the
-runners. Jobs start and get answers through the [run API](docs/run-api.md).
+runners. Jobs start through the [run API](docs/run-api.md)
+and run headless from start to finish.
 The control plane owns tickets, the ledger, schedules, the factory's presets and the UI. It
 never runs a step. Runners do, and they dial out, so a runner behind a firewall needs no
 inbound route.
@@ -26,11 +27,12 @@ flowchart LR
 
 A ticket is one piece of work with one preset and one fixed branch,
 `machinist/<ticket id>`. Every run runs the preset's steps from the first, in an empty
-workspace. The only state carried between runs is what a step pushed and the ticket log:
-the request, questions and human answers. The run API calls a ticket a job.
+workspace. The only state carried between runs is what a step pushed and the ticket log.
+No run waits for a person: an agent that has to guess writes its guess to
+`assumptions.md`, and `publish.sh` puts it in the pull request. The run API calls a ticket a job.
 
-The runner turns the steps' outcome into one report. A step that fails fails the run. A
-step that writes `question.md` gives `needs_input`. Otherwise the report is `no_change`,
+The runner turns the steps' outcome into one report. A step that fails fails the run.
+Otherwise the report is `no_change`,
 with `result.md` as its summary. After a run, the control plane looks up the branch's pull
 request, so a step that opens one needs to report nothing. See
 [Factory files](docs/factory.md#presets).
@@ -38,14 +40,12 @@ request, so a step that opens one needs to report nothing. See
 | State | Meaning |
 | --- | --- |
 | `working` | A run is going or about to |
-| `needs_you` | Waiting for a person |
 | `pr_ready` | A pull request is open and nothing is running |
 | `done` | Finished with no pull request needed |
-| `failed` | An automation's run failed. Automations never wait for a person |
+| `failed` | A step failed, the preset is gone, or the runner was lost three times |
 | `cancelled` | Someone cancelled it. Its pull request stays open |
 
-A ticket stops and asks a person after `max_turns_without_human` runs with no human
-input. Each run has a deadline, the preset's `timeout` or `run_timeout`. Provider spend
+A run whose runner is lost is retried, at most three times in all. Each run has a deadline, the preset's `timeout` or `run_timeout`. Provider spend
 limits cap total cost.
 
 The full state table is in the

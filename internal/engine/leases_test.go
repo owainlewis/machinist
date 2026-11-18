@@ -33,7 +33,7 @@ func TestLostLeaseInterruptsRunAndQueuesANewOne(t *testing.T) {
 	if err != nil || replacement == nil || replacement.RunID == lost.RunID || replacement.Branch != lost.Branch {
 		t.Fatalf("replacement = %+v, err = %v", replacement, err)
 	}
-	if err := e.Complete(t.Context(), lost.RunID, succeed("no_change", "Late", "")); err == nil {
+	if err := e.Complete(t.Context(), lost.RunID, succeed("no_change", "Late")); err == nil {
 		t.Fatal("expired run completed")
 	}
 }
@@ -64,7 +64,7 @@ func TestLeasesSurviveControlPlaneRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	presets := map[string]factory.Preset{"default": testPreset()}
-	options := Options{Store: store, Factory: &factory.Factory{Presets: presets}, MaxTurns: 3, RunTimeout: time.Hour, Handle: "bot"}
+	options := Options{Store: store, Factory: &factory.Factory{Presets: presets}, RunTimeout: time.Hour, Handle: "bot"}
 	first := New(options)
 	if _, _, err = store.CreateTicket(t.Context(), tickets.NewTicket{Source: "api", Repo: "o/r", Title: "T", Body: "B", Agent: "default", CreatedBy: "a", SourceKey: "k"}); err != nil {
 		t.Fatal(err)

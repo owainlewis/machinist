@@ -37,7 +37,6 @@ server:
   database: .machinist/tickets.db
   factory: factory
   default_preset: default
-  max_turns_without_human: 5
   run_timeout: 60m
   # tls_cert: /etc/machinist/tls.crt
   # tls_key: /etc/machinist/tls.key
@@ -53,7 +52,6 @@ github:
 | `database` | The SQLite file. Back this up |
 | `factory` | The factory directory |
 | `default_preset` | The preset a job uses when it names none |
-| `max_turns_without_human` | Runs allowed since a person last said something |
 | `run_timeout` | The deadline for one run, when its preset sets none |
 | `tls_cert`, `tls_key` | Serve HTTPS, and mark the sign-in cookie Secure |
 | `github.handle` | The bot's login. Use a dedicated account |

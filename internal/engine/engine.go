@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
@@ -16,6 +15,10 @@ import (
 )
 
 const tickInterval = time.Second
+
+// maxAttempts caps the runs of one job. A run only repeats when its runner was
+// lost, so a runner that keeps dying cannot retry a job forever.
+const maxAttempts = 3
 
 // ErrInvalidCompletion means a runner sent a state Machinist does not know.
 var ErrInvalidCompletion = errors.New("invalid run completion")
@@ -35,7 +38,6 @@ type PRFinder func(ctx context.Context, repository, branch string) (*PR, error)
 type Options struct {
 	Store      *tickets.Store
 	Factory    *factory.Factory
-	MaxTurns   int
 	RunTimeout time.Duration
 	Handle     string
 	FindPR     PRFinder
@@ -95,19 +97,16 @@ func (e *Engine) Tick(ctx context.Context) error {
 }
 
 func (e *Engine) advance(ctx context.Context, ticket tickets.Ticket) error {
-	turns, err := e.Store.TurnsSinceHuman(ctx, ticket.ID)
+	attempts, err := e.Store.TurnsSinceHuman(ctx, ticket.ID)
 	if err != nil {
 		return err
 	}
-	if turns >= e.MaxTurns {
-		message, err := e.turnLimitMessage(ctx, ticket.ID)
-		if err != nil {
-			return err
-		}
-		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: waitingState(ticket), Message: message})
+	if attempts >= maxAttempts {
+		message := fmt.Sprintf("Stopped after %d attempts, because the runner was lost each time.", maxAttempts)
+		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: message})
 	}
 	if _, ok := e.Factory.Preset(ticket.Agent); !ok {
-		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: waitingState(ticket), Message: missingPresetMessage(ticket.Agent)})
+		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: missingPresetMessage(ticket.Agent)})
 	}
 	// The ticket can leave working between the listing and here. Then there is nothing to run.
 	if _, err = e.Store.QueueRun(ctx, ticket.ID, protocol.StepsHarness); errors.Is(err, tickets.ErrNotWorking) {
@@ -116,30 +115,8 @@ func (e *Engine) advance(ctx context.Context, ticket tickets.Ticket) error {
 	return err
 }
 
-// turnLimitMessage says what the last run reported.
-func (e *Engine) turnLimitMessage(ctx context.Context, ticketID string) (string, error) {
-	report, err := e.Store.LastReport(ctx, ticketID)
-	if err != nil {
-		return "", err
-	}
-	parts := []string{fmt.Sprintf("Reached the limit of %d runs without human input.", e.MaxTurns)}
-	if report != "" {
-		parts = append(parts, report)
-	}
-	return strings.Join(parts, "\n\n"), nil
-}
-
 func missingPresetMessage(preset string) string {
 	return fmt.Sprintf("Preset %q is not in the factory.", preset)
-}
-
-// waitingState is where a ticket goes when it needs a person. An automation
-// never waits, so one bad run cannot stop its schedule.
-func waitingState(ticket tickets.Ticket) string {
-	if ticket.Automation() {
-		return tickets.StateFailed
-	}
-	return tickets.StateNeedsYou
 }
 
 // Assign gives the oldest queued run for these harnesses to a runner. It
@@ -152,8 +129,8 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 	preset, ok := e.Factory.Preset(claim.Ticket.Agent)
 	if !ok {
 		message := missingPresetMessage(claim.Ticket.Agent)
-		return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, e.MaxTurns, func(ticket tickets.Ticket, _ string) tickets.Transition {
-			return tickets.Transition{State: waitingState(ticket), Message: message}
+		return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
+			return tickets.Transition{State: tickets.StateFailed, Message: message}
 		})
 	}
 	timeout := e.RunTimeout
@@ -199,8 +176,8 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	if err != nil {
 		return err
 	}
-	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: report, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages}, e.MaxTurns, func(ticket tickets.Ticket, status string) tickets.Transition {
-		transition := decide(ticket, status, report, reason, pr)
+	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: report, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages}, func(ticket tickets.Ticket, status string) tickets.Transition {
+		transition := decide(status, report, reason, pr)
 		if pr != nil && ticket.PRNumber == 0 {
 			transition.FirstPR = e.firstPR(ticket, pr.Number)
 		}
@@ -236,7 +213,9 @@ func (e *Engine) findPR(ctx context.Context, runID string) (*PR, error) {
 	return e.FindPR(ctx, ticket.Repo, ticket.Branch())
 }
 
-func decide(ticket tickets.Ticket, status string, report *protocol.Report, reason string, pr *PR) tickets.Transition {
+// decide is the state table for the end of a run. A job ends done, with a pull
+// request or without one, or failed. It never waits for a person.
+func decide(status string, report *protocol.Report, reason string, pr *PR) tickets.Transition {
 	transition := tickets.Transition{}
 	if pr != nil {
 		transition.PRNumber = pr.Number
@@ -249,28 +228,23 @@ func decide(ticket tickets.Ticket, status string, report *protocol.Report, reaso
 		if reason == "" {
 			reason = status
 		}
-		transition.State = waitingState(ticket)
+		transition.State = tickets.StateFailed
 		transition.Message = "The run ended without a report: " + reason
 		return transition
 	}
 	transition.Report = report.Outcome + ": " + report.Summary
-	if report.Question != "" {
-		transition.Report += "\nQuestion: " + report.Question
-	}
 	switch report.Outcome {
 	case protocol.OutcomePRReady:
 		if pr != nil && !pr.Closed {
 			transition.State = tickets.StatePRReady
 		} else {
-			transition.State = waitingState(ticket)
+			transition.State = tickets.StateFailed
 			transition.Message = "Reported a PR but none is open for this branch."
 		}
-	case protocol.OutcomeNeedsInput:
-		transition.State, transition.Message = waitingState(ticket), report.Question
 	case protocol.OutcomeNoChange:
 		transition.State, transition.Message = tickets.StateDone, report.Summary
 	default:
-		transition.State, transition.Message = waitingState(ticket), report.Summary
+		transition.State, transition.Message = tickets.StateFailed, report.Summary
 	}
 	return transition
 }

@@ -114,11 +114,15 @@ automation. The web app is read-only:
 | Page | What it does |
 | --- | --- |
 | Jobs | The newest jobs, with each one's repository, preset, pull request and state |
-| Job | One job: its question if it is waiting, its result, its prompt, and every attempt with the output of each step |
+| Job | One job: its result, its prompt, and every attempt with the output of each step |
 | Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
 
-To answer a job's question, `POST /machinist/jobs/{id}/input`. To stop it,
-`POST /machinist/jobs/{id}/cancel`.
+To stop a job, `POST /machinist/jobs/{id}/cancel`.
+
+Jobs run headless, from start to finish, and never stop to ask a question. When the agent
+has to guess, it says so under **Assumptions** in the pull request. For work that needs a
+person's decisions first, run the `spec` preset, edit the spec it returns, and send that
+as the prompt of a `coding` job.
 
 ## Testing Machinist itself
 

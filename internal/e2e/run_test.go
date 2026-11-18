@@ -63,8 +63,7 @@ func (b *lockedBuffer) String() string {
 // options changes what start builds.
 type options struct {
 	// claude is the fake claude command that the shipped presets run.
-	claude   func(output string) string
-	maxTurns int
+	claude func(output string) string
 	// factory, when set, adds files to the factory before it is loaded.
 	factory func(t *testing.T, directory string)
 }
@@ -103,17 +102,16 @@ func newRemote(t *testing.T) string {
 	return remote
 }
 
-// claudeScript asks which database to use, then commits once it has the answer.
+// claudeScript cannot ask which database to use, so it picks one, says so in
+// assumptions.md and commits.
 func claudeScript(output string) string {
 	return `#!/bin/sh
 env > ` + output + `/env
+printf '%s' "$*" > ` + output + `/args
 cat > ` + output + `/prompt
 git status --porcelain > ` + output + `/status
-if grep -q 'Use Postgres' ` + output + `/prompt; then
-  git commit --quiet --allow-empty -m 'use postgres'
-else
-  echo 'Which database?' > "$MACHINIST_DIR/question.md"
-fi
+echo '- Used Postgres, because the request named no database.' > "$MACHINIST_DIR/assumptions.md"
+git commit --quiet --allow-empty -m 'use postgres'
 `
 }
 
@@ -146,7 +144,7 @@ func shippedFactory(t *testing.T, directory string) {
 // preset runs against a fake claude, a fake gh and a local Git remote.
 func start(t *testing.T) *system {
 	t.Helper()
-	return startWith(t, options{claude: claudeScript, maxTurns: 5})
+	return startWith(t, options{claude: claudeScript})
 }
 
 func startWith(t *testing.T, chosen options) *system {
@@ -172,7 +170,7 @@ func startWith(t *testing.T, chosen options) *system {
 		chosen.factory(t, factoryDirectory)
 	}
 	configPath := filepath.Join(root, "config.yaml")
-	writeFile(t, configPath, fmt.Sprintf("server:\n  max_turns_without_human: %d\n", chosen.maxTurns)+"  listen: 127.0.0.1:0\n  database: tickets.db\n  factory: factory\n\ngithub:\n  handle: machinist-bot\n  repositories: [owner/repo]\n", 0o600)
+	writeFile(t, configPath, "server:\n  listen: 127.0.0.1:0\n  database: tickets.db\n  factory: factory\n\ngithub:\n  handle: machinist-bot\n  repositories: [owner/repo]\n", 0o600)
 	machinistConfig, err := config.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -338,7 +336,6 @@ func (s *system) waitForCleanup(t *testing.T, runID string) {
 type jobView struct {
 	ID       string `json:"id"`
 	State    string `json:"state"`
-	Question string `json:"question"`
 	PRNumber int    `json:"pr_number"`
 }
 
@@ -352,9 +349,9 @@ func (s *system) job(t *testing.T, id string) jobView {
 	return view
 }
 
-// The whole path: a run request, the shipped default preset, a question, an
-// answer, and a pull request.
-func TestRunAsksAQuestionThenOpensAPullRequest(t *testing.T) {
+// The whole path: a run request, the shipped default preset and a pull request,
+// in one run that never waits for a person.
+func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	s := start(t)
 	status, body := s.call(t, http.MethodPost, "/machinist/run", map[string]any{
 		"key": "linear:ENG-1", "preset": "default", "vars": map[string]string{"repo": "owner/repo"}, "prompt": "Add a thing\n\nTHE REQUEST",
@@ -364,29 +361,32 @@ func TestRunAsksAQuestionThenOpensAPullRequest(t *testing.T) {
 		t.Fatalf("status = %d: %s", status, body)
 	}
 
-	asked := s.waitForState(t, created.ID, tickets.StateNeedsYou)
-	if view := s.job(t, created.ID); view.State != "needs_input" || view.Question != "Which database?" {
+	finished := s.waitForState(t, created.ID, tickets.StateDone)
+	if view := s.job(t, created.ID); view.State != "done" || view.PRNumber != 7 {
 		t.Fatalf("job = %+v", view)
 	}
 	runs, err := s.store.Runs(t.Context(), created.ID)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
-	first := runs[0]
-	if first.Status != tickets.RunSucceeded || first.Runner != "runner-1" || first.Harness != protocol.StepsHarness || first.Report.Question != "Which database?" {
-		t.Fatalf("first run = %+v", first)
+	run := runs[0]
+	if run.Status != tickets.RunSucceeded || run.Runner != "runner-1" || run.Harness != protocol.StepsHarness {
+		t.Fatalf("run = %+v", run)
 	}
-	if got := stepStates(first); got != "checkout=succeeded work=succeeded publish=skipped" {
+	if got := stepStates(run); got != "checkout=succeeded work=succeeded publish=succeeded" {
 		t.Fatalf("steps = %s", got)
 	}
 	if prompt := s.read(t, "prompt"); !strings.Contains(prompt, "THE REQUEST") || !strings.Contains(prompt, "untrusted") {
 		t.Fatalf("prompt:\n%s", prompt)
 	}
+	if args := s.read(t, "args"); !strings.Contains(args, "running headless") || !strings.Contains(args, "Do the work in the prompt") {
+		t.Fatalf("system prompt:\n%s", args)
+	}
 	if status := s.read(t, "status"); status != "" {
 		t.Fatalf("the workspace was not a clean clone: %q", status)
 	}
 	environment := s.read(t, "env")
-	for _, want := range []string{"ANTHROPIC_API_KEY=fixture-anthropic", "GH_TOKEN=fixture-github", "MACHINIST_REPO=owner/repo", "MACHINIST_BRANCH=" + asked.Branch()} {
+	for _, want := range []string{"ANTHROPIC_API_KEY=fixture-anthropic", "GH_TOKEN=fixture-github", "MACHINIST_REPO=owner/repo", "MACHINIST_BRANCH=" + finished.Branch()} {
 		if !strings.Contains(environment, want) {
 			t.Fatalf("missing %s in:\n%s", want, environment)
 		}
@@ -396,34 +396,22 @@ func TestRunAsksAQuestionThenOpensAPullRequest(t *testing.T) {
 			t.Fatalf("%s reached a step:\n%s", unwanted, environment)
 		}
 	}
-	page, err := s.store.RunEvents(t.Context(), first.ID, 0)
+	page, err := s.store.RunEvents(t.Context(), run.ID, 0)
 	if err != nil || len(page.Events) == 0 {
 		t.Fatalf("no activity arrived: %+v, %v", page, err)
-	}
-	s.waitForCleanup(t, first.ID)
-
-	if status, body := s.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/input", map[string]string{"text": "Use Postgres"}); status != http.StatusOK {
-		t.Fatalf("status = %d: %s", status, body)
-	}
-	finished := s.waitForState(t, created.ID, tickets.StateDone)
-	if finished.PRNumber != 7 {
-		t.Fatalf("ticket = %+v", finished)
-	}
-	if view := s.job(t, created.ID); view.State != "done" || view.PRNumber != 7 {
-		t.Fatalf("job = %+v", view)
 	}
 	if author := git(t, s.remote, "log", "-1", "--format=%s %ae", finished.Branch()); author != "use postgres machinist-bot@users.noreply.github.com" {
 		t.Fatalf("pushed commit = %s", author)
 	}
-	prompt := s.read(t, "prompt")
-	for _, want := range []string{"THE REQUEST", "Which database?", "Use Postgres"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("missing %q in second prompt:\n%s", want, prompt)
-		}
+	if body := s.github.PRBody(7); !strings.Contains(body, "## Assumptions") || !strings.Contains(body, "Used Postgres") {
+		t.Fatalf("PR body:\n%s", body)
 	}
 	entries, err := s.store.Entries(t.Context(), created.ID)
 	if err != nil || entries[len(entries)-1].Body != "https://github.com/owner/repo/pull/7" {
 		t.Fatalf("entries = %+v, err = %v", entries, err)
+	}
+	if status, _ := s.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/input", map[string]string{"text": "Use Postgres"}); status == http.StatusOK {
+		t.Fatal("a job took input")
 	}
 }
 

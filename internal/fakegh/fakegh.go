@@ -43,6 +43,7 @@ case "$1 $2" in
 "pr create")
   number=$(cat "$dir/next-pr")
   echo $((number + 1)) > "$dir/next-pr"
+  while [ $# -gt 0 ]; do if [ "$1" = --body-file ]; then cp "$2" "$dir/pr-body-$number"; fi; shift; done
   branch=$(git branch --show-current)
   printf '[{"number":%%s,"state":"OPEN","isCrossRepository":false}]' "$number" > "$dir/prlist-$(printf %%s "$branch" | tr / _)"
   cp "$dir/open-pr" "$dir/pr-$number"
@@ -356,6 +357,9 @@ func (g *GitHub) Merged() []string { return lines(g.read("merged")) }
 
 // PRComments returns the comments agents posted with gh pr comment.
 func (g *GitHub) PRComments() []string { return lines(g.read("pr-comments")) }
+
+// PRBody is the body a step gave pr create for a pull request.
+func (g *GitHub) PRBody(number int) string { return g.read("pr-body-" + strconv.Itoa(number)) }
 
 func lines(text string) []string {
 	if text == "" {

@@ -54,7 +54,7 @@ func completeTo(state string) func(Ticket, string) Transition {
 
 func completeRun(t *testing.T, store *Store, runID, state string) {
 	t.Helper()
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: runID, Status: RunSucceeded}, 5, completeTo(state)); err != nil {
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: runID, Status: RunSucceeded}, completeTo(state)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -157,25 +157,25 @@ func TestCompleteRunAppliesTransitionAndStoresResult(t *testing.T) {
 	ticket := createTicket(t, store, "api:1")
 	claim := claimRun(t, store, ticket)
 	tokens, cost := int64(12), 0.5
-	report := &protocol.Report{Outcome: protocol.OutcomeNeedsInput, Summary: "Stuck", Question: "Which?"}
-	err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: report, Tokens: &tokens, Cost: &cost}, 5, func(Ticket, string) Transition {
-		return Transition{State: StateNeedsYou, Report: "needs_input: Stuck", Message: "Which?"}
+	report := &protocol.Report{Outcome: protocol.OutcomeFailed, Summary: "Stuck"}
+	err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: report, Tokens: &tokens, Cost: &cost}, func(Ticket, string) Transition {
+		return Transition{State: StateFailed, Report: "failed: Stuck", Message: "Stuck"}
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := reload(t, store, ticket.ID); got.State != StateNeedsYou {
+	if got := reload(t, store, ticket.ID); got.State != StateFailed {
 		t.Fatalf("state = %s", got.State)
 	}
 	run, _ := store.Run(t.Context(), claim.Run.ID)
-	if run.Status != RunSucceeded || *run.Tokens != 12 || *run.Cost != 0.5 || run.Report.Question != "Which?" || run.EndedAt == nil {
+	if run.Status != RunSucceeded || *run.Tokens != 12 || *run.Cost != 0.5 || run.Report.Summary != "Stuck" || run.EndedAt == nil {
 		t.Fatalf("run = %+v", run)
 	}
 	entries, _ := store.Entries(t.Context(), ticket.ID)
-	if entries[1].Kind != EntryReport || entries[2].Kind != EntryMessage || entries[2].Body != "Which?" {
+	if entries[1].Kind != EntryReport || entries[2].Kind != EntryMessage || entries[2].Body != "Stuck" {
 		t.Fatalf("entries = %+v", entries)
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, 5, completeTo(StateDone)); !errors.Is(err, ErrRunNotActive) {
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, completeTo(StateDone)); !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("second completion: %v", err)
 	}
 }
@@ -190,7 +190,7 @@ func TestCompleteRunStoresStagesInOrder(t *testing.T) {
 		{Name: "test", Kind: "script", State: "failed", DurationMillis: 20, Error: "command exited with status 1"},
 		{Name: "review", Kind: "agent", State: protocol.StageSkipped},
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed, Stages: stages}, 5, completeTo(StateNeedsYou)); err != nil {
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed, Stages: stages}, completeTo(StateFailed)); err != nil {
 		t.Fatal(err)
 	}
 	runs, err := store.Runs(t.Context(), ticket.ID)
@@ -222,17 +222,17 @@ func TestWaitingInputReturnsTicketToWorking(t *testing.T) {
 	}
 }
 
-func TestWaitingCISignalStopsAtTurnLimit(t *testing.T) {
+func TestAFailedRunIgnoresWaitingInput(t *testing.T) {
 	store := openStore(t)
 	ticket := createTicket(t, store, "api:1")
 	claim := claimRun(t, store, ticket)
 	if _, _, err := store.AddInput(t.Context(), ticket.ID, Input{Kind: EntryCI, Author: "github", Body: "CI failed on abc", SourceKey: "github:ci:abc"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, 1, completeTo(StateNeedsYou)); err != nil {
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, completeTo(StateFailed)); err != nil {
 		t.Fatal(err)
 	}
-	if got := reload(t, store, ticket.ID); got.State != StateNeedsYou {
+	if got := reload(t, store, ticket.ID); got.State != StateFailed {
 		t.Fatalf("state = %s", got.State)
 	}
 }
@@ -245,7 +245,7 @@ func TestEndedTicketIgnoresWaitingInputAndCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunCancelled}, 5, func(Ticket, string) Transition {
+	err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunCancelled}, func(Ticket, string) Transition {
 		called = true
 		return Transition{State: StateDone}
 	})
@@ -268,9 +268,6 @@ func TestAddInputFollowsStateRows(t *testing.T) {
 		from, kind, want string
 	}{
 		{StateWorking, EntryComment, StateWorking},
-		{StateNeedsYou, EntryComment, StateWorking},
-		{StateNeedsYou, EntryReview, StateNeedsYou},
-		{StateNeedsYou, EntryCI, StateNeedsYou},
 		{StatePRReady, EntryReview, StateWorking},
 		{StatePRReady, EntryCI, StateWorking},
 		{StatePRReady, EntryComment, StateWorking},
@@ -304,7 +301,7 @@ func TestTurnsSinceHumanRestartsOnHumanInput(t *testing.T) {
 	completeRun(t, store, claim.Run.ID, StateWorking)
 	assertTurns(1)
 	claim = claimRun(t, store, ticket)
-	completeRun(t, store, claim.Run.ID, StateNeedsYou)
+	completeRun(t, store, claim.Run.ID, StatePRReady)
 	assertTurns(2)
 	if _, _, err := store.AddInput(t.Context(), ticket.ID, Input{Kind: EntryComment, Author: "alice", Body: "Answer"}); err != nil {
 		t.Fatal(err)
@@ -338,7 +335,7 @@ func TestLeasesRenewExpireAndAskRunnersToStop(t *testing.T) {
 	if _, err := store.RenewLease(t.Context(), claim.Run.ID, now); !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("expired run renewed: %v", err)
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, 5, completeTo(StateDone)); !errors.Is(err, ErrRunNotActive) {
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, completeTo(StateDone)); !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("expired run completed: %v", err)
 	}
 	if _, err := store.RenewLease(t.Context(), "run_unknown", now); !errors.Is(err, ErrNotFound) {
@@ -401,7 +398,7 @@ func TestTicketsAwaitingRunSkipsActiveRunsAndOtherStates(t *testing.T) {
 	if _, err := store.QueueRun(t.Context(), busy.ID, "claude"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Apply(t.Context(), paused.ID, StateWorking, Transition{State: StateNeedsYou}); err != nil {
+	if err := store.Apply(t.Context(), paused.ID, StateWorking, Transition{State: StatePRReady}); err != nil {
 		t.Fatal(err)
 	}
 	tickets, err := store.TicketsAwaitingRun(t.Context())
@@ -484,44 +481,24 @@ func TestOpenRestoresDataAfterRestart(t *testing.T) {
 	}
 }
 
-func TestAnswerOnlyWhenWaiting(t *testing.T) {
-	store := openStore(t)
-	ticket := createTicket(t, store, "api:answer")
-	if _, err := store.Answer(t.Context(), ticket.ID, "alice", "Too soon"); !errors.Is(err, ErrNotWaiting) {
-		t.Fatalf("error = %v", err)
-	}
-	if err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: StateNeedsYou, Message: "Which?"}); err != nil {
-		t.Fatal(err)
-	}
-	waiting := reload(t, store, ticket.ID)
-	if question, err := store.WaitingQuestion(t.Context(), waiting); err != nil || question != "Which?" {
-		t.Fatalf("question = %q, err = %v", question, err)
-	}
-	answered, err := store.Answer(t.Context(), ticket.ID, "alice", "Postgres")
-	if err != nil || answered.State != StateWorking {
-		t.Fatalf("ticket = %+v, err = %v", answered, err)
-	}
-	if question, err := store.WaitingQuestion(t.Context(), answered); err != nil || question != "" {
-		t.Fatalf("question = %q, err = %v", question, err)
-	}
-	if _, err := store.Answer(t.Context(), "t_missing", "alice", "x"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestQuestionAskedWithTheFirstPRIsStillTheWaitingQuestion(t *testing.T) {
-	store := openStore(t)
-	ticket := createTicket(t, store, "api:1")
-	transition := Transition{State: StateNeedsYou, Message: "Which database?", PRNumber: 7, FirstPR: &FirstPR{Link: "Opened a PR: https://github.com/owner/repo/pull/7"}}
-	if err := store.Apply(t.Context(), ticket.ID, StateWorking, transition); err != nil {
-		t.Fatal(err)
-	}
-	ticket, err := store.Ticket(t.Context(), ticket.ID)
+func TestOpenFailsJobsLeftWaitingForAnAnswer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tickets.db")
+	store, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if question, err := store.WaitingQuestion(t.Context(), ticket); err != nil || question != "Which database?" {
-		t.Fatalf("question = %q, err = %v", question, err)
+	ticket := createTicket(t, store, "api:waiting")
+	if _, err := store.db.Exec(`UPDATE tickets SET state='needs_you' WHERE id=?`, ticket.ID); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got := reload(t, reopened, ticket.ID); got.State != StateFailed {
+		t.Fatalf("state = %s", got.State)
 	}
 }
 

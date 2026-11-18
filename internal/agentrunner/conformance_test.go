@@ -312,16 +312,6 @@ func TestConformance(t *testing.T) {
 		}
 	})
 
-	eachRunner(t, "question", func(t *testing.T, executor Executor, _, _, _ string) {
-		result := executor.Execute(t.Context(), conformanceRequest(
-			runner.Step{Name: "ask", Run: `echo "Which database?" > "$MACHINIST_DIR/question.md"`},
-			runner.Step{Name: "after", Run: "true"},
-		))
-		if result.State != runner.StateSucceeded || result.Report == nil || result.Report.Outcome != protocol.OutcomeNeedsInput || result.Report.Question != "Which database?" {
-			t.Fatalf("result = %+v", result)
-		}
-	})
-
 	eachRunner(t, "failing step", func(t *testing.T, executor Executor, _, _, _ string) {
 		result := executor.Execute(t.Context(), conformanceRequest(
 			runner.Step{Name: "work", Run: "echo broken >&2; exit 3"},

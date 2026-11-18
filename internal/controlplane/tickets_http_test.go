@@ -18,16 +18,16 @@ func (f *fixture) connect(t *testing.T) {
 	f.server.intake.Repositories = []string{"owner/repo"}
 }
 
-func decodeTicket(t *testing.T, body []byte) ticketView {
+func decodeTicket(t *testing.T, body []byte) tickets.Ticket {
 	t.Helper()
-	var view ticketView
+	var view tickets.Ticket
 	if err := json.Unmarshal(body, &view); err != nil {
 		t.Fatalf("%v: %s", err, body)
 	}
 	return view
 }
 
-func (f *fixture) assign(t *testing.T, id string) ticketView {
+func (f *fixture) assign(t *testing.T, id string) tickets.Ticket {
 	t.Helper()
 	f.connect(t)
 	response, body := f.call(t, http.MethodPost, "/api/v1/tickets", f.token, sources.AssignRequest{RequestID: id, Repo: "owner/repo", Title: "T", Body: "Do it"})
@@ -35,13 +35,6 @@ func (f *fixture) assign(t *testing.T, id string) ticketView {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
 	return decodeTicket(t, body)
-}
-
-func (f *fixture) ask(t *testing.T, id string) {
-	t.Helper()
-	if err := f.store.Apply(t.Context(), id, tickets.StateWorking, tickets.Transition{State: tickets.StateNeedsYou, Message: "Which database?"}); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestCreateTicketReturns200WhenItExisted(t *testing.T) {
@@ -70,26 +63,28 @@ func TestListTicketsFiltersNewestFirst(t *testing.T) {
 	first := f.assign(t, "r1")
 	time.Sleep(2 * time.Millisecond)
 	second := f.assign(t, "r2")
-	f.ask(t, second.ID)
-	list := func(query string) []ticketView {
+	if err := f.store.Apply(t.Context(), second.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed}); err != nil {
+		t.Fatal(err)
+	}
+	list := func(query string) []tickets.Ticket {
 		t.Helper()
 		response, body := f.call(t, http.MethodGet, "/api/v1/tickets"+query, f.token, nil)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d: %s", response.StatusCode, body)
 		}
 		var page struct {
-			Tickets []ticketView `json:"tickets"`
+			Tickets []tickets.Ticket `json:"tickets"`
 		}
 		if err := json.Unmarshal(body, &page); err != nil {
 			t.Fatal(err)
 		}
 		return page.Tickets
 	}
-	if all := list(""); len(all) != 2 || all[0].ID != second.ID || all[1].ID != first.ID || all[0].Question != "Which database?" {
+	if all := list(""); len(all) != 2 || all[0].ID != second.ID || all[1].ID != first.ID {
 		t.Fatalf("all = %+v", all)
 	}
-	if waiting := list("?state=needs_you&repo=owner/repo"); len(waiting) != 1 || waiting[0].ID != second.ID {
-		t.Fatalf("waiting = %+v", waiting)
+	if failed := list("?state=failed&repo=owner/repo"); len(failed) != 1 || failed[0].ID != second.ID {
+		t.Fatalf("failed = %+v", failed)
 	}
 	if none := list("?repo=other/repo"); len(none) != 0 {
 		t.Fatalf("none = %+v", none)
@@ -108,7 +103,7 @@ func TestGetTicketReturnsEntriesRunsAndFigures(t *testing.T) {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
 	var detail struct {
-		Ticket  ticketView      `json:"ticket"`
+		Ticket  tickets.Ticket  `json:"ticket"`
 		Entries []tickets.Entry `json:"entries"`
 		Runs    []tickets.Run   `json:"runs"`
 		Figures tickets.Figures `json:"figures"`
@@ -120,26 +115,6 @@ func TestGetTicketReturnsEntriesRunsAndFigures(t *testing.T) {
 		t.Fatalf("detail = %+v", detail)
 	}
 	if response, _ := f.call(t, http.MethodGet, "/api/v1/tickets/t_missing", f.token, nil); response.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d", response.StatusCode)
-	}
-}
-
-func TestAnswerConflictsUnlessWaiting(t *testing.T) {
-	f := newFixture(t)
-	ticket := f.assign(t, "r1")
-	path := "/api/v1/tickets/" + ticket.ID + "/answer"
-	if response, _ := f.call(t, http.MethodPost, path, f.token, map[string]string{"text": "Too soon"}); response.StatusCode != http.StatusConflict {
-		t.Fatalf("status = %d", response.StatusCode)
-	}
-	f.ask(t, ticket.ID)
-	if response, _ := f.call(t, http.MethodPost, path, f.token, map[string]string{"text": " "}); response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d", response.StatusCode)
-	}
-	response, body := f.call(t, http.MethodPost, path, f.token, map[string]string{"text": "Postgres"})
-	if response.StatusCode != http.StatusOK || decodeTicket(t, body).State != tickets.StateWorking {
-		t.Fatalf("status = %d: %s", response.StatusCode, body)
-	}
-	if response, _ := f.call(t, http.MethodPost, "/api/v1/tickets/t_missing/answer", f.token, map[string]string{"text": "x"}); response.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d", response.StatusCode)
 	}
 }

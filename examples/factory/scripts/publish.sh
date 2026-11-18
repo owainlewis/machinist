@@ -1,6 +1,6 @@
 #!/bin/sh
 # Push the branch and open one draft pull request, or say no change was needed.
-# The body is plan.md and review.md when earlier steps wrote them.
+# The body is plan.md, assumptions.md and review.md, when earlier steps wrote them.
 set -e
 if test -z "$(git log --oneline "origin/HEAD..HEAD")"; then
   echo "The work needed no change." > "$MACHINIST_DIR/result.md"
@@ -9,7 +9,7 @@ fi
 git push --quiet -u origin HEAD
 if ! gh pr view "$MACHINIST_BRANCH" > /dev/null 2>&1; then
   : > "$MACHINIST_DIR/body.md"
-  for part in Plan Review; do
+  for part in Plan Assumptions Review; do
     file="$MACHINIST_DIR/$(echo "$part" | tr '[:upper:]' '[:lower:]').md"
     if test -s "$file"; then
       { echo "## $part"; echo; cat "$file"; echo; } >> "$MACHINIST_DIR/body.md"

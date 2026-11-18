@@ -8,7 +8,6 @@ import (
 func TestParseReportAcceptsEachOutcome(t *testing.T) {
 	for _, body := range []string{
 		`{"outcome":"pr_ready","summary":"Opened"}`,
-		`{"outcome":"needs_input","summary":"Stuck","question":"Which API?"}`,
 		`{"outcome":"no_change","summary":"Nothing to do"}`,
 		`{"outcome":"failed","summary":"Tests cannot run"}`,
 	} {
@@ -22,7 +21,8 @@ func TestParseReportRejectsInvalidReports(t *testing.T) {
 	for _, test := range []struct{ body, want string }{
 		{`{"outcome":"complete","summary":"old"}`, "not one of"},
 		{`{"outcome":"pr_ready","summary":"  "}`, "summary is empty"},
-		{`{"outcome":"needs_input","summary":"Stuck"}`, "requires a question"},
+		{`{"outcome":"needs_input","summary":"Stuck"}`, "not one of"},
+		{`{"outcome":"failed","summary":"Stuck","question":"Which API?"}`, "expected one JSON object"},
 		{`{"outcome":"pr_ready","summary":"x","pr_url":"https://example.test"}`, "expected one JSON object"},
 		{`{"outcome":"pr_ready","summary":"x"} {}`, "expected one JSON object"},
 		{`Done: {"outcome":"pr_ready","summary":"x"}`, "expected one JSON object"},

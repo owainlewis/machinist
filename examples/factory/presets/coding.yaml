@@ -12,7 +12,7 @@ steps:
     timeout: 20m
     run: |
       agent.sh plan
-      test -s "$MACHINIST_DIR/question.md" || test -s "$MACHINIST_DIR/plan.md"
+      test -s "$MACHINIST_DIR/plan.md"
 
   - name: implement
     run: agent.sh implement

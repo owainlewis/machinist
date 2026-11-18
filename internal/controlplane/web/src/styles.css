@@ -190,10 +190,6 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .job-facts dd { font-size: 14px; }
 .job-facts a { color: var(--info); }
 .job-facts a:hover { text-decoration: underline; }
-.callout { border-radius: 12px; background: var(--warning-soft); padding: 14px 18px; }
-.callout .label { color: var(--warning); }
-.callout p { max-width: 80ch; margin-top: 6px; font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
-.callout .callout-hint { color: var(--muted-foreground); font-size: 13px; }
 .prompt summary { cursor: pointer; list-style: revert; }
 .prompt[open] summary { margin-bottom: 8px; }
 .run { display: flex; flex-direction: column; gap: 10px; }

@@ -25,7 +25,7 @@ func withPR(e *Engine) {
 func prReady(t *testing.T, e *Engine, ticket tickets.Ticket) {
 	t.Helper()
 	request := assignRun(t, e)
-	if err := e.Complete(t.Context(), request.RunID, succeed("pr_ready", "Opened", "")); err != nil {
+	if err := e.Complete(t.Context(), request.RunID, succeed("pr_ready", "Opened")); err != nil {
 		t.Fatal(err)
 	}
 	if got := state(t, e, ticket.ID); got != tickets.StatePRReady {
@@ -73,32 +73,6 @@ func TestFirstPRWithNoIssuePostsNoLink(t *testing.T) {
 	}
 }
 
-func TestSignalsWhileNeedsYouWaitForTheNextRun(t *testing.T) {
-	e := newEngine(t)
-	ticket := newTicket(t, e, "api")
-	request := assignRun(t, e)
-	if err := e.Complete(t.Context(), request.RunID, succeed("needs_input", "Stuck", "Which?")); err != nil {
-		t.Fatal(err)
-	}
-	for key, kind := range map[string]string{"ci": tickets.EntryCI, "review": tickets.EntryReview} {
-		if _, _, err := e.Store.AddInput(t.Context(), ticket.ID, tickets.Input{Kind: kind, Author: "bob", Body: "SIGNAL " + key, SourceKey: key}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := state(t, e, ticket.ID); got != tickets.StateNeedsYou {
-		t.Fatalf("state = %s", got)
-	}
-	if _, _, err := e.Store.AddInput(t.Context(), ticket.ID, tickets.Input{Kind: tickets.EntryComment, Author: "alice", Body: "Use v2"}); err != nil {
-		t.Fatal(err)
-	}
-	next := assignRun(t, e)
-	for _, want := range []string{"SIGNAL ci", "SIGNAL review", "Use v2"} {
-		if !strings.Contains(prompt(t, next), want) {
-			t.Fatalf("missing %q in:\n%s", want, prompt(t, next))
-		}
-	}
-}
-
 func TestInputDuringRunStartsTheNextRunAtOnce(t *testing.T) {
 	e := newEngine(t)
 	withPR(e)
@@ -107,7 +81,7 @@ func TestInputDuringRunStartsTheNextRunAtOnce(t *testing.T) {
 	if _, _, err := e.Store.AddInput(t.Context(), ticket.ID, tickets.Input{Kind: tickets.EntryComment, Author: "alice", Body: "Also this", SourceKey: "c"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Complete(t.Context(), request.RunID, succeed("pr_ready", "Opened", "")); err != nil {
+	if err := e.Complete(t.Context(), request.RunID, succeed("pr_ready", "Opened")); err != nil {
 		t.Fatal(err)
 	}
 	if got := state(t, e, ticket.ID); got != tickets.StateWorking {
@@ -121,13 +95,6 @@ func TestInputDuringRunStartsTheNextRunAtOnce(t *testing.T) {
 func TestCancelFromEveryActiveStateStopsWorkAndKeepsThePR(t *testing.T) {
 	for name, setup := range map[string]func(*testing.T, *Engine, tickets.Ticket) string{
 		"working": func(t *testing.T, e *Engine, _ tickets.Ticket) string { return assignRun(t, e).RunID },
-		"needs you": func(t *testing.T, e *Engine, ticket tickets.Ticket) string {
-			request := assignRun(t, e)
-			if err := e.Complete(t.Context(), request.RunID, succeed("needs_input", "Stuck", "Which?")); err != nil {
-				t.Fatal(err)
-			}
-			return ""
-		},
 		"pr ready": func(t *testing.T, e *Engine, ticket tickets.Ticket) string {
 			prReady(t, e, ticket)
 			return ""

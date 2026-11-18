@@ -4,31 +4,14 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
-// ticketView is a ticket with the question it is waiting on.
-type ticketView struct {
-	tickets.Ticket
-	Question string `json:"question,omitempty"`
-}
-
-func (s *Server) view(r *http.Request, ticket tickets.Ticket) (ticketView, error) {
-	question, err := s.store.WaitingQuestion(r.Context(), ticket)
-	return ticketView{Ticket: ticket, Question: question}, err
-}
-
-func (s *Server) writeTicket(w http.ResponseWriter, r *http.Request, status int, ticket tickets.Ticket) {
-	view, err := s.view(r, ticket)
-	if err != nil {
-		writeTicketError(w, err)
-		return
-	}
-	writeJSON(w, status, view)
+func (s *Server) writeTicket(w http.ResponseWriter, _ *http.Request, status int, ticket tickets.Ticket) {
+	writeJSON(w, status, ticket)
 }
 
 func writeTicketError(w http.ResponseWriter, err error) {
@@ -37,7 +20,7 @@ func writeTicketError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err)
 	case errors.Is(err, tickets.ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
-	case errors.Is(err, tickets.ErrNotWaiting), errors.Is(err, tickets.ErrTicketEnded):
+	case errors.Is(err, tickets.ErrTicketEnded):
 		writeError(w, http.StatusConflict, err)
 	default:
 		writeError(w, http.StatusInternalServerError, err)
@@ -67,26 +50,12 @@ func (s *Server) listTickets(w http.ResponseWriter, r *http.Request, _ string) {
 		writeTicketError(w, err)
 		return
 	}
-	views := make([]ticketView, 0, len(found))
-	for _, ticket := range found {
-		view, err := s.view(r, ticket)
-		if err != nil {
-			writeTicketError(w, err)
-			return
-		}
-		views = append(views, view)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"tickets": views})
+	writeJSON(w, http.StatusOK, map[string]any{"tickets": found})
 }
 
 func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 	id := r.PathValue("id")
 	ticket, err := s.store.Ticket(r.Context(), id)
-	if err != nil {
-		writeTicketError(w, err)
-		return
-	}
-	view, err := s.view(r, ticket)
 	if err != nil {
 		writeTicketError(w, err)
 		return
@@ -106,26 +75,7 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 		writeTicketError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ticket": view, "entries": entries, "runs": runs, "figures": figures})
-}
-
-func (s *Server) answerTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
-	var request struct {
-		Text string `json:"text"`
-	}
-	if !decodeJSON(w, r, maxRequestBytes, &request) {
-		return
-	}
-	if strings.TrimSpace(request.Text) == "" {
-		writeError(w, http.StatusBadRequest, errors.New("text is required"))
-		return
-	}
-	ticket, err := s.store.Answer(r.Context(), r.PathValue("id"), tokenName, request.Text)
-	if err != nil {
-		writeTicketError(w, err)
-		return
-	}
-	s.writeTicket(w, r, http.StatusOK, ticket)
+	writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures})
 }
 
 func (s *Server) cancelTicket(w http.ResponseWriter, r *http.Request, tokenName string) {

@@ -44,7 +44,7 @@ func installStarterAutomation(t *testing.T, directory string) {
 
 // CUJ 6.
 func TestAutomationMergesWhatBranchProtectionAllows(t *testing.T) {
-	s := startWith(t, options{claude: maintainerScript, maxTurns: 5, factory: installStarterAutomation})
+	s := startWith(t, options{claude: maintainerScript, factory: installStarterAutomation})
 	s.github.RefuseMerge(12, "Protected branch: review required")
 
 	request, err := http.NewRequest(http.MethodPost, "http://"+s.address+"/api/v1/automations/review-open-prs/run", bytes.NewReader(nil))

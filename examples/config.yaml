@@ -5,7 +5,6 @@ server:
   database: .machinist/tickets.db
   factory: factory
   default_preset: default
-  max_turns_without_human: 5
   run_timeout: 60m
   # tls_cert: /etc/machinist/tls.crt
   # tls_key: /etc/machinist/tls.key

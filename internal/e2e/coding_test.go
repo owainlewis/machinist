@@ -27,7 +27,7 @@ esac
 // The coding preset as shipped: plan, implement, test, review, fix, retest and
 // one draft pull request, on a Go repository.
 func TestCodingPresetOpensOneReviewedPullRequest(t *testing.T) {
-	s := startWith(t, options{claude: codingClaude, maxTurns: 5})
+	s := startWith(t, options{claude: codingClaude})
 	seed := filepath.Join(t.TempDir(), "seed")
 	git(t, filepath.Dir(seed), "clone", "--quiet", s.remote, seed)
 	writeFile(t, filepath.Join(seed, "go.mod"), "module example.test/hello\n\ngo 1.22\n", 0o600)

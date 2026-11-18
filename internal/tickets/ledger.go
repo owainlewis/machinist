@@ -10,7 +10,6 @@ import (
 // Figures is what one ticket cost and how much help it needed.
 type Figures struct {
 	TicketID       string        `json:"ticket_id"`
-	Questions      int           `json:"questions"`
 	FeedbackRounds int           `json:"feedback_rounds"`
 	HumanCommits   *int          `json:"human_commits,omitempty"`
 	Tokens         int64         `json:"tokens"`
@@ -22,7 +21,6 @@ type Figures struct {
 // Ledger is the average per merged PR, for tickets not started by a schedule.
 type Ledger struct {
 	MergedPRs      int      `json:"merged_prs"`
-	Questions      float64  `json:"questions"`
 	FeedbackRounds float64  `json:"feedback_rounds"`
 	HumanCommits   float64  `json:"human_commits"`
 	Tokens         float64  `json:"tokens"`
@@ -30,7 +28,6 @@ type Ledger struct {
 }
 
 const figuresQuery = `SELECT t.id,t.human_commits,t.merged_at,t.created_at,t.updated_at,
-  (SELECT COUNT(*) FROM runs r WHERE r.ticket_id=t.id AND r.kind='agent' AND json_extract(r.report,'$.outcome')='needs_input'),
   (SELECT COUNT(DISTINCT e.consumed_by_run) FROM ticket_entries e WHERE e.ticket_id=t.id AND e.kind IN ('comment','review') AND e.consumed_by_run IS NOT NULL),
   (SELECT COALESCE(SUM(r.tokens),0) FROM runs r WHERE r.ticket_id=t.id),
   (SELECT SUM(r.cost) FROM runs r WHERE r.ticket_id=t.id)
@@ -49,7 +46,7 @@ func (s *Store) figures(ctx context.Context, where string, arguments ...any) ([]
 		var merged sql.NullString
 		var created, updated string
 		var cost sql.NullFloat64
-		if err := rows.Scan(&figures.TicketID, &commits, &merged, &created, &updated, &figures.Questions, &figures.FeedbackRounds, &figures.Tokens, &cost); err != nil {
+		if err := rows.Scan(&figures.TicketID, &commits, &merged, &created, &updated, &figures.FeedbackRounds, &figures.Tokens, &cost); err != nil {
 			return nil, err
 		}
 		if commits.Valid {
@@ -103,7 +100,6 @@ func (s *Store) Ledger(ctx context.Context, repo string, since time.Time) (Ledge
 	var cost float64
 	costed := false
 	for _, figures := range merged {
-		ledger.Questions += float64(figures.Questions) / count
 		ledger.FeedbackRounds += float64(figures.FeedbackRounds) / count
 		ledger.Tokens += float64(figures.Tokens) / count
 		if figures.HumanCommits != nil {

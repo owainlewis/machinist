@@ -14,7 +14,7 @@ import (
 // command given, and checks what the test left in the workspace.
 func startSteps(t *testing.T, test string) (*system, tickets.Ticket) {
 	t.Helper()
-	s := startWith(t, options{maxTurns: 5, factory: func(t *testing.T, directory string) {
+	s := startWith(t, options{factory: func(t *testing.T, directory string) {
 		preset := fmt.Sprintf(`steps:
   - name: checkout
     run: gh repo clone "$MACHINIST_REPO" . -- --quiet
@@ -56,7 +56,7 @@ func TestStepsRunInOrderInOneWorkspace(t *testing.T) {
 
 func TestAFailedStepEndsTheRun(t *testing.T) {
 	s, ticket := startSteps(t, "echo the tests failed >&2; exit 3")
-	s.waitForState(t, ticket.ID, tickets.StateNeedsYou)
+	s.waitForState(t, ticket.ID, tickets.StateFailed)
 
 	runs, err := s.store.Runs(t.Context(), ticket.ID)
 	if err != nil || len(runs) != 1 {

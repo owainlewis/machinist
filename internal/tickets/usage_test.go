@@ -15,7 +15,7 @@ func endRun(t *testing.T, store *Store, sourceKey, status string, tokens int64, 
 	if err != nil || claim == nil {
 		t.Fatalf("claim = %v, err = %v", claim, err)
 	}
-	err = store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: status, Tokens: &tokens, Cost: cost}, 10, func(Ticket, string) Transition {
+	err = store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: status, Tokens: &tokens, Cost: cost}, func(Ticket, string) Transition {
 		return Transition{State: StateFailed}
 	})
 	if err != nil {

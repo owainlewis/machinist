@@ -52,7 +52,6 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	ticketEngine := engine.New(engine.Options{
 		Store:      store,
 		Factory:    loaded,
-		MaxTurns:   machinistConfig.Server.MaxTurnsWithoutHuman,
 		RunTimeout: machinistConfig.Server.RunDeadline(),
 		Handle:     machinistConfig.GitHub.Handle,
 		FindPR:     findPR(client),
@@ -105,7 +104,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/tickets", s.requireToken(s.createTicket))
 	mux.HandleFunc("GET /api/v1/tickets", s.requireToken(s.listTickets))
 	mux.HandleFunc("GET /api/v1/tickets/{id}", s.requireToken(s.getTicket))
-	mux.HandleFunc("POST /api/v1/tickets/{id}/answer", s.requireToken(s.answerTicket))
 	mux.HandleFunc("POST /api/v1/tickets/{id}/cancel", s.requireToken(s.cancelTicket))
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.requireToken(s.runEvents))
 	mux.HandleFunc("GET /api/v1/ledger", s.requireToken(s.ledger))
@@ -113,7 +111,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /machinist/run", s.requireToken(s.runJob))
 	mux.HandleFunc("GET /machinist/jobs", s.requireToken(s.listJobs))
 	mux.HandleFunc("GET /machinist/jobs/{id}", s.requireToken(s.getJob))
-	mux.HandleFunc("POST /machinist/jobs/{id}/input", s.requireToken(s.inputJob))
 	mux.HandleFunc("POST /machinist/jobs/{id}/cancel", s.requireToken(s.cancelJob))
 	mux.HandleFunc("POST /api/v1/runners/poll", s.requireToken(s.poll))
 	mux.HandleFunc("GET /api/v1/runners", s.requireToken(s.listRunners))

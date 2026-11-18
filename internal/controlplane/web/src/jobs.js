@@ -2,7 +2,6 @@
 export const stateLabels = {
   queued: "Queued",
   running: "Running",
-  needs_input: "Needs input",
   done: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
@@ -13,7 +12,6 @@ export const stateLabels = {
 export function jobState(ticket, running = false) {
   switch (ticket?.state) {
     case "working": return running ? "running" : "queued";
-    case "needs_you": return "needs_input";
     case "pr_ready":
     case "done": return "done";
     case "cancelled": return "cancelled";

@@ -129,11 +129,6 @@ export function JobView({ detail }) {
       <div><dt>Started by</dt><dd>{ticket.created_by}</dd></div>
       <div><dt>Created</dt><dd><time dateTime={ticket.created_at}>{relativeTime(ticket.created_at)}</time></dd></div>
     </dl>
-    {state === "needs_input" && ticket.question && <section className="callout" aria-labelledby="job-question">
-      <h2 id="job-question" className="label">The job asks</h2>
-      <p>{ticket.question}</p>
-      <p className="callout-hint">Answer with <code>POST /machinist/jobs/{ticket.id}/input</code>.</p>
-    </section>}
     {result && isFinished(state) && <section className="panel" aria-labelledby="job-result"><h2 id="job-result" className="label">Result</h2><p className="prose">{result}</p></section>}
     {prompt && <details className="panel prompt"><summary className="label">Prompt</summary><p className="prose">{prompt}</p></details>}
     {attempts.length ? attempts.map(({ run, number }) => <Run key={run.id} run={run} number={number} />) : <p className="page-note">Waiting for a runner.</p>}

@@ -31,16 +31,15 @@ The reply is the job, with `201` when it was created and `200` when the key alre
 | --- | --- |
 | `GET /machinist/jobs` | Lists the newest jobs. `?repo=owner/name` filters them |
 | `GET /machinist/jobs/{id}` | Returns one job |
-| `POST /machinist/jobs/{id}/input` | Answers its question, with `{"text": "..."}` |
 | `POST /machinist/jobs/{id}/cancel` | Stops it. Its pull request stays open |
 
 | State | Meaning |
 | --- | --- |
 | `queued` | Waiting for a runner |
 | `running` | A runner holds it |
-| `needs_input` | It asked a question. `question` says what |
 | `done` | It finished. `pr_number` is set when it opened a pull request |
 | `failed` | It could not finish |
 | `cancelled` | Someone cancelled it |
 
-Input to a job that is not waiting returns `409`. A missing job returns `404`.
+Jobs never stop to ask a question. Cancelling a job that has ended returns `409`. A missing
+job returns `404`.
