@@ -34,8 +34,9 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 	}
 	installed := regularFiles(t, directory)
 	for _, name := range []string{
-		"config.toml", "runner.toml", ".machinist/runner.token", ".gitignore",
-		"factory/presets/default.toml", "factory/presets/coding.toml", "factory/presets/maintainer.toml", "factory/presets/hello.toml",
+		"config.yaml", "runner.yaml", ".machinist/runner.token", ".gitignore",
+		"factory/presets/default.yaml", "factory/presets/coding.yaml", "factory/presets/maintainer.yaml", "factory/presets/hello.yaml",
+		"factory/prompts/rules.md", "factory/scripts/agent.sh",
 		"factory/automation-templates/review-open-prs.md",
 	} {
 		if !slices.Contains(installed, name) {
@@ -43,17 +44,17 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 		}
 	}
 	assertStarterFactoryAndTokenWork(t, directory)
-	want, err := machinistexamples.Files.ReadFile("config.toml")
+	want, err := machinistexamples.Files.ReadFile("config.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(directory, "config.toml")
+	path := filepath.Join(directory, "config.yaml")
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatal("installed config.toml does not match its default")
+		t.Fatal("installed config.yaml does not match its default")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -75,7 +76,7 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 	if _, err := config.LoadConfig(path); err != nil {
 		t.Fatalf("load installed configuration: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "created config.toml") || !strings.Contains(stdout.String(), "Set github.handle and repositories in config.toml") {
+	if !strings.Contains(stdout.String(), "created config.yaml") || !strings.Contains(stdout.String(), "Set github.handle and repositories in config.yaml") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -87,7 +88,7 @@ func TestInitLeavesLegacyFactoryDirectoryUntouched(t *testing.T) {
 	if err := os.Mkdir(legacyDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	legacyPath := filepath.Join(legacyDirectory, "config.toml")
+	legacyPath := filepath.Join(legacyDirectory, "config.yaml")
 	legacyBody := []byte("incompatible legacy configuration\n")
 	if err := os.WriteFile(legacyPath, legacyBody, 0o600); err != nil {
 		t.Fatal(err)
@@ -104,7 +105,7 @@ func TestInitLeavesLegacyFactoryDirectoryUntouched(t *testing.T) {
 	if !bytes.Equal(got, legacyBody) {
 		t.Fatalf("legacy configuration changed: %q", got)
 	}
-	if _, err := os.Stat(filepath.Join(directory, "config.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(directory, "config.yaml")); err != nil {
 		t.Fatalf("Machinist configuration was not created: %v", err)
 	}
 }
@@ -114,7 +115,7 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, "test"); exitCode != 0 {
 		t.Fatalf("first init exit code = %d", exitCode)
 	}
-	path := filepath.Join(directory, "config.toml")
+	path := filepath.Join(directory, "config.yaml")
 	if err := os.WriteFile(path, []byte("custom config\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +127,7 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	if got, _ := os.ReadFile(path); string(got) != "custom config\n" {
 		t.Fatalf("init changed the existing file: %q", got)
 	}
-	if !strings.Contains(stdout.String(), "kept config.toml") {
+	if !strings.Contains(stdout.String(), "kept config.yaml") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 
@@ -137,7 +138,7 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	if exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, "test"); exitCode != 0 {
 		t.Fatalf("third init exit code = %d", exitCode)
 	}
-	if !strings.Contains(stdout.String(), "created config.toml") {
+	if !strings.Contains(stdout.String(), "created config.yaml") {
 		t.Fatalf("missing default not restored: %q", stdout.String())
 	}
 }
@@ -154,7 +155,7 @@ func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
 	if len(loaded.Presets["default"].Steps) != 3 || len(loaded.Presets) != 4 || len(loaded.Automations) != 0 {
 		t.Fatalf("factory = %+v", loaded)
 	}
-	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.toml"))
+	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +175,7 @@ func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("info = %v, err = %v", info, err)
 	}
-	if _, err := config.LoadRunner(filepath.Join(directory, "runner.toml")); err != nil {
+	if _, err := config.LoadRunner(filepath.Join(directory, "runner.yaml")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -228,7 +229,7 @@ func TestInitRejectsExistingNonFile(t *testing.T) {
 			}
 		}},
 		{name: "symlink", setup: func(t *testing.T, path string) {
-			target := filepath.Join(t.TempDir(), "config.toml")
+			target := filepath.Join(t.TempDir(), "config.yaml")
 			if err := os.WriteFile(target, []byte("custom\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -244,12 +245,12 @@ func TestInitRejectsExistingNonFile(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directory := inTempDirectory(t)
-			test.setup(t, filepath.Join(directory, "config.toml"))
+			test.setup(t, filepath.Join(directory, "config.yaml"))
 
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
 			exitCode := Execute(t.Context(), []string{"init"}, strings.NewReader(""), &stdout, &stderr, "test")
-			if exitCode != 2 || !strings.Contains(stderr.String(), "config.toml already exists and is not a regular file") {
+			if exitCode != 2 || !strings.Contains(stderr.String(), "config.yaml already exists and is not a regular file") {
 				t.Fatalf("exit code = %d, stdout = %q, stderr = %q", exitCode, stdout.String(), stderr.String())
 			}
 			if strings.Contains(stdout.String(), "configuration is ready") {
@@ -293,7 +294,7 @@ func TestInitWritesToTheNamedDirectory(t *testing.T) {
 	}
 	directory := filepath.Join(working, "deploy", "machinist")
 	assertStarterFactoryAndTokenWork(t, directory)
-	if _, err := os.Stat(filepath.Join(working, "config.toml")); err == nil {
+	if _, err := os.Stat(filepath.Join(working, "config.yaml")); err == nil {
 		t.Fatal("init wrote to the current directory instead of the named one")
 	}
 }
@@ -336,7 +337,7 @@ func TestCommandsExplainAMissingConfiguration(t *testing.T) {
 	}
 	var stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{"token", "create", "someone"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode == 0 || !strings.Contains(stderr.String(), "no config.toml in") || !strings.Contains(stderr.String(), "machinist init") || !strings.Contains(stderr.String(), "--config "+filepath.Join(old, "config.toml")) {
+	if exitCode == 0 || !strings.Contains(stderr.String(), "no config.yaml in") || !strings.Contains(stderr.String(), "machinist init") || !strings.Contains(stderr.String(), "Older versions kept it in "+old) {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
@@ -361,8 +362,8 @@ func TestRemovedCommandsAreUnknown(t *testing.T) {
 }
 
 func TestKubernetesCommandReadsRunnerConfiguration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runner.toml")
-	if err := os.WriteFile(path, []byte("[executors.codex]\ncommand = [\"codex\"]\n"), 0o600); err != nil {
+	path := filepath.Join(t.TempDir(), "runner.yaml")
+	if err := os.WriteFile(path, []byte("executors:\n  codex:\n    command: [codex]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stderr bytes.Buffer

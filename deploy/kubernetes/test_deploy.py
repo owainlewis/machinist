@@ -18,14 +18,14 @@ spec.loader.exec_module(deploy)
 IMAGE='registry/image@sha256:'+'a'*64
 REVISION='a'*40
 STATE={'version':REVISION,'tickets':{'t_1':'pr_ready'},'active_runs':0}
-RUNNER_CONFIG='control_plane = "http://x"\n\n[kubernetes]\nimage = "old@sha256:'+'b'*64+'"\nsecret = "keep-me"\n'
+RUNNER_CONFIG='control_plane: http://x\n\nkubernetes:\n  image: "old@sha256:'+'b'*64+'"\n  secret: keep-me\n'
 
 
 class FakeDeployment(deploy.Deployment):
     def __init__(self, fail=None):
         super().__init__('test'); self.calls=[]; self.fail=fail
     def status(self):return copy.deepcopy(STATE)
-    def get(self,*args,**kwargs):return {'data':{'runner.toml':RUNNER_CONFIG},'spec':{'replicas':1,'strategy':{'type':'Recreate'},'template':{'spec':{'containers':[{'image':IMAGE}]}}}}
+    def get(self,*args,**kwargs):return {'data':{'runner.yaml':RUNNER_CONFIG},'spec':{'replicas':1,'strategy':{'type':'Recreate'},'template':{'spec':{'containers':[{'image':IMAGE}]}}}}
     def no_runners(self):self.calls.append(('no_runners',))
     def k(self,*args,**kwargs):
         self.calls.append(args)
@@ -154,8 +154,8 @@ class DeploymentTests(unittest.TestCase):
 
     def test_runner_config_update_changes_only_the_image(self):
         updated=deploy.with_runner_image(RUNNER_CONFIG,IMAGE)
-        self.assertIn('image = '+json.dumps(IMAGE),updated);self.assertIn('secret = "keep-me"',updated)
-        with self.assertRaises(ValueError):deploy.with_runner_image('secret = "x"\n',IMAGE)
+        self.assertIn('  image: '+json.dumps(IMAGE),updated);self.assertIn('  secret: keep-me',updated)
+        with self.assertRaises(ValueError):deploy.with_runner_image('kubernetes:\n  secret: x\n',IMAGE)
 
     def test_tags_and_malformed_revisions_never_reach_cluster(self):
         fake=FakeDeployment()

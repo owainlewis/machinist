@@ -38,23 +38,33 @@ machinist init
 ```
 
 Machinist runs from the directory that holds its configuration, so keep that directory in
-git and start Machinist there. `init` writes a control plane config, a runner config and
-four presets, all meant to be committed. It also makes `.machinist/`, which holds the
-database and a token for a local runner, and adds it to `.gitignore`. Run every command
-below from this directory, or pass `--config`.
+git and start Machinist there. `init` writes these, all meant to be committed:
 
-1.  In `config.toml`, set `handle` to the GitHub login that owns your token,
+```text
+config.yaml          the control plane
+runner.yaml          a local runner
+factory/presets/     four presets, each a short list of steps
+factory/prompts/     the prompts those steps give Claude Code
+factory/scripts/     the shell those steps run
+```
+
+It also makes `.machinist/`, which holds the database and a token for the local runner,
+and adds it to `.gitignore`. Run every command below from this directory, or pass
+`--config`.
+
+1.  In `config.yaml`, set `handle` to the GitHub login that owns your token,
     which `gh api user --jq .login` prints, and list the repositories jobs may work on.
     Commits are made under that handle:
 
-    ```toml
-    handle = "your-login"
-    repositories = ["owner/name"]
+    ```yaml
+    github:
+      handle: your-login
+      repositories: [owner/name]
     ```
 
-2.  In `runner.toml`, set `env = []` and uncomment `login = true`, so steps
+2.  In `runner.yaml`, set `env: []` and uncomment `login: true`, so steps
     use your own Claude Code login. To use an API key instead, keep
-    `env = ["ANTHROPIC_API_KEY"]` and set it in the runner's environment. See
+    `env: [ANTHROPIC_API_KEY]` and set it in the runner's environment. See
     [Credentials](docs/credentials.md).
 3.  Start the control plane in one terminal and the runner in another:
 

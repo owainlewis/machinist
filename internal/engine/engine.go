@@ -168,6 +168,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		Branch:        claim.Ticket.Branch(),
 		Vars:          map[string]string{"repo": claim.Ticket.Repo},
 		Prompt:        tickets.RenderLog(claim.Entries),
+		Files:         e.Factory.Files,
 		Steps:         preset.Steps,
 		TimeoutMillis: timeout.Milliseconds(),
 		GitName:       e.Handle,

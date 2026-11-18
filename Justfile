@@ -9,11 +9,12 @@ build: frontend
 
 # Start the local control plane.
 control-plane: build
-    ./bin/machinist start --config=examples/config.toml
+    ./bin/machinist init "${MACHINIST_DIR:-../machinist-dev}" > /dev/null
+    cd "${MACHINIST_DIR:-../machinist-dev}" && "$OLDPWD/bin/machinist" start
 
 # Start a local runner.
 runner: build
-    ./bin/machinist runner start
+    cd "${MACHINIST_DIR:-../machinist-dev}" && "$OLDPWD/bin/machinist" runner start
 
 # Start the local control plane and a runner together.
 local: build

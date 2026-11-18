@@ -97,9 +97,9 @@ cat <<'EOF'
 VM bootstrap complete.
 
 Next steps:
-  1. Run `su - machinist`, then edit ~/config.toml and set github.handle
+  1. Run `su - machinist`, then edit ~/config.yaml and set github.handle
      and github.repositories.
-  2. Edit ~/runner.toml and choose the credential for each harness.
+  2. Edit ~/runner.yaml and choose the credential for each harness.
   3. Exit back to root. Put GH_TOKEN, for the bot account, and those credentials in
      /etc/machinist/runner.env. Put GH_TOKEN in /etc/machinist/control-plane.env.
      Make both files readable only by root.

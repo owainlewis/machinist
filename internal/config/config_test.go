@@ -17,7 +17,7 @@ func writeTestFile(t *testing.T, path, body string) {
 
 func TestLoadConfigAppliesDefaults(t *testing.T) {
 	directory := t.TempDir()
-	path := filepath.Join(directory, "config.toml")
+	path := filepath.Join(directory, "config.yaml")
 	writeTestFile(t, path, "")
 	loaded, err := LoadConfig(path)
 	if err != nil {
@@ -38,32 +38,32 @@ func TestLoadConfigAppliesDefaults(t *testing.T) {
 func TestLoadConfigReadsTheCurrentDirectoryByDefault(t *testing.T) {
 	directory := t.TempDir()
 	t.Chdir(directory)
-	writeTestFile(t, filepath.Join(directory, "config.toml"), "[github]\nhandle = \"bot\"\n")
+	writeTestFile(t, filepath.Join(directory, "config.yaml"), "github:\n  handle: bot\n")
 	loaded, err := LoadConfig("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Path() != filepath.Join(directory, "config.toml") || loaded.GitHub.Handle != "bot" {
+	if loaded.Path() != filepath.Join(directory, "config.yaml") || loaded.GitHub.Handle != "bot" {
 		t.Fatalf("loaded %q with handle %q", loaded.Path(), loaded.GitHub.Handle)
 	}
 }
 
 func TestLoadConfigReadsEveryKeyAndResolvesPaths(t *testing.T) {
 	directory := t.TempDir()
-	path := filepath.Join(directory, "config.toml")
-	writeTestFile(t, path, `[server]
-listen = "10.0.0.5:7331"
-database = "data/tickets.db"
-factory = "factory"
-default_preset = "maintainer"
-max_turns_without_human = 2
-run_timeout = "15m"
-tls_cert = "tls.crt"
-tls_key = "tls.key"
+	path := filepath.Join(directory, "config.yaml")
+	writeTestFile(t, path, `server:
+  listen: 10.0.0.5:7331
+  database: data/tickets.db
+  factory: factory
+  default_preset: maintainer
+  max_turns_without_human: 2
+  run_timeout: 15m
+  tls_cert: tls.crt
+  tls_key: tls.key
 
-[github]
-handle = "machinist-bot"
-repositories = ["owner/one", "owner/two"]
+github:
+  handle: machinist-bot
+  repositories: [owner/one, owner/two]
 `)
 	loaded, err := LoadConfig(path)
 	if err != nil {
@@ -85,15 +85,14 @@ repositories = ["owner/one", "owner/two"]
 
 func TestLoadConfigNamesOldKeys(t *testing.T) {
 	for _, test := range []struct{ body, key string }{
-		{"[server]\nstate = \"factory\"\n", "server.state"},
-		{"[server]\nworker_token_file = \"worker.token\"\n", "server.worker_token_file"},
-		{"[server]\nmax_concurrent_jobs = 2\n", "server.max_concurrent_jobs"},
-		{"[commands.plan]\nexecutor = \"codex\"\n", "commands"},
-		{"[workflows.factory]\nmode = \"factory\"\n", "workflows"},
-		{"[triggers.github.intake]\nevery = \"5m\"\n", "triggers"},
-		{"[storage]\nbackend = \"local\"\n", "storage"},
+		{"server:\n  state: factory\n", "state on line 2"},
+		{"server:\n  worker_token_file: worker.token\n", "worker_token_file"},
+		{"server:\n  max_concurrent_jobs: 2\n", "max_concurrent_jobs"},
+		{"commands:\n  plan:\n    executor: codex\n", "commands on line 1"},
+		{"workflows:\n  factory: {}\n", "workflows"},
+		{"storage:\n  backend: local\n", "storage"},
 	} {
-		path := filepath.Join(t.TempDir(), "config.toml")
+		path := filepath.Join(t.TempDir(), "config.yaml")
 		writeTestFile(t, path, test.body)
 		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown key "+test.key) {
 			t.Fatalf("%q: error = %v", test.body, err)
@@ -103,13 +102,15 @@ func TestLoadConfigNamesOldKeys(t *testing.T) {
 
 func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 	for _, test := range []struct{ body, want string }{
-		{"[server]\nmax_turns_without_human = -1\n", "max_turns_without_human"},
-		{"[server]\nrun_timeout = \"soon\"\n", "run_timeout"},
-		{"[server]\nrun_timeout = \"-1m\"\n", "run_timeout"},
-		{"[server]\ntls_cert = \"tls.crt\"\n", "tls_cert and tls_key"},
-		{"not toml =", "parse config"},
+		{"server:\n  max_turns_without_human: -1\n", "max_turns_without_human"},
+		{"server:\n  run_timeout: soon\n", "run_timeout"},
+		{"server:\n  run_timeout: -1m\n", "run_timeout"},
+		{"server:\n  tls_cert: tls.crt\n", "tls_cert and tls_key"},
+		{"server: [", "parse config"},
+		{"server:\n  max_turns_without_human: many\n", "parse config"},
+		{"github:\n  handle: one\n---\ngithub:\n  handle: two\n", "only one YAML document"},
 	} {
-		path := filepath.Join(t.TempDir(), "config.toml")
+		path := filepath.Join(t.TempDir(), "config.yaml")
 		writeTestFile(t, path, test.body)
 		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Fatalf("%q: error = %v", test.body, err)
@@ -118,11 +119,22 @@ func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 }
 
 func TestExampleConfigurationLoads(t *testing.T) {
-	loaded, err := LoadConfig(filepath.Join("..", "..", "examples", "config.toml"))
+	loaded, err := LoadConfig(filepath.Join("..", "..", "examples", "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if loaded.Server.DefaultPreset != "default" || loaded.GitHub.Handle == "" {
 		t.Fatalf("example = %+v", loaded)
+	}
+}
+
+func TestLoadConfigExplainsAnOldTOMLFile(t *testing.T) {
+	directory := t.TempDir()
+	t.Chdir(directory)
+	writeTestFile(t, filepath.Join(directory, "config.toml"), "[github]\nhandle = \"bot\"\n")
+	for _, path := range []string{"", filepath.Join(directory, "config.toml")} {
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "is TOML, and Machinist now reads YAML. Rewrite it as "+filepath.Join(directory, "config.yaml")) {
+			t.Fatalf("%q: error = %v", path, err)
+		}
 	}
 }

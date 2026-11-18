@@ -15,23 +15,17 @@ import (
 func startSteps(t *testing.T, test string) (*system, tickets.Ticket) {
 	t.Helper()
 	s := startWith(t, options{maxTurns: 5, factory: func(t *testing.T, directory string) {
-		preset := fmt.Sprintf(`[[steps]]
-name = "checkout"
-run = 'gh repo clone "$MACHINIST_REPO" . -- --quiet'
-
-[[steps]]
-name = "build"
-run = 'echo built > built.txt'
-
-[[steps]]
-name = "test"
-run = %q
-
-[[steps]]
-name = "check"
-run = 'cat tested.txt > "$MACHINIST_DIR/result.md"'
+		preset := fmt.Sprintf(`steps:
+  - name: checkout
+    run: gh repo clone "$MACHINIST_REPO" . -- --quiet
+  - name: build
+    run: echo built > built.txt
+  - name: test
+    run: %q
+  - name: check
+    run: cat tested.txt > "$MACHINIST_DIR/result.md"
 `, test)
-		writeFile(t, filepath.Join(directory, "presets/ship.toml"), preset, 0o600)
+		writeFile(t, filepath.Join(directory, "presets/ship.yaml"), preset, 0o600)
 	}})
 	ticket, created, err := s.store.CreateTicket(t.Context(), tickets.NewTicket{Source: "api", Repo: "owner/repo", Title: "Add a thing", Body: "THE REQUEST", Agent: "ship", CreatedBy: "alice", SourceKey: "api:1"})
 	if err != nil || !created {

@@ -25,24 +25,26 @@ func writeFiles(t *testing.T, files map[string]string) string {
 	return root
 }
 
-const defaultPreset = `timeout = "30m"
+const defaultPreset = `timeout: 30m
 
-[[steps]]
-name = "checkout"
-run = "gh repo clone \"$MACHINIST_REPO\" ."
-timeout = "5m"
+steps:
+  - name: checkout
+    run: gh repo clone "$MACHINIST_REPO" .
+    timeout: 5m
 
-[[steps]]
-name = "test"
-run = '''
-go test ./...
-'''
+  - name: test
+    run: |
+      go test ./...
 `
+
+const nightly = "---\nschedule: \"0 6 * * 1\"\ntimezone: UTC\nrepo: owner/repo\npreset: default\n---\nCheck the repo.\n"
 
 func validFactory() map[string]string {
 	return map[string]string{
-		"presets/default.toml":   defaultPreset,
-		"automations/nightly.md": "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nrepo = \"owner/repo\"\npreset = \"default\"\n+++\nCheck the repo.\n",
+		"presets/default.yaml":   defaultPreset,
+		"automations/nightly.md": nightly,
+		"prompts/plan.md":        "Write a plan.\n",
+		"scripts/agent.sh":       "#!/bin/sh\nclaude\n",
 	}
 }
 
@@ -68,10 +70,13 @@ func TestLoadReadsPresetsAndAutomations(t *testing.T) {
 	if err := factory.Validate("default", []string{"owner/repo"}); err != nil {
 		t.Fatal(err)
 	}
+	if len(factory.Files) != 2 || factory.Files["prompts/plan.md"] != "Write a plan.\n" || factory.Files["scripts/agent.sh"] != "#!/bin/sh\nclaude\n" {
+		t.Fatalf("files = %+v", factory.Files)
+	}
 }
 
 func TestPresetTimeoutIsOptional(t *testing.T) {
-	factory, err := Load(writeFiles(t, map[string]string{"presets/quick.toml": "[[steps]]\nname = \"only\"\nrun = \"true\"\n"}))
+	factory, err := Load(writeFiles(t, map[string]string{"presets/quick.yaml": "steps:\n  - name: only\n    run: \"true\"\n"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,42 +95,58 @@ func TestLoadAllowsNoAutomations(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidFactories(t *testing.T) {
-	step := func(body string) string { return "[[steps]]\n" + body + "\n" }
+	steps := func(body string) string { return "steps:\n" + body }
+	automation := func(front string) string { return "---\n" + front + "---\nGo.\n" }
 	for _, test := range []struct {
 		name, want string
 		change     func(map[string]string)
 	}{
-		{"no presets", "no presets", func(files map[string]string) { delete(files, "presets/default.toml") }},
-		{"no steps", "at least one step", func(files map[string]string) { files["presets/default.toml"] = "timeout = \"5m\"\n" }},
+		{"no presets", "no presets", func(files map[string]string) { delete(files, "presets/default.yaml") }},
+		{"no steps", "at least one step", func(files map[string]string) { files["presets/default.yaml"] = "timeout: 5m\n" }},
 		{"bad step name", "invalid name", func(files map[string]string) {
-			files["presets/default.toml"] = step("name = \"Build It\"\nrun = \"true\"")
+			files["presets/default.yaml"] = steps("  - name: Build It\n    run: \"true\"\n")
 		}},
 		{"step twice", "listed twice", func(files map[string]string) {
-			files["presets/default.toml"] = step("name = \"build\"\nrun = \"true\"") + step("name = \"build\"\nrun = \"true\"")
+			files["presets/default.yaml"] = steps("  - name: build\n    run: \"true\"\n  - name: build\n    run: \"true\"\n")
 		}},
-		{"empty run", "run is empty", func(files map[string]string) { files["presets/default.toml"] = step("name = \"build\"\nrun = \" \"") }},
+		{"empty run", "run is empty", func(files map[string]string) {
+			files["presets/default.yaml"] = steps("  - name: build\n    run: \" \"\n")
+		}},
 		{"bad timeout", "positive duration", func(files map[string]string) {
-			files["presets/default.toml"] = "timeout = \"soon\"\n" + step("name = \"b\"\nrun = \"true\"")
+			files["presets/default.yaml"] = "timeout: soon\n" + steps("  - name: b\n    run: \"true\"\n")
 		}},
 		{"bad step timeout", "step b: timeout", func(files map[string]string) {
-			files["presets/default.toml"] = step("name = \"b\"\nrun = \"true\"\ntimeout = \"-1m\"")
+			files["presets/default.yaml"] = steps("  - name: b\n    run: \"true\"\n    timeout: -1m\n")
 		}},
-		{"unknown key", "unknown key", func(files map[string]string) {
-			files["presets/default.toml"] = step("name = \"b\"\nrun = \"true\"\nneeds = \"a\"")
+		{"unknown key", "unknown key needs", func(files map[string]string) {
+			files["presets/default.yaml"] = steps("  - name: b\n    run: \"true\"\n    needs: a\n")
+		}},
+		{"old TOML preset", "is TOML, and Machinist now reads YAML", func(files map[string]string) {
+			files["presets/old.toml"] = "[[steps]]\nname = \"b\"\nrun = \"true\"\n"
 		}},
 		{"no front matter", "front matter", func(files map[string]string) { files["automations/nightly.md"] = "Just a prompt\n" }},
-		{"unclosed front matter", "not closed", func(files map[string]string) { files["automations/nightly.md"] = "+++\nrepo = \"x\"\n" }},
+		{"TOML front matter", "Machinist now reads YAML between --- lines", func(files map[string]string) {
+			files["automations/nightly.md"] = "+++\nrepo = \"x\"\n+++\nGo.\n"
+		}},
+		{"unclosed front matter", "not closed", func(files map[string]string) { files["automations/nightly.md"] = "---\nrepo: x\n" }},
 		{"bad cron", "", func(files map[string]string) {
-			files["automations/nightly.md"] = "+++\nschedule = \"nope\"\ntimezone = \"UTC\"\nrepo = \"o/r\"\npreset = \"default\"\n+++\nGo.\n"
+			files["automations/nightly.md"] = automation("schedule: nope\ntimezone: UTC\nrepo: o/r\npreset: default\n")
 		}},
 		{"no repo", "repo and preset", func(files map[string]string) {
-			files["automations/nightly.md"] = "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\npreset = \"default\"\n+++\nGo.\n"
+			files["automations/nightly.md"] = automation("schedule: \"0 6 * * 1\"\ntimezone: UTC\npreset: default\n")
 		}},
 		{"old agent key", "unknown key agent", func(files map[string]string) {
-			files["automations/nightly.md"] = "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nrepo = \"o/r\"\nagent = \"default\"\n+++\nGo.\n"
+			files["automations/nightly.md"] = automation("schedule: \"0 6 * * 1\"\ntimezone: UTC\nrepo: o/r\nagent: default\n")
 		}},
 		{"empty automation prompt", "prompt is empty", func(files map[string]string) {
-			files["automations/nightly.md"] = "+++\nschedule = \"0 6 * * 1\"\ntimezone = \"UTC\"\nrepo = \"o/r\"\npreset = \"default\"\n+++\n\n"
+			files["automations/nightly.md"] = "---\nschedule: \"0 6 * * 1\"\ntimezone: UTC\nrepo: o/r\npreset: default\n---\n\n"
+		}},
+		{"bad script name", "invalid file name", func(files map[string]string) { files["scripts/.hidden"] = "x" }},
+		{"script directory", "regular file", func(files map[string]string) { files["scripts/nested/run.sh"] = "x" }},
+		{"too many file bytes", "add up to less than", func(files map[string]string) {
+			for _, name := range []string{"a", "b", "c", "d", "e"} {
+				files["prompts/"+name+".md"] = strings.Repeat("x", 1<<20-1)
+			}
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -140,7 +161,7 @@ func TestLoadRejectsInvalidFactories(t *testing.T) {
 
 func TestLoadRejectsSymlinkedPreset(t *testing.T) {
 	root := writeFiles(t, validFactory())
-	path := filepath.Join(root, "presets", "default.toml")
+	path := filepath.Join(root, "presets", "default.yaml")
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}

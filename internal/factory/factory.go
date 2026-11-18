@@ -41,12 +41,21 @@ type Automation struct {
 type Factory struct {
 	Presets     map[string]Preset
 	Automations []Automation
+	// Files are prompts/*.md and scripts/*, by path. Every run carries them
+	// into its control directory, where steps read them.
+	Files map[string]string
 }
+
+// Every run carries the factory's files, so they share one size limit.
+const maxFactoryFiles = 4 << 20
 
 // Load reads and validates a factory directory.
 func Load(directory string) (*Factory, error) {
 	factory := &Factory{Presets: map[string]Preset{}}
-	if err := eachFile(filepath.Join(directory, "presets"), "*.toml", func(name, body string) error {
+	if old, _ := filepath.Glob(filepath.Join(directory, "presets", "*.toml")); len(old) > 0 {
+		return nil, fmt.Errorf("preset: %s is TOML, and Machinist now reads YAML. Rewrite it as %s", old[0], strings.TrimSuffix(old[0], ".toml")+".yaml")
+	}
+	if err := eachFile(filepath.Join(directory, "presets"), "*.yaml", func(name, body string) error {
 		preset, err := parsePreset(name, body)
 		if err != nil {
 			return err
@@ -59,6 +68,11 @@ func Load(directory string) (*Factory, error) {
 	if len(factory.Presets) == 0 {
 		return nil, fmt.Errorf("factory %s has no presets", directory)
 	}
+	files, err := loadFiles(directory)
+	if err != nil {
+		return nil, err
+	}
+	factory.Files = files
 	if err := eachFile(filepath.Join(directory, "automations"), "*.md", func(name, body string) error {
 		automation, err := parseAutomation(name, body)
 		if err != nil {
@@ -70,6 +84,34 @@ func Load(directory string) (*Factory, error) {
 		return nil, fmt.Errorf("automation: %w", err)
 	}
 	return factory, nil
+}
+
+// loadFiles reads the prompts and scripts that steps use.
+func loadFiles(directory string) (map[string]string, error) {
+	files := map[string]string{}
+	total := 0
+	for _, kind := range []struct{ directory, pattern string }{{"prompts", "*.md"}, {"scripts", "*"}} {
+		paths, err := filepath.Glob(filepath.Join(directory, kind.directory, kind.pattern))
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range paths {
+			relative := kind.directory + "/" + filepath.Base(path)
+			if !runner.FilePath.MatchString(relative) {
+				return nil, fmt.Errorf("%s: invalid file name", relative)
+			}
+			body, err := readFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", relative, err)
+			}
+			total += len(body)
+			if total > maxFactoryFiles {
+				return nil, fmt.Errorf("prompts and scripts must add up to less than %d MiB", maxFactoryFiles>>20)
+			}
+			files[relative] = body
+		}
+	}
+	return files, nil
 }
 
 // Preset finds a preset by name.
@@ -91,12 +133,12 @@ func parseDuration(field, value string) (time.Duration, error) {
 
 func parsePreset(name, body string) (Preset, error) {
 	var settings struct {
-		Timeout string `toml:"timeout"`
+		Timeout string `yaml:"timeout"`
 		Steps   []struct {
-			Name    string `toml:"name"`
-			Run     string `toml:"run"`
-			Timeout string `toml:"timeout"`
-		} `toml:"steps"`
+			Name    string `yaml:"name"`
+			Run     string `yaml:"run"`
+			Timeout string `yaml:"timeout"`
+		} `yaml:"steps"`
 	}
 	if err := config.DecodeStrict(name, []byte(body), &settings); err != nil {
 		return Preset{}, err
@@ -181,21 +223,24 @@ func eachFile(directory, pattern string, visit func(name, body string) error) er
 	return nil
 }
 
-const frontMatterFence = "+++\n"
+const frontMatterFence = "---\n"
 
 func parseAutomation(name, body string) (Automation, error) {
+	if strings.HasPrefix(body, "+++\n") {
+		return Automation{}, errors.New("front matter is TOML between +++ lines, and Machinist now reads YAML between --- lines")
+	}
 	if !strings.HasPrefix(body, frontMatterFence) {
-		return Automation{}, errors.New("must start with +++ TOML front matter")
+		return Automation{}, errors.New("must start with --- YAML front matter")
 	}
 	front, prompt, found := strings.Cut(strings.TrimPrefix(body, frontMatterFence), "\n"+frontMatterFence)
 	if !found {
-		return Automation{}, errors.New("front matter is not closed with +++")
+		return Automation{}, errors.New("front matter is not closed with ---")
 	}
 	var settings struct {
-		Schedule string `toml:"schedule"`
-		Timezone string `toml:"timezone"`
-		Repo     string `toml:"repo"`
-		Preset   string `toml:"preset"`
+		Schedule string `yaml:"schedule"`
+		Timezone string `yaml:"timezone"`
+		Repo     string `yaml:"repo"`
+		Preset   string `yaml:"preset"`
 	}
 	if err := config.DecodeStrict(name, []byte(front), &settings); err != nil {
 		return Automation{}, err

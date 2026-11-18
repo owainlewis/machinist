@@ -1,0 +1,15 @@
+# Look after a repository's open pull requests. This preset may merge, so only
+# automations should use it. GitHub refuses any merge branch protection does not
+# allow, and Claude Code is told to treat that as final.
+timeout: 30m
+
+steps:
+  - name: checkout
+    timeout: 5m
+    run: gh repo clone "$MACHINIST_REPO" . -- --quiet
+
+  - name: maintain
+    run: |
+      claude --print --dangerously-skip-permissions \
+        --append-system-prompt "$(cat "$MACHINIST_DIR/prompts/maintain.md")" \
+        < "$MACHINIST_DIR/prompt.md" > "$MACHINIST_DIR/result.md"

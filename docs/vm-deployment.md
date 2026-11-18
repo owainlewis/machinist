@@ -16,10 +16,15 @@ It installs Machinist, Git, the GitHub CLI, Claude Code and Codex, runs `machini
 directory. It prints the remaining steps. To keep the config in git, make `/home/machinist`
 a checkout of your repository before running the script; `init` keeps files that exist.
 
-An install from before this layout keeps its config in `~/.machinist`. Move
-`config.toml`, `runner.toml` and `factory/` to `/home/machinist`, and either move the state
-too (`server/tickets.db` to `.machinist/tickets.db`, `runner.token` and `runner/` to
-`.machinist/`) or keep the old absolute paths in the moved files.
+An install from before this layout keeps TOML config in `~/.machinist`. To move it:
+
+1.  Run `machinist init` in `/home/machinist` for the new files.
+2.  Copy your settings from `~/.machinist/config.toml` and `runner.toml` into
+    `config.yaml` and `runner.yaml`, and your presets into `factory/presets/*.yaml`.
+3.  Stop both services. Move `~/.machinist/server/tickets.db` to `.machinist/tickets.db`
+    and `~/.machinist/runner.token` to `.machinist/runner.token`, replacing the new ones,
+    so job history and tokens carry over.
+4.  Start both services.
 
 ## Credentials
 
@@ -46,7 +51,7 @@ Create a token with `machinist token create <name>` as the `machinist` user, the
 ## A runner on another machine
 
 Set `listen` to a private address on the control plane, and create a token for the runner.
-On the other machine, set `control_plane` and `token_file` in `runner.toml`. See
+On the other machine, set `control_plane` and `token_file` in `runner.yaml`. See
 [Runners](runners.md). The runner dials out, so it needs no inbound route.
 
 ## Back up

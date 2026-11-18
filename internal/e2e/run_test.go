@@ -124,19 +124,21 @@ func shippedFactory(t *testing.T, directory string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.WalkDir(files, "presets", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-		body, err := fs.ReadFile(files, name)
+	for _, shipped := range []string{"presets", "prompts", "scripts"} {
+		err = fs.WalkDir(files, shipped, func(name string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() {
+				return err
+			}
+			body, err := fs.ReadFile(files, name)
+			if err != nil {
+				return err
+			}
+			writeFile(t, filepath.Join(directory, filepath.FromSlash(name)), string(body), 0o600)
+			return nil
+		})
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		writeFile(t, filepath.Join(directory, filepath.FromSlash(name)), string(body), 0o600)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -169,8 +171,8 @@ func startWith(t *testing.T, chosen options) *system {
 	if chosen.factory != nil {
 		chosen.factory(t, factoryDirectory)
 	}
-	configPath := filepath.Join(root, "config.toml")
-	writeFile(t, configPath, fmt.Sprintf("[server]\nmax_turns_without_human = %d\n", chosen.maxTurns)+"listen = \"127.0.0.1:0\"\ndatabase = \"tickets.db\"\nfactory = \"factory\"\n\n[github]\nhandle = \"machinist-bot\"\nrepositories = [\"owner/repo\"]\n", 0o600)
+	configPath := filepath.Join(root, "config.yaml")
+	writeFile(t, configPath, fmt.Sprintf("server:\n  max_turns_without_human: %d\n", chosen.maxTurns)+"  listen: 127.0.0.1:0\n  database: tickets.db\n  factory: factory\n\ngithub:\n  handle: machinist-bot\n  repositories: [owner/repo]\n", 0o600)
 	machinistConfig, err := config.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -201,8 +203,8 @@ func startWith(t *testing.T, chosen options) *system {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(root, "runner.token"), token+"\n", 0o600)
-	runnerPath := filepath.Join(root, "runner.toml")
-	writeFile(t, runnerPath, fmt.Sprintf("control_plane = \"http://%s\"\ntoken_file = \"runner.token\"\ndata_directory = \"runner-data\"\nenv = [\"ANTHROPIC_API_KEY\"]\n", address), 0o600)
+	runnerPath := filepath.Join(root, "runner.yaml")
+	writeFile(t, runnerPath, fmt.Sprintf("control_plane: http://%s\ntoken_file: runner.token\ndata_directory: runner-data\nenv: [ANTHROPIC_API_KEY]\n", address), 0o600)
 	runnerConfig, err := config.LoadRunner(runnerPath)
 	if err != nil {
 		t.Fatal(err)

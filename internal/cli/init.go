@@ -25,8 +25,8 @@ const (
 )
 
 var initialFiles = []string{
-	"config.toml",
-	"runner.toml",
+	"config.yaml",
+	"runner.yaml",
 }
 
 func newInitCommand(options *commandOptions) *cobra.Command {
@@ -77,8 +77,8 @@ func initializeMachinist(ctx context.Context, directory string, output io.Writer
 		return err
 	}
 	fmt.Fprintf(output, "Machinist configuration is ready in %s\n", directory)
-	fmt.Fprintf(output, "Commit config.toml, runner.toml and factory/. %s/ holds the database and tokens and stays out of git.\n", config.StateDir)
-	fmt.Fprintln(output, "Set github.handle and repositories in config.toml, and env in runner.toml.")
+	fmt.Fprintf(output, "Commit config.yaml, runner.yaml and factory/. %s/ holds the database and tokens and stays out of git.\n", config.StateDir)
+	fmt.Fprintln(output, "Set github.handle and repositories in config.yaml, and env in runner.yaml.")
 	return nil
 }
 
@@ -120,7 +120,14 @@ func installFactory(directory string, output io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("read default %s: %w", path, err)
 		}
-		return installFile(directory, path, body, output)
+		if err := installFile(directory, path, body, output); err != nil {
+			return err
+		}
+		// Scripts are executable, so they can be run by hand too.
+		if strings.HasPrefix(path, starterFactory+"/scripts/") {
+			return os.Chmod(filepath.Join(directory, filepath.FromSlash(path)), 0o700)
+		}
+		return nil
 	})
 }
 
@@ -134,7 +141,7 @@ func installRunnerToken(ctx context.Context, directory string, output io.Writer)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("inspect existing %s: %w", runnerTokenFile, err)
 	}
-	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.toml"))
+	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.yaml"))
 	if err != nil {
 		return err
 	}

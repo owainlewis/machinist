@@ -1,16 +1,18 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/pelletier/go-toml/v2"
+	"go.yaml.in/yaml/v3"
 )
 
 const (
@@ -28,14 +30,14 @@ const (
 )
 
 type Server struct {
-	Listen               string `toml:"listen"`
-	Database             string `toml:"database"`
-	Factory              string `toml:"factory"`
-	DefaultPreset        string `toml:"default_preset"`
-	MaxTurnsWithoutHuman int    `toml:"max_turns_without_human"`
-	RunTimeout           string `toml:"run_timeout"`
-	TLSCert              string `toml:"tls_cert"`
-	TLSKey               string `toml:"tls_key"`
+	Listen               string `yaml:"listen"`
+	Database             string `yaml:"database"`
+	Factory              string `yaml:"factory"`
+	DefaultPreset        string `yaml:"default_preset"`
+	MaxTurnsWithoutHuman int    `yaml:"max_turns_without_human"`
+	RunTimeout           string `yaml:"run_timeout"`
+	TLSCert              string `yaml:"tls_cert"`
+	TLSKey               string `yaml:"tls_key"`
 	runTimeout           time.Duration
 	configDir            string
 }
@@ -44,13 +46,13 @@ type Server struct {
 func (s Server) RunDeadline() time.Duration { return s.runTimeout }
 
 type GitHub struct {
-	Handle       string   `toml:"handle"`
-	Repositories []string `toml:"repositories"`
+	Handle       string   `yaml:"handle"`
+	Repositories []string `yaml:"repositories"`
 }
 
 type Config struct {
-	Server Server `toml:"server"`
-	GitHub GitHub `toml:"github"`
+	Server Server `yaml:"server"`
+	GitHub GitHub `yaml:"github"`
 	path   string
 }
 
@@ -70,7 +72,7 @@ type ResolvedCommand struct {
 
 func LoadConfig(path string) (Config, error) {
 	if path == "" {
-		defaultPath, err := defaultConfigPath("config.toml")
+		defaultPath, err := defaultConfigPath("config.yaml")
 		if err != nil {
 			return Config{}, err
 		}
@@ -95,6 +97,9 @@ func LoadConfig(path string) (Config, error) {
 // decodeFile rejects keys the target does not define and names each one, so an
 // old configuration fails at startup with the key to remove.
 func decodeFile(path string, target any) error {
+	if filepath.Ext(path) == ".toml" {
+		return tomlError(path)
+	}
 	body, err := readBoundedFile(path, maxConfigBytes)
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", path, err)
@@ -102,21 +107,39 @@ func decodeFile(path string, target any) error {
 	return DecodeStrict(path, body, target)
 }
 
-// DecodeStrict decodes TOML and names any key the target does not define.
+// tomlError says how to move a file from before Machinist read YAML.
+func tomlError(path string) error {
+	return fmt.Errorf("%s is TOML, and Machinist now reads YAML. Rewrite it as %s", path, strings.TrimSuffix(path, ".toml")+".yaml")
+}
+
+var unknownField = regexp.MustCompile(`^line (\d+): field (\S+) not found in type`)
+
+// DecodeStrict decodes one YAML document and names any key the target does not
+// define.
 func DecodeStrict(path string, body []byte, target any) error {
-	decoder := toml.NewDecoder(strings.NewReader(string(body)))
-	decoder.DisallowUnknownFields()
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
+	decoder.KnownFields(true)
 	err := decoder.Decode(target)
-	var missing *toml.StrictMissingError
-	if errors.As(err, &missing) {
-		keys := make([]string, 0, len(missing.Errors))
-		for _, unknown := range missing.Errors {
-			keys = append(keys, strings.Join(unknown.Key(), "."))
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	var typeError *yaml.TypeError
+	if errors.As(err, &typeError) {
+		problems := make([]string, 0, len(typeError.Errors))
+		for _, problem := range typeError.Errors {
+			if match := unknownField.FindStringSubmatch(problem); match != nil {
+				problem = fmt.Sprintf("unknown key %s on line %s", match[2], match[1])
+			}
+			problems = append(problems, problem)
 		}
-		return fmt.Errorf("parse config %q: unknown key %s", path, strings.Join(keys, ", "))
+		return fmt.Errorf("parse config %q: %s", path, strings.Join(problems, "; "))
 	}
 	if err != nil {
 		return fmt.Errorf("parse config %q: %w", path, err)
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return fmt.Errorf("parse config %q: only one YAML document is allowed", path)
 	}
 	return nil
 }
@@ -202,6 +225,10 @@ func defaultConfigPath(name string) (string, error) {
 		return "", fmt.Errorf("resolve %s: %w", name, err)
 	}
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		old := strings.TrimSuffix(path, ".yaml") + ".toml"
+		if _, err := os.Stat(old); err == nil {
+			return "", tomlError(old)
+		}
 		return "", missingConfigError(name, filepath.Dir(path))
 	}
 	return path, nil
@@ -210,9 +237,9 @@ func defaultConfigPath(name string) (string, error) {
 func missingConfigError(name, directory string) error {
 	message := fmt.Sprintf("no %s in %s. Run Machinist from the directory that holds its configuration, create one there with machinist init, or pass --config", name, directory)
 	if home, err := os.UserHomeDir(); err == nil {
-		old := filepath.Join(home, ".machinist", name)
+		old := filepath.Join(home, ".machinist", strings.TrimSuffix(name, ".yaml")+".toml")
 		if _, err := os.Stat(old); err == nil {
-			message += fmt.Sprintf(". Older versions kept it in %s; move that directory's files here or pass --config %s", filepath.Dir(old), old)
+			message += fmt.Sprintf(". Older versions kept it in %s; move its files here and rewrite them as YAML", filepath.Dir(old))
 		}
 	}
 	return errors.New(message)

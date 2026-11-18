@@ -18,13 +18,16 @@ type Step struct {
 // RunRequest is everything a runner needs to start one run. It carries no
 // secrets. The steps run in order in one empty workspace.
 type RunRequest struct {
-	RunID         string            `json:"run_id"`
-	TicketID      string            `json:"ticket_id"`
-	Preset        string            `json:"preset"`
-	Repository    string            `json:"repository"`
-	Branch        string            `json:"branch"`
-	Vars          map[string]string `json:"vars,omitempty"`
-	Prompt        string            `json:"prompt"`
+	RunID      string            `json:"run_id"`
+	TicketID   string            `json:"ticket_id"`
+	Preset     string            `json:"preset"`
+	Repository string            `json:"repository"`
+	Branch     string            `json:"branch"`
+	Vars       map[string]string `json:"vars,omitempty"`
+	Prompt     string            `json:"prompt"`
+	// Files are the factory's prompts and scripts, by path such as
+	// prompts/plan.md. They are written to the control directory.
+	Files         map[string]string `json:"files,omitempty"`
 	Steps         []Step            `json:"steps"`
 	TimeoutMillis int64             `json:"timeout_millis"`
 	GitName       string            `json:"git_name"`

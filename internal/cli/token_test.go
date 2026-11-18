@@ -19,7 +19,7 @@ func runToken(t *testing.T, path string, args ...string) (int, string, string) {
 }
 
 func TestTokenLifecycle(t *testing.T) {
-	path := writeConfigFile(t, t.TempDir(), "config.toml", "[server]\ndatabase = \"tickets.db\"\n\n[github]\nhandle = \"bot\"\n")
+	path := writeConfigFile(t, t.TempDir(), "config.yaml", "server:\n  database: tickets.db\n\ngithub:\n  handle: bot\n")
 	code, stdout, stderr := runToken(t, path, "create", "alice")
 	token := strings.TrimSpace(stdout)
 	if code != 0 || len(token) != 64 {

@@ -31,4 +31,4 @@ ENV HOME=/var/lib/machinist/home GIT_TERMINAL_PROMPT=0
 USER 1000:1000
 WORKDIR /var/lib/machinist
 ENTRYPOINT ["machinist"]
-CMD ["start", "--config=/var/lib/machinist/config.toml"]
+CMD ["start", "--config=/var/lib/machinist/config.yaml"]

@@ -1,10 +1,11 @@
 # Configuration
 
 There are three places to configure Machinist: [factory files](factory.md), the control
-plane's `config.toml` and each runner's `runner.toml`. An unknown key stops startup and
-names the key.
+plane's `config.yaml` and each runner's `runner.yaml`. All of them are YAML. An unknown key
+stops startup and names the key and its line. A file left over in TOML stops startup too,
+and says to rewrite it as YAML.
 
-Machinist reads `config.toml` or `runner.toml` from the current directory, or the file
+Machinist reads `config.yaml` or `runner.yaml` from the current directory, or the file
 `--config` names. Keep that directory in git with the factory, and start Machinist from it.
 `machinist init [directory]` writes commented copies there.
 
@@ -17,31 +18,33 @@ file.
 
 ```text
 my-machinist/          a git repository
-  config.toml          the control plane
-  runner.toml          a runner
+  config.yaml          the control plane
+  runner.yaml          a runner
   factory/presets/     presets
+  factory/prompts/     prompts
+  factory/scripts/     scripts
   .machinist/          state, ignored by git
 ```
 
-## Control plane: config.toml
+## Control plane: config.yaml
 
 The control plane reads its GitHub token from `GH_TOKEN`. It must belong to `github.handle`,
 or startup stops.
 
-```toml
-[server]
-listen = "127.0.0.1:7331"
-database = ".machinist/tickets.db"
-factory = "factory"
-default_preset = "default"
-max_turns_without_human = 5
-run_timeout = "60m"
-# tls_cert = "/etc/machinist/tls.crt"
-# tls_key = "/etc/machinist/tls.key"
+```yaml
+server:
+  listen: 127.0.0.1:7331
+  database: .machinist/tickets.db
+  factory: factory
+  default_preset: default
+  max_turns_without_human: 5
+  run_timeout: 60m
+  # tls_cert: /etc/machinist/tls.crt
+  # tls_key: /etc/machinist/tls.key
 
-[github]
-handle = "machinist-bot"
-repositories = ["owner/name"]
+github:
+  handle: machinist-bot
+  repositories: [owner/name]
 ```
 
 | Key | Meaning |
@@ -56,7 +59,7 @@ repositories = ["owner/name"]
 | `github.handle` | The bot's login. Use a dedicated account |
 | `github.repositories` | The repositories Machinist serves |
 
-## Runner: runner.toml
+## Runner: runner.yaml
 
 See [Runners](runners.md) for each type.
 

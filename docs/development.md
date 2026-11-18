@@ -29,7 +29,7 @@ go build ./...
 mkdir -p ../machinist-dev && ./bin/machinist init ../machinist-dev
 ```
 
-Set `github.handle` and `github.repositories` in `../machinist-dev/config.toml`. Use a
+Set `github.handle` and `github.repositories` in `../machinist-dev/config.yaml`. Use a
 repository you control and a token for a bot account. Never point experiments at live state.
 `just local` starts the control plane and a runner from that directory:
 

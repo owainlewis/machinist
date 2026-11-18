@@ -77,7 +77,7 @@ spec:
       containers:
         - name: machinist
           image: machinist-control-plane
-          # config.toml and the factory directory live on the state volume.
+          # config.yaml and the factory directory live on the state volume.
           env:
             - name: GH_TOKEN
               valueFrom:

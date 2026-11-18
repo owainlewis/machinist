@@ -17,22 +17,22 @@ var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Runner is the configuration of one machine or cluster that runs steps.
 type Runner struct {
-	Kubernetes *Kubernetes `toml:"kubernetes"`
+	Kubernetes *Kubernetes `yaml:"kubernetes"`
 	// Env names the variables passed from the runner's own environment to
 	// every step, such as ANTHROPIC_API_KEY or LINEAR_API_KEY.
-	Env []string `toml:"env"`
+	Env []string `yaml:"env"`
 	// Login gives steps the OS user's home, so a tool can use an existing login.
-	Login         bool   `toml:"login"`
-	ControlPlane  string `toml:"control_plane"`
-	TokenFile     string `toml:"token_file"`
-	DataDirectory string `toml:"data_directory"`
-	Slots         int    `toml:"slots"`
+	Login         bool   `yaml:"login"`
+	ControlPlane  string `yaml:"control_plane"`
+	TokenFile     string `yaml:"token_file"`
+	DataDirectory string `yaml:"data_directory"`
+	Slots         int    `yaml:"slots"`
 	configDir     string
 }
 
 func LoadRunner(path string) (Runner, error) {
 	if path == "" {
-		defaultPath, err := defaultConfigPath("runner.toml")
+		defaultPath, err := defaultConfigPath("runner.yaml")
 		if err != nil {
 			return Runner{}, err
 		}

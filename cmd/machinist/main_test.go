@@ -30,7 +30,7 @@ func TestBinaryInitWritesConfiguration(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("init: %v: %s", err, output)
 	}
-	if _, err := os.Stat(filepath.Join(directory, "config.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(directory, "config.yaml")); err != nil {
 		t.Fatal(err)
 	}
 }

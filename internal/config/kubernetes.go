@@ -7,13 +7,13 @@ import (
 
 // Kubernetes is operator-owned execution configuration. Tasks cannot change it.
 type Kubernetes struct {
-	Context      string   `toml:"context"`
-	Kubeconfig   string   `toml:"kubeconfig"`
-	Namespace    string   `toml:"namespace"`
-	Image        string   `toml:"image"`
-	Secret       string   `toml:"secret"`
-	ProxyURL     string   `toml:"proxy_url"`
-	AllowedHosts []string `toml:"allowed_hosts"`
+	Context      string   `yaml:"context"`
+	Kubeconfig   string   `yaml:"kubeconfig"`
+	Namespace    string   `yaml:"namespace"`
+	Image        string   `yaml:"image"`
+	Secret       string   `yaml:"secret"`
+	ProxyURL     string   `yaml:"proxy_url"`
+	AllowedHosts []string `yaml:"allowed_hosts"`
 }
 
 func (k Kubernetes) Validate() error {

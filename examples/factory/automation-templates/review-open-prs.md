@@ -1,9 +1,9 @@
-+++
-schedule = "0 9 * * 1-5"
-timezone = "UTC"
-repo = "owner/name"
-preset = "maintainer"
-+++
+---
+schedule: "0 9 * * 1-5"
+timezone: UTC
+repo: owner/name
+preset: maintainer
+---
 Review open pull requests in this repository, and merge the ones that are ready.
 
 A pull request is ready when all of these are true:
