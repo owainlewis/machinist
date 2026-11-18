@@ -9,6 +9,7 @@ import { createStatusLoader } from "@/status-loader";
 import { api, SignedOutError } from "./api.js";
 import { JobPage } from "./job-page.jsx";
 import { JobsPage } from "./jobs-page.jsx";
+import { NewJobPage } from "./new-job-page.jsx";
 import { RunnersPage } from "./runners.jsx";
 import { SignIn } from "./sign-in.jsx";
 import "./styles.css";
@@ -101,7 +102,7 @@ function App() {
 
   if (!session.checked) return null;
   if (!session.signedIn) return <SignIn onSignedIn={checkSession} />;
-  const active = route.view === "job" ? "jobs" : route.view;
+  const active = route.view === "job" || route.view === "new" ? "jobs" : route.view;
   const ThemeIcon = dark ? Sun : Moon;
   const themeLabel = dark ? "Light mode" : "Dark mode";
   return <div className="app-shell">
@@ -117,6 +118,7 @@ function App() {
     </aside>
     <main className="app-main">
       {route.view === "jobs" && <JobsPage tickets={status.tickets} runners={status.runners} loaded={loaded} error={error} />}
+      {route.view === "new" && <NewJobPage onSignedOut={signedOut} />}
       {route.view === "job" && <JobPage key={route.jobID} jobID={route.jobID} onSignedOut={signedOut} />}
       {route.view === "runners" && <RunnersPage runners={status.runners} queue={status.queue} loaded={loaded} error={error} />}
     </main>

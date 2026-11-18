@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 	"github.com/owainlewis/machinist/internal/triggers"
@@ -224,5 +225,24 @@ func TestAutomationRoutes(t *testing.T) {
 	response, body = f.call(t, http.MethodGet, "/api/v1/automations", f.token, nil)
 	if !strings.Contains(string(body), first.ID) {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+}
+
+func TestPresetsRouteListsEachPresetsSteps(t *testing.T) {
+	f := newFixture(t)
+	f.server.presets = presetViews(&factory.Factory{Presets: map[string]factory.Preset{
+		"spec":    {Name: "spec", Steps: []runner.Step{{Name: "checkout"}, {Name: "write"}}},
+		"default": {Name: "default", Steps: []runner.Step{{Name: "work"}}},
+	}})
+	response, body := f.call(t, http.MethodGet, "/api/v1/presets", f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	want := `{"default":"default","presets":[{"name":"default","steps":["work"]},{"name":"spec","steps":["checkout","write"]}]}`
+	if strings.TrimSpace(string(body)) != want {
+		t.Fatalf("body = %s", body)
+	}
+	if response, _ := f.call(t, http.MethodGet, "/api/v1/presets", "", nil); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("signed out status = %d", response.StatusCode)
 	}
 }
