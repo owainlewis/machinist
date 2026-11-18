@@ -72,3 +72,19 @@ In this order, each only when real jobs show the need:
     them and the next step can rely on them.
 3.  **A preset as a step.** One step runs another preset, so a common sequence is written
     once.
+
+## Milestones
+
+Open question: does v1 ship before the Linear trigger and GitHub App tokens?
+
+1.  **v1: one default job, end to end** (this week). #607 New job form, then #609 one-off
+    jobs with only `default`. #610 this document, replacing `docs/direction.md`.
+    Housekeeping: #603 Go deps, #580 Actions bump, #578 unit test (rebase, then rerun CI).
+2.  **Proven on real work.** ENG-45: run `default` on Machinist's own backlog and on one
+    other repo, and count the draft PRs worth merging. Fix the Public site deploy that
+    failed at 07:51 on 18 Nov.
+3.  **Any trigger, narrow credentials.** #604 Linear trigger (rework it to use `default`,
+    not `coding`). #608 GitHub App tokens, one repository per run.
+4.  **See the work.** #606 pipeline view and Run again. #605 dashboard. ENG-48 "Mine"
+    filter, rewritten for the Jobs page.
+5.  **Later**, only when real jobs show the need: the items under Next above.
