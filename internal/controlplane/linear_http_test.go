@@ -31,6 +31,7 @@ func linearFixture(t *testing.T, maxJobs int) *fixture {
 	machinistConfig := testConfig()
 	machinistConfig.GitHub.Repositories = []string{"owner/repo"}
 	machinistConfig.Linear.AppUserID = "app-user"
+	machinistConfig.Linear.AllowedUsers = []string{"owain"}
 	machinistConfig.Linear.Teams = map[string]string{"ENG": "owner/repo"}
 	machinistConfig.Linear.MaxJobsPerHour = maxJobs
 	machinistConfig.Linear.Secret = linearSecret
@@ -47,7 +48,7 @@ func linearFixture(t *testing.T, maxJobs int) *fixture {
 func issueEvent(t *testing.T, id, assignee string) []byte {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
-		"action": "create", "type": "Issue", "webhookTimestamp": time.Now().UnixMilli(),
+		"action": "create", "type": "Issue", "webhookTimestamp": time.Now().UnixMilli(), "actor": map[string]string{"id": "owain", "type": "user"},
 		"data": map[string]any{"id": id, "identifier": "ENG-1", "title": "Fix it", "description": "Detail", "url": "https://linear.app/x/issue/ENG-1", "team": map[string]string{"key": "ENG"}, "assigneeId": assignee},
 	})
 	if err != nil {

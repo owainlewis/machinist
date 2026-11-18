@@ -112,7 +112,7 @@ func linearRules(machinistConfig config.Config, loaded *factory.Factory) (source
 			return sources.LinearRules{}, fmt.Errorf("linear.teams.%s: %s is not in github.repositories", team, repository)
 		}
 	}
-	return sources.LinearRules{Secret: linear.Secret, AppUserID: linear.AppUserID, Preset: preset, Teams: linear.Teams}, nil
+	return sources.LinearRules{Secret: linear.Secret, AppUserID: linear.AppUserID, AllowedUsers: linear.AllowedUsers, Preset: preset, Teams: linear.Teams}, nil
 }
 
 func findPR(client *ghclient.Client) engine.PRFinder {

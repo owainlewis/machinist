@@ -45,8 +45,8 @@ set `tls_cert` and `tls_key`.
 
 **The Linear webhook is public by design.** It is on only when `linear.teams` is set, and it
 accepts a request only with a valid `Linear-Signature` and a timestamp less than a minute
-old. Expose that one path through a proxy, not the whole control plane. Anyone who can assign
-issues in a connected team can start a job with the issue's text as its prompt.
+old. Expose that one path through a proxy, not the whole control plane. Only the Linear users in
+`linear.allowed_users` can start a job, and the issue's text becomes its prompt.
 See [Linear](docs/linear.md).
 
 **Local runners.** Concurrent runs under one OS user can read each other's files and

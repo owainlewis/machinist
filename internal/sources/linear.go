@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,7 +27,9 @@ var ErrLinearUnsigned = errors.New("the request is not signed by Linear")
 type LinearRules struct {
 	Secret    string
 	AppUserID string
-	Preset    string
+	// AllowedUsers may start jobs. The event's actor must be one of them.
+	AllowedUsers []string
+	Preset       string
 	// Teams maps a team key to a repository.
 	Teams map[string]string
 }
@@ -36,7 +39,12 @@ type LinearEvent struct {
 	Action    string `json:"action"`
 	Type      string `json:"type"`
 	Timestamp int64  `json:"webhookTimestamp"`
-	Data      struct {
+	// Actor is who made the change.
+	Actor struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	} `json:"actor"`
+	Data struct {
 		ID          string `json:"id"`
 		Identifier  string `json:"identifier"`
 		Title       string `json:"title"`
@@ -93,6 +101,9 @@ func (rules LinearRules) Decide(event LinearEvent) (LinearJob, string) {
 	}
 	if !rules.assignedToApp(event) {
 		return LinearJob{}, "the issue was not just assigned to the Machinist app"
+	}
+	if event.Actor.ID == "" || !slices.Contains(rules.AllowedUsers, event.Actor.ID) {
+		return LinearJob{}, fmt.Sprintf("user %q may not start jobs", event.Actor.ID)
 	}
 	return LinearJob{Key: "linear:" + event.Data.ID, Repo: repository, Preset: rules.Preset, Prompt: linearPrompt(event)}, ""
 }

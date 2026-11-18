@@ -55,6 +55,9 @@ type Linear struct {
 	// AppUserID is the Machinist app's Linear user. Assigning an issue to it
 	// starts a job.
 	AppUserID string `yaml:"app_user_id"`
+	// AllowedUsers are the Linear user IDs whose assignments start jobs. An
+	// assignment by anyone else is ignored.
+	AllowedUsers []string `yaml:"allowed_users"`
 	// Preset is the preset Linear jobs use. It defaults to server.default_preset.
 	Preset string `yaml:"preset"`
 	// Teams maps a Linear team key, such as ENG, to the repository its jobs
@@ -218,7 +221,7 @@ func applyServerDefaults(server Server) (Server, error) {
 
 func applyLinearDefaults(linear Linear, secret string) (Linear, error) {
 	if !linear.Enabled() {
-		if linear.AppUserID != "" || linear.Preset != "" {
+		if linear.AppUserID != "" || linear.Preset != "" || len(linear.AllowedUsers) > 0 {
 			return Linear{}, errors.New("linear: set teams to switch the webhook on, or remove the linear section")
 		}
 		return linear, nil
@@ -231,6 +234,16 @@ func applyLinearDefaults(linear Linear, secret string) (Linear, error) {
 	if linear.AppUserID == "" {
 		return Linear{}, errors.New("linear: set app_user_id to the Machinist app's Linear user, so only issues assigned to it start jobs")
 	}
+	allowed := linear.AllowedUsers[:0:0]
+	for _, user := range linear.AllowedUsers {
+		if user = strings.TrimSpace(user); user != "" {
+			allowed = append(allowed, user)
+		}
+	}
+	if len(allowed) == 0 {
+		return Linear{}, errors.New("linear: list the Linear user IDs allowed to assign work in allowed_users")
+	}
+	linear.AllowedUsers = allowed
 	for team, repository := range linear.Teams {
 		if strings.TrimSpace(team) == "" || strings.TrimSpace(repository) == "" {
 			return Linear{}, errors.New("linear: each team needs a key and a repository")

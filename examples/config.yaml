@@ -18,6 +18,7 @@ github:
 # from LINEAR_WEBHOOK_SECRET. See docs/linear.md.
 # linear:
 #   app_user_id: <the Machinist app's Linear user ID>
+#   allowed_users: [<your Linear user ID>]
 #   preset: coding
 #   teams:
 #     ENG: owner/name

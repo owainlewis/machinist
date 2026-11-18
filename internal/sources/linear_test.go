@@ -25,6 +25,7 @@ func linearEvent(t *testing.T, action string, at time.Time, assignee string, upd
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
 		"action": action, "type": "Issue", "webhookTimestamp": at.UnixMilli(), "updatedFrom": updatedFrom,
+		"actor": map[string]string{"id": "owain", "type": "user"},
 		"data": map[string]any{
 			"id": "issue-1", "identifier": "ENG-12", "title": "Fix the export button", "description": "It does nothing on Safari.",
 			"url": "https://linear.app/team/issue/ENG-12", "assigneeId": assignee, "team": map[string]string{"key": "ENG"},
@@ -71,7 +72,7 @@ func decide(t *testing.T, rules LinearRules, body []byte) (LinearJob, string) {
 }
 
 func TestLinearStartsAJobWhenAnIssueIsAssignedToTheApp(t *testing.T) {
-	rules := LinearRules{AppUserID: "app-user", Preset: "coding", Teams: map[string]string{"eng": "owner/repo"}}
+	rules := LinearRules{AppUserID: "app-user", AllowedUsers: []string{"owain"}, Preset: "coding", Teams: map[string]string{"eng": "owner/repo"}}
 	now := time.Now()
 	job, reason := decide(t, rules, linearEvent(t, "update", now, "app-user", map[string]any{"assigneeId": nil}))
 	if reason != "" || job.Key != "linear:issue-1" || job.Repo != "owner/repo" || job.Preset != "coding" {
@@ -101,9 +102,20 @@ func TestLinearStartsAJobWhenAnIssueIsAssignedToTheApp(t *testing.T) {
 			t.Errorf("%s started a job", name)
 		}
 	}
-	other := LinearRules{AppUserID: "app-user", Teams: map[string]string{"OPS": "owner/repo"}}
+	other := LinearRules{AppUserID: "app-user", AllowedUsers: []string{"owain"}, Teams: map[string]string{"OPS": "owner/repo"}}
 	if _, reason := decide(t, other, linearEvent(t, "create", now, "app-user", nil)); !strings.Contains(reason, "not connected") {
 		t.Errorf("other team: reason = %q", reason)
+	}
+	stranger := LinearRules{AppUserID: "app-user", AllowedUsers: []string{"someone-else"}, Teams: map[string]string{"ENG": "owner/repo"}}
+	if _, reason := decide(t, stranger, linearEvent(t, "create", now, "app-user", nil)); !strings.Contains(reason, "may not start jobs") {
+		t.Errorf("unlisted user: reason = %q", reason)
+	}
+	var noActor map[string]any
+	_ = json.Unmarshal(linearEvent(t, "create", now, "app-user", nil), &noActor)
+	delete(noActor, "actor")
+	body, _ := json.Marshal(noActor)
+	if _, reason := decide(t, rules, body); !strings.Contains(reason, "may not start jobs") {
+		t.Errorf("no actor: reason = %q", reason)
 	}
 	if _, reason := decide(t, LinearRules{Teams: map[string]string{"ENG": "owner/repo"}}, linearEvent(t, "create", now, "", nil)); reason == "" {
 		t.Error("no app user started a job")
