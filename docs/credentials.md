@@ -16,7 +16,11 @@ different credentials on different runners.
 
 ## GitHub token scopes
 
-Steps get `GH_TOKEN`, so `gh` and `git` can clone, push and open pull requests.
+With a [GitHub App](github-app.md), each run gets its own token for its repository, which
+lasts an hour, and the rest of this section does not apply.
+
+Without one, steps get the runner's `GH_TOKEN`, so `gh` and `git` can clone, push and open
+pull requests.
 `machinist runner check` and `machinist runner start` print one warning if a classic token
 reports scopes beyond `repo` (private repositories) or `public_repo` (public repositories).
 The warning names the extra scopes, such as `delete_repo` or `admin:public_key`: any step

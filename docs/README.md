@@ -16,6 +16,7 @@ Start with the [quick start](../README.md#quick-start).
 | [Configuration](configuration.md) | Look up every setting |
 | [Runners](runners.md) | Add local and Kubernetes runners |
 | [Credentials](credentials.md) | Choose the credentials steps get |
+| [GitHub App](github-app.md) | Give each run a short-lived token for its own repository |
 | [VM deployment](vm-deployment.md) | Run the control plane and a runner on a VM |
 | [Continuous deployment](local-factory/continuous-deployment.md) | Release to GKE |
 | [Architecture](../ARCHITECTURE.md) | See how the pieces fit |

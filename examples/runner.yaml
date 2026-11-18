@@ -4,8 +4,9 @@ token_file: .machinist/runner.token
 data_directory: .machinist/runner
 slots: 2
 
-# The runner also needs GH_TOKEN, for a GitHub login that belongs to the bot.
-# Steps get it as GH_TOKEN, scoped to the job's repository.
+# Without a GitHub App on the control plane, the runner needs GH_TOKEN, for a
+# GitHub login that belongs to the bot. Steps get it as GH_TOKEN, scoped to the
+# job's repository. With an app, each run brings its own token instead.
 
 # Variables passed from the runner's environment to every step.
 env: [ANTHROPIC_API_KEY]
