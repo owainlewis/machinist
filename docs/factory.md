@@ -77,13 +77,14 @@ push first.
 After a job ends, Machinist looks for an open pull request on `MACHINIST_BRANCH` and records
 its number on the job.
 
-`init` installs three presets:
+`init` installs four presets:
 
 | Preset | Steps |
 | --- | --- |
 | `default` | Clone, run Claude Code on the prompt, open one pull request |
 | `coding` | Clone, plan, implement, test, review, fix, test again, open one draft pull request with the plan and the review |
 | `maintainer` | Clone, look after open pull requests, and merge the ready ones |
+| `hello` | Print the job and its prompt, then finish. A smoke test with no clone and no agent |
 
 The `coding` preset's test steps run `npm test`, `go test ./...`, `cargo test` or `pytest`,
 by the files the repository has. Copy the preset and change those steps for anything else.
