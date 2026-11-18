@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -69,9 +70,36 @@ func (e *Error) Unwrap() error { return e.Err }
 type Client struct {
 	executable string
 	timeout    time.Duration
+	token      func(ctx context.Context, repository string) (string, error)
 }
 
 func New() *Client { return &Client{executable: "gh", timeout: commandTimeout} }
+
+// WithToken gives each command a token for the repository it works on, in
+// place of the process's GH_TOKEN.
+func (c *Client) WithToken(token func(ctx context.Context, repository string) (string, error)) *Client {
+	c.token = token
+	return c
+}
+
+// environment is the process's own, with GH_TOKEN replaced by a token for
+// repository when the client has a token source.
+func (c *Client) environment(ctx context.Context, repository string) ([]string, error) {
+	if c.token == nil || repository == "" {
+		return nil, nil
+	}
+	token, err := c.token(ctx, repository)
+	if err != nil {
+		return nil, &Error{Kind: ErrorAuth, Operation: "get a token for " + repository, Detail: sanitize([]byte(err.Error())), Err: err}
+	}
+	environment := []string{}
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "GH_TOKEN=") && !strings.HasPrefix(entry, "GITHUB_TOKEN=") {
+			environment = append(environment, entry)
+		}
+	}
+	return append(environment, "GH_TOKEN="+token), nil
+}
 
 type limitedBuffer struct{ bytes.Buffer }
 
@@ -82,17 +110,22 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	return b.Buffer.Write(p)
 }
 
-func (c *Client) run(ctx context.Context, operation string, input []byte, args ...string) ([]byte, error) {
+func (c *Client) run(ctx context.Context, repository, operation string, input []byte, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	environment, err := c.environment(ctx, repository)
+	if err != nil {
+		return nil, err
+	}
 	command := exec.CommandContext(ctx, c.executable, args...)
+	command.Env = environment
 	if input != nil {
 		command.Stdin = bytes.NewReader(input)
 	}
 	var stdout limitedBuffer
 	var stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
-	err := command.Run()
+	err = command.Run()
 	if err == nil {
 		return stdout.Bytes(), nil
 	}
@@ -160,7 +193,7 @@ func (c *Client) Issue(ctx context.Context, repository string, number int) (Issu
 	if err := validRepository(repository); err != nil {
 		return issue, err
 	}
-	output, err := c.run(ctx, "read issue", nil, "api", "--method", "GET", fmt.Sprintf("repos/%s/issues/%d", repository, number))
+	output, err := c.run(ctx, repository, "read issue", nil, "api", "--method", "GET", fmt.Sprintf("repos/%s/issues/%d", repository, number))
 	if err != nil {
 		return issue, err
 	}
@@ -176,7 +209,7 @@ func (c *Client) PostComment(ctx context.Context, repository string, number int,
 	if err != nil {
 		return err
 	}
-	_, err = c.run(ctx, "post comment", input, "api", "--method", "POST", fmt.Sprintf("repos/%s/issues/%d/comments", repository, number), "--input", "-")
+	_, err = c.run(ctx, repository, "post comment", input, "api", "--method", "POST", fmt.Sprintf("repos/%s/issues/%d/comments", repository, number), "--input", "-")
 	return err
 }
 
@@ -192,7 +225,7 @@ func (c *Client) FindPR(ctx context.Context, repository, branch string) (*PRRef,
 	if err := validRepository(repository); err != nil {
 		return nil, err
 	}
-	output, err := c.run(ctx, "find PR", nil, "pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--limit", "100", "--json", "number,state,isCrossRepository")
+	output, err := c.run(ctx, repository, "find PR", nil, "pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--limit", "100", "--json", "number,state,isCrossRepository")
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +256,7 @@ func (c *Client) FindPR(ctx context.Context, repository, branch string) (*PRRef,
 // TokenScopes returns the classic token scopes reported by GitHub. Fine-grained
 // tokens do not report scopes.
 func (c *Client) TokenScopes(ctx context.Context) ([]string, error) {
-	output, err := c.run(ctx, "read token scopes", nil, "api", "--method", "GET", "--include", "user")
+	output, err := c.run(ctx, "", "read token scopes", nil, "api", "--method", "GET", "--include", "user")
 	if err != nil {
 		return nil, err
 	}
