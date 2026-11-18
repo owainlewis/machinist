@@ -190,6 +190,27 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .job-facts dd { font-size: 14px; }
 .job-facts a { color: var(--info); }
 .job-facts a:hover { text-decoration: underline; }
+.job-actions { display: flex; flex: none; align-items: flex-start; gap: 10px; }
+.job-actions .pill { margin-top: 3px; }
+.run-again { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+
+/* The pipeline: one node per step, left to right, joined by an edge. */
+.pipeline { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 14px; }
+.pipeline ol { display: flex; width: max-content; min-width: 100%; align-items: center; margin: 0; padding: 0; list-style: none; }
+.pipeline li { display: flex; flex: 1 0 auto; align-items: center; }
+.pipeline-edge { display: block; width: 14px; height: 2px; flex: none; background: var(--border); }
+.pipeline li[data-state="succeeded"] + li .pipeline-edge, .pipeline li[data-state="succeeded"] + li[data-state] .pipeline-edge { background: color-mix(in srgb, var(--success) 55%, var(--border)); }
+.pipeline-node { display: grid; width: 100%; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 8px; align-items: center; border: 1px solid var(--border); border-radius: 10px; background: var(--background); padding: 8px 10px; text-align: left; }
+.pipeline-node:not(:disabled):hover { border-color: color-mix(in srgb, var(--foreground) 25%, var(--border)); }
+.pipeline-node:disabled { cursor: default; }
+.pipeline-node svg { grid-row: span 2; }
+.pipeline-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 500; white-space: nowrap; }
+.pipeline-meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pipeline li[data-state="running"] .pipeline-node { border-color: var(--info); box-shadow: 0 0 0 3px var(--info-soft); }
+.pipeline li[data-state="failed"] .pipeline-node, .pipeline li[data-state="timed_out"] .pipeline-node { border-color: var(--danger); background: var(--danger-soft); }
+.pipeline li[data-state="succeeded"] .pipeline-node { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.pipeline li[data-state="skipped"] .pipeline-name, .pipeline li[data-state="pending"] .pipeline-name { color: var(--muted-foreground); font-weight: 400; }
+.pipeline li[data-state="pending"] .pipeline-node { border-style: dashed; }
 .prompt summary { cursor: pointer; list-style: revert; }
 .prompt[open] summary { margin-bottom: 8px; }
 .run { display: flex; flex-direction: column; gap: 10px; }
@@ -247,6 +268,7 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
   .page { gap: 16px; padding: 20px 16px 48px; }
   .page-banner { padding-inline: 16px; }
   .job-head { flex-direction: column; gap: 8px; }
+  .run-again { align-items: flex-start; }
   .job-head h1 { font-size: 19px; }
   .job-facts { gap: 8px 20px; }
   .step-row { grid-template-columns: auto minmax(0, 1fr) auto auto; }

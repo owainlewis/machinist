@@ -20,7 +20,7 @@ func writeTicketError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err)
 	case errors.Is(err, tickets.ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
-	case errors.Is(err, tickets.ErrTicketEnded):
+	case errors.Is(err, tickets.ErrTicketEnded), errors.Is(err, tickets.ErrStillWorking):
 		writeError(w, http.StatusConflict, err)
 	default:
 		writeError(w, http.StatusInternalServerError, err)
@@ -75,7 +75,30 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 		writeTicketError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures})
+	writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": s.presetSteps(ticket.Agent)})
+}
+
+// presetSteps names the steps of a preset, in order, so the UI can draw a job's
+// pipeline before its first run starts. A preset that is gone has none.
+func (s *Server) presetSteps(name string) []string {
+	preset, ok := s.factory.Preset(name)
+	if !ok {
+		return []string{}
+	}
+	names := make([]string, 0, len(preset.Steps))
+	for _, step := range preset.Steps {
+		names = append(names, step.Name)
+	}
+	return names
+}
+
+func (s *Server) rerunTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
+	ticket, err := s.store.Rerun(r.Context(), r.PathValue("id"), tokenName)
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Server) cancelTicket(w http.ResponseWriter, r *http.Request, tokenName string) {

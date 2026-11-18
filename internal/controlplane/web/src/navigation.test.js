@@ -21,6 +21,7 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
     { type: "step.started", message: "name=test" }, { type: "process.output", encoding: "base64", data: btoa("FAIL tests/styles.test.ts\n") },
   ].map((event, index) => ({ sequence: index + 1, time: now, ...event }));
   let releaseOld;
+  let reruns = 0;
   const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
   globalThis.fetch = async (url, options = {}) => {
     if (url === "/api/v1/session" && options.method === "POST") {
@@ -32,9 +33,10 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
     if (!signedIn) return reply(401, { error: "a token is required" });
     if (url === "/api/v1/repositories") return reply(200, { repositories: ["owner/repo"], name: "alice" });
     if (url === "/api/v1/tickets") return reply(200, { tickets: [older, ticket] });
+    if (url === "/api/v1/tickets/t_new/rerun" && options.method === "POST") { reruns++; return reply(200, { ...ticket, state: "working" }); }
     if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
     if (url === "/api/v1/tickets/t_old") return new Promise(resolve => { releaseOld = () => resolve(reply(200, { ticket: older, entries: [], runs: [] })); });
-    if (url === "/api/v1/tickets/t_new") return reply(200, { ticket, entries: [{ id: 1, kind: "request", author: "alice", body: "Center the toasts\n\nThey sit off to the right.", created_at: now }], runs: [run] });
+    if (url === "/api/v1/tickets/t_new") return reply(200, { ticket, entries: [{ id: 1, kind: "request", author: "alice", body: "Center the toasts\n\nThey sit off to the right.", created_at: now }], runs: [run], steps: ["checkout", "test", "publish"] });
     if (url === "/api/v1/runs/run_1/events?after=0") return reply(200, { cursor: events.length, events });
     throw new Error(`unexpected ${url}`);
   };
@@ -77,6 +79,12 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   await act(async () => document.querySelector('.step[data-state="succeeded"] .step-row').click());
   await eventually(() => assert.ok([...document.querySelectorAll(".step-output")].some(pane => /Cloning into/.test(pane.textContent))));
   assert.equal(document.querySelector('.step[data-state="skipped"] .step-row').disabled, true);
+  assert.deepEqual([...document.querySelectorAll(".pipeline-node")].map(node => node.getAttribute("aria-label")), ["checkout: Passed", "test: Failed", "publish: Skipped"]);
+  await act(async () => document.querySelector('.step[data-state="succeeded"] .step-row').click());
+  await act(async () => document.querySelector('.pipeline li[data-state="succeeded"] .pipeline-node').click());
+  await eventually(() => assert.ok([...document.querySelectorAll(".step-output")].some(pane => /Cloning into/.test(pane.textContent))));
+  await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent === "Run again").click());
+  await eventually(() => assert.equal(reruns, 1));
 
   // A reply for a job someone has left must not show under the next one.
   await act(async () => { window.location.hash = "#/jobs/t_old"; });

@@ -109,15 +109,16 @@ The production UI is committed, so this build does not need Node.
 ## Using it
 
 Jobs start through the [run API](docs/run-api.md), from `curl`, a tracker, a webhook or an
-automation. The web app is read-only:
+automation. The web app shows them, and can run an ended job again:
 
 | Page | What it does |
 | --- | --- |
 | Jobs | The newest jobs, with each one's repository, preset, pull request and state |
-| Job | One job: its result, its prompt, and every attempt with the output of each step |
+| Job | One job: its result, its prompt, its preset's steps drawn as a pipeline with each step's state, and every attempt with the output of each step. **Run again** starts an ended job once more |
 | Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
 
-To stop a job, `POST /machinist/jobs/{id}/cancel`.
+To stop a job, `POST /machinist/jobs/{id}/cancel`. To run an ended job again,
+`POST /machinist/jobs/{id}/rerun`.
 
 Jobs run headless, from start to finish, and never stop to ask a question. When the agent
 has to guess, it says so under **Assumptions** in the pull request. For work that needs a

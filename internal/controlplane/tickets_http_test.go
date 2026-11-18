@@ -226,3 +226,29 @@ func TestAutomationRoutes(t *testing.T) {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
 }
+
+func TestRerunRouteAndPresetSteps(t *testing.T) {
+	f := newFixture(t)
+	ticket := f.assign(t, "r1")
+	response, body := f.call(t, http.MethodGet, "/api/v1/tickets/"+ticket.ID, f.token, nil)
+	var detail struct {
+		Steps []string `json:"steps"`
+	}
+	if err := json.Unmarshal(body, &detail); err != nil || response.StatusCode != http.StatusOK || strings.Join(detail.Steps, ",") != "work" {
+		t.Fatalf("status = %d, detail = %+v, err = %v", response.StatusCode, detail, err)
+	}
+	path := "/api/v1/tickets/" + ticket.ID + "/rerun"
+	if response, _ := f.call(t, http.MethodPost, path, f.token, nil); response.StatusCode != http.StatusConflict {
+		t.Fatalf("working: status = %d", response.StatusCode)
+	}
+	if err := f.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed}); err != nil {
+		t.Fatal(err)
+	}
+	response, body = f.call(t, http.MethodPost, path, f.token, nil)
+	if response.StatusCode != http.StatusOK || decodeTicket(t, body).State != tickets.StateWorking {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	if response, _ := f.call(t, http.MethodPost, path, "", nil); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+}

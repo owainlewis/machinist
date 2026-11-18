@@ -39,6 +39,7 @@ type Server struct {
 	schedule *sources.Schedule
 	version  string
 	log      io.Writer
+	factory  *factory.Factory
 }
 
 func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Factory, version string, log io.Writer) (*Server, error) {
@@ -76,6 +77,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		intake:   intake,
 		schedule: sources.NewSchedule(store, loaded.Automations, log),
 		version:  version,
+		factory:  loaded,
 		log:      log,
 	}, nil
 }
@@ -105,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tickets", s.requireToken(s.listTickets))
 	mux.HandleFunc("GET /api/v1/tickets/{id}", s.requireToken(s.getTicket))
 	mux.HandleFunc("POST /api/v1/tickets/{id}/cancel", s.requireToken(s.cancelTicket))
+	mux.HandleFunc("POST /api/v1/tickets/{id}/rerun", s.requireToken(s.rerunTicket))
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.requireToken(s.runEvents))
 	mux.HandleFunc("GET /api/v1/ledger", s.requireToken(s.ledger))
 	mux.HandleFunc("GET /api/v1/usage", s.requireToken(s.usage))
@@ -112,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /machinist/jobs", s.requireToken(s.listJobs))
 	mux.HandleFunc("GET /machinist/jobs/{id}", s.requireToken(s.getJob))
 	mux.HandleFunc("POST /machinist/jobs/{id}/cancel", s.requireToken(s.cancelJob))
+	mux.HandleFunc("POST /machinist/jobs/{id}/rerun", s.requireToken(s.rerunJob))
 	mux.HandleFunc("POST /api/v1/runners/poll", s.requireToken(s.poll))
 	mux.HandleFunc("GET /api/v1/runners", s.requireToken(s.listRunners))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.requireToken(s.heartbeat))
