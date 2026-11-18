@@ -37,9 +37,12 @@ go build -o ./bin/machinist ./cmd/machinist
 `init` creates `~/.machinist` with a control plane config, a runner config, four presets
 and a token for a local runner.
 
-1.  In `~/.machinist/config.toml`, list the repositories jobs may work on:
+1.  In `~/.machinist/config.toml`, set `handle` to the GitHub login that owns your token,
+    which `gh api user --jq .login` prints, and list the repositories jobs may work on.
+    Commits are made under that handle:
 
     ```toml
+    handle = "your-login"
     repositories = ["owner/name"]
     ```
 
@@ -83,7 +86,7 @@ and a token for a local runner.
     ```
 
 The pull request comes from whoever owns `GH_TOKEN`. For a team, give the control plane
-and runners a bot account's token instead, and set `github.handle` to its login.
+and runners a bot account's token instead, and set `handle` to its login.
 
 The production UI is committed, so this build does not need Node.
 
