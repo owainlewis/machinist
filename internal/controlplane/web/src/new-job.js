@@ -5,10 +5,18 @@ function randomHex() {
   return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-// The run API takes a key so a retried request starts one job, not two. The
-// form makes one key when it opens, so a double click is harmless.
+// The run API takes a key so a retried request starts one job, not two.
 export function newJobKey(random = randomHex) {
   return `ui-${random()}`;
+}
+
+// keyFor keeps one key for one request. A retry of the same fields reuses the
+// last key, so a lost response cannot start a second job. Edited fields get a
+// new key, because the run API would answer an old key with the old job.
+export function keyFor(last, body, make = newJobKey) {
+  const fields = JSON.stringify(body);
+  if (last && last.fields === fields) return last;
+  return { key: make(), fields };
 }
 
 // runRequest is the body of POST /machinist/run for what the form holds.
