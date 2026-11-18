@@ -15,10 +15,9 @@ software.
 - **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.
 
 Send the work to the [run API](docs/run-api.md), or let an automation start it. The job works on its own branch, and the default preset opens one pull request.
-When a step needs a decision, it asks and the job waits.
+A job runs headless from start to finish and never stops to ask a question.
 
-Machinist is moving to one generic workflow runner. See [Direction](docs/direction.md) for where
-it is going and how far the code has got.
+See [Vision](VISION.md) for what Machinist is for, where it is, and what comes next.
 
 <a id="quick-start"></a>
 
@@ -149,7 +148,7 @@ of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
 | Guide | What it covers |
 | --- | --- |
 | [Documentation](docs/README.md) | The full list |
-| [Direction](docs/direction.md) | What Machinist is for, and what is missing |
+| [Vision](VISION.md) | What Machinist is for, where it is, and what comes next |
 | [Run API](docs/run-api.md) | Starting jobs from any system |
 | [Factory files](docs/factory.md) | Presets and automations |
 | [Runners](docs/runners.md) | Adding local and Kubernetes runners |
