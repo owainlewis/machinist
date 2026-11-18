@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/owainlewis/machinist/internal/engine"
@@ -75,6 +76,11 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, _ string) {
 		return
 	}
 	if err := s.engine.Complete(r.Context(), r.PathValue("id"), completion); err != nil {
+		// The runner retries a failed completion until it succeeds, so the job
+		// shows as running meanwhile. Say why here, where someone can fix it.
+		if status := runErrorStatus(err); status >= http.StatusInternalServerError {
+			fmt.Fprintf(s.log, "machinist: run %s finished, but recording it failed and the runner will retry: %v\n", r.PathValue("id"), err)
+		}
 		writeRunError(w, err)
 		return
 	}
@@ -82,14 +88,18 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, _ string) {
 }
 
 func writeRunError(w http.ResponseWriter, err error) {
+	writeError(w, runErrorStatus(err), err)
+}
+
+func runErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, tickets.ErrRunNotActive):
-		writeError(w, http.StatusConflict, err)
+		return http.StatusConflict
 	case errors.Is(err, tickets.ErrNotFound):
-		writeError(w, http.StatusNotFound, err)
+		return http.StatusNotFound
 	case errors.Is(err, engine.ErrInvalidCompletion):
-		writeError(w, http.StatusBadRequest, err)
+		return http.StatusBadRequest
 	default:
-		writeError(w, http.StatusInternalServerError, err)
+		return http.StatusInternalServerError
 	}
 }
