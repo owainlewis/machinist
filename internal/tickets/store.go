@@ -21,7 +21,6 @@ import (
 
 const (
 	StateWorking   = "working"
-	StateNeedsYou  = "needs_you"
 	StatePRReady   = "pr_ready"
 	StateDone      = "done"
 	StateFailed    = "failed"
@@ -53,7 +52,6 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrRunNotActive = errors.New("run is not active")
 	ErrTicketEnded  = errors.New("ticket has ended")
-	ErrNotWaiting   = errors.New("ticket is not waiting for an answer")
 	ErrNotWorking   = errors.New("ticket is not working")
 	ErrTokenExists  = errors.New("an active token with this name exists")
 )
@@ -216,9 +214,15 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	// Reviewer runs are gone. Cancel any a database from before still queues.
-	if _, err = db.Exec(`UPDATE runs SET status='cancelled' WHERE status='queued' AND kind<>'agent'`); err != nil {
-		db.Close()
-		return nil, err
+	// Jobs no longer wait for answers, so one left waiting has failed.
+	for _, statement := range []string{
+		`UPDATE runs SET status='cancelled' WHERE status='queued' AND kind<>'agent'`,
+		`UPDATE tickets SET state='failed' WHERE state='needs_you'`,
+	} {
+		if _, err = db.Exec(statement); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	if err = os.Chmod(path, 0o600); err != nil {
 		db.Close()
@@ -473,7 +477,7 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 			return err
 		}
 		if request.IssueNumber != 0 {
-			existing, err = scanTicket(tx.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND issue_number=? AND state IN ('working','needs_you','pr_ready')`, request.Repo, request.IssueNumber))
+			existing, err = scanTicket(tx.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND issue_number=? AND state IN ('working','pr_ready')`, request.Repo, request.IssueNumber))
 			if err == nil {
 				ticket = existing
 				return nil
@@ -485,7 +489,7 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 		if strings.HasPrefix(request.Source, sourceSchedulePrefix) {
 			// An automation runs one ticket at a time. Machinist no longer
 			// follows pull requests, so an open one does not hold the schedule.
-			existing, err = scanTicket(tx.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? AND state IN ('working','needs_you') LIMIT 1`, request.Source))
+			existing, err = scanTicket(tx.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? AND state=? LIMIT 1`, request.Source, StateWorking))
 			if err == nil {
 				ticket = existing
 				return nil
@@ -539,7 +543,7 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 		}
 		added = true
 		next := ticket.State
-		if ticket.State == StatePRReady || (ticket.State == StateNeedsYou && input.Kind == EntryComment) {
+		if ticket.State == StatePRReady {
 			next = StateWorking
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,updated_at=? WHERE id=?`, next, stamp(now), ticketID); err != nil {
@@ -549,30 +553,6 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 		return err
 	})
 	return ticket, added, err
-}
-
-// Answer gives a waiting ticket a person's reply.
-func (s *Store) Answer(ctx context.Context, ticketID, author, text string) (Ticket, error) {
-	var ticket Ticket
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		var err error
-		if ticket, err = loadTicket(ctx, tx, ticketID); err != nil {
-			return err
-		}
-		if ticket.State != StateNeedsYou {
-			return ErrNotWaiting
-		}
-		now := s.now()
-		if err = insertEntry(ctx, tx, ticketID, EntryComment, author, text, nil, now); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
-			return err
-		}
-		ticket, err = loadTicket(ctx, tx, ticketID)
-		return err
-	})
-	return ticket, err
 }
 
 // TicketBySourceKey finds the ticket that a piece of intake went to.
@@ -610,21 +590,13 @@ func (s *Store) LatestMessage(ctx context.Context, ticketID string) (string, err
 	return body, err
 }
 
-// WaitingQuestion is what a needs_you ticket is asking, and is empty otherwise.
-func (s *Store) WaitingQuestion(ctx context.Context, ticket Ticket) (string, error) {
-	if ticket.State != StateNeedsYou {
-		return "", nil
-	}
-	return s.LatestMessage(ctx, ticket.ID)
-}
-
 // LatestTicketBySource returns the newest ticket from a source.
 func (s *Store) LatestTicketBySource(ctx context.Context, source string) (Ticket, error) {
 	return scanTicket(s.db.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? ORDER BY rowid DESC LIMIT 1`, source))
 }
 
 func activeState(state string) bool {
-	return state == StateWorking || state == StateNeedsYou || state == StatePRReady
+	return state == StateWorking || state == StatePRReady
 }
 
 // Cancel ends a ticket. A queued run stops here. A running run is told to stop
@@ -676,7 +648,7 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 			return err
 		}
 	}
-	// The PR link goes first, so a question stays the newest thing Machinist said.
+	// The PR link goes first, so the result stays the newest thing Machinist said.
 	if transition.FirstPR != nil && transition.FirstPR.Link != "" {
 		if err := insertMessage(ctx, q, ticket, transition.PRNumber, transition.FirstPR.Link, nil, now); err != nil {
 			return err
@@ -851,9 +823,9 @@ func (s *Store) ExpireLeases(ctx context.Context) (int64, error) {
 }
 
 // CompleteRun records a run's end. For an agent run on a working ticket, decide
-// picks the next state. Waiting input then returns the ticket to working, unless
-// it ended or reached its turn limit.
-func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, maxTurns int, decide func(Ticket, string) Transition) error {
+// picks the next state. Input that arrived during the run returns a ticket with
+// an open pull request to working.
+func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decide func(Ticket, string) Transition) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		run, err := loadRun(ctx, tx, completion.RunID)
 		if err != nil {
@@ -894,17 +866,12 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, maxTu
 			return nil
 		}
 		transition := decide(ticket, status)
-		if transition.State == StateNeedsYou || transition.State == StatePRReady {
+		if transition.State == StatePRReady {
 			var waiting int
 			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM ticket_entries WHERE ticket_id=? AND consumed_by_run IS NULL AND kind IN (?,?,?,?)`, ticket.ID, EntryRequest, EntryComment, EntryReview, EntryCI).Scan(&waiting); err != nil {
 				return err
 			}
-			turns, err := turnsSinceHuman(ctx, tx, ticket.ID)
-			if err != nil {
-				return err
-			}
-			// From pr_ready the engine applies the turn limit and writes its message.
-			if waiting > 0 && (turns < maxTurns || transition.State == StatePRReady) {
+			if waiting > 0 {
 				transition.State = StateWorking
 			}
 		}
@@ -983,7 +950,7 @@ func (s *Store) RunEvents(ctx context.Context, runID string, after int64) (proto
 
 // ActiveTicketFor finds the active ticket on an issue or PR number.
 func (s *Store) ActiveTicketFor(ctx context.Context, repo string, number int) (Ticket, error) {
-	return scanTicket(s.db.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND (issue_number=? OR pr_number=?) AND state IN (?,?,?) ORDER BY created_at DESC LIMIT 1`, repo, number, number, StateWorking, StateNeedsYou, StatePRReady))
+	return scanTicket(s.db.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND (issue_number=? OR pr_number=?) AND state IN (?,?) ORDER BY created_at DESC LIMIT 1`, repo, number, number, StateWorking, StatePRReady))
 }
 
 // Cursor returns a source's stored position. The bool is false on first use.

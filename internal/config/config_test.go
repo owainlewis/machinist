@@ -24,7 +24,7 @@ func TestLoadConfigAppliesDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := loaded.Server
-	if server.Listen != "127.0.0.1:7331" || server.DefaultPreset != "default" || server.MaxTurnsWithoutHuman != 5 || server.RunDeadline() != time.Hour {
+	if server.Listen != "127.0.0.1:7331" || server.DefaultPreset != "default" || server.RunDeadline() != time.Hour {
 		t.Fatalf("server = %+v", server)
 	}
 	if server.Database != filepath.Join(directory, ".machinist", "tickets.db") || server.Factory != filepath.Join(directory, "factory") {
@@ -56,7 +56,6 @@ func TestLoadConfigReadsEveryKeyAndResolvesPaths(t *testing.T) {
   database: data/tickets.db
   factory: factory
   default_preset: maintainer
-  max_turns_without_human: 2
   run_timeout: 15m
   tls_cert: tls.crt
   tls_key: tls.key
@@ -70,7 +69,7 @@ github:
 		t.Fatal(err)
 	}
 	server := loaded.Server
-	if server.Listen != "10.0.0.5:7331" || server.DefaultPreset != "maintainer" || server.MaxTurnsWithoutHuman != 2 || server.RunDeadline() != 15*time.Minute {
+	if server.Listen != "10.0.0.5:7331" || server.DefaultPreset != "maintainer" || server.RunDeadline() != 15*time.Minute {
 		t.Fatalf("server = %+v", server)
 	}
 	for got, want := range map[string]string{server.Database: "data/tickets.db", server.Factory: "factory", server.TLSCert: "tls.crt", server.TLSKey: "tls.key"} {
@@ -91,6 +90,7 @@ func TestLoadConfigNamesOldKeys(t *testing.T) {
 		{"commands:\n  plan:\n    executor: codex\n", "commands on line 1"},
 		{"workflows:\n  factory: {}\n", "workflows"},
 		{"storage:\n  backend: local\n", "storage"},
+		{"server:\n  max_turns_without_human: 5\n", "max_turns_without_human"},
 	} {
 		path := filepath.Join(t.TempDir(), "config.yaml")
 		writeTestFile(t, path, test.body)
@@ -102,12 +102,11 @@ func TestLoadConfigNamesOldKeys(t *testing.T) {
 
 func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 	for _, test := range []struct{ body, want string }{
-		{"server:\n  max_turns_without_human: -1\n", "max_turns_without_human"},
 		{"server:\n  run_timeout: soon\n", "run_timeout"},
 		{"server:\n  run_timeout: -1m\n", "run_timeout"},
 		{"server:\n  tls_cert: tls.crt\n", "tls_cert and tls_key"},
 		{"server: [", "parse config"},
-		{"server:\n  max_turns_without_human: many\n", "parse config"},
+		{"server:\n  run_timeout: [1]\n", "parse config"},
 		{"github:\n  handle: one\n---\ngithub:\n  handle: two\n", "only one YAML document"},
 	} {
 		path := filepath.Join(t.TempDir(), "config.yaml")

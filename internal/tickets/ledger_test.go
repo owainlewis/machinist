@@ -17,8 +17,8 @@ func finishRun(t *testing.T, store *Store, ticketID string, report *protocol.Rep
 	if err != nil || claim == nil {
 		t.Fatalf("claim = %v, err = %v", claim, err)
 	}
-	err = store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: report, Tokens: &tokens, Cost: cost}, 10, func(Ticket, string) Transition {
-		return Transition{State: StateNeedsYou}
+	err = store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: report, Tokens: &tokens, Cost: cost}, func(Ticket, string) Transition {
+		return Transition{State: StatePRReady}
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestLedgerAveragesMergedHumanTickets(t *testing.T) {
 	merged := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 
 	first := createTicket(t, store, "api:first")
-	finishRun(t, store, first.ID, &protocol.Report{Outcome: "needs_input", Summary: "s", Question: "q"}, 100, &cost)
+	finishRun(t, store, first.ID, &protocol.Report{Outcome: "pr_ready", Summary: "s"}, 100, &cost)
 	if _, _, err := store.AddInput(ctx, first.ID, Input{Kind: EntryComment, Author: "alice", Body: "answer"}); err != nil {
 		t.Fatal(err)
 	}
@@ -61,18 +61,18 @@ func TestLedgerAveragesMergedHumanTickets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ledger.MergedPRs != 2 || ledger.Questions != 0.5 || ledger.FeedbackRounds != 0.5 || ledger.HumanCommits != 2 || ledger.Tokens != 300 || ledger.Cost == nil || *ledger.Cost != 2 {
+	if ledger.MergedPRs != 2 || ledger.FeedbackRounds != 0.5 || ledger.HumanCommits != 2 || ledger.Tokens != 300 || ledger.Cost == nil || *ledger.Cost != 2 {
 		t.Fatalf("ledger = %+v", ledger)
 	}
 	if later, _ := store.Ledger(ctx, "owner/repo", merged.Add(time.Minute)); later.MergedPRs != 1 || later.HumanCommits != 1 || later.Cost != nil {
 		t.Fatalf("later = %+v", later)
 	}
-	if other, _ := store.Ledger(ctx, "other/repo", time.Time{}); other.MergedPRs != 0 || other.Questions != 0 {
+	if other, _ := store.Ledger(ctx, "other/repo", time.Time{}); other.MergedPRs != 0 {
 		t.Fatalf("other = %+v", other)
 	}
 
 	figures, err := store.TicketFigures(ctx, first.ID)
-	if err != nil || figures.Questions != 1 || figures.FeedbackRounds != 1 || figures.Tokens != 400 || *figures.HumanCommits != 3 || !figures.Merged || *figures.Cost != 4 {
+	if err != nil || figures.FeedbackRounds != 1 || figures.Tokens != 400 || *figures.HumanCommits != 3 || !figures.Merged || *figures.Cost != 4 {
 		t.Fatalf("figures = %+v, err = %v", figures, err)
 	}
 	if _, err := store.TicketFigures(ctx, "t_missing"); err != ErrNotFound {

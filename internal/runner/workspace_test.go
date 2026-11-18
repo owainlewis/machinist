@@ -145,19 +145,13 @@ func TestAStepMayIgnoreThePrompt(t *testing.T) {
 	}
 }
 
-func TestQuestionEndsTheRunAsNeedsInput(t *testing.T) {
+func TestAQuestionFileDoesNotStopTheRun(t *testing.T) {
 	result, _ := run(t, stepsRequest(
-		Step{Name: "plan", Run: `printf 'Which database?\n' > "$MACHINIST_DIR/question.md"`},
-		Step{Name: "build", Run: "exit 1"},
+		Step{Name: "plan", Run: `printf 'Which database?\n' > "$MACHINIST_DIR/result.md"`},
+		Step{Name: "build", Run: `printf 'Built.' > "$MACHINIST_DIR/result.md"`},
 	))
-	if result.State != StateSucceeded || result.Report == nil || result.Report.Outcome != protocol.OutcomeNeedsInput || result.Report.Question != "Which database?" {
+	if result.State != StateSucceeded || result.Report == nil || result.Report.Summary != "Built." || result.Stages[1].State != string(StateSucceeded) {
 		t.Fatalf("result = %+v", result)
-	}
-	if err := result.Report.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	if result.Stages[1].State != protocol.StageSkipped {
-		t.Fatalf("stages = %+v", result.Stages)
 	}
 }
 
@@ -179,7 +173,7 @@ func TestControlFilesMustBeSmallRegularFiles(t *testing.T) {
 	if result.State != StateFailed || !strings.Contains(result.Error, "not a regular file") {
 		t.Fatalf("result = %+v", result)
 	}
-	result, _ = run(t, stepsRequest(Step{Name: "big", Run: `head -c 70000 /dev/zero | tr '\0' x > "$MACHINIST_DIR/question.md"`}))
+	result, _ = run(t, stepsRequest(Step{Name: "big", Run: `head -c 70000 /dev/zero | tr '\0' x > "$MACHINIST_DIR/result.md"`}))
 	if result.State != StateFailed || !strings.Contains(result.Error, "larger than") {
 		t.Fatalf("result = %+v", result)
 	}

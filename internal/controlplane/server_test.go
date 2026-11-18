@@ -53,7 +53,6 @@ func testConfig() config.Config {
 	var loaded config.Config
 	loaded.Server.Listen = "127.0.0.1:0"
 	loaded.Server.DefaultPreset = "default"
-	loaded.Server.MaxTurnsWithoutHuman = 3
 	loaded.GitHub.Handle = "machinist-bot"
 	return loaded
 }

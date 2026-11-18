@@ -24,7 +24,6 @@ func newEngine(t *testing.T) *Engine {
 	return New(Options{
 		Store:      store,
 		Factory:    &factory.Factory{Presets: map[string]factory.Preset{"default": testPreset()}},
-		MaxTurns:   3,
 		RunTimeout: time.Hour,
 		Handle:     "machinist-bot",
 	})
@@ -84,8 +83,8 @@ func lastMessage(t *testing.T, e *Engine, id string) string {
 	return ""
 }
 
-func succeed(outcome, summary, question string) protocol.Completion {
-	return protocol.Completion{State: tickets.RunSucceeded, Report: &protocol.Report{Outcome: outcome, Summary: summary, Question: question}}
+func succeed(outcome, summary string) protocol.Completion {
+	return protocol.Completion{State: tickets.RunSucceeded, Report: &protocol.Report{Outcome: outcome, Summary: summary}}
 }
 
 func TestAssignBuildsTheRunRequest(t *testing.T) {
@@ -154,16 +153,15 @@ func TestReportRows(t *testing.T) {
 		want       string
 		message    string
 	}{
-		{"pr ready with PR", succeed("pr_ready", "Opened", ""), found, tickets.StatePRReady, ""},
-		{"pr ready without PR", succeed("pr_ready", "Opened", ""), nil, tickets.StateNeedsYou, "Reported a PR but none is open for this branch."},
-		{"pr ready with only a closed PR", succeed("pr_ready", "Opened", ""), &PR{Number: 42, Closed: true}, tickets.StateNeedsYou, "Reported a PR but none is open for this branch."},
-		{"needs input", succeed("needs_input", "Stuck", "Which API?"), nil, tickets.StateNeedsYou, "Which API?"},
-		{"no change", succeed("no_change", "Nothing to do", ""), nil, tickets.StateDone, "Nothing to do"},
-		{"failed report", succeed("failed", "Tests cannot run", ""), nil, tickets.StateNeedsYou, "Tests cannot run"},
-		{"no report", protocol.Completion{State: tickets.RunSucceeded}, nil, tickets.StateNeedsYou, "The run ended without a report: succeeded"},
-		{"malformed report", succeed("complete", "old", ""), nil, tickets.StateNeedsYou, "The run ended without a report: report outcome"},
-		{"run failed", protocol.Completion{State: tickets.RunFailed, Error: "exit 7"}, nil, tickets.StateNeedsYou, "The run ended without a report: exit 7"},
-		{"deadline", protocol.Completion{State: tickets.RunTimedOut, Error: "command exceeded timeout"}, nil, tickets.StateNeedsYou, "The run ended without a report: command exceeded"},
+		{"pr ready with PR", succeed("pr_ready", "Opened"), found, tickets.StatePRReady, ""},
+		{"pr ready without PR", succeed("pr_ready", "Opened"), nil, tickets.StateFailed, "Reported a PR but none is open for this branch."},
+		{"pr ready with only a closed PR", succeed("pr_ready", "Opened"), &PR{Number: 42, Closed: true}, tickets.StateFailed, "Reported a PR but none is open for this branch."},
+		{"no change", succeed("no_change", "Nothing to do"), nil, tickets.StateDone, "Nothing to do"},
+		{"failed report", succeed("failed", "Tests cannot run"), nil, tickets.StateFailed, "Tests cannot run"},
+		{"no report", protocol.Completion{State: tickets.RunSucceeded}, nil, tickets.StateFailed, "The run ended without a report: succeeded"},
+		{"malformed report", succeed("complete", "old"), nil, tickets.StateFailed, "The run ended without a report: report outcome"},
+		{"run failed", protocol.Completion{State: tickets.RunFailed, Error: "exit 7"}, nil, tickets.StateFailed, "The run ended without a report: exit 7"},
+		{"deadline", protocol.Completion{State: tickets.RunTimedOut, Error: "command exceeded timeout"}, nil, tickets.StateFailed, "The run ended without a report: command exceeded"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			e := newEngine(t)
@@ -188,7 +186,7 @@ func TestReportRows(t *testing.T) {
 }
 
 func TestAutomationNeverWaitsForAPerson(t *testing.T) {
-	for _, completion := range []protocol.Completion{succeed("needs_input", "Stuck", "Which?"), succeed("failed", "Broken", ""), succeed("pr_ready", "Opened", ""), {State: tickets.RunFailed, Error: "exit 1"}} {
+	for _, completion := range []protocol.Completion{succeed("failed", "Broken"), succeed("pr_ready", "Opened"), {State: tickets.RunFailed, Error: "exit 1"}} {
 		e := newEngine(t)
 		ticket := newTicket(t, e, "schedule:nightly")
 		request := assignRun(t, e)
@@ -208,10 +206,10 @@ func TestCompleteRejectsUnknownStateAndInactiveRuns(t *testing.T) {
 	if err := e.Complete(t.Context(), request.RunID, protocol.Completion{State: "exploded"}); !errors.Is(err, ErrInvalidCompletion) {
 		t.Fatalf("error = %v", err)
 	}
-	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Done", "")); err != nil {
+	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Done")); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Done", "")); !errors.Is(err, tickets.ErrRunNotActive) {
+	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Done")); !errors.Is(err, tickets.ErrRunNotActive) {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -228,13 +226,13 @@ func TestPRLookupFailureLeavesRunActiveSoRunnerRetries(t *testing.T) {
 		return nil, nil
 	}
 	request := assignRun(t, e)
-	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Done", "")); err == nil {
+	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Done")); err == nil {
 		t.Fatal("lookup failure hidden")
 	}
 	if got := state(t, e, ticket.ID); got != tickets.StateWorking {
 		t.Fatalf("state = %s", got)
 	}
-	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Done", "")); err != nil {
+	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Done")); err != nil {
 		t.Fatal(err)
 	}
 	if got := state(t, e, ticket.ID); got != tickets.StateDone {
@@ -262,89 +260,58 @@ func TestStoppedRunnerRequeuesWithoutBotheringAPerson(t *testing.T) {
 	}
 }
 
-func TestTurnLimitStopsAndHumanReplyRestartsCount(t *testing.T) {
+func TestALostRunnerIsRetriedAtMostThreeTimes(t *testing.T) {
 	e := newEngine(t)
 	ticket := newTicket(t, e, "api")
-	for index := range e.MaxTurns {
+	for range maxAttempts {
 		request := assignRun(t, e)
-		completion := protocol.Completion{State: tickets.RunCancelled}
-		if index == e.MaxTurns-1 {
-			if _, _, err := e.Store.AddInput(t.Context(), ticket.ID, tickets.Input{Kind: tickets.EntryCI, Author: "github", Body: "CI failed", SourceKey: "ci:1"}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := e.Complete(t.Context(), request.RunID, completion); err != nil {
+		if err := e.Complete(t.Context(), request.RunID, protocol.Completion{State: tickets.RunCancelled}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got := state(t, e, ticket.ID); got != tickets.StateNeedsYou {
+	if got := state(t, e, ticket.ID); got != tickets.StateFailed {
 		t.Fatalf("state = %s", got)
 	}
-	if message := lastMessage(t, e, ticket.ID); !strings.Contains(message, "limit of 3 runs") {
+	if message := lastMessage(t, e, ticket.ID); !strings.Contains(message, "Stopped after 3 attempts") {
 		t.Fatalf("message = %q", message)
 	}
-	if _, _, err := e.Store.AddInput(t.Context(), ticket.ID, tickets.Input{Kind: tickets.EntryComment, Author: "alice", Body: "Keep going"}); err != nil {
-		t.Fatal(err)
-	}
-	if request := assignRun(t, e); !strings.Contains(prompt(t, request), "Keep going") {
-		t.Fatalf("prompt = %s", prompt(t, request))
-	}
 }
 
-func TestTurnLimitMessageIsTheLastReport(t *testing.T) {
+func TestEveryJobEndsDoneOrFailed(t *testing.T) {
+	for _, outcome := range []string{"pr_ready", "no_change", "failed"} {
+		e := newEngine(t)
+		e.FindPR = func(context.Context, string, string) (*PR, error) { return &PR{Number: 1}, nil }
+		ticket := newTicket(t, e, "api")
+		request := assignRun(t, e)
+		if err := e.Complete(t.Context(), request.RunID, succeed(outcome, "Summary")); err != nil {
+			t.Fatal(err)
+		}
+		if got := state(t, e, ticket.ID); got == tickets.StateWorking {
+			t.Fatalf("%s: the job is still working", outcome)
+		}
+	}
 	e := newEngine(t)
-	e.MaxTurns = 1
-	ticket := newTicket(t, e, "api")
+	newTicket(t, e, "api")
 	request := assignRun(t, e)
-	if err := e.Store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateWorking, Report: "failed: Could not build"}); err != nil {
+	if err := e.Complete(t.Context(), request.RunID, succeed("needs_input", "Which API?")); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Complete(t.Context(), request.RunID, protocol.Completion{State: tickets.RunCancelled}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.Tick(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	message := lastMessage(t, e, ticket.ID)
-	for _, want := range []string{"limit of 1 runs", "failed: Could not build"} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("missing %q in %q", want, message)
-		}
+	if message := lastMessage(t, e, request.TicketID); !strings.Contains(message, "report outcome \"needs_input\" is not one of") {
+		t.Fatalf("message = %q", message)
 	}
 }
 
-func TestFollowUpRunSeesEarlierReportAndAnswer(t *testing.T) {
-	e := newEngine(t)
-	ticket := newTicket(t, e, "api")
-	first := assignRun(t, e)
-	if err := e.Complete(t.Context(), first.RunID, succeed("needs_input", "Stuck on auth", "Which API?")); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := e.Store.AddInput(t.Context(), ticket.ID, tickets.Input{Kind: tickets.EntryComment, Author: "alice", Body: "Use the v2 API"}); err != nil {
-		t.Fatal(err)
-	}
-	second := assignRun(t, e)
-	if second.Branch != first.Branch {
-		t.Fatalf("branch changed: %s", second.Branch)
-	}
-	for _, want := range []string{"THE REQUEST", "Stuck on auth", "Which API?", "Use the v2 API"} {
-		if !strings.Contains(prompt(t, second), want) {
-			t.Fatalf("missing %q in:\n%s", want, prompt(t, second))
-		}
-	}
-}
-
-func TestMissingPresetAsksForAPerson(t *testing.T) {
+func TestMissingPresetFailsTheJob(t *testing.T) {
 	e := newEngine(t)
 	ticket := newTicket(t, e, "api")
 	delete(e.Factory.Presets, "default")
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got := state(t, e, ticket.ID); got != tickets.StateNeedsYou {
+	if got := state(t, e, ticket.ID); got != tickets.StateFailed {
 		t.Fatalf("state = %s", got)
 	}
 	if message := lastMessage(t, e, ticket.ID); !strings.Contains(message, "default") {
@@ -352,7 +319,7 @@ func TestMissingPresetAsksForAPerson(t *testing.T) {
 	}
 }
 
-func TestPresetRemovedAfterQueueingAsksForAPerson(t *testing.T) {
+func TestPresetRemovedAfterQueueingFailsTheJob(t *testing.T) {
 	e := newEngine(t)
 	ticket := newTicket(t, e, "api")
 	if err := e.Tick(t.Context()); err != nil {
@@ -362,7 +329,7 @@ func TestPresetRemovedAfterQueueingAsksForAPerson(t *testing.T) {
 	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}); err != nil || request != nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
-	if got := state(t, e, ticket.ID); got != tickets.StateNeedsYou {
+	if got := state(t, e, ticket.ID); got != tickets.StateFailed {
 		t.Fatalf("state = %s", got)
 	}
 }

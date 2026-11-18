@@ -9,30 +9,25 @@ import (
 )
 
 const (
-	OutcomePRReady    = "pr_ready"
-	OutcomeNeedsInput = "needs_input"
-	OutcomeNoChange   = "no_change"
-	OutcomeFailed     = "failed"
+	OutcomePRReady  = "pr_ready"
+	OutcomeNoChange = "no_change"
+	OutcomeFailed   = "failed"
 )
 
-// Report is the one result an agent returns at the end of every run.
+// Report is the one result of every run. A run never asks a person anything.
 type Report struct {
-	Outcome  string `json:"outcome"`
-	Summary  string `json:"summary"`
-	Question string `json:"question,omitempty"`
+	Outcome string `json:"outcome"`
+	Summary string `json:"summary"`
 }
 
 func (r Report) Validate() error {
 	switch r.Outcome {
-	case OutcomePRReady, OutcomeNeedsInput, OutcomeNoChange, OutcomeFailed:
+	case OutcomePRReady, OutcomeNoChange, OutcomeFailed:
 	default:
-		return fmt.Errorf("report outcome %q is not one of pr_ready, needs_input, no_change or failed", r.Outcome)
+		return fmt.Errorf("report outcome %q is not one of pr_ready, no_change or failed", r.Outcome)
 	}
 	if strings.TrimSpace(r.Summary) == "" {
 		return errors.New("report summary is empty")
-	}
-	if r.Outcome == OutcomeNeedsInput && strings.TrimSpace(r.Question) == "" {
-		return errors.New("report outcome needs_input requires a question")
 	}
 	return nil
 }

@@ -12,6 +12,8 @@
   - `default` clones the repository, runs Claude Code and opens a pull request. It never merges.
   - `coding` plans, implements, tests, reviews, fixes and tests again, then opens a draft pull request.
   - `maintainer` may merge, and is used by the merge automation.
+  - `spec` clones the repository and returns a spec as the job's result, with the open
+    decisions and a recommended answer for each. It opens no pull request.
   - `hello` clones nothing and runs no agent. It proves a runner works.
 
 `factory/automation-templates/` holds automations that are not switched on. To

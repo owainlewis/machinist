@@ -19,7 +19,7 @@ while [ ! -f ` + output + `/release ]; do sleep 0.05; done
 
 // CUJ 8.
 func TestControlPlaneRestartDoesNotDisturbARun(t *testing.T) {
-	s := startWith(t, options{claude: pausingScript, maxTurns: 5})
+	s := startWith(t, options{claude: pausingScript})
 	ticket := s.createTicket(t)
 	eventually(t, "the work step to start", func() bool {
 		_, err := os.Stat(filepath.Join(s.output, "started"))

@@ -5,7 +5,6 @@ import { formatDuration, jobState, newestFirst, prLink, runningTickets } from ".
 test("ticket states read as the run API's job states", () => {
   assert.equal(jobState({ state: "working" }), "queued");
   assert.equal(jobState({ state: "working" }, true), "running");
-  assert.equal(jobState({ state: "needs_you" }), "needs_input");
   assert.equal(jobState({ state: "pr_ready" }), "done");
   assert.equal(jobState({ state: "done" }), "done");
   assert.equal(jobState({ state: "cancelled" }), "cancelled");

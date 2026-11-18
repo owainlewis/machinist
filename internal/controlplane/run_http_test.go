@@ -83,7 +83,6 @@ func TestJobStateFollowsTheTicket(t *testing.T) {
 		{tickets.StateWorking, nil, JobQueued},
 		{tickets.StateWorking, ended, JobQueued},
 		{tickets.StateWorking, running, JobRunning},
-		{tickets.StateNeedsYou, ended, JobNeedsInput},
 		{tickets.StatePRReady, ended, JobDone},
 		{tickets.StateDone, ended, JobDone},
 		{tickets.StateFailed, ended, JobFailed},
@@ -95,7 +94,7 @@ func TestJobStateFollowsTheTicket(t *testing.T) {
 	}
 }
 
-func TestJobRoutesGetListInputAndCancel(t *testing.T) {
+func TestJobRoutesGetListAndCancel(t *testing.T) {
 	f := newFixture(t)
 	created := f.run(t, "k1")
 
@@ -115,20 +114,9 @@ func TestJobRoutesGetListInputAndCancel(t *testing.T) {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
 
-	if response, _ := f.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/input", f.token, map[string]string{"text": "Postgres"}); response.StatusCode != http.StatusConflict {
-		t.Fatalf("input while not waiting: status = %d", response.StatusCode)
-	}
-	f.ask(t, created.ID)
-	response, body = f.call(t, http.MethodGet, "/machinist/jobs/"+created.ID, f.token, nil)
-	if asked := decodeJob(t, body); asked.State != JobNeedsInput || asked.Question != "Which database?" {
-		t.Fatalf("job = %+v", asked)
-	}
-	if response, _ := f.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/input", f.token, map[string]string{"text": " "}); response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("empty input: status = %d", response.StatusCode)
-	}
-	response, body = f.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/input", f.token, map[string]string{"text": "Postgres"})
-	if answered := decodeJob(t, body); response.StatusCode != http.StatusOK || answered.State != JobQueued {
-		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	// Jobs never wait for a person, so there is nothing to answer.
+	if response, _ := f.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/input", f.token, map[string]string{"text": "Postgres"}); response.StatusCode == http.StatusOK {
+		t.Fatalf("input: status = %d", response.StatusCode)
 	}
 
 	response, body = f.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/cancel", f.token, nil)

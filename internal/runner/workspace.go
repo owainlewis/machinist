@@ -41,8 +41,7 @@ type WorkspaceOptions struct {
 
 // Workspace is an empty directory, the control directory beside it and the
 // complete environment of the steps. The control directory holds prompt.md and
-// the factory's prompts/ and scripts/, and a step can leave question.md or
-// result.md there. scripts/ is first on PATH, so a step runs a script by name. It is outside the
+// the factory's prompts/ and scripts/, and a step can leave result.md there. scripts/ is first on PATH, so a step runs a script by name. It is outside the
 // workspace, so a clone into the workspace never commits it.
 type Workspace struct {
 	Directory   string
@@ -150,8 +149,8 @@ func stepEnvironment(options WorkspaceOptions, control string) ([]string, error)
 
 // RunSteps runs the steps of a request in order in a prepared workspace. Each
 // step is a new process, and only the workspace carries over. The run ends at
-// the first step that exits non-zero or times out, or at a step that writes
-// question.md in the control directory. The run timeout covers all steps together.
+// the first step that exits non-zero or times out. No step can wait for a
+// person. The run timeout covers all steps together.
 func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, dataDirectory string) RunResult {
 	if !ValidRunID(request.RunID) {
 		return RunResult{State: StateFailed, Error: fmt.Sprintf("invalid run ID %q", request.RunID)}
@@ -190,17 +189,6 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 				entry.Error = err.Error()
 			}
 			output.Error = fmt.Sprintf("step %s: %s", step.Name, entry.Error)
-			break
-		}
-		question, err := readControlFile(workspace.Control, "question.md")
-		if err != nil {
-			output.State, entry.Error = StateFailed, err.Error()
-			output.Error = fmt.Sprintf("step %s: %s", step.Name, entry.Error)
-			break
-		}
-		if question != "" {
-			entry.Outcome = protocol.OutcomeNeedsInput
-			output.Report = &protocol.Report{Outcome: protocol.OutcomeNeedsInput, Summary: "Step " + step.Name + " asked a question.", Question: question}
 			break
 		}
 	}
