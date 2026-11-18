@@ -51,7 +51,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	root.PersistentFlags().StringVar(&options.configPath, "config", "", "configuration file")
+	root.PersistentFlags().StringVar(&options.configPath, "config", "", "configuration file (default config.yaml or runner.yaml in the current directory)")
 	root.AddCommand(newInitCommand(options))
 	root.AddCommand(newStartCommand(options))
 	root.AddCommand(newRunnerCommand(options))

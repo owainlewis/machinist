@@ -23,13 +23,14 @@ func TestBinaryPrintsVersion(t *testing.T) {
 
 func TestBinaryInitWritesConfiguration(t *testing.T) {
 	binary := buildBinary(t)
-	home := t.TempDir()
+	directory := t.TempDir()
 	command := exec.Command(binary, "init")
-	command.Env = append(os.Environ(), "HOME="+home)
+	command.Dir = directory
+	command.Env = append(os.Environ(), "HOME="+t.TempDir())
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("init: %v: %s", err, output)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".machinist", "config.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(directory, "config.yaml")); err != nil {
 		t.Fatal(err)
 	}
 }

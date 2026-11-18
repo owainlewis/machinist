@@ -1,28 +1,50 @@
 # Configuration
 
 There are three places to configure Machinist: [factory files](factory.md), the control
-plane's `config.toml` and each runner's `runner.toml`. `machinist init` installs commented
-copies in `~/.machinist`. An unknown key stops startup and names the key.
+plane's `config.yaml` and each runner's `runner.yaml`. All of them are YAML. An unknown key
+stops startup and names the key and its line. A file left over in TOML stops startup too,
+and says to rewrite it as YAML.
 
-## Control plane: config.toml
+Machinist reads `config.yaml` or `runner.yaml` from the current directory, or the file
+`--config` names. Keep that directory in git with the factory, and start Machinist from it.
+`machinist init [directory]` writes commented copies there.
+
+Relative paths in either file are read from the file's own directory. By default
+everything Machinist writes goes under `.machinist/` beside the config: the database, the
+runner token and run workspaces. `init` adds `.machinist/` to `.gitignore`. Point
+`database` or `data_directory` elsewhere, such as `/var/lib/machinist`, to keep state off
+the checkout. Secrets never go in these files: tokens come from the environment or a token
+file.
+
+```text
+my-machinist/          a git repository
+  config.yaml          the control plane
+  runner.yaml          a runner
+  factory/presets/     presets
+  factory/prompts/     prompts
+  factory/scripts/     scripts
+  .machinist/          state, ignored by git
+```
+
+## Control plane: config.yaml
 
 The control plane reads its GitHub token from `GH_TOKEN`. It must belong to `github.handle`,
 or startup stops.
 
-```toml
-[server]
-listen = "127.0.0.1:7331"
-database = "~/.machinist/server/tickets.db"
-factory = "~/.machinist/factory"
-default_preset = "default"
-max_turns_without_human = 5
-run_timeout = "60m"
-# tls_cert = "/etc/machinist/tls.crt"
-# tls_key = "/etc/machinist/tls.key"
+```yaml
+server:
+  listen: 127.0.0.1:7331
+  database: .machinist/tickets.db
+  factory: factory
+  default_preset: default
+  max_turns_without_human: 5
+  run_timeout: 60m
+  # tls_cert: /etc/machinist/tls.crt
+  # tls_key: /etc/machinist/tls.key
 
-[github]
-handle = "machinist-bot"
-repositories = ["owner/name"]
+github:
+  handle: machinist-bot
+  repositories: [owner/name]
 ```
 
 | Key | Meaning |
@@ -37,7 +59,7 @@ repositories = ["owner/name"]
 | `github.handle` | The bot's login. Use a dedicated account |
 | `github.repositories` | The repositories Machinist serves |
 
-## Runner: runner.toml
+## Runner: runner.yaml
 
 See [Runners](runners.md) for each type.
 

@@ -4,33 +4,35 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 )
 
-const defaultRunnerDirName = ".machinist/runner"
+const (
+	defaultRunnerData  = StateDir + "/runner"
+	defaultRunnerToken = StateDir + "/runner.token"
+)
 
 var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Runner is the configuration of one machine or cluster that runs steps.
 type Runner struct {
-	Kubernetes *Kubernetes `toml:"kubernetes"`
+	Kubernetes *Kubernetes `yaml:"kubernetes"`
 	// Env names the variables passed from the runner's own environment to
 	// every step, such as ANTHROPIC_API_KEY or LINEAR_API_KEY.
-	Env []string `toml:"env"`
+	Env []string `yaml:"env"`
 	// Login gives steps the OS user's home, so a tool can use an existing login.
-	Login         bool   `toml:"login"`
-	ControlPlane  string `toml:"control_plane"`
-	TokenFile     string `toml:"token_file"`
-	DataDirectory string `toml:"data_directory"`
-	Slots         int    `toml:"slots"`
+	Login         bool   `yaml:"login"`
+	ControlPlane  string `yaml:"control_plane"`
+	TokenFile     string `yaml:"token_file"`
+	DataDirectory string `yaml:"data_directory"`
+	Slots         int    `yaml:"slots"`
 	configDir     string
 }
 
 func LoadRunner(path string) (Runner, error) {
 	if path == "" {
-		defaultPath, err := defaultConfigPath("runner.toml")
+		defaultPath, err := defaultConfigPath("runner.yaml")
 		if err != nil {
 			return Runner{}, err
 		}
@@ -68,7 +70,7 @@ func applyRunnerDefaults(runner Runner) (Runner, error) {
 		return Runner{}, errors.New("control_plane must be an http or https URL")
 	}
 	if runner.TokenFile == "" {
-		return Runner{}, errors.New("token_file is required")
+		runner.TokenFile = filepath.FromSlash(defaultRunnerToken)
 	}
 	runner.TokenFile, err = resolveConfigPath(runner.TokenFile, runner.configDir)
 	if err != nil {
@@ -81,11 +83,7 @@ func applyRunnerDefaults(runner Runner) (Runner, error) {
 		return Runner{}, errors.New("slots must be positive")
 	}
 	if runner.DataDirectory == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return Runner{}, fmt.Errorf("find user home directory: %w", err)
-		}
-		runner.DataDirectory = filepath.Join(home, filepath.FromSlash(defaultRunnerDirName))
+		runner.DataDirectory = filepath.FromSlash(defaultRunnerData)
 	}
 	runner.DataDirectory, err = resolveConfigPath(runner.DataDirectory, runner.configDir)
 	if err != nil {

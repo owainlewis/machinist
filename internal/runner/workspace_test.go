@@ -73,6 +73,37 @@ func TestStepsShareTheWorkspaceAndSeeTheJob(t *testing.T) {
 	}
 }
 
+func TestStepsRunFactoryScriptsByNameAndReadItsPrompts(t *testing.T) {
+	request := stepsRequest(Step{Name: "greet", Run: `greet.sh world > out`})
+	request.Files = map[string]string{
+		"scripts/greet.sh":    "#!/bin/sh\nprintf '%s, %s' \"$(cat \"$MACHINIST_DIR/prompts/greeting.md\")\" \"$1\"\n",
+		"prompts/greeting.md": "Hello",
+	}
+	result, workspace := run(t, request)
+	if result.State != StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+	out, err := os.ReadFile(filepath.Join(workspace.Directory, "out"))
+	if err != nil || string(out) != "Hello, world" {
+		t.Fatalf("out = %q, err = %v", out, err)
+	}
+	info, err := os.Stat(filepath.Join(workspace.Control, "prompts", "greeting.md"))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("prompt = %v, err = %v", info, err)
+	}
+}
+
+func TestPrepareWorkspaceRejectsFactoryFilesOutsideItsDirectories(t *testing.T) {
+	for _, path := range []string{"../escape.sh", "scripts/../../escape.sh", "other/file", "scripts/nested/file", "prompts/"} {
+		request := stepsRequest()
+		request.Files = map[string]string{path: "x"}
+		root := t.TempDir()
+		if _, err := PrepareWorkspace(WorkspaceOptions{Request: request, Root: root, Home: filepath.Join(root, "home")}); err == nil || !strings.Contains(err.Error(), "invalid factory file") {
+			t.Fatalf("%q: error = %v", path, err)
+		}
+	}
+}
+
 func TestResultFileIsTheSummary(t *testing.T) {
 	result, _ := run(t, stepsRequest(Step{Name: "ship", Run: `printf 'Opened https://example.test/pull/1\n' > "$MACHINIST_DIR/result.md"`}))
 	if result.Report == nil || result.Report.Summary != "Opened https://example.test/pull/1" {

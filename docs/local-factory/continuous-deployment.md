@@ -73,7 +73,7 @@ backup; the completed disk snapshot is.
 
 `deploy.py` only updates images. Before the first release, apply
 `deploy/kubernetes/control-plane-gke` once and create the Secrets listed in
-[Runners](../runners.md#running-the-runner-in-the-cluster). Put `config.toml` and the factory
+[Runners](../runners.md#running-the-runner-in-the-cluster). Put `config.yaml` and the factory
 directory on the state volume, with `listen` on a Pod address such as `0.0.0.0:7341`.
 
 ## Failure and rollback

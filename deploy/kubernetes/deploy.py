@@ -56,9 +56,9 @@ def preserved(before, after):
 
 
 def with_runner_image(text, image):
-    updated,count=re.subn(r'(?m)^image[ \t]*=.*$','image = '+json.dumps(image),text)
+    updated,count=re.subn(r'(?m)^([ \t]+)image:[ \t].*$',lambda match:match.group(1)+'image: '+json.dumps(image),text)
     if count!=1:
-        raise ValueError('Expected one image setting in runner.toml')
+        raise ValueError('Expected one image setting in runner.yaml')
     return updated
 
 
@@ -131,7 +131,7 @@ class Deployment:
         finally:
             self.k('delete','pod',name,'--ignore-not-found=true','--wait=true','--timeout=180s')
         config=self.get('configmap','machinist-runner-config')
-        self.k('patch','configmap/machinist-runner-config','--type=merge','-p',json.dumps({'data':{'runner.toml':with_runner_image(config['data']['runner.toml'],runner)}}))
+        self.k('patch','configmap/machinist-runner-config','--type=merge','-p',json.dumps({'data':{'runner.yaml':with_runner_image(config['data']['runner.yaml'],runner)}}))
         self.k('set','image','deployment/machinist-egress','proxy='+runner,namespace='machinist-runners')
         self.k('rollout','status','deployment/machinist-egress','--timeout=300s',namespace='machinist-runners')
         self.k('set','image','deployment/machinist-control-plane','machinist='+control_plane)

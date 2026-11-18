@@ -72,7 +72,8 @@ for agent_command in codex claude; do
   ln -sfn "$agent_path" "/usr/local/bin/$agent_command"
 done
 
-runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist init
+# The services run from the home directory, which holds the config and factory.
+runuser -u "$runtime_user" -- env HOME="$runtime_home" bash -c 'cd && machinist init'
 
 service_base_url="https://raw.githubusercontent.com/owainlewis/machinist/$machinist_version/deploy/systemd"
 service_tmp_dir=$(mktemp -d)
@@ -96,9 +97,9 @@ cat <<'EOF'
 VM bootstrap complete.
 
 Next steps:
-  1. Run `su - machinist`, then edit ~/.machinist/config.toml and set github.handle
+  1. Run `su - machinist`, then edit ~/config.yaml and set github.handle
      and github.repositories.
-  2. Edit ~/.machinist/runner.toml and choose the credential for each harness.
+  2. Edit ~/runner.yaml and choose the credential for each harness.
   3. Exit back to root. Put GH_TOKEN, for the bot account, and those credentials in
      /etc/machinist/runner.env. Put GH_TOKEN in /etc/machinist/control-plane.env.
      Make both files readable only by root.

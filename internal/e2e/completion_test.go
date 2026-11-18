@@ -16,7 +16,7 @@ import (
 // runner's retry records it.
 func TestAFailedCompletionIsLoggedAndRetried(t *testing.T) {
 	s := startWith(t, options{factory: func(t *testing.T, directory string) {
-		writeFile(t, filepath.Join(directory, "presets", "quick.toml"), "timeout = \"1m\"\n\n[[steps]]\nname = \"quick\"\nrun = \"true\"\n", 0o600)
+		writeFile(t, filepath.Join(directory, "presets", "quick.yaml"), "timeout: 1m\nsteps:\n  - name: quick\n    run: \"true\"\n", 0o600)
 	}})
 	s.github.FailOn("pr list", "HTTP 401: Bad credentials")
 	status, body := s.call(t, http.MethodPost, "/machinist/run", map[string]any{

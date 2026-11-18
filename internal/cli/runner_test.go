@@ -28,8 +28,8 @@ func writeConfigFile(t *testing.T, directory, name, body string) string {
 func writeStartConfig(t *testing.T) string {
 	t.Helper()
 	directory := t.TempDir()
-	writeConfigFile(t, directory, "factory/presets/default.toml", "[[steps]]\nname = \"work\"\nrun = \"true\"\n")
-	return writeConfigFile(t, directory, "config.toml", "[server]\nlisten = \"127.0.0.1:0\"\ndatabase = \"tickets.db\"\nfactory = \"factory\"\n\n[github]\nhandle = \"machinist-bot\"\n")
+	writeConfigFile(t, directory, "factory/presets/default.yaml", "steps:\n  - name: work\n    run: \"true\"\n")
+	return writeConfigFile(t, directory, "config.yaml", "server:\n  listen: 127.0.0.1:0\n  database: tickets.db\n  factory: factory\n\ngithub:\n  handle: machinist-bot\n")
 }
 
 type cancelOnListen struct {
@@ -61,17 +61,17 @@ func TestStartReportsListeningAfterBindAndStopsOnCancellation(t *testing.T) {
 
 func TestStartRejectsInvalidFactory(t *testing.T) {
 	directory := t.TempDir()
-	path := writeConfigFile(t, directory, "config.toml", "[server]\nfactory = \"missing\"\ndatabase = \"tickets.db\"\n\n[github]\nhandle = \"bot\"\n")
+	path := writeConfigFile(t, directory, "config.yaml", "server:\n  factory: missing\n  database: tickets.db\n\ngithub:\n  handle: bot\n")
 	var stderr bytes.Buffer
 	if exitCode := Execute(t.Context(), []string{"start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "load factory") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
 
-const runnerConfigBody = "control_plane = \"http://127.0.0.1:1\"\ntoken_file = \"runner.token\"\nlogin = true\n"
+const runnerConfigBody = "control_plane: http://127.0.0.1:1\ntoken_file: runner.token\nlogin: true\n"
 
 func TestKubernetesRunnerValidatesItsConfiguration(t *testing.T) {
-	path := writeConfigFile(t, t.TempDir(), "runner.toml", "control_plane = \"http://127.0.0.1:1\"\ntoken_file = \"runner.token\"\nenv = [\"ANTHROPIC_API_KEY\"]\n\n[kubernetes]\nsecret = \"s\"\n")
+	path := writeConfigFile(t, t.TempDir(), "runner.yaml", "control_plane: http://127.0.0.1:1\ntoken_file: runner.token\nenv: [ANTHROPIC_API_KEY]\n\nkubernetes:\n  secret: s\n")
 	var stderr bytes.Buffer
 	if exitCode := Execute(t.Context(), []string{"runner", "start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "explicit context") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
@@ -80,7 +80,7 @@ func TestKubernetesRunnerValidatesItsConfiguration(t *testing.T) {
 
 func TestRunnerStartRequiresGitHubToken(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
-	path := writeConfigFile(t, t.TempDir(), "runner.toml", runnerConfigBody)
+	path := writeConfigFile(t, t.TempDir(), "runner.yaml", runnerConfigBody)
 	var stderr bytes.Buffer
 	if exitCode := Execute(t.Context(), []string{"runner", "start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "GH_TOKEN") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
@@ -90,7 +90,7 @@ func TestRunnerStartRequiresGitHubToken(t *testing.T) {
 func TestRunnerStartReadsTokenFileAndStopsOnCancellation(t *testing.T) {
 	t.Setenv("GH_TOKEN", "fixture")
 	directory := t.TempDir()
-	path := writeConfigFile(t, directory, "runner.toml", runnerConfigBody+"\n")
+	path := writeConfigFile(t, directory, "runner.yaml", runnerConfigBody+"\n")
 	var stderr bytes.Buffer
 	if exitCode := Execute(t.Context(), []string{"runner", "start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "runner.token") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
@@ -145,7 +145,7 @@ func TestRunnerTokenScopeWarning(t *testing.T) {
 					github.Fail("bad credentials: " + token)
 				}
 				directory := t.TempDir()
-				path := writeConfigFile(t, directory, "runner.toml", runnerConfigBody)
+				path := writeConfigFile(t, directory, "runner.yaml", runnerConfigBody)
 				writeConfigFile(t, directory, "runner.token", "runner-token\n")
 				// Fail git locally so check cannot reach GitHub.
 				git := writeConfigFile(t, directory, "bin/git", "#!/bin/sh\nexit 1\n")

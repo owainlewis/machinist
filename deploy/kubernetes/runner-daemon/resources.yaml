@@ -107,22 +107,19 @@ metadata:
 data:
   # deploy.py replaces image with the release's runner digest. The Secret
   # machinist-agent in machinist-runners must hold GH_TOKEN and these variables.
-  runner.toml: |
-    control_plane = "http://machinist-control-plane.machinist-system.svc:7341"
-    token_file = "/etc/machinist/token/token"
-    data_directory = "/var/lib/machinist-runner"
-    slots = 4
+  runner.yaml: |
+    control_plane: http://machinist-control-plane.machinist-system.svc:7341
+    token_file: /etc/machinist/token/token
+    data_directory: /var/lib/machinist-runner
+    slots: 4
 
-    [credentials.claude]
-    env = ["ANTHROPIC_API_KEY"]
-
-    [kubernetes]
-    context = "in-cluster"
-    kubeconfig = "/etc/machinist/cluster/kubeconfig"
-    namespace = "machinist-runners"
-    image = "machinist-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-    secret = "machinist-agent"
-    proxy_url = "http://machinist-egress:3128"
+    kubernetes:
+      context: in-cluster
+      kubeconfig: /etc/machinist/cluster/kubeconfig
+      namespace: machinist-runners
+      image: "machinist-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      secret: machinist-agent
+      proxy_url: http://machinist-egress:3128
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -154,7 +151,7 @@ spec:
       containers:
         - name: runner
           image: machinist-control-plane
-          args: [runner, start, --config=/etc/machinist/config/runner.toml]
+          args: [runner, start, --config=/etc/machinist/config/runner.yaml]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

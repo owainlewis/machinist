@@ -20,7 +20,13 @@ const (
 	defaultSummary = "Every step passed."
 )
 
-var varName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+var (
+	varName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	// FilePath is the form of a factory file a run carries.
+	FilePath = regexp.MustCompile(`^(prompts|scripts)/[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+)
+
+const defaultPath = "/usr/local/bin:/usr/bin:/bin"
 
 // WorkspaceOptions describes the private directory and credentials of one run.
 type WorkspaceOptions struct {
@@ -34,8 +40,9 @@ type WorkspaceOptions struct {
 }
 
 // Workspace is an empty directory, the control directory beside it and the
-// complete environment of the steps. The control directory holds prompt.md,
-// and a step can leave question.md or result.md there. It is outside the
+// complete environment of the steps. The control directory holds prompt.md and
+// the factory's prompts/ and scripts/, and a step can leave question.md or
+// result.md there. scripts/ is first on PATH, so a step runs a script by name. It is outside the
 // workspace, so a clone into the workspace never commits it.
 type Workspace struct {
 	Directory   string
@@ -66,12 +73,48 @@ func PrepareWorkspace(options WorkspaceOptions) (Workspace, error) {
 	if err := os.WriteFile(filepath.Join(workspace.Control, "prompt.md"), []byte(request.Prompt), 0o600); err != nil {
 		return Workspace{}, err
 	}
+	if err := writeFiles(workspace.Control, request.Files); err != nil {
+		return Workspace{}, err
+	}
 	environment, err := stepEnvironment(options, workspace.Control)
 	if err != nil {
 		return Workspace{}, err
 	}
 	workspace.Environment = environment
 	return workspace, nil
+}
+
+// writeFiles writes the factory's prompts and scripts. Scripts are executable.
+func writeFiles(control string, files map[string]string) error {
+	for path, body := range files {
+		if !FilePath.MatchString(path) || strings.Contains(path, "..") {
+			return fmt.Errorf("invalid factory file %q", path)
+		}
+		mode := os.FileMode(0o600)
+		if strings.HasPrefix(path, "scripts/") {
+			mode = 0o700
+		}
+		target := filepath.Join(control, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, []byte(body), mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// withScriptsOnPath puts the factory's scripts first on PATH. When a key is
+// listed twice, a process sees the last value.
+func withScriptsOnPath(environment []string, control string) []string {
+	path := defaultPath
+	for _, entry := range environment {
+		if value, ok := strings.CutPrefix(entry, "PATH="); ok && value != "" {
+			path = value
+		}
+	}
+	return append(environment, "PATH="+filepath.Join(control, "scripts")+string(os.PathListSeparator)+path)
 }
 
 func stepEnvironment(options WorkspaceOptions, control string) ([]string, error) {
@@ -88,6 +131,7 @@ func stepEnvironment(options WorkspaceOptions, control string) ([]string, error)
 		"MACHINIST_BRANCH="+request.Branch,
 		"MACHINIST_DIR="+control,
 	)
+	environment = withScriptsOnPath(environment, control)
 	for name, value := range request.Vars {
 		if !varName.MatchString(name) {
 			return nil, fmt.Errorf("invalid var name %q", name)

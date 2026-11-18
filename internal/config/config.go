@@ -1,37 +1,43 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/pelletier/go-toml/v2"
+	"go.yaml.in/yaml/v3"
 )
 
 const (
-	defaultListen        = "127.0.0.1:7331"
-	defaultPreset        = "default"
-	defaultMaxTurns      = 5
-	defaultRunTimeout    = 60 * time.Minute
-	maxConfigBytes       = 1 << 20
-	maxTokenBytes        = 8 << 10
-	defaultServerDirName = ".machinist/server"
-	defaultFactoryDir    = ".machinist/factory"
+	defaultListen     = "127.0.0.1:7331"
+	defaultPreset     = "default"
+	defaultMaxTurns   = 5
+	defaultRunTimeout = 60 * time.Minute
+	maxConfigBytes    = 1 << 20
+	maxTokenBytes     = 8 << 10
+	// StateDir holds what Machinist writes at run time, next to the
+	// configuration. It is kept out of git.
+	StateDir          = ".machinist"
+	defaultDatabase   = StateDir + "/tickets.db"
+	defaultFactoryDir = "factory"
 )
 
 type Server struct {
-	Listen               string `toml:"listen"`
-	Database             string `toml:"database"`
-	Factory              string `toml:"factory"`
-	DefaultPreset        string `toml:"default_preset"`
-	MaxTurnsWithoutHuman int    `toml:"max_turns_without_human"`
-	RunTimeout           string `toml:"run_timeout"`
-	TLSCert              string `toml:"tls_cert"`
-	TLSKey               string `toml:"tls_key"`
+	Listen               string `yaml:"listen"`
+	Database             string `yaml:"database"`
+	Factory              string `yaml:"factory"`
+	DefaultPreset        string `yaml:"default_preset"`
+	MaxTurnsWithoutHuman int    `yaml:"max_turns_without_human"`
+	RunTimeout           string `yaml:"run_timeout"`
+	TLSCert              string `yaml:"tls_cert"`
+	TLSKey               string `yaml:"tls_key"`
 	runTimeout           time.Duration
 	configDir            string
 }
@@ -40,13 +46,13 @@ type Server struct {
 func (s Server) RunDeadline() time.Duration { return s.runTimeout }
 
 type GitHub struct {
-	Handle       string   `toml:"handle"`
-	Repositories []string `toml:"repositories"`
+	Handle       string   `yaml:"handle"`
+	Repositories []string `yaml:"repositories"`
 }
 
 type Config struct {
-	Server Server `toml:"server"`
-	GitHub GitHub `toml:"github"`
+	Server Server `yaml:"server"`
+	GitHub GitHub `yaml:"github"`
 	path   string
 }
 
@@ -66,7 +72,7 @@ type ResolvedCommand struct {
 
 func LoadConfig(path string) (Config, error) {
 	if path == "" {
-		defaultPath, err := defaultConfigPath("config.toml")
+		defaultPath, err := defaultConfigPath("config.yaml")
 		if err != nil {
 			return Config{}, err
 		}
@@ -91,6 +97,9 @@ func LoadConfig(path string) (Config, error) {
 // decodeFile rejects keys the target does not define and names each one, so an
 // old configuration fails at startup with the key to remove.
 func decodeFile(path string, target any) error {
+	if filepath.Ext(path) == ".toml" {
+		return tomlError(path)
+	}
 	body, err := readBoundedFile(path, maxConfigBytes)
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", path, err)
@@ -98,21 +107,39 @@ func decodeFile(path string, target any) error {
 	return DecodeStrict(path, body, target)
 }
 
-// DecodeStrict decodes TOML and names any key the target does not define.
+// tomlError says how to move a file from before Machinist read YAML.
+func tomlError(path string) error {
+	return fmt.Errorf("%s is TOML, and Machinist now reads YAML. Rewrite it as %s", path, strings.TrimSuffix(path, ".toml")+".yaml")
+}
+
+var unknownField = regexp.MustCompile(`^line (\d+): field (\S+) not found in type`)
+
+// DecodeStrict decodes one YAML document and names any key the target does not
+// define.
 func DecodeStrict(path string, body []byte, target any) error {
-	decoder := toml.NewDecoder(strings.NewReader(string(body)))
-	decoder.DisallowUnknownFields()
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
+	decoder.KnownFields(true)
 	err := decoder.Decode(target)
-	var missing *toml.StrictMissingError
-	if errors.As(err, &missing) {
-		keys := make([]string, 0, len(missing.Errors))
-		for _, unknown := range missing.Errors {
-			keys = append(keys, strings.Join(unknown.Key(), "."))
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	var typeError *yaml.TypeError
+	if errors.As(err, &typeError) {
+		problems := make([]string, 0, len(typeError.Errors))
+		for _, problem := range typeError.Errors {
+			if match := unknownField.FindStringSubmatch(problem); match != nil {
+				problem = fmt.Sprintf("unknown key %s on line %s", match[2], match[1])
+			}
+			problems = append(problems, problem)
 		}
-		return fmt.Errorf("parse config %q: unknown key %s", path, strings.Join(keys, ", "))
+		return fmt.Errorf("parse config %q: %s", path, strings.Join(problems, "; "))
 	}
 	if err != nil {
 		return fmt.Errorf("parse config %q: %w", path, err)
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return fmt.Errorf("parse config %q: only one YAML document is allowed", path)
 	}
 	return nil
 }
@@ -144,16 +171,13 @@ func applyServerDefaults(server Server) (Server, error) {
 	if (server.TLSCert == "") != (server.TLSKey == "") {
 		return Server{}, errors.New("tls_cert and tls_key must be set together")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return Server{}, fmt.Errorf("find user home directory: %w", err)
-	}
 	if server.Database == "" {
-		server.Database = filepath.Join(home, filepath.FromSlash(defaultServerDirName), "tickets.db")
+		server.Database = filepath.FromSlash(defaultDatabase)
 	}
 	if server.Factory == "" {
-		server.Factory = filepath.Join(home, filepath.FromSlash(defaultFactoryDir))
+		server.Factory = defaultFactoryDir
 	}
+	var err error
 	for _, path := range []*string{&server.Database, &server.Factory, &server.TLSCert, &server.TLSKey} {
 		if *path == "" {
 			continue
@@ -193,12 +217,32 @@ func readToken(path string) (string, error) {
 	return token, nil
 }
 
+// defaultConfigPath is the named file in the current directory. Machinist runs
+// from the directory that holds its configuration, usually a git repository.
 func defaultConfigPath(name string) (string, error) {
-	home, err := os.UserHomeDir()
+	path, err := filepath.Abs(name)
 	if err != nil {
-		return "", fmt.Errorf("find user home directory: %w", err)
+		return "", fmt.Errorf("resolve %s: %w", name, err)
 	}
-	return filepath.Join(home, ".machinist", name), nil
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		old := strings.TrimSuffix(path, ".yaml") + ".toml"
+		if _, err := os.Stat(old); err == nil {
+			return "", tomlError(old)
+		}
+		return "", missingConfigError(name, filepath.Dir(path))
+	}
+	return path, nil
+}
+
+func missingConfigError(name, directory string) error {
+	message := fmt.Sprintf("no %s in %s. Run Machinist from the directory that holds its configuration, create one there with machinist init, or pass --config", name, directory)
+	if home, err := os.UserHomeDir(); err == nil {
+		old := filepath.Join(home, ".machinist", strings.TrimSuffix(name, ".yaml")+".toml")
+		if _, err := os.Stat(old); err == nil {
+			message += fmt.Sprintf(". Older versions kept it in %s; move its files here and rewrite them as YAML", filepath.Dir(old))
+		}
+	}
+	return errors.New(message)
 }
 
 func expandHome(path string) (string, error) {

@@ -3,12 +3,12 @@
 Credentials live on runners. The control plane never holds a credential a step uses.
 
 A credential is a list of environment variable names that a tool already reads, passed
-through unchanged with `env` in `runner.toml`. So keys, service accounts, federation and
+through unchanged with `env` in `runner.yaml`. So keys, service accounts, federation and
 cloud providers need no special handling. On a Kubernetes runner the same variables live in
 one Secret. See [Runners](runners.md#what-steps-can-use).
 
-```toml
-env = ["ANTHROPIC_API_KEY", "LINEAR_API_KEY"]
+```yaml
+env: [ANTHROPIC_API_KEY, LINEAR_API_KEY]
 ```
 
 Every step of every preset on that runner gets these variables. Run presets that need

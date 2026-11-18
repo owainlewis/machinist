@@ -35,7 +35,7 @@ func installStarterAutomation(t *testing.T, directory string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	active := strings.Replace(string(template), `repo = "owner/name"`, `repo = "owner/repo"`, 1)
+	active := strings.Replace(string(template), "repo: owner/name", "repo: owner/repo", 1)
 	if active == string(template) {
 		t.Fatal("the template's repo line changed")
 	}

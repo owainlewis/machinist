@@ -87,6 +87,16 @@ requests themselves. Model and tracker credentials live on runners, never on the
 plane. Branch protection and the login's permissions are what limit a step. At startup the control plane refuses a
 token that is not the bot's, and warns about an unprotected default branch or admin rights.
 
+## Configuration
+
+Machinist runs from one directory, normally a git repository. `config.yaml`, `runner.yaml`
+and `factory/` (presets, prompts and scripts) are committed there. `.machinist/` beside them
+holds the database, tokens and workspaces, and git ignores it. Commands read the config in
+the current directory unless `--config` names one, and relative paths resolve from the
+config file's directory. Secrets come from the environment, never from these files. Every
+run carries the factory's `prompts/` and `scripts/` in its request, so a step can use them
+on any runner.
+
 ## Packages
 
 ```text
