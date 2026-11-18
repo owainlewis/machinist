@@ -19,21 +19,15 @@ func sign(body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func linearEvent(t *testing.T, action string, at time.Time, labels []string, updatedFrom map[string]any) []byte {
+// linearEvent is an issue event. assignee is the issue's assignee now, and
+// updatedFrom holds the old values an update changed.
+func linearEvent(t *testing.T, action string, at time.Time, assignee string, updatedFrom map[string]any) []byte {
 	t.Helper()
-	type label struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	list := []label{}
-	for _, name := range labels {
-		list = append(list, label{ID: "label-" + name, Name: name})
-	}
 	body, err := json.Marshal(map[string]any{
 		"action": action, "type": "Issue", "webhookTimestamp": at.UnixMilli(), "updatedFrom": updatedFrom,
 		"data": map[string]any{
 			"id": "issue-1", "identifier": "ENG-12", "title": "Fix the export button", "description": "It does nothing on Safari.",
-			"url": "https://linear.app/team/issue/ENG-12", "assigneeId": "", "team": map[string]string{"key": "ENG"}, "labels": list,
+			"url": "https://linear.app/team/issue/ENG-12", "assigneeId": assignee, "team": map[string]string{"key": "ENG"},
 		},
 	})
 	if err != nil {
@@ -44,7 +38,7 @@ func linearEvent(t *testing.T, action string, at time.Time, labels []string, upd
 
 func TestVerifyLinearAcceptsOnlyFreshSignedDeliveries(t *testing.T) {
 	now := time.Now()
-	body := linearEvent(t, "create", now, nil, nil)
+	body := linearEvent(t, "create", now, "", nil)
 	if event, err := VerifyLinear(testLinearSecret, body, sign(body), now); err != nil || event.Data.Identifier != "ENG-12" {
 		t.Fatalf("event = %+v, err = %v", event, err)
 	}
@@ -76,53 +70,43 @@ func decide(t *testing.T, rules LinearRules, body []byte) (LinearJob, string) {
 	return rules.Decide(event)
 }
 
-func TestLinearStartsAJobOnlyWhenTheTriggerIsNew(t *testing.T) {
-	rules := LinearRules{TriggerLabel: "Machinist", AppUserID: "app-user", Preset: "coding", Teams: map[string]string{"eng": "owner/repo"}}
+func TestLinearStartsAJobWhenAnIssueIsAssignedToTheApp(t *testing.T) {
+	rules := LinearRules{AppUserID: "app-user", Preset: "coding", Teams: map[string]string{"eng": "owner/repo"}}
 	now := time.Now()
-	job, reason := decide(t, rules, linearEvent(t, "create", now, []string{"machinist"}, nil))
+	job, reason := decide(t, rules, linearEvent(t, "update", now, "app-user", map[string]any{"assigneeId": nil}))
 	if reason != "" || job.Key != "linear:issue-1" || job.Repo != "owner/repo" || job.Preset != "coding" {
 		t.Fatalf("job = %+v, reason = %q", job, reason)
 	}
 	if !strings.HasPrefix(job.Prompt, "Fix the export button\n\nIt does nothing on Safari.") || !strings.Contains(job.Prompt, "Linear issue ENG-12: https://linear.app/team/issue/ENG-12") {
 		t.Fatalf("prompt = %q", job.Prompt)
 	}
-	if _, reason := decide(t, rules, linearEvent(t, "update", now, []string{"machinist"}, map[string]any{"labelIds": []string{}})); reason != "" {
-		t.Fatalf("adding the label: %s", reason)
+	started := map[string][]byte{
+		"created assigned":    linearEvent(t, "create", now, "app-user", nil),
+		"moved from a person": linearEvent(t, "update", now, "app-user", map[string]any{"assigneeId": "someone"}),
+	}
+	for name, body := range started {
+		if _, reason := decide(t, rules, body); reason != "" {
+			t.Errorf("%s: %s", name, reason)
+		}
 	}
 	ignored := map[string][]byte{
-		"no label":           linearEvent(t, "create", now, []string{"bug"}, nil),
-		"label already on":   linearEvent(t, "update", now, []string{"machinist"}, map[string]any{"labelIds": []string{"label-machinist"}}),
-		"other field edited": linearEvent(t, "update", now, []string{"machinist"}, map[string]any{"title": "Old"}),
-		"removed":            linearEvent(t, "remove", now, []string{"machinist"}, nil),
-	}
-	other := LinearRules{TriggerLabel: "machinist", Teams: map[string]string{"OPS": "owner/repo"}}
-	if _, reason := decide(t, other, linearEvent(t, "create", now, []string{"machinist"}, nil)); !strings.Contains(reason, "not connected") {
-		t.Errorf("other team: reason = %q", reason)
+		"assigned to a person":        linearEvent(t, "update", now, "someone", map[string]any{"assigneeId": nil}),
+		"unassigned":                  linearEvent(t, "create", now, "", nil),
+		"edited while the app has it": linearEvent(t, "update", now, "app-user", map[string]any{"title": "Old"}),
+		"reassigned to the app again": linearEvent(t, "update", now, "app-user", map[string]any{"assigneeId": "app-user"}),
+		"removed":                     linearEvent(t, "remove", now, "app-user", nil),
 	}
 	for name, body := range ignored {
 		if _, reason := decide(t, rules, body); reason == "" {
 			t.Errorf("%s started a job", name)
 		}
 	}
-}
-
-func TestLinearStartsAJobWhenAssignedToTheApp(t *testing.T) {
-	rules := LinearRules{AppUserID: "app-user", Preset: "coding", Teams: map[string]string{"ENG": "owner/repo"}}
-	assigned := func(before any) []byte {
-		var event map[string]any
-		_ = json.Unmarshal(linearEvent(t, "update", time.Now(), nil, map[string]any{"assigneeId": before}), &event)
-		event["data"].(map[string]any)["assigneeId"] = "app-user"
-		body, _ := json.Marshal(event)
-		return body
+	other := LinearRules{AppUserID: "app-user", Teams: map[string]string{"OPS": "owner/repo"}}
+	if _, reason := decide(t, other, linearEvent(t, "create", now, "app-user", nil)); !strings.Contains(reason, "not connected") {
+		t.Errorf("other team: reason = %q", reason)
 	}
-	if _, reason := decide(t, rules, assigned(nil)); reason != "" {
-		t.Fatalf("from nobody: %s", reason)
-	}
-	if _, reason := decide(t, rules, assigned("someone")); reason != "" {
-		t.Fatalf("from someone: %s", reason)
-	}
-	if _, reason := decide(t, rules, assigned("app-user")); reason == "" {
-		t.Fatal("an unchanged assignee started a job")
+	if _, reason := decide(t, LinearRules{Teams: map[string]string{"ENG": "owner/repo"}}, linearEvent(t, "create", now, "", nil)); reason == "" {
+		t.Error("no app user started a job")
 	}
 }
 

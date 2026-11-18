@@ -30,7 +30,7 @@ func linearFixture(t *testing.T, maxJobs int) *fixture {
 	t.Cleanup(func() { _ = store.Close() })
 	machinistConfig := testConfig()
 	machinistConfig.GitHub.Repositories = []string{"owner/repo"}
-	machinistConfig.Linear.TriggerLabel = "machinist"
+	machinistConfig.Linear.AppUserID = "app-user"
 	machinistConfig.Linear.Teams = map[string]string{"ENG": "owner/repo"}
 	machinistConfig.Linear.MaxJobsPerHour = maxJobs
 	machinistConfig.Linear.Secret = linearSecret
@@ -43,15 +43,12 @@ func linearFixture(t *testing.T, maxJobs int) *fixture {
 	return &fixture{server: server, store: store, http: web}
 }
 
-func issueEvent(t *testing.T, id string, labels ...string) []byte {
+// issueEvent creates an issue assigned to assignee.
+func issueEvent(t *testing.T, id, assignee string) []byte {
 	t.Helper()
-	list := []map[string]string{}
-	for _, name := range labels {
-		list = append(list, map[string]string{"id": "label-" + name, "name": name})
-	}
 	body, err := json.Marshal(map[string]any{
 		"action": "create", "type": "Issue", "webhookTimestamp": time.Now().UnixMilli(),
-		"data": map[string]any{"id": id, "identifier": "ENG-1", "title": "Fix it", "description": "Detail", "url": "https://linear.app/x/issue/ENG-1", "team": map[string]string{"key": "ENG"}, "labels": list},
+		"data": map[string]any{"id": id, "identifier": "ENG-1", "title": "Fix it", "description": "Detail", "url": "https://linear.app/x/issue/ENG-1", "team": map[string]string{"key": "ENG"}, "assigneeId": assignee},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +83,7 @@ func linearSign(body []byte) string {
 
 func TestLinearWebhookStartsOneJobPerIssue(t *testing.T) {
 	f := linearFixture(t, 5)
-	body := issueEvent(t, "issue-1", "machinist")
+	body := issueEvent(t, "issue-1", "app-user")
 	status, reply := f.deliver(t, body, linearSign(body))
 	if status != http.StatusCreated || reply["job"] == "" {
 		t.Fatalf("status = %d, reply = %v", status, reply)
@@ -95,7 +92,7 @@ func TestLinearWebhookStartsOneJobPerIssue(t *testing.T) {
 	if err != nil || ticket.Source != "linear" || ticket.Repo != "owner/repo" || ticket.Agent != "default" || ticket.State != tickets.StateWorking {
 		t.Fatalf("ticket = %+v, err = %v", ticket, err)
 	}
-	again := issueEvent(t, "issue-1", "machinist")
+	again := issueEvent(t, "issue-1", "app-user")
 	if status, retry := f.deliver(t, again, linearSign(again)); status != http.StatusOK || retry["job"] != reply["job"] {
 		t.Fatalf("retry: status = %d, reply = %v", status, retry)
 	}
@@ -103,7 +100,7 @@ func TestLinearWebhookStartsOneJobPerIssue(t *testing.T) {
 
 func TestLinearWebhookRejectsUnsignedRequests(t *testing.T) {
 	f := linearFixture(t, 5)
-	body := issueEvent(t, "issue-1", "machinist")
+	body := issueEvent(t, "issue-1", "app-user")
 	for _, signature := range []string{"", "00", strings.Repeat("ab", 32)} {
 		if status, _ := f.deliver(t, body, signature); status != http.StatusUnauthorized {
 			t.Fatalf("signature %q: status = %d", signature, status)
@@ -120,7 +117,7 @@ func TestLinearWebhookRejectsUnsignedRequests(t *testing.T) {
 
 func TestLinearWebhookIgnoresIssuesWithoutTheTrigger(t *testing.T) {
 	f := linearFixture(t, 5)
-	body := issueEvent(t, "issue-1", "bug")
+	body := issueEvent(t, "issue-1", "someone")
 	if status, reply := f.deliver(t, body, linearSign(body)); status != http.StatusOK || reply["ignored"] == "" {
 		t.Fatalf("status = %d, reply = %v", status, reply)
 	}
@@ -128,16 +125,16 @@ func TestLinearWebhookIgnoresIssuesWithoutTheTrigger(t *testing.T) {
 
 func TestLinearWebhookCapsJobsPerHour(t *testing.T) {
 	f := linearFixture(t, 1)
-	first := issueEvent(t, "issue-1", "machinist")
+	first := issueEvent(t, "issue-1", "app-user")
 	if status, _ := f.deliver(t, first, linearSign(first)); status != http.StatusCreated {
 		t.Fatalf("first: status = %d", status)
 	}
-	second := issueEvent(t, "issue-2", "machinist")
+	second := issueEvent(t, "issue-2", "app-user")
 	if status, _ := f.deliver(t, second, linearSign(second)); status != http.StatusTooManyRequests {
 		t.Fatalf("second: status = %d", status)
 	}
 	f.server.now = func() time.Time { return time.Now().Add(61 * time.Minute) }
-	later := issueEvent(t, "issue-2", "machinist")
+	later := issueEvent(t, "issue-2", "app-user")
 	var event map[string]any
 	_ = json.Unmarshal(later, &event)
 	event["webhookTimestamp"] = f.server.now().UnixMilli()
@@ -149,7 +146,7 @@ func TestLinearWebhookCapsJobsPerHour(t *testing.T) {
 
 func TestLinearWebhookIsOffWithoutTeams(t *testing.T) {
 	f := newFixture(t)
-	body := issueEvent(t, "issue-1", "machinist")
+	body := issueEvent(t, "issue-1", "app-user")
 	if status, _ := f.deliver(t, body, linearSign(body)); status == http.StatusCreated || status == http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
@@ -157,7 +154,7 @@ func TestLinearWebhookIsOffWithoutTeams(t *testing.T) {
 
 func TestLinearTeamsMustBeConnected(t *testing.T) {
 	machinistConfig := testConfig()
-	machinistConfig.Linear.TriggerLabel = "machinist"
+	machinistConfig.Linear.AppUserID = "app-user"
 	machinistConfig.Linear.Teams = map[string]string{"ENG": "owner/elsewhere"}
 	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
 	if err != nil {

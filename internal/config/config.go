@@ -52,10 +52,8 @@ type GitHub struct {
 // least one team. The signing secret comes from LINEAR_WEBHOOK_SECRET, never
 // from this file, so the file can live in git.
 type Linear struct {
-	// TriggerLabel starts a job when it is added to an issue.
-	TriggerLabel string `yaml:"trigger_label"`
-	// AppUserID starts a job when an issue is assigned to this Linear user,
-	// usually the Machinist app.
+	// AppUserID is the Machinist app's Linear user. Assigning an issue to it
+	// starts a job.
 	AppUserID string `yaml:"app_user_id"`
 	// Preset is the preset Linear jobs use. It defaults to server.default_preset.
 	Preset string `yaml:"preset"`
@@ -220,7 +218,7 @@ func applyServerDefaults(server Server) (Server, error) {
 
 func applyLinearDefaults(linear Linear, secret string) (Linear, error) {
 	if !linear.Enabled() {
-		if linear.TriggerLabel != "" || linear.AppUserID != "" || linear.Preset != "" {
+		if linear.AppUserID != "" || linear.Preset != "" {
 			return Linear{}, errors.New("linear: set teams to switch the webhook on, or remove the linear section")
 		}
 		return linear, nil
@@ -229,8 +227,9 @@ func applyLinearDefaults(linear Linear, secret string) (Linear, error) {
 		return Linear{}, fmt.Errorf("linear: %s must hold the webhook's signing secret, at least %d characters", LinearSecretEnv, minLinearSecretBytes)
 	}
 	linear.Secret = strings.TrimSpace(secret)
-	if strings.TrimSpace(linear.TriggerLabel) == "" && strings.TrimSpace(linear.AppUserID) == "" {
-		return Linear{}, errors.New("linear: set trigger_label, app_user_id or both, so only chosen issues start jobs")
+	linear.AppUserID = strings.TrimSpace(linear.AppUserID)
+	if linear.AppUserID == "" {
+		return Linear{}, errors.New("linear: set app_user_id to the Machinist app's Linear user, so only issues assigned to it start jobs")
 	}
 	for team, repository := range linear.Teams {
 		if strings.TrimSpace(team) == "" || strings.TrimSpace(repository) == "" {

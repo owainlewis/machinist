@@ -145,7 +145,7 @@ func TestLinearIsOffUntilTeamsAreSet(t *testing.T) {
 	if err != nil || loaded.Linear.Enabled() {
 		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
 	}
-	writeTestFile(t, path, "linear:\n  trigger_label: machinist\n")
+	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n")
 	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "set teams") {
 		t.Fatalf("error = %v", err)
 	}
@@ -153,7 +153,7 @@ func TestLinearIsOffUntilTeamsAreSet(t *testing.T) {
 
 func TestLinearNeedsASecretAndATrigger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	writeTestFile(t, path, "linear:\n  trigger_label: machinist\n  teams:\n    ENG: owner/repo\n")
+	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n  teams:\n    ENG: owner/repo\n")
 	t.Setenv(LinearSecretEnv, "")
 	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), LinearSecretEnv) {
 		t.Fatalf("no secret: error = %v", err)
@@ -168,7 +168,7 @@ func TestLinearNeedsASecretAndATrigger(t *testing.T) {
 		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
 	}
 	writeTestFile(t, path, "linear:\n  teams:\n    ENG: owner/repo\n")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "trigger_label") {
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "app_user_id") {
 		t.Fatalf("no trigger: error = %v", err)
 	}
 	writeTestFile(t, path, "linear:\n  secret: in-the-file\n  teams:\n    ENG: owner/repo\n")

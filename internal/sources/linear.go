@@ -21,12 +21,12 @@ const MaxLinearSkew = time.Minute
 // ErrLinearUnsigned means a request is not from Linear, or is a replay.
 var ErrLinearUnsigned = errors.New("the request is not signed by Linear")
 
-// LinearRules decide which Linear issues start jobs, and where.
+// LinearRules decide which Linear issues start jobs, and where. Assigning an
+// issue to the Machinist app is the only trigger.
 type LinearRules struct {
-	Secret       string
-	TriggerLabel string
-	AppUserID    string
-	Preset       string
+	Secret    string
+	AppUserID string
+	Preset    string
 	// Teams maps a team key to a repository.
 	Teams map[string]string
 }
@@ -46,10 +46,6 @@ type LinearEvent struct {
 		Team        struct {
 			Key string `json:"key"`
 		} `json:"team"`
-		Labels []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"labels"`
 	} `json:"data"`
 	// UpdatedFrom holds the old value of each field an update changed.
 	UpdatedFrom map[string]json.RawMessage `json:"updatedFrom"`
@@ -95,8 +91,8 @@ func (rules LinearRules) Decide(event LinearEvent) (LinearJob, string) {
 	if !ok {
 		return LinearJob{}, fmt.Sprintf("team %q is not connected", event.Data.Team.Key)
 	}
-	if !rules.labelAdded(event) && !rules.assignedToApp(event) {
-		return LinearJob{}, "the issue was not just labelled or assigned for Machinist"
+	if !rules.assignedToApp(event) {
+		return LinearJob{}, "the issue was not just assigned to the Machinist app"
 	}
 	return LinearJob{Key: "linear:" + event.Data.ID, Repo: repository, Preset: rules.Preset, Prompt: linearPrompt(event)}, ""
 }
@@ -108,40 +104,6 @@ func (rules LinearRules) team(key string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// labelAdded reports whether the trigger label is on the issue and was not on
-// it before this event.
-func (rules LinearRules) labelAdded(event LinearEvent) bool {
-	if rules.TriggerLabel == "" {
-		return false
-	}
-	id := ""
-	for _, label := range event.Data.Labels {
-		if strings.EqualFold(strings.TrimSpace(label.Name), strings.TrimSpace(rules.TriggerLabel)) {
-			id = label.ID
-		}
-	}
-	if id == "" {
-		return false
-	}
-	if event.Action == "create" {
-		return true
-	}
-	raw, changed := event.UpdatedFrom["labelIds"]
-	if !changed {
-		return false
-	}
-	var before []string
-	if json.Unmarshal(raw, &before) != nil {
-		return false
-	}
-	for _, old := range before {
-		if old == id {
-			return false
-		}
-	}
-	return true
 }
 
 // assignedToApp reports whether this event assigned the issue to the app.

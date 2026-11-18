@@ -109,7 +109,7 @@ The production UI is committed, so this build does not need Node.
 ## Using it
 
 Jobs start through the [run API](docs/run-api.md), from `curl`, a tracker, a webhook or an
-automation, or when a Linear issue gets the `machinist` label (see [Linear](docs/linear.md)). The web app is read-only:
+automation, or when a Linear issue is assigned to the Machinist app (see [Linear](docs/linear.md)). The web app is read-only:
 
 | Page | What it does |
 | --- | --- |

@@ -7,7 +7,7 @@ Start with the [quick start](../README.md#quick-start).
 | Guide | Use it to |
 | --- | --- |
 | [Run API](run-api.md) | Start and follow jobs from any system |
-| [Linear](linear.md) | Start a job by labelling or assigning a Linear issue |
+| [Linear](linear.md) | Start a job by assigning a Linear issue to Machinist |
 | [Factory files](factory.md) | Write presets and add automations |
 
 ## Run it
