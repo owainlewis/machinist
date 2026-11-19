@@ -31,6 +31,10 @@ type Usage struct {
 	Cost   float64 `json:"cost"`
 }
 
+// claudeEvents are the event types Claude Code's stream-json writes. A JSON
+// line of any other type is not Claude Code's, so it passes through.
+var claudeEvents = map[string]bool{"system": true, "assistant": true, "user": true, "result": true}
+
 type event struct {
 	Type    string `json:"type"`
 	Subtype string `json:"subtype"`
@@ -68,7 +72,7 @@ func Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		var parsed event
-		if !strings.HasPrefix(line, `{"type":`) || json.Unmarshal([]byte(line), &parsed) != nil {
+		if !strings.HasPrefix(line, `{"type":`) || json.Unmarshal([]byte(line), &parsed) != nil || !claudeEvents[parsed.Type] {
 			if _, err := fmt.Fprintln(w, line); err != nil {
 				return usage, err
 			}

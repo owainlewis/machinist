@@ -159,7 +159,13 @@ func TestFleetShowsWhatARunningJobIsDoing(t *testing.T) {
 	if job.Step != "work" || !job.StepStartedAt.Equal(time.Date(2026, 11, 10, 9, 1, 0, 0, time.UTC)) || job.Action != "Run go test ./..." {
 		t.Fatalf("job = %+v", job)
 	}
-	if job := ingest(started(6, "publish", "2026-11-10T09:05:00Z")); job.Step != "publish" || job.Action != "" {
+	if job := ingest(output(6, "stdout", "▸ Edit src/"), output(7, "stdout", "main.go\n▸ Run go te")); job.Action != "Edit src/main.go" {
+		t.Fatalf("an action split across events = %q", job.Action)
+	}
+	if job := ingest(output(8, "stdout", "st ./...\n")); job.Action != "Run go test ./..." {
+		t.Fatalf("an action split across batches = %q", job.Action)
+	}
+	if job := ingest(started(9, "publish", "2026-11-10T09:05:00Z")); job.Step != "publish" || job.Action != "" {
 		t.Fatalf("a new step kept the last one's action: %+v", job)
 	}
 }

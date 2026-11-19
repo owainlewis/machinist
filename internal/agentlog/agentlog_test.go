@@ -48,11 +48,11 @@ func TestFormatTurnsStreamJSONIntoLines(t *testing.T) {
 
 func TestFormatPassesOtherOutputThrough(t *testing.T) {
 	var out bytes.Buffer
-	usage, err := Format(strings.NewReader("hello\n{\"not\":\"an event\"}\n{\"type\":broken\n"), &out, "")
+	usage, err := Format(strings.NewReader("hello\n{\"not\":\"an event\"}\n{\"type\":broken\n{\"type\":\"progress\",\"text\":\"working\"}\n"), &out, "")
 	if err != nil || usage != nil {
 		t.Fatalf("usage = %v, err = %v", usage, err)
 	}
-	if out.String() != "hello\n{\"not\":\"an event\"}\n{\"type\":broken\n" {
+	if out.String() != "hello\n{\"not\":\"an event\"}\n{\"type\":broken\n{\"type\":\"progress\",\"text\":\"working\"}\n" {
 		t.Fatalf("got %q", out.String())
 	}
 }
