@@ -99,8 +99,9 @@ The production UI is committed, so this build does not need Node.
 
 ## Using it
 
-Jobs start from the web app's **New job** form, or through the [run API](docs/run-api.md)
-from `curl`, a tracker, a webhook or an automation. The web app can also run an ended job again:
+Jobs start from the web app's **New job** form, through the [run API](docs/run-api.md)
+from `curl`, a tracker, a webhook or an automation, or when a Linear issue is assigned to
+the Machinist app (see [Linear](docs/linear.md)). The web app can also run an ended job again:
 
 | Page | What it does |
 | --- | --- |

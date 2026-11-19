@@ -30,38 +30,46 @@ func (i *Intake) Run(ctx context.Context, request RunRequest, by string) (ticket
 	if request.Key == "" || len(request.Key) > maxRequestIDBytes {
 		return tickets.Ticket{}, false, invalid("key is required and at most %d bytes", maxRequestIDBytes)
 	}
-	key := "run:" + request.Key
-	if existing, err := i.Store.TicketBySourceKey(ctx, key); err == nil {
+	if extra := unknownVars(request.Vars); len(extra) > 0 {
+		return tickets.Ticket{}, false, invalid("unknown vars: %s", strings.Join(extra, ", "))
+	}
+	return i.start(ctx, start{source: "run", key: "run:" + request.Key, preset: request.Preset, repo: request.Vars[repoVar], prompt: request.Prompt, by: by})
+}
+
+// start is a job from any source that names its preset, repository and prompt.
+type start struct {
+	source, key, preset, repo, prompt, by string
+}
+
+func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, error) {
+	if existing, err := i.Store.TicketBySourceKey(ctx, job.key); err == nil {
 		return existing, false, nil
 	} else if !errors.Is(err, tickets.ErrNotFound) {
 		return tickets.Ticket{}, false, err
 	}
 	// A one-off job names no preset and gets the default one.
-	if request.Preset == "" {
-		request.Preset = i.DefaultPreset
+	if job.preset == "" {
+		job.preset = i.DefaultPreset
 	}
-	if i.Presets == nil || !i.Presets(request.Preset) {
-		return tickets.Ticket{}, false, invalid("preset %q does not exist", request.Preset)
+	if i.Presets == nil || !i.Presets(job.preset) {
+		return tickets.Ticket{}, false, invalid("preset %q does not exist", job.preset)
 	}
-	if extra := unknownVars(request.Vars); len(extra) > 0 {
-		return tickets.Ticket{}, false, invalid("unknown vars: %s", strings.Join(extra, ", "))
-	}
-	repository, connected := i.repository(request.Vars[repoVar])
+	repository, connected := i.repository(job.repo)
 	if !connected {
-		return tickets.Ticket{}, false, invalid("vars.repo %q is not connected", request.Vars[repoVar])
+		return tickets.Ticket{}, false, invalid("vars.repo %q is not connected", job.repo)
 	}
-	prompt := strings.TrimSpace(request.Prompt)
+	prompt := strings.TrimSpace(job.prompt)
 	if prompt == "" {
 		return tickets.Ticket{}, false, invalid("prompt is required")
 	}
 	return i.Store.CreateTicket(ctx, tickets.NewTicket{
-		Source:    "run",
+		Source:    job.source,
 		Repo:      repository,
 		Title:     title(prompt),
 		Body:      prompt,
-		Agent:     request.Preset,
-		CreatedBy: by,
-		SourceKey: key,
+		Agent:     job.preset,
+		CreatedBy: job.by,
+		SourceKey: job.key,
 	})
 }
 

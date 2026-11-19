@@ -18,3 +18,12 @@ github:
   # app:
   #   id: 123456
   #   private_key_file: .machinist/github-app.pem
+
+# Start jobs from Linear. Off until teams is set. The signing secret is read
+# from LINEAR_WEBHOOK_SECRET. See docs/linear.md.
+# linear:
+#   app_user_id: <the Machinist app's Linear user ID>
+#   allowed_users: [<your Linear user ID>]
+#   teams:
+#     ENG: owner/name
+#   max_jobs_per_hour: 20

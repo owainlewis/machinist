@@ -59,6 +59,7 @@ github:
 | `github.repositories` | The repositories Machinist serves |
 | `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
 | `github.app.private_key_file` | The app's private key file. Keep it out of git |
+| `linear.*` | Start jobs from Linear issues. Off unless `linear.teams` is set. See [Linear](linear.md) |
 
 ## Runner: runner.yaml
 

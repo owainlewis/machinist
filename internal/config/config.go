@@ -58,9 +58,42 @@ type GitHubApp struct {
 	PrivateKeyFile string `yaml:"private_key_file"`
 }
 
+// Linear starts jobs from a Linear webhook. It is off until teams lists at
+// least one team. The signing secret comes from LINEAR_WEBHOOK_SECRET, never
+// from this file, so the file can live in git.
+type Linear struct {
+	// AppUserID is the Machinist app's Linear user. Assigning an issue to it
+	// starts a job.
+	AppUserID string `yaml:"app_user_id"`
+	// AllowedUsers are the Linear user IDs whose assignments start jobs. An
+	// assignment by anyone else is ignored.
+	AllowedUsers []string `yaml:"allowed_users"`
+	// Preset is the preset Linear jobs use. It defaults to server.default_preset.
+	Preset string `yaml:"preset"`
+	// Teams maps a Linear team key, such as ENG, to the repository its jobs
+	// work in. Issues from any other team are ignored.
+	Teams map[string]string `yaml:"teams"`
+	// MaxJobsPerHour caps the jobs Linear can start in any hour.
+	MaxJobsPerHour int `yaml:"max_jobs_per_hour"`
+	// Secret signs every webhook request. It is read from the environment.
+	Secret string `yaml:"-"`
+}
+
+// Enabled reports whether the Linear webhook is switched on.
+func (l Linear) Enabled() bool { return len(l.Teams) > 0 }
+
+// LinearSecretEnv names the variable that holds the webhook signing secret.
+const LinearSecretEnv = "LINEAR_WEBHOOK_SECRET"
+
+const (
+	defaultLinearJobsPerHour = 20
+	minLinearSecretBytes     = 16
+)
+
 type Config struct {
 	Server Server `yaml:"server"`
 	GitHub GitHub `yaml:"github"`
+	Linear Linear `yaml:"linear"`
 	path   string
 }
 
@@ -100,6 +133,10 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	if err := applyAppDefaults(machinistConfig.GitHub.App, machinistConfig.Server.configDir); err != nil {
+		return Config{}, err
+	}
+	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv(LinearSecretEnv))
+	if err != nil {
 		return Config{}, err
 	}
 	return machinistConfig, nil
@@ -193,6 +230,45 @@ func applyServerDefaults(server Server) (Server, error) {
 		}
 	}
 	return server, nil
+}
+
+func applyLinearDefaults(linear Linear, secret string) (Linear, error) {
+	if !linear.Enabled() {
+		if linear.AppUserID != "" || linear.Preset != "" || len(linear.AllowedUsers) > 0 {
+			return Linear{}, errors.New("linear: set teams to switch the webhook on, or remove the linear section")
+		}
+		return linear, nil
+	}
+	if len(strings.TrimSpace(secret)) < minLinearSecretBytes {
+		return Linear{}, fmt.Errorf("linear: %s must hold the webhook's signing secret, at least %d characters", LinearSecretEnv, minLinearSecretBytes)
+	}
+	linear.Secret = strings.TrimSpace(secret)
+	linear.AppUserID = strings.TrimSpace(linear.AppUserID)
+	if linear.AppUserID == "" {
+		return Linear{}, errors.New("linear: set app_user_id to the Machinist app's Linear user, so only issues assigned to it start jobs")
+	}
+	allowed := linear.AllowedUsers[:0:0]
+	for _, user := range linear.AllowedUsers {
+		if user = strings.TrimSpace(user); user != "" {
+			allowed = append(allowed, user)
+		}
+	}
+	if len(allowed) == 0 {
+		return Linear{}, errors.New("linear: list the Linear user IDs allowed to assign work in allowed_users")
+	}
+	linear.AllowedUsers = allowed
+	for team, repository := range linear.Teams {
+		if strings.TrimSpace(team) == "" || strings.TrimSpace(repository) == "" {
+			return Linear{}, errors.New("linear: each team needs a key and a repository")
+		}
+	}
+	if linear.MaxJobsPerHour < 0 {
+		return Linear{}, errors.New("linear: max_jobs_per_hour must be positive")
+	}
+	if linear.MaxJobsPerHour == 0 {
+		linear.MaxJobsPerHour = defaultLinearJobsPerHour
+	}
+	return linear, nil
 }
 
 func applyAppDefaults(app *GitHubApp, base string) error {
