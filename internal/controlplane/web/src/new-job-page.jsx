@@ -2,15 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
-import { canStart, initialPreset, keyFor, runRequest, titleOf } from "./new-job.js";
+import { canStart, initialPreset, keyFor, offersPresetChoice, runRequest, titleOf } from "./new-job.js";
 import { jobHref } from "./routes.js";
-
-function Steps({ preset }) {
-  if (!preset?.steps?.length) return null;
-  return <ol className="preset-steps" aria-label={`Steps of ${preset.name}`}>
-    {preset.steps.map((step, index) => <li key={`${step}-${index}`}>{step}</li>)}
-  </ol>;
-}
 
 // NewJobPage starts a job through the run API, like curl or a tracker would.
 export function NewJobPage({ onSignedOut }) {
@@ -69,21 +62,12 @@ export function NewJobPage({ onSignedOut }) {
     {!options && !error && <p className="page-note" role="status">Loading presets</p>}
     {options && !options.repositories.length && <p className="page-warning" role="alert">No repositories are connected. Add them to <code>github.repositories</code> in <code>config.yaml</code>, then restart the control plane.</p>}
     {options && <form className="new-job" onSubmit={submit}>
-      <div className="new-job-choices">
-        <div>
-          <label className="field-label" htmlFor="new-job-repo">Repository</label>
-          <select id="new-job-repo" className="field-control" value={repo} onChange={event => setRepo(event.target.value)} disabled={!options.repositories.length}>
-            {options.repositories.map(name => <option key={name} value={name}>{name}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="field-label" htmlFor="new-job-preset">Preset</label>
-          <select id="new-job-preset" className="field-control" value={preset} onChange={event => setPreset(event.target.value)}>
-            {options.presets.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
-          </select>
-        </div>
+      <div>
+        <label className="field-label" htmlFor="new-job-repo">Repository</label>
+        <select id="new-job-repo" className="field-control" value={repo} onChange={event => setRepo(event.target.value)} disabled={!options.repositories.length}>
+          {options.repositories.map(name => <option key={name} value={name}>{name}</option>)}
+        </select>
       </div>
-      <Steps preset={chosen} />
       <div>
         <label className="field-label" htmlFor="new-job-prompt">Prompt</label>
         <textarea id="new-job-prompt" className="field-control new-job-prompt" rows={14} value={prompt} onChange={event => setPrompt(event.target.value)} onKeyDown={submitOnShortcut} placeholder={"What should the agent do? Paste a spec or describe the change.\n\nThe first line becomes the job's title."} />
@@ -92,7 +76,13 @@ export function NewJobPage({ onSignedOut }) {
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="new-job-actions">
         <Button type="submit" disabled={!ready}><Play className="size-4" aria-hidden="true" />{pending ? "Starting" : "Start job"}</Button>
-        <span className="field-hint">Ctrl or ⌘ + Enter</span>
+        <span className="field-hint new-job-shortcut">Ctrl or ⌘ + Enter</span>
+        {offersPresetChoice(options.presets) && <div className="new-job-preset">
+          <label htmlFor="new-job-preset">Preset</label>
+          <select id="new-job-preset" className="field-control" value={preset} onChange={event => setPreset(event.target.value)} title={chosen?.steps?.join(", ")}>
+            {options.presets.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
+          </select>
+        </div>}
       </div>
     </form>}
     {!options && error && <p className="form-error" role="alert">{error}</p>}

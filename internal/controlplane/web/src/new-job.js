@@ -41,3 +41,9 @@ export function titleOf(prompt, limit = 80) {
   const characters = Array.from(line);
   return characters.length <= limit ? line : `${characters.slice(0, limit - 1).join("").trim()}…`;
 }
+
+// The form offers a preset only when there is a choice to make. With one, every
+// job is a one-off job on the default preset.
+export function offersPresetChoice(presets) {
+  return presets.length > 1;
+}
