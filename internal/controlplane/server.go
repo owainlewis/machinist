@@ -39,6 +39,7 @@ type Server struct {
 	schedule *sources.Schedule
 	version  string
 	log      io.Writer
+	presets  []presetView
 }
 
 func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Factory, version string, log io.Writer) (*Server, error) {
@@ -75,6 +76,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		client:   client,
 		intake:   intake,
 		schedule: sources.NewSchedule(store, loaded.Automations, log),
+		presets:  presetViews(loaded),
 		version:  version,
 		log:      log,
 	}, nil
@@ -118,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/events", s.requireToken(s.ingestEvents))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.requireToken(s.complete))
 	mux.HandleFunc("GET /api/v1/repositories", s.requireToken(s.listRepositories))
+	mux.HandleFunc("GET /api/v1/presets", s.requireToken(s.listPresets))
 	mux.HandleFunc("GET /api/v1/automations", s.requireToken(s.listAutomations))
 	mux.HandleFunc("POST /api/v1/automations/{name}/run", s.requireToken(s.runAutomation))
 	mux.Handle("/", http.FileServer(http.FS(mustSub(webAssets, "web/dist"))))

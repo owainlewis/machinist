@@ -1,8 +1,9 @@
 # Architecture
 
 Machinist has one Go control plane with an embedded React UI, and any number of runners.
-The UI is read-only: a list of jobs, a page for each job with every step's output, and the
-runners. Jobs start through the [run API](docs/run-api.md)
+The UI shows a list of jobs, a page for each job with every step's output, and the runners.
+Its one write is the New job form, which sends the same `POST /machinist/run` as any other
+caller. Jobs start through the [run API](docs/run-api.md)
 and run headless from start to finish.
 The control plane owns tickets, the ledger, schedules, the factory's presets and the UI. It
 never runs a step. Runners do, and they dial out, so a runner behind a firewall needs no

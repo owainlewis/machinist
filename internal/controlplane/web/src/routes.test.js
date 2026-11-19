@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { jobHref, routeFromHash } from "./routes.js";
 
-test("jobs and runners are addressable", () => {
-  for (const view of ["jobs", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
+test("jobs, the new job form and runners are addressable", () => {
+  for (const view of ["jobs", "new", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
 });
 
 test("jobs is the default and unknown routes return to it", () => {

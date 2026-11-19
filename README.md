@@ -107,12 +107,13 @@ The production UI is committed, so this build does not need Node.
 
 ## Using it
 
-Jobs start through the [run API](docs/run-api.md), from `curl`, a tracker, a webhook or an
-automation. The web app is read-only:
+Jobs start from the web app's **New job** form, or through the [run API](docs/run-api.md)
+from `curl`, a tracker, a webhook or an automation:
 
 | Page | What it does |
 | --- | --- |
 | Jobs | The newest jobs, with each one's repository, preset, pull request and state |
+| New job | Pick a repository and a preset, paste a prompt or spec, and start a job. It calls the run API |
 | Job | One job: its result, its prompt, and every attempt with the output of each step |
 | Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
 
