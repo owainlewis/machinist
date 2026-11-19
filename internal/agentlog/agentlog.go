@@ -205,10 +205,22 @@ func firstLine(text string, limit int) string {
 // The runner reads it after the step and adds it to the step's result.
 const UsageFile = "usage.json"
 
+// addUsage adds usage to what earlier agents in the same step left at path,
+// so a step that runs two agents reports both.
+func addUsage(path string, usage Usage) {
+	var earlier Usage
+	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &earlier) == nil {
+		usage.Tokens += earlier.Tokens
+		usage.Cost += earlier.Cost
+	}
+	if data, err := json.Marshal(usage); err == nil {
+		_ = os.WriteFile(path, data, 0o600)
+	}
+}
+
 // Run starts command with stdin, formats its stdout onto stdout, and passes
-// its stderr through. It writes the reported usage to usagePath, when the
-// agent reported any and usagePath is set, and returns the command's exit
-// code.
+// its stderr through. It adds the reported usage to usagePath, when the agent
+// reported any and usagePath is set, and returns the command's exit code.
 func Run(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer, usagePath string) (int, error) {
 	if len(command) == 0 {
 		return 2, errors.New("name the agent command after --")
@@ -230,9 +242,7 @@ func Run(ctx context.Context, command []string, stdin io.Reader, stdout, stderr 
 	}
 	waitErr := process.Wait()
 	if usage != nil && usagePath != "" {
-		if data, err := json.Marshal(usage); err == nil {
-			_ = os.WriteFile(usagePath, data, 0o600)
-		}
+		addUsage(usagePath, *usage)
 	}
 	var exit *exec.ExitError
 	if errors.As(waitErr, &exit) {

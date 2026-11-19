@@ -3,6 +3,8 @@ package agentlog
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +86,21 @@ func TestRunKeepsTheExitCodeAndWritesUsage(t *testing.T) {
 	}
 	var usage Usage
 	if err := json.Unmarshal(data, &usage); err != nil || usage.Tokens != 7 || usage.Cost != 0.01 {
+		t.Fatalf("usage = %+v, err = %v", usage, err)
+	}
+}
+
+func TestRunAddsUpEveryAgentInAStep(t *testing.T) {
+	usagePath := filepath.Join(t.TempDir(), UsageFile)
+	for _, tokens := range []string{"10", "20"} {
+		script := `printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.1,"usage":{"input_tokens":` + tokens + `}}'`
+		if code, err := Run(t.Context(), []string{"sh", "-c", script}, strings.NewReader(""), io.Discard, io.Discard, usagePath); err != nil || code != 0 {
+			t.Fatalf("code = %d, err = %v", code, err)
+		}
+	}
+	data, _ := os.ReadFile(usagePath)
+	var usage Usage
+	if err := json.Unmarshal(data, &usage); err != nil || usage.Tokens != 30 || math.Abs(usage.Cost-0.2) > 1e-9 {
 		t.Fatalf("usage = %+v, err = %v", usage, err)
 	}
 }
