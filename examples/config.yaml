@@ -9,17 +9,21 @@ server:
   # tls_cert: /etc/machinist/tls.crt
   # tls_key: /etc/machinist/tls.key
 
-# The control plane reads its GitHub token from GH_TOKEN.
+# The control plane reads its GitHub token from GH_TOKEN, unless a GitHub App is
+# set. With an app, each run gets a token for its own repository that lasts an
+# hour, and no runner needs GH_TOKEN. See docs/github-app.md.
 github:
   handle: machinist-bot
   repositories: []
+  # app:
+  #   id: 123456
+  #   private_key_file: .machinist/github-app.pem
 
 # Start jobs from Linear. Off until teams is set. The signing secret is read
 # from LINEAR_WEBHOOK_SECRET. See docs/linear.md.
 # linear:
 #   app_user_id: <the Machinist app's Linear user ID>
 #   allowed_users: [<your Linear user ID>]
-#   preset: coding
 #   teams:
 #     ENG: owner/name
 #   max_jobs_per_hour: 20

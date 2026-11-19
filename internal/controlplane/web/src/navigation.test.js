@@ -20,7 +20,8 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
     { type: "step.started", message: "name=checkout" }, { type: "process.output", encoding: "base64", data: btoa("Cloning into 'repo'\n") },
     { type: "step.started", message: "name=test" }, { type: "process.output", encoding: "base64", data: btoa("FAIL tests/styles.test.ts\n") },
   ].map((event, index) => ({ sequence: index + 1, time: now, ...event }));
-  let releaseOld;
+  let releaseOld, releaseRun, holdRun = false;
+  const started = [];
   const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
   globalThis.fetch = async (url, options = {}) => {
     if (url === "/api/v1/session" && options.method === "POST") {
@@ -32,6 +33,12 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
     if (!signedIn) return reply(401, { error: "a token is required" });
     if (url === "/api/v1/repositories") return reply(200, { repositories: ["owner/repo"], name: "alice" });
     if (url === "/api/v1/tickets") return reply(200, { tickets: [older, ticket] });
+    if (url === "/api/v1/presets") return reply(200, { default: "coding", presets: [{ name: "coding", steps: ["checkout", "implement", "publish"] }, { name: "spec", steps: ["checkout", "write"] }] });
+    if (url === "/machinist/run" && options.method === "POST") {
+      started.push(JSON.parse(options.body));
+      if (holdRun) return new Promise(resolve => { releaseRun = () => resolve(reply(201, { id: "t_new", state: "queued" })); });
+      return reply(201, { id: "t_new", state: "queued" });
+    }
     if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
     if (url === "/api/v1/tickets/t_old") return new Promise(resolve => { releaseOld = () => resolve(reply(200, { ticket: older, entries: [], runs: [] })); });
     if (url === "/api/v1/tickets/t_new") return reply(200, { ticket, entries: [{ id: 1, kind: "request", author: "alice", body: "Center the toasts\n\nThey sit off to the right.", created_at: now }], runs: [run] });
@@ -78,6 +85,40 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   await eventually(() => assert.ok([...document.querySelectorAll(".step-output")].some(pane => /Cloning into/.test(pane.textContent))));
   assert.equal(document.querySelector('.step[data-state="skipped"] .step-row').disabled, true);
 
+  // Start a job from the form, and land on its page.
+  await act(async () => { window.location.hash = "#/jobs"; });
+  await eventually(() => assert.ok(document.querySelector('a[href="#/new"]')));
+  await act(async () => document.querySelector('.page-head a[href="#/new"]').click());
+  await eventually(() => assert.ok(document.querySelector("#new-job-preset")));
+  assert.equal(document.querySelector("h1").textContent, "New job");
+  assert.equal(document.querySelector('nav a[aria-current="page"]').textContent, "Jobs");
+  assert.equal(document.querySelector("#new-job-preset").value, "coding", "the default preset is chosen");
+  assert.equal(document.querySelector("#new-job-repo").value, "owner/repo");
+  assert.equal(document.querySelector("#new-job-preset").title, "checkout, implement, publish");
+  const start = () => [...document.querySelectorAll("form button")].find(button => /Start job/.test(button.textContent));
+  assert.equal(start().disabled, true, "a job needs a prompt");
+  await choose("#new-job-preset", "spec");
+  await type("#new-job-prompt", "  Write a spec for dark mode\n\nCover the settings page.  ");
+  assert.match(document.querySelector(".field-hint").textContent, /Write a spec for dark mode/);
+  await act(async () => start().click());
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Center the toasts"));
+  assert.equal(started.length, 1);
+  assert.match(started[0].key, /^ui-/);
+  assert.deepEqual({ ...started[0], key: undefined }, { key: undefined, preset: "spec", vars: { repo: "owner/repo" }, prompt: "Write a spec for dark mode\n\nCover the settings page." });
+
+  // A job that starts after someone has left the form must not pull them back.
+  holdRun = true;
+  await act(async () => { window.location.hash = "#/new"; });
+  await eventually(() => assert.ok(document.querySelector("#new-job-prompt")));
+  await type("#new-job-prompt", "Fix the footer");
+  await act(async () => start().click());
+  await eventually(() => assert.ok(releaseRun));
+  await act(async () => { window.location.hash = "#/runners"; });
+  await eventually(() => assert.equal(document.querySelector("h1").textContent, "Runners"));
+  await act(async () => { releaseRun(); await new Promise(resolve => setTimeout(resolve, 50)); });
+  assert.equal(window.location.hash, "#/runners");
+  holdRun = false;
+
   // A reply for a job someone has left must not show under the next one.
   await act(async () => { window.location.hash = "#/jobs/t_old"; });
   await eventually(() => assert.ok(releaseOld));
@@ -96,6 +137,14 @@ async function type(selector, value) {
   await act(async () => {
     setter.call(element, value);
     element.dispatchEvent(new window.Event("input", { bubbles: true }));
+  });
+}
+
+async function choose(selector, value) {
+  const element = document.querySelector(selector);
+  await act(async () => {
+    element.value = value;
+    element.dispatchEvent(new window.Event("change", { bubbles: true }));
   });
 }
 

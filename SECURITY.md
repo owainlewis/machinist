@@ -31,7 +31,10 @@ in the runner's `env`. Use dedicated service accounts with narrow scopes and pro
 and belong to the bot.
 
 **One token reaches many repositories.** A prompt injection in one repository can reach any
-other repository the token covers. Run one deployment per trust domain.
+other repository the token covers. Run one deployment per trust domain. A
+[GitHub App](docs/github-app.md) removes this: each run's token reaches its own repository
+alone, cannot change workflows or settings, and expires after an hour. The app's private key
+stays on the control plane.
 
 **Machinist tokens are powerful.** Any token holder can read run history, claim runs, and
 assign work that tells an agent to reveal its runner's credentials. Treat a token as equal to the

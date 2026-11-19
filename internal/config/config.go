@@ -46,6 +46,16 @@ func (s Server) RunDeadline() time.Duration { return s.runTimeout }
 type GitHub struct {
 	Handle       string   `yaml:"handle"`
 	Repositories []string `yaml:"repositories"`
+	// App, when set, gives each run a short-lived token for its repository
+	// alone, in place of a token on the runner.
+	App *GitHubApp `yaml:"app"`
+}
+
+// GitHubApp names a GitHub App and the file that holds its private key. The key
+// itself never goes in the configuration.
+type GitHubApp struct {
+	ID             int64  `yaml:"id"`
+	PrivateKeyFile string `yaml:"private_key_file"`
 }
 
 // Linear starts jobs from a Linear webhook. It is off until teams lists at
@@ -120,6 +130,9 @@ func LoadConfig(path string) (Config, error) {
 	machinistConfig.Server.configDir = filepath.Dir(absPath)
 	machinistConfig.Server, err = applyServerDefaults(machinistConfig.Server)
 	if err != nil {
+		return Config{}, err
+	}
+	if err := applyAppDefaults(machinistConfig.GitHub.App, machinistConfig.Server.configDir); err != nil {
 		return Config{}, err
 	}
 	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv(LinearSecretEnv))
@@ -256,6 +269,24 @@ func applyLinearDefaults(linear Linear, secret string) (Linear, error) {
 		linear.MaxJobsPerHour = defaultLinearJobsPerHour
 	}
 	return linear, nil
+}
+
+func applyAppDefaults(app *GitHubApp, base string) error {
+	if app == nil {
+		return nil
+	}
+	if app.ID <= 0 {
+		return errors.New("github.app.id is required: the App ID from the app's settings page")
+	}
+	if app.PrivateKeyFile == "" {
+		return errors.New("github.app.private_key_file is required: the path to the app's private key")
+	}
+	path, err := resolveConfigPath(app.PrivateKeyFile, base)
+	if err != nil {
+		return err
+	}
+	app.PrivateKeyFile = path
+	return nil
 }
 
 func resolveConfigPath(path, base string) (string, error) {

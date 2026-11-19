@@ -17,6 +17,7 @@ Start with the [quick start](../README.md#quick-start).
 | [Configuration](configuration.md) | Look up every setting |
 | [Runners](runners.md) | Add local and Kubernetes runners |
 | [Credentials](credentials.md) | Choose the credentials steps get |
+| [GitHub App](github-app.md) | Give each run a short-lived token for its own repository |
 | [VM deployment](vm-deployment.md) | Run the control plane and a runner on a VM |
 | [Continuous deployment](local-factory/continuous-deployment.md) | Release to GKE |
 | [Architecture](../ARCHITECTURE.md) | See how the pieces fit |
@@ -27,7 +28,7 @@ Start with the [quick start](../README.md#quick-start).
 | Guide | Use it to |
 | --- | --- |
 | [Development](development.md) | Build, test and contribute |
-| [Direction](direction.md) | See what Machinist is for and what is missing |
+| [Vision](../VISION.md) | See what Machinist is for, where it is, and what comes next |
 | [Design](designs/generic-runner.md) | Read the design: one API, presets of steps, runners |
 | [Earlier design](designs/machinist-redesign.md) | Read the GitHub-first design the code still follows |
 | [Examples](../examples/README.md) | See the files `machinist init` installs |

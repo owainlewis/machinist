@@ -28,8 +28,9 @@ my-machinist/          a git repository
 
 ## Control plane: config.yaml
 
-The control plane reads its GitHub token from `GH_TOKEN`. It must belong to `github.handle`,
-or startup stops.
+The control plane reads its GitHub token from `GH_TOKEN`, unless `github.app` is set. Then
+it makes short-lived tokens from the [GitHub App](github-app.md) for its own calls and for
+each run, and needs no `GH_TOKEN`.
 
 ```yaml
 server:
@@ -56,6 +57,8 @@ github:
 | `tls_cert`, `tls_key` | Serve HTTPS, and mark the sign-in cookie Secure |
 | `github.handle` | The bot's login. Use a dedicated account |
 | `github.repositories` | The repositories Machinist serves |
+| `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
+| `github.app.private_key_file` | The app's private key file. Keep it out of git |
 | `linear.*` | Start jobs from Linear issues. Off unless `linear.teams` is set. See [Linear](linear.md) |
 
 ## Runner: runner.yaml

@@ -47,6 +47,10 @@ func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, er
 	} else if !errors.Is(err, tickets.ErrNotFound) {
 		return tickets.Ticket{}, false, err
 	}
+	// A one-off job names no preset and gets the default one.
+	if job.preset == "" {
+		job.preset = i.DefaultPreset
+	}
 	if i.Presets == nil || !i.Presets(job.preset) {
 		return tickets.Ticket{}, false, invalid("preset %q does not exist", job.preset)
 	}

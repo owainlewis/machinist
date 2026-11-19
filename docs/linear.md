@@ -22,7 +22,6 @@ linear:
   app_user_id: <the app's user ID>
   allowed_users:
     - <your Linear user ID>
-  preset: coding
   teams:
     ENG: owner/name
   max_jobs_per_hour: 20

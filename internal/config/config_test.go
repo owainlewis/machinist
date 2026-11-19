@@ -117,6 +117,29 @@ func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsTheGitHubApp(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.yaml")
+	writeTestFile(t, path, "github:\n  handle: bot\n  app:\n    id: 123\n    private_key_file: keys/app.pem\n")
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app := loaded.GitHub.App; app == nil || app.ID != 123 || app.PrivateKeyFile != filepath.Join(directory, "keys", "app.pem") {
+		t.Fatalf("app = %+v", loaded.GitHub.App)
+	}
+	for _, test := range []struct{ body, want string }{
+		{"github:\n  app:\n    private_key_file: app.pem\n", "github.app.id"},
+		{"github:\n  app:\n    id: 1\n", "github.app.private_key_file"},
+		{"github:\n  app:\n    id: 1\n    private_key: secret\n", "unknown key private_key"},
+	} {
+		writeTestFile(t, path, test.body)
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("%q: error = %v", test.body, err)
+		}
+	}
+}
+
 func TestExampleConfigurationLoads(t *testing.T) {
 	loaded, err := LoadConfig(filepath.Join("..", "..", "examples", "config.yaml"))
 	if err != nil {

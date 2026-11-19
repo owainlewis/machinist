@@ -1,6 +1,7 @@
-const pages = new Set(["jobs", "runners"]);
+const pages = new Set(["jobs", "new", "runners"]);
 
-// #/jobs lists jobs, #/jobs/<id> opens one and #/runners lists runners.
+// #/jobs lists jobs, #/jobs/<id> opens one, #/new starts one and #/runners
+// lists runners.
 export function routeFromHash(hash) {
   const value = hash.replace(/^#\//, "");
   if (value.startsWith("jobs/") && value.slice(5)) {

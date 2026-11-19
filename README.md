@@ -15,10 +15,9 @@ software.
 - **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.
 
 Send the work to the [run API](docs/run-api.md), or let an automation start it. The job works on its own branch, and the default preset opens one pull request.
-When a step needs a decision, it asks and the job waits.
+A job runs headless from start to finish and never stops to ask a question.
 
-Machinist is moving to one generic workflow runner. See [Direction](docs/direction.md) for where
-it is going and how far the code has got.
+See [Vision](VISION.md) for what Machinist is for, where it is, and what comes next.
 
 <a id="quick-start"></a>
 
@@ -82,47 +81,43 @@ and adds it to `.gitignore`. Run every command below from this directory, or pas
     TOKEN=$(machinist token create "$USER" | tail -n 1)
     ```
 
-5.  Start a job with the `hello` preset. It clones nothing and runs no agent, so it proves
-    the runner works in a few seconds:
+5.  Open `http://127.0.0.1:7331`, sign in with the token and select **New job**. Pick the
+    repository, type what you want done, and select **Start job**. Claude Code does the
+    work and opens a draft pull request. The same from `curl`:
 
     ```sh
     curl -sS -X POST http://127.0.0.1:7331/machinist/run \
       -H "Authorization: Bearer $TOKEN" \
-      -d '{"key":"hello-1","preset":"hello","vars":{"repo":"owner/name"},"prompt":"Say hello"}'
+      -d '{"key":"fix-1","vars":{"repo":"owner/name"},"prompt":"Fix the toast position"}'
     ```
 
-6.  Open `http://127.0.0.1:7331`, sign in with the token and open the job. It should be
-    Done, with each step's output.
-7.  Now give it real work with the `coding` preset. It opens a draft pull request:
-
-    ```sh
-    curl -sS -X POST http://127.0.0.1:7331/machinist/run \
-      -H "Authorization: Bearer $TOKEN" \
-      -d '{"key":"fix-1","preset":"coding","vars":{"repo":"owner/name"},"prompt":"Fix the toast position"}'
-    ```
-
-The pull request comes from whoever owns `GH_TOKEN`. For a team, give the control plane
-and runners a bot account's token instead, and set `handle` to its login.
+The pull request comes from whoever owns `GH_TOKEN`. For a team, use a
+[GitHub App](docs/github-app.md) instead: each run gets a token for its own repository that
+lasts an hour, and no runner holds a GitHub token.
 
 The production UI is committed, so this build does not need Node.
 
 ## Using it
 
-Jobs start through the [run API](docs/run-api.md), from `curl`, a tracker, a webhook or an
-automation, or when a Linear issue is assigned to the Machinist app (see [Linear](docs/linear.md)). The web app is read-only:
+Jobs start from the web app's **New job** form, through the [run API](docs/run-api.md)
+from `curl`, a tracker, a webhook or an automation, or when a Linear issue is assigned to
+the Machinist app (see [Linear](docs/linear.md)):
 
 | Page | What it does |
 | --- | --- |
 | Jobs | The newest jobs, with each one's repository, preset, pull request and state |
+| New job | Pick a repository, paste a prompt or spec, and start a job. It calls the run API |
 | Job | One job: its result, its prompt, and every attempt with the output of each step |
 | Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
 
 To stop a job, `POST /machinist/jobs/{id}/cancel`.
 
 Jobs run headless, from start to finish, and never stop to ask a question. When the agent
-has to guess, it says so under **Assumptions** in the pull request. For work that needs a
-person's decisions first, run the `spec` preset, edit the spec it returns, and send that
-as the prompt of a `coding` job.
+has to guess, it says so under **Assumptions** in the pull request.
+
+Every job uses the `default` preset unless it names another: clone, run Claude Code on the
+prompt, open one pull request. Add a preset to `factory/presets/` only when a kind of job
+needs different steps.
 
 ## Testing Machinist itself
 
@@ -148,7 +143,7 @@ of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
 | Guide | What it covers |
 | --- | --- |
 | [Documentation](docs/README.md) | The full list |
-| [Direction](docs/direction.md) | What Machinist is for, and what is missing |
+| [Vision](VISION.md) | What Machinist is for, where it is, and what comes next |
 | [Run API](docs/run-api.md) | Starting jobs from any system |
 | [Factory files](docs/factory.md) | Presets and automations |
 | [Runners](docs/runners.md) | Adding local and Kubernetes runners |
