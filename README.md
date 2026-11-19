@@ -100,8 +100,9 @@ and adds it to `.gitignore`. Run every command below from this directory, or pas
       -d '{"key":"fix-1","preset":"coding","vars":{"repo":"owner/name"},"prompt":"Fix the toast position"}'
     ```
 
-The pull request comes from whoever owns `GH_TOKEN`. For a team, give the control plane
-and runners a bot account's token instead, and set `handle` to its login.
+The pull request comes from whoever owns `GH_TOKEN`. For a team, use a
+[GitHub App](docs/github-app.md) instead: each run gets a token for its own repository that
+lasts an hour, and no runner holds a GitHub token.
 
 The production UI is committed, so this build does not need Node.
 

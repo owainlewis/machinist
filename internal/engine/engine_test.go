@@ -100,11 +100,47 @@ func TestAssignBuildsTheRunRequest(t *testing.T) {
 	if len(request.Steps) != 2 || request.Steps[0] != testPreset().Steps[0] {
 		t.Fatalf("steps = %+v", request.Steps)
 	}
+	if request.GitHubToken != "" {
+		t.Fatalf("a run without a GitHub App got token %q", request.GitHubToken)
+	}
 	if !runner.ValidRunID(request.RunID) {
 		t.Fatalf("run ID = %q", request.RunID)
 	}
 	if !strings.Contains(prompt(t, request), "THE REQUEST") {
 		t.Fatalf("prompt = %q", prompt(t, request))
+	}
+}
+
+func TestAssignGivesTheRunATokenForItsRepository(t *testing.T) {
+	e := newEngine(t)
+	asked := ""
+	e.GitHubToken = func(_ context.Context, repository string) (string, error) {
+		asked = repository
+		return "ghs_scoped", nil
+	}
+	newTicket(t, e, "api")
+	if request := assignRun(t, e); request.GitHubToken != "ghs_scoped" || asked != "owner/repo" {
+		t.Fatalf("token = %q for %q", request.GitHubToken, asked)
+	}
+}
+
+func TestAssignFailsTheJobWhenNoTokenCanBeMade(t *testing.T) {
+	e := newEngine(t)
+	e.GitHubToken = func(context.Context, string) (string, error) {
+		return "", errors.New("the GitHub App is not installed on owner/repo")
+	}
+	ticket := newTicket(t, e, "api")
+	if err := e.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}); err != nil || request != nil {
+		t.Fatalf("request = %+v, err = %v", request, err)
+	}
+	if got := state(t, e, ticket.ID); got != tickets.StateFailed {
+		t.Fatalf("state = %q", got)
+	}
+	if message := lastMessage(t, e, ticket.ID); !strings.Contains(message, "not installed on owner/repo") {
+		t.Fatalf("message = %q", message)
 	}
 }
 

@@ -35,6 +35,9 @@ func BotEmail(handle string) string { return handle + "@users.noreply.github.com
 // PRFinder finds the pull request for a branch, or nil if there is none.
 type PRFinder func(ctx context.Context, repository, branch string) (*PR, error)
 
+// TokenMinter returns a short-lived GitHub token for one repository.
+type TokenMinter func(ctx context.Context, repository string) (string, error)
+
 type Options struct {
 	Store      *tickets.Store
 	Factory    *factory.Factory
@@ -42,7 +45,10 @@ type Options struct {
 	Handle     string
 	FindPR     PRFinder
 	Post       Poster
-	Log        io.Writer
+	// GitHubToken, when set, gives each run its own token for its repository.
+	// Without it, a runner uses its own GH_TOKEN.
+	GitHubToken TokenMinter
+	Log         io.Writer
 }
 
 type Engine struct {
@@ -137,6 +143,16 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 	if preset.Timeout > 0 {
 		timeout = preset.Timeout
 	}
+	token := ""
+	if e.GitHubToken != nil {
+		token, err = e.GitHubToken(ctx, claim.Ticket.Repo)
+		if err != nil {
+			message := fmt.Sprintf("Machinist could not get a GitHub token from the GitHub App: %v.", err)
+			return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
+				return tickets.Transition{State: tickets.StateFailed, Message: message}
+			})
+		}
+	}
 	return &runner.RunRequest{
 		RunID:         claim.Run.ID,
 		TicketID:      claim.Ticket.ID,
@@ -150,6 +166,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		TimeoutMillis: timeout.Milliseconds(),
 		GitName:       e.Handle,
 		GitEmail:      BotEmail(e.Handle),
+		GitHubToken:   token,
 	}, nil
 }
 

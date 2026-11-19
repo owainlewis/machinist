@@ -2,6 +2,7 @@ package runner
 
 import (
 	"encoding/hex"
+	"errors"
 	"strings"
 
 	"github.com/owainlewis/machinist/internal/protocol"
@@ -32,6 +33,9 @@ type RunRequest struct {
 	TimeoutMillis int64             `json:"timeout_millis"`
 	GitName       string            `json:"git_name"`
 	GitEmail      string            `json:"git_email"`
+	// GitHubToken is a short-lived token for Repository alone, when the
+	// control plane has a GitHub App. Without it, the runner uses GH_TOKEN.
+	GitHubToken string `json:"github_token,omitempty"`
 }
 
 // RunResult is what one run produced, on either runner type.
@@ -49,4 +53,20 @@ func ValidRunID(value string) bool {
 	}
 	_, err := hex.DecodeString(strings.TrimPrefix(value, "run_"))
 	return err == nil
+}
+
+// ErrNoGitHubToken means a run has no token of its own and the runner has no
+// GH_TOKEN to fall back on.
+var ErrNoGitHubToken = errors.New("no GitHub token: give the control plane a GitHub App (github.app), or set GH_TOKEN on the runner")
+
+// RunToken is the token a run's steps use: the run's own, or else fallback,
+// the runner's GH_TOKEN.
+func RunToken(request RunRequest, fallback string) (string, error) {
+	if request.GitHubToken != "" {
+		return request.GitHubToken, nil
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", ErrNoGitHubToken
 }
