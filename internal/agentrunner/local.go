@@ -2,7 +2,6 @@ package agentrunner
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,11 +23,10 @@ type Local struct {
 }
 
 // NewLocal checks that every variable this runner passes to steps is set.
+// GH_TOKEN is optional: a control plane with a GitHub App sends each run a
+// token of its own.
 func NewLocal(runnerConfig config.Runner) (*Local, error) {
 	local := &Local{config: runnerConfig, getenv: os.Getenv}
-	if local.getenv("GH_TOKEN") == "" {
-		return nil, errors.New("GH_TOKEN is required")
-	}
 	for _, name := range runnerConfig.Env {
 		if local.getenv(name) == "" {
 			return nil, fmt.Errorf("env: %s is not set", name)
@@ -48,7 +46,11 @@ func (l *Local) environment(names []string) []string {
 }
 
 func (l *Local) workspaceOptions(request runner.RunRequest, root string) (runner.WorkspaceOptions, error) {
-	options := runner.WorkspaceOptions{Request: request, Root: root, GitHubToken: l.getenv("GH_TOKEN"), Home: filepath.Join(root, "home")}
+	token, err := runner.RunToken(request, l.getenv("GH_TOKEN"))
+	if err != nil {
+		return runner.WorkspaceOptions{}, err
+	}
+	options := runner.WorkspaceOptions{Request: request, Root: root, GitHubToken: token, Home: filepath.Join(root, "home")}
 	options.Environment = append(l.environment(environmentAllowlist), l.environment(l.config.Env)...)
 	if l.config.Login {
 		options.Environment = append(options.Environment, l.environment(loginAllowlist)...)

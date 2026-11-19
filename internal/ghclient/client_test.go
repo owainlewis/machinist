@@ -3,6 +3,8 @@ package ghclient
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -117,5 +119,33 @@ func TestTokenScopes(t *testing.T) {
 				t.Fatalf("calls = %v", calls)
 			}
 		})
+	}
+}
+
+func TestWithTokenGivesEachCommandATokenForItsRepository(t *testing.T) {
+	directory := t.TempDir()
+	script := filepath.Join(directory, "gh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s %s' \"$GH_TOKEN\" \"$GITHUB_TOKEN\" > \""+directory+"/seen\"\necho '{}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_TOKEN", "ghp_broad")
+	t.Setenv("GITHUB_TOKEN", "ghp_broad")
+	asked := ""
+	client := (&Client{executable: script, timeout: time.Minute}).WithToken(func(_ context.Context, repository string) (string, error) {
+		asked = repository
+		return "ghs_scoped", nil
+	})
+	if _, err := client.Issue(t.Context(), "owner/repo", 1); err != nil {
+		t.Fatal(err)
+	}
+	if seen, _ := os.ReadFile(filepath.Join(directory, "seen")); string(seen) != "ghs_scoped " || asked != "owner/repo" {
+		t.Fatalf("seen = %q for %q", seen, asked)
+	}
+	failing := (&Client{executable: script, timeout: time.Minute}).WithToken(func(context.Context, string) (string, error) {
+		return "", errors.New("the GitHub App is not installed on owner/repo")
+	})
+	var ghError *Error
+	if _, err := failing.Issue(t.Context(), "owner/repo", 1); !errors.As(err, &ghError) || ghError.Kind != ErrorAuth || !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("error = %v", err)
 	}
 }

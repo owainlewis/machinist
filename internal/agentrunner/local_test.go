@@ -47,10 +47,6 @@ func localRequest(steps ...runner.Step) runner.RunRequest {
 func TestNewLocalRequiresEveryVariableItPasses(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 	cfg := config.Runner{Env: []string{"MACHINIST_TEST_KEY"}}
-	if _, err := NewLocal(cfg); err == nil || !strings.Contains(err.Error(), "GH_TOKEN") {
-		t.Fatalf("error = %v", err)
-	}
-	t.Setenv("GH_TOKEN", "x")
 	if _, err := NewLocal(cfg); err == nil || !strings.Contains(err.Error(), "MACHINIST_TEST_KEY") {
 		t.Fatalf("error = %v", err)
 	}
@@ -92,6 +88,28 @@ func TestLocalStepsGetAPrivateHomeAndOnlyAllowedEnvironment(t *testing.T) {
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Fatalf("workspace and private home were not removed: %v", err)
+	}
+}
+
+func TestLocalStepsUseTheRunsOwnGitHubToken(t *testing.T) {
+	output := t.TempDir()
+	local, _ := newLocal(t, config.Runner{})
+	request := localRequest(runner.Step{Name: "look", Run: "printf %s \"$GH_TOKEN\" > " + output + "/token"})
+	request.GitHubToken = "ghs_for_this_run"
+	if result := local.Execute(t.Context(), request); result.State != runner.StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+	if token, _ := os.ReadFile(filepath.Join(output, "token")); string(token) != "ghs_for_this_run" {
+		t.Fatalf("token = %q", token)
+	}
+}
+
+func TestLocalWithoutAnyGitHubTokenFailsTheRun(t *testing.T) {
+	local, _ := newLocal(t, config.Runner{})
+	t.Setenv("GH_TOKEN", "")
+	result := local.Execute(t.Context(), localRequest(runner.Step{Name: "look", Run: "true"}))
+	if result.State != runner.StateFailed || !strings.Contains(result.Error, "github.app") {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
