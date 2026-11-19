@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/agentlog"
 	"github.com/owainlewis/machinist/internal/githubauth"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
@@ -104,8 +106,10 @@ func writeFiles(control string, files map[string]string) error {
 	return nil
 }
 
-// withScriptsOnPath puts the factory's scripts first on PATH. When a key is
-// listed twice, a process sees the last value.
+// withScriptsOnPath puts the factory's scripts first on PATH, and the running
+// machinist's own directory last, so a step can call machinist agent-log even
+// when machinist is not installed on PATH. When a key is listed twice, a
+// process sees the last value.
 func withScriptsOnPath(environment []string, control string) []string {
 	path := defaultPath
 	for _, entry := range environment {
@@ -113,7 +117,11 @@ func withScriptsOnPath(environment []string, control string) []string {
 			path = value
 		}
 	}
-	return append(environment, "PATH="+filepath.Join(control, "scripts")+string(os.PathListSeparator)+path)
+	path = filepath.Join(control, "scripts") + string(os.PathListSeparator) + path
+	if executable, err := os.Executable(); err == nil {
+		path += string(os.PathListSeparator) + filepath.Dir(executable)
+	}
+	return append(environment, "PATH="+path)
 }
 
 func stepEnvironment(options WorkspaceOptions, control string) ([]string, error) {
@@ -183,6 +191,7 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 		entry := &results[index]
 		entry.State = string(result.State)
 		entry.DurationMillis = result.DurationMillis
+		entry.Tokens, entry.Cost = stepUsage(workspace.Control)
 		if result.State != StateSucceeded {
 			output.State = result.State
 			if err != nil {
@@ -203,6 +212,22 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 	}
 	output.Stages = results
 	return output
+}
+
+// stepUsage reads the tokens and cost an agent reported during a step, which
+// machinist agent-log leaves in the control directory, and removes the file so
+// the next step starts without it. A missing or unreadable file reports none.
+func stepUsage(control string) (*int64, *float64) {
+	body, err := readControlFile(control, agentlog.UsageFile)
+	_ = os.Remove(filepath.Join(control, agentlog.UsageFile))
+	if err != nil || body == "" {
+		return nil, nil
+	}
+	var usage agentlog.Usage
+	if json.Unmarshal([]byte(body), &usage) != nil || usage.Tokens < 0 || usage.Cost < 0 {
+		return nil, nil
+	}
+	return &usage.Tokens, &usage.Cost
 }
 
 // finalReport is the run's result: result.md, or a plain summary.

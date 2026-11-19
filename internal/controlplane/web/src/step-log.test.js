@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { outputLimit, pollEvents, steps } from "./step-log.js";
+import { latestAction, outputLimit, pollEvents, stepTime, steps } from "./step-log.js";
 
 const output = (text, stream = "stdout") => ({ type: "process.output", stream, encoding: "base64", data: Buffer.from(text).toString("base64") });
 const started = name => ({ type: "step.started", message: `name=${name}`, time: "2026-11-17T21:24:57Z" });
@@ -53,4 +53,17 @@ test("the pipeline shows every preset step, and the ones not reached yet", async
   assert.deepEqual(pipeline(["checkout", "plan", "test"], [], "").map(step => step.state), ["pending", "pending", "pending"]);
   assert.deepEqual(pipeline(["checkout", "test"], [{ name: "checkout", state: "failed" }], "failed").map(step => step.state), ["failed", "skipped"]);
   assert.deepEqual(pipeline(["new"], [{ name: "old", state: "succeeded" }], "succeeded").map(step => step.name), ["old"]);
+});
+
+test("the latest action is the last line agent-log marked as one", () => {
+  assert.equal(latestAction("Claude Code started\n▸ Read go.mod\nThinking it over\n▸ Run go test ./...\nok\n"), "Run go test ./...");
+  assert.equal(latestAction("plain output\n"), "");
+  assert.equal(latestAction(), "");
+});
+
+test("a running step counts up from when it started, and an ended one shows how long it took", () => {
+  const start = Date.parse("2026-11-19T15:00:00Z");
+  assert.equal(stepTime({ state: "running", started_at: "2026-11-19T15:00:00Z" }, start + 192000), "3m 12s");
+  assert.equal(stepTime({ state: "succeeded", started_at: "2026-11-19T15:00:00Z", duration_millis: 45000 }, start + 999999), "45s");
+  assert.equal(stepTime({ state: "pending" }), "");
 });

@@ -28,7 +28,7 @@ func writeConfigFile(t *testing.T, directory, name, body string) string {
 func writeStartConfig(t *testing.T) string {
 	t.Helper()
 	directory := t.TempDir()
-	writeConfigFile(t, directory, "factory/presets/default.yaml", "steps:\n  - name: work\n    run: \"true\"\n")
+	writeConfigFile(t, directory, "factory/presets/default.yaml", "description: Test.\nsteps:\n  - name: work\n    run: \"true\"\n")
 	return writeConfigFile(t, directory, "config.yaml", "server:\n  listen: 127.0.0.1:0\n  database: tickets.db\n  factory: factory\n\ngithub:\n  handle: machinist-bot\n")
 }
 

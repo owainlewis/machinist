@@ -81,6 +81,13 @@ The control plane stores that with the time of last contact, and heartbeats keep
 current while every slot is busy. The Runners page reads it with the running runs and the
 queue, so it is the same after a control plane restart.
 
+Step output reaches the control plane as events about once a second. `machinist agent-log`
+runs inside a step and turns Claude Code's stream-json into readable lines, one per message
+or action, and leaves the tokens and cost the agent reported in `usage.json`. The runner
+adds them to the step's result and the run's totals. As events arrive, the control plane
+keeps each running run's current step, when it started and the last action line, so the
+board can show what every running job is doing without reading its events.
+
 | Runner | Where steps run | Their limits |
 | --- | --- | --- |
 | Local | Processes with a private home and an allowlisted environment | The OS user and the GitHub login |
@@ -120,4 +127,5 @@ internal/controlplane  HTTP routes, sign-in and the embedded UI
 internal/agentrunner   the runner daemon, and the local and Kubernetes executors
 internal/kuberunner    gVisor Jobs, egress proxy and the code that runs in the Job
 internal/runner        workspaces, steps, process supervision and the event log
+internal/agentlog      readable live lines, tokens and cost from an agent's stream-json
 ```

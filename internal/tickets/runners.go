@@ -18,14 +18,18 @@ type Runner struct {
 	Jobs        []RunnerJob `json:"jobs"`
 }
 
-// RunnerJob is one run a runner is doing.
+// RunnerJob is one run a runner is doing, with the step it is on and the
+// last action that step's agent named.
 type RunnerJob struct {
-	RunID     string    `json:"run_id"`
-	TicketID  string    `json:"ticket_id"`
-	Title     string    `json:"title"`
-	Kind      string    `json:"kind"`
-	Reviewer  string    `json:"reviewer,omitempty"`
-	StartedAt time.Time `json:"started_at"`
+	RunID         string     `json:"run_id"`
+	TicketID      string     `json:"ticket_id"`
+	Title         string     `json:"title"`
+	Kind          string     `json:"kind"`
+	Reviewer      string     `json:"reviewer,omitempty"`
+	StartedAt     time.Time  `json:"started_at"`
+	Step          string     `json:"step,omitempty"`
+	StepStartedAt *time.Time `json:"step_started_at,omitempty"`
+	Action        string     `json:"action,omitempty"`
 }
 
 // Queue is the runs no runner has taken yet.
@@ -62,8 +66,9 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 	for index := range runners {
 		byName[runners[index].Name] = &runners[index]
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.runner,r.id,r.ticket_id,t.title,r.kind,r.reviewer,r.started_at
-  FROM runs r JOIN tickets t ON t.id=r.ticket_id WHERE r.status=? ORDER BY r.started_at`, RunRunning)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.runner,r.id,r.ticket_id,t.title,r.kind,r.reviewer,r.started_at,
+  COALESCE(p.step,''),p.step_started_at,COALESCE(p.action,'')
+  FROM runs r JOIN tickets t ON t.id=r.ticket_id LEFT JOIN run_progress p ON p.run=r.id WHERE r.status=? ORDER BY r.started_at`, RunRunning)
 	if err != nil {
 		return nil, Queue{}, err
 	}
@@ -71,10 +76,11 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 	for rows.Next() {
 		var runner string
 		var job RunnerJob
-		var started sql.NullString
-		if err := rows.Scan(&runner, &job.RunID, &job.TicketID, &job.Title, &job.Kind, &job.Reviewer, &started); err != nil {
+		var started, stepStarted sql.NullString
+		if err := rows.Scan(&runner, &job.RunID, &job.TicketID, &job.Title, &job.Kind, &job.Reviewer, &started, &job.Step, &stepStarted, &job.Action); err != nil {
 			return nil, Queue{}, err
 		}
+		job.StepStartedAt = parseTime(stepStarted)
 		if at := parseTime(started); at != nil {
 			job.StartedAt = *at
 		}

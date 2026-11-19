@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Ban, Check, Clock3, LoaderCircle, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { stateLabels } from "./jobs.js";
@@ -17,6 +17,19 @@ export function State({ value }) {
     <Icon className={cn("size-3.5", value === "running" && "state-working")} aria-hidden="true" />
     <span>{stateLabels[value] || value}</span>
   </span>;
+}
+
+// useNow is the time, updated every second while active, so an elapsed time
+// counts up on screen.
+export function useNow(active) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return undefined;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
 }
 
 export function relativeTime(value, now = Date.now()) {

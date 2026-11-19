@@ -29,7 +29,13 @@ export function prLink(ticket) {
 
 // The jobs a runner holds now.
 export function runningTickets(runners = []) {
-  return new Set(runners.flatMap(runner => (runner.jobs || []).map(job => job.ticket_id)));
+  return new Set(runningJobs(runners).keys());
+}
+
+// What each running job is doing, by its job ID: the step it is on, when that
+// step started, and the last action its agent named.
+export function runningJobs(runners = []) {
+  return new Map(runners.flatMap(runner => (runner.jobs || []).map(job => [job.ticket_id, job])));
 }
 
 // The newest job first, as the run API lists them.

@@ -23,6 +23,7 @@ jobs that do not name one.
 
 ```yaml
 # presets/default.yaml
+description: Clone the repository, run Claude Code on the prompt and open one pull request.
 timeout: 60m          # all steps together; optional
 
 steps:
@@ -36,6 +37,9 @@ steps:
   - name: test
     run: go test ./...
 ```
+
+`description` is required: one sentence on what a job on this preset does. The New job form
+shows it, with the steps, under the preset picker.
 
 `run` is shell. Use `run: |` for more than one line.
 
@@ -63,6 +67,25 @@ The shipped scripts:
 | `publish.sh` | Pushes the branch and opens one draft pull request, with `assumptions.md` as its body when it exists |
 
 To use another agent, change `agent.sh`. To change what a step asks for, edit its prompt.
+
+### Live output from an agent
+
+`claude --print` writes nothing until it ends. `agent.sh` runs it with
+`--output-format stream-json` under `machinist agent-log`, which turns the stream into one
+line per message or action as it happens:
+
+```
+Claude Code started with <model>
+▸ Read internal/server.go
+▸ Run go test ./...
+Finished after 12 turns in 3m10s, $0.42
+```
+
+Lines that start with `▸` are actions. The job page shows the latest one as what a running
+job is doing. `agent-log` also records the tokens and cost the agent reports, so the
+dashboard can count them. Wrap another agent's command the same way:
+`machinist agent-log -- <command>`. Output that is not Claude Code's stream passes through
+unchanged.
 
 Step names are letters, digits, hyphens and underscores, and are unique in a preset.
 

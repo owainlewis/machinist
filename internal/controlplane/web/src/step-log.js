@@ -1,3 +1,5 @@
+import { formatDuration } from "./jobs.js";
+
 // A step keeps the end of its output, which is where a failure shows.
 export const outputLimit = 64 * 1024;
 
@@ -43,6 +45,18 @@ export function steps(events = [], stages = [], runStatus = "") {
   });
 }
 
+// actionPrefix starts every line machinist agent-log writes for an action.
+export const actionPrefix = "▸ ";
+
+// latestAction is the last action a step's output names, without the prefix.
+export function latestAction(output = "") {
+  const lines = output.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].startsWith(actionPrefix)) return lines[index].slice(actionPrefix.length).trim();
+  }
+  return "";
+}
+
 // pollEvents says whether a run can still send events.
 export function pollEvents(run) {
   return ["queued", "running"].includes(run?.status) || (run?.status === "cancelled" && !run?.ended_at);
@@ -57,4 +71,10 @@ export function pipeline(presetSteps = [], ran = [], runStatus = "") {
   const seen = new Map(ran.map(step => [step.name, step]));
   const names = ran.length && ran.some(step => !presetSteps.includes(step.name)) ? ran.map(step => step.name) : presetSteps.length ? presetSteps : ran.map(step => step.name);
   return names.map(name => seen.get(name) || { name, output: "", error: "", state: going ? "pending" : "skipped" });
+}
+
+// stepTime is how long a step took, or, while it runs, how long it has run.
+export function stepTime(step, now = Date.now()) {
+  if (step.state === "running" && step.started_at) return formatDuration(now - Date.parse(step.started_at));
+  return step.duration_millis != null ? formatDuration(step.duration_millis) : "";
 }

@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS runners (
 CREATE TABLE IF NOT EXISTS source_cursors (source TEXT NOT NULL, repo TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(source, repo));
 CREATE TABLE IF NOT EXISTS ignored_source_keys (key TEXT PRIMARY KEY, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_activity_events (run TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(run, sequence));
+CREATE TABLE IF NOT EXISTS run_progress (run TEXT PRIMARY KEY, step TEXT NOT NULL DEFAULT '', step_started_at TEXT, action TEXT NOT NULL DEFAULT '', partial TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS run_stages (
   run TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '',
   tokens INTEGER, cost REAL, duration_millis INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', PRIMARY KEY(run, position));`
@@ -927,6 +928,10 @@ func (s *Store) IngestRunEvents(ctx context.Context, runID string, events []json
 		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence),0) FROM run_activity_events WHERE run=?`, runID).Scan(&cursor); err != nil {
 			return err
 		}
+		now, err := loadProgress(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
 		for _, raw := range events {
 			var event protocol.RunEvent
 			if len(raw) > 128<<10 || json.Unmarshal(raw, &event) != nil || event.Sequence < 1 || event.Type == "" {
@@ -954,8 +959,9 @@ func (s *Store) IngestRunEvents(ctx context.Context, runID string, events []json
 				return err
 			}
 			cursor = event.Sequence
+			now.note(event)
 		}
-		return nil
+		return saveProgress(ctx, tx, runID, now)
 	})
 	return cursor, err
 }
