@@ -13,6 +13,8 @@ file in your repository. It runs Codex on your VM every weekday at 9, and anyone
 - **Saved jobs.** A saved job is a file in git with a prompt, a repository, an agent, a host
   and an optional schedule. The web app lists them, each with a **Run** button and its
   last result. Run takes the saved prompt or an edited one for that run.
+- **Any trigger.** The **Run** button, a schedule, assigning a Linear issue, `curl` against
+  the run API, or a bot through MCP. Every caller has its own revocable token.
 - **One-off jobs.** The New job form takes a repository and a prompt and runs the defaults.
 - **Any agent.** Claude Code, Codex, OpenCode, Pi or any other command. Each agent has a
   small adapter script that takes the prompt and runs headless. Machinist is not an agent.
@@ -20,7 +22,8 @@ file in your repository. It runs Codex on your VM every weekday at 9, and anyone
   control plane for work, so it needs no inbound route. Runners carry labels such as `vm`,
   and report which agents they have. A job runs only where its host label and agent match.
 - **One place for the team.** One control plane holds every job and run. Anyone signed in
-  sees the dashboard, what is queued and running, each step's output, and the result.
+  sees the dashboard, what is queued and running, what each running agent is doing right
+  now, and the result.
 - **Headless runs.** A run never stops to ask a question. It does the work, lists its
   assumptions, and ends with a result a person reviews: a pull request, comments or a
   report.
@@ -64,14 +67,20 @@ through the API. They become saved jobs.
 
 In this order. Each ships on its own.
 
-1.  **Saved jobs in the web app.** Automations become saved jobs, listed on a Jobs page
-    tab, each with **Run**, its schedule, its last result, and Run with an edited prompt.
-2.  **Pick the agent.** `agent:` on a saved job or a one-off job, adapter scripts for
+1.  **See what a running job is doing.** Stream the agent's messages and actions to the job
+    page as they happen, show the current action and elapsed time on the board, and record
+    tokens and cost.
+2.  **Saved jobs in the web app.** Automations become saved jobs, listed on the Jobs page,
+    each with **Run**, its schedule, its last result, and Run with an edited prompt.
+3.  **An MCP server.** A bot such as a team assistant lists, runs, watches and cancels jobs
+    through MCP, with a token of its own. Tokens get scopes, such as run-only and read-only,
+    and can be revoked one at a time.
+4.  **Pick the agent.** `agent:` on a saved job or a one-off job, adapter scripts for
     Claude Code, Codex, OpenCode and Pi, and runners that report which agents they have.
-3.  **Pick the host.** Runner labels and `runs_on:` on a job. A job with no label runs on
+5.  **Pick the host.** Runner labels and `runs_on:` on a job. A job with no label runs on
     any runner.
-4.  **Runs that recover.** Spot a run that has stopped making progress, retry a failed run
+6.  **Runs that recover.** Spot a run that has stopped making progress, retry a failed run
     with backoff, and stop a job when its Linear issue moves out of the state that started
     it.
-5.  **Rerun from a step.** Save each step's workspace so a failed run can start again at
+7.  **Rerun from a step.** Save each step's workspace so a failed run can start again at
     the step that failed instead of from the clone.
