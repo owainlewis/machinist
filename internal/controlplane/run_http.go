@@ -121,6 +121,15 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request, _ string) {
 	s.writeJob(w, r, http.StatusOK, ticket)
 }
 
+func (s *Server) rerunJob(w http.ResponseWriter, r *http.Request, tokenName string) {
+	ticket, err := s.store.Rerun(r.Context(), r.PathValue("id"), tokenName)
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	s.writeJob(w, r, http.StatusOK, ticket)
+}
+
 func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request, tokenName string) {
 	ticket, err := s.store.Cancel(r.Context(), r.PathValue("id"), tokenName)
 	if err != nil {

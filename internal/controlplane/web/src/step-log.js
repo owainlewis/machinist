@@ -47,3 +47,14 @@ export function steps(events = [], stages = [], runStatus = "") {
 export function pollEvents(run) {
   return ["queued", "running"].includes(run?.status) || (run?.status === "cancelled" && !run?.ended_at);
 }
+
+// pipeline is the job's steps as a graph shows them: every step of the preset,
+// in order, with what the latest run says about each. Steps the run has not
+// reached are pending while it goes, and skipped once it has ended. A run of an
+// older preset shows its own steps.
+export function pipeline(presetSteps = [], ran = [], runStatus = "") {
+  const going = !runStatus || runStatus === "running" || runStatus === "queued";
+  const seen = new Map(ran.map(step => [step.name, step]));
+  const names = ran.length && ran.some(step => !presetSteps.includes(step.name)) ? ran.map(step => step.name) : presetSteps.length ? presetSteps : ran.map(step => step.name);
+  return names.map(name => seen.get(name) || { name, output: "", error: "", state: going ? "pending" : "skipped" });
+}

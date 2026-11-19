@@ -31,6 +31,7 @@ The reply is the job, with `201` when it was created and `200` when the key alre
 | `GET /machinist/jobs` | Lists the newest jobs. `?repo=owner/name` filters them |
 | `GET /machinist/jobs/{id}` | Returns one job |
 | `POST /machinist/jobs/{id}/cancel` | Stops it. Its pull request stays open |
+| `POST /machinist/jobs/{id}/rerun` | Runs an ended job again, on the same branch, and returns it |
 
 | State | Meaning |
 | --- | --- |
@@ -40,5 +41,6 @@ The reply is the job, with `201` when it was created and `200` when the key alre
 | `failed` | It could not finish |
 | `cancelled` | Someone cancelled it |
 
-Jobs never stop to ask a question. Cancelling a job that has ended returns `409`. A missing
+Jobs never stop to ask a question. Cancelling a job that has ended returns `409`, and so does
+running a job again while it is still queued or running. A missing
 job returns `404`.
