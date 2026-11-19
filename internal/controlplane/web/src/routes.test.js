@@ -6,8 +6,9 @@ test("the dashboard, jobs, the new job form and runners are addressable", () => 
   for (const view of ["dashboard", "jobs", "new", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
 });
 
-test("jobs is the default and unknown routes return to it", () => {
-  for (const hash of ["", "#/", "#/unknown", "#/home", "#/work", "#/jobs/"]) assert.deepEqual(routeFromHash(hash), { view: "jobs", jobID: "" });
+test("the app opens on the dashboard, and unknown routes return to it", () => {
+  for (const hash of ["", "#/", "#/unknown", "#/home", "#/work"]) assert.deepEqual(routeFromHash(hash), { view: "dashboard", jobID: "" });
+  assert.deepEqual(routeFromHash("#/jobs/"), { view: "jobs", jobID: "" });
 });
 
 test("a job has its own route", () => {

@@ -128,7 +128,7 @@ code { font-size: .92em; }
 }
 
 /* Every page is a left-aligned column of blocks with one gap between them. */
-.page { display: flex; max-width: 1180px; flex-direction: column; gap: 20px; padding: 28px 32px 56px; }
+.page { display: flex; flex-direction: column; gap: 20px; padding: 28px 32px 56px; }
 .page-head { display: flex; min-height: 38px; align-items: center; justify-content: space-between; gap: 16px; }
 main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: -.01em; }
 .page-sub { margin-top: 6px; color: var(--muted-foreground); }
@@ -180,8 +180,23 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .jobs .job-detail { color: var(--muted-foreground); font-size: 13px; }
 .jobs .job-updated { color: var(--faint); font-size: 13px; text-align: right; }
 
+.page-actions { display: flex; align-items: center; gap: 12px; }
+
+/* The board: the same jobs as columns of cards. */
+.board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 16px; }
+.board-column { display: flex; min-width: 0; flex-direction: column; gap: 10px; border-radius: 12px; background: var(--muted); padding: 12px; }
+.board-column-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; color: var(--muted-foreground); font-size: 13px; font-weight: 600; }
+.board-count { border-radius: 999px; background: var(--surface); padding: 0 8px; color: var(--faint); font-size: 12px; line-height: 20px; }
+.board-cards { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.board-card { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 12px 14px; }
+.board-card:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.board-card-title { font-size: 14px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.board-card-title::after { position: absolute; inset: 0; content: ""; }
+.board-card-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted-foreground); font-size: 12px; }
+.board-empty { padding: 8px 4px; color: var(--faint); font-size: 13px; }
+@media (max-width: 900px) { .board { grid-template-columns: minmax(0, 1fr); } }
+
 /* One job: its facts, then each attempt and the steps it ran. */
-.job-page { max-width: 980px; }
 .job-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .job-head h1 { min-width: 0; font-size: 22px; line-height: 1.35; font-weight: 600; letter-spacing: -.01em; overflow-wrap: anywhere; }
 .job-head .pill { margin-top: 3px; }
@@ -217,7 +232,6 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .history p { margin-top: 2px; color: var(--muted-foreground); font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* The New job form. */
-.new-job-page { max-width: 820px; }
 .new-job { display: flex; flex-direction: column; gap: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 20px; }
 .new-job select.field-control { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%), linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
 .new-job-prompt { min-height: 240px; resize: vertical; font-size: 14px; line-height: 1.6; }
@@ -245,7 +259,7 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 
 /* Dashboard: tiles, then charts and tables in pairs. */
 .range { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); padding: 2px; }
-.range button { border-radius: 7px; padding: 5px 12px; color: var(--muted-foreground); font-size: 13px; font-weight: 500; }
+.range button { display: inline-flex; align-items: center; gap: 6px; border-radius: 7px; padding: 5px 12px; color: var(--muted-foreground); font-size: 13px; font-weight: 500; }
 .range button:hover { color: var(--foreground); }
 .range button[aria-pressed="true"] { background: var(--muted); color: var(--foreground); }
 .stat-tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }

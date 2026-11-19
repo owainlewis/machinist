@@ -17,7 +17,7 @@ import "./styles.css";
 
 const pollMillis = 2000;
 const emptyStatus = { tickets: [], runners: [], queue: null };
-const navigation = [["jobs", Rows3, "Jobs"], ["dashboard", ChartColumn, "Dashboard"], ["runners", Server, "Runners"]];
+const navigation = [["dashboard", ChartColumn, "Dashboard"], ["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"]];
 
 async function loadStatus() {
   const [tickets, runners] = await Promise.all([api("/api/v1/tickets"), api("/api/v1/runners")]);
