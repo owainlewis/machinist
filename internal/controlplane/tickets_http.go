@@ -3,9 +3,11 @@ package controlplane
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -191,4 +193,28 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 		status = http.StatusCreated
 	}
 	s.writeTicket(w, r, status, ticket)
+}
+
+// presetView is what the New job form shows of a preset: its name and the
+// names of its steps, in order.
+type presetView struct {
+	Name  string   `json:"name"`
+	Steps []string `json:"steps"`
+}
+
+func presetViews(loaded *factory.Factory) []presetView {
+	views := make([]presetView, 0, len(loaded.Presets))
+	for name, preset := range loaded.Presets {
+		steps := make([]string, 0, len(preset.Steps))
+		for _, step := range preset.Steps {
+			steps = append(steps, step.Name)
+		}
+		views = append(views, presetView{Name: name, Steps: steps})
+	}
+	sort.Slice(views, func(a, b int) bool { return views[a].Name < views[b].Name })
+	return views
+}
+
+func (s *Server) listPresets(w http.ResponseWriter, _ *http.Request, _ string) {
+	writeJSON(w, http.StatusOK, map[string]any{"presets": s.presets, "default": s.config.Server.DefaultPreset})
 }

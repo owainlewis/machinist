@@ -131,9 +131,9 @@ func runRequest(ctx context.Context, request runner.RunRequest, exchange, root, 
 		}
 		return runner.RunResult{State: state, Error: err.Error()}
 	}
-	token := os.Getenv("GH_TOKEN")
-	if token == "" {
-		return failure(fmt.Errorf("the agent Secret must hold GH_TOKEN"))
+	token, err := runner.RunToken(request, os.Getenv("GH_TOKEN"))
+	if err != nil {
+		return failure(err)
 	}
 	workspace, err := runner.PrepareWorkspace(runner.WorkspaceOptions{
 		Request:     request,

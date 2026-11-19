@@ -1,4 +1,5 @@
-# Clone the repository, let Claude Code do the work, and open one pull request.
+# A one-off job: clone the repository, let Claude Code do what the prompt asks,
+# and open one pull request. Every job uses this preset unless it names another.
 # Each run is a shell command, run with sh -e in one workspace, in order. The
 # first that fails ends the job. Scripts in factory/scripts are on PATH, and
 # factory/prompts is in $MACHINIST_DIR/prompts.

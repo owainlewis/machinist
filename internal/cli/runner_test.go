@@ -78,15 +78,6 @@ func TestKubernetesRunnerValidatesItsConfiguration(t *testing.T) {
 	}
 }
 
-func TestRunnerStartRequiresGitHubToken(t *testing.T) {
-	t.Setenv("GH_TOKEN", "")
-	path := writeConfigFile(t, t.TempDir(), "runner.yaml", runnerConfigBody)
-	var stderr bytes.Buffer
-	if exitCode := Execute(t.Context(), []string{"runner", "start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "GH_TOKEN") {
-		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
-	}
-}
-
 func TestRunnerStartReadsTokenFileAndStopsOnCancellation(t *testing.T) {
 	t.Setenv("GH_TOKEN", "fixture")
 	directory := t.TempDir()

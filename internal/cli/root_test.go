@@ -35,12 +35,15 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 	installed := regularFiles(t, directory)
 	for _, name := range []string{
 		"config.yaml", "runner.yaml", ".machinist/runner.token", ".gitignore",
-		"factory/presets/default.yaml", "factory/presets/coding.yaml", "factory/presets/maintainer.yaml", "factory/presets/hello.yaml", "factory/presets/spec.yaml",
-		"factory/prompts/rules.md", "factory/scripts/agent.sh",
-		"factory/automation-templates/review-open-prs.md",
+		"factory/presets/default.yaml", "factory/prompts/rules.md", "factory/prompts/work.md", "factory/scripts/agent.sh",
 	} {
 		if !slices.Contains(installed, name) {
 			t.Fatalf("%s is missing from %q", name, installed)
+		}
+	}
+	for _, name := range installed {
+		if strings.HasPrefix(name, "factory/presets/") && name != "factory/presets/default.yaml" {
+			t.Fatalf("init installed a preset besides default: %s", name)
 		}
 	}
 	assertStarterFactoryAndTokenWork(t, directory)
@@ -152,7 +155,7 @@ func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
 	if err := loaded.Validate("default", nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Presets["default"].Steps) != 3 || len(loaded.Presets) != 5 || len(loaded.Automations) != 0 {
+	if len(loaded.Presets["default"].Steps) != 3 || len(loaded.Presets) != 1 || len(loaded.Automations) != 0 {
 		t.Fatalf("factory = %+v", loaded)
 	}
 	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.yaml"))

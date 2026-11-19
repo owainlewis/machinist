@@ -80,7 +80,7 @@ func TestJobGivesTheSecretOnlyToTheAgentContainer(t *testing.T) {
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
-func TestSandboxRequiresGHToken(t *testing.T) {
+func TestSandboxWithoutAnyGitHubTokenFails(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 	result := runRequest(t.Context(), fixtureRequest(), t.TempDir(), t.TempDir(), t.TempDir())
 	if result.State != runner.StateFailed || !strings.Contains(result.Error, "GH_TOKEN") {
