@@ -15,7 +15,7 @@ func TestRerunStartsAFailedJobAgain(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran-once")
 	s := startWith(t, options{factory: func(t *testing.T, directory string) {
 		step := fmt.Sprintf("test -e %q || { touch %q; exit 1; }", marker, marker)
-		writeFile(t, filepath.Join(directory, "presets", "flaky.yaml"), fmt.Sprintf("timeout: 1m\nsteps:\n  - name: flaky\n    run: '%s'\n", step), 0o600)
+		writeFile(t, filepath.Join(directory, "presets", "flaky.yaml"), fmt.Sprintf("description: Test.\ntimeout: 1m\nsteps:\n  - name: flaky\n    run: '%s'\n", step), 0o600)
 	}})
 	status, body := s.call(t, http.MethodPost, "/machinist/run", map[string]any{
 		"key": "flaky-1", "preset": "flaky", "vars": map[string]string{"repo": "owner/repo"}, "prompt": "Try it",

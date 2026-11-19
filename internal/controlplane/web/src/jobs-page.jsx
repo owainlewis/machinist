@@ -1,8 +1,8 @@
 import React, { useState } from "react";
 import { Columns3, List, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { State, relativeTime } from "./display.jsx";
-import { boardColumns, boardOf, jobState, newestFirst, runningTickets } from "./jobs.js";
+import { State, relativeTime, useNow } from "./display.jsx";
+import { boardColumns, boardOf, formatDuration, jobState, newestFirst, runningJobs } from "./jobs.js";
 import { jobHref } from "./routes.js";
 
 const viewKey = "machinist-jobs-view";
@@ -29,9 +29,20 @@ function JobList({ jobs, running }) {
   </table></div>;
 }
 
-function JobCard({ ticket, state, showState }) {
+// NowDoing is the step a running job is on, how long it has been on it, and
+// the last thing its agent did.
+function NowDoing({ job, now }) {
+  const since = Date.parse(job.step_started_at || job.started_at);
+  return <div className="board-card-now">
+    {job.step && <span className="board-card-step">{job.step}{Number.isFinite(since) && <> · {formatDuration(now - since)}</>}</span>}
+    {job.action && <span className="board-card-action" title={job.action}>{job.action}</span>}
+  </div>;
+}
+
+function JobCard({ ticket, state, showState, progress, now }) {
   return <li className="board-card">
     <a className="board-card-title" href={jobHref(ticket.id)}>{ticket.title || ticket.id}</a>
+    {state === "running" && progress && (progress.step || progress.action) && <NowDoing job={progress} now={now} />}
     <div className="board-card-meta">
       <span>{ticket.repo}</span>
       {ticket.pr_number ? <span>#{ticket.pr_number}</span> : null}
@@ -43,13 +54,14 @@ function JobCard({ ticket, state, showState }) {
 
 // JobBoard shows the same jobs as columns, so what is waiting and what is
 // running can be read at a glance.
-function JobBoard({ tickets, running }) {
+function JobBoard({ tickets, running, progress }) {
   const board = boardOf(tickets, running);
+  const now = useNow(board.running.length > 0);
   return <div className="board">
     {boardColumns.map(column => <section key={column.key} className="board-column" aria-labelledby={`board-${column.key}`}>
       <h2 id={`board-${column.key}`} className="board-column-head"><span>{column.label}</span><span className="board-count">{board[column.key].length}</span></h2>
       {board[column.key].length
-        ? <ul className="board-cards">{board[column.key].map(job => <JobCard key={job.ticket.id} {...job} showState={column.key === "done"} />)}</ul>
+        ? <ul className="board-cards">{board[column.key].map(job => <JobCard key={job.ticket.id} {...job} showState={column.key === "done"} progress={progress.get(job.ticket.id)} now={now} />)}</ul>
         : <p className="board-empty">None</p>}
     </section>)}
   </div>;
@@ -58,7 +70,8 @@ function JobBoard({ tickets, running }) {
 export function JobsPage({ tickets = [], runners = [], loaded, error }) {
   const [view, setView] = useState(savedView);
   const jobs = newestFirst(tickets);
-  const running = runningTickets(runners);
+  const progress = runningJobs(runners);
+  const running = new Set(progress.keys());
   function choose(next) {
     setView(next);
     try { localStorage.setItem(viewKey, next); } catch { /* The choice lasts for this visit. */ }
@@ -77,6 +90,6 @@ export function JobsPage({ tickets = [], runners = [], loaded, error }) {
     {error && <p className="form-error" role="alert">{error}</p>}
     {!loaded && !error && <p className="page-note" role="status">Loading jobs</p>}
     {loaded && !jobs.length && <p className="empty">No jobs yet. <a href="#/new">Start one</a>, or send <code>POST /machinist/run</code>.</p>}
-    {jobs.length > 0 && (view === "board" ? <JobBoard tickets={tickets} running={running} /> : <JobList jobs={jobs} running={running} />)}
+    {jobs.length > 0 && (view === "board" ? <JobBoard tickets={tickets} running={running} progress={progress} /> : <JobList jobs={jobs} running={running} />)}
   </div>;
 }

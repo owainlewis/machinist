@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleDashed, LoaderCircle, Minus, RotateCcw } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
-import { State, relativeTime } from "./display.jsx";
+import { State, relativeTime, useNow } from "./display.jsx";
 import { formatDuration, isFinished, jobState, prLink } from "./jobs.js";
-import { pipeline, pollEvents, steps } from "./step-log.js";
+import { latestAction, pipeline, pollEvents, stepTime, steps } from "./step-log.js";
 import { Button } from "@/components/ui/button";
 
 const pollMillis = 2000;
@@ -59,7 +59,7 @@ const stateWords = { succeeded: "Passed", running: "Running", failed: "Failed", 
 // Pipeline draws the preset's steps left to right, joined in the order they
 // run. Each node shows how far the latest attempt got. Choosing one opens its
 // output below.
-function Pipeline({ nodes, onChoose }) {
+function Pipeline({ nodes, onChoose, now = Date.now() }) {
   return <section className="pipeline" aria-label="Pipeline">
     <ol>{nodes.map((step, index) => {
       const [Icon, tone] = stepIcons[step.state] || stepIcons.unknown;
@@ -69,7 +69,7 @@ function Pipeline({ nodes, onChoose }) {
         <button type="button" className="pipeline-node" disabled={empty} onClick={() => onChoose(step.name)} aria-label={`${step.name}: ${stateWords[step.state] || step.state}`}>
           <Icon className={`size-4 shrink-0 ${tone}`} aria-hidden="true" />
           <span className="pipeline-name">{step.name}</span>
-          <span className="pipeline-meta">{step.duration_millis != null && step.state !== "skipped" ? formatDuration(step.duration_millis) : stateWords[step.state]}</span>
+          <span className="pipeline-meta">{step.state !== "skipped" && stepTime(step, now) || stateWords[step.state]}</span>
         </button>
       </li>;
     })}</ol>
@@ -90,7 +90,7 @@ function StepOutput({ text }) {
   return <pre ref={pane} className="step-output" onScroll={scrolled}>{text}</pre>;
 }
 
-function Step({ step, chosen }) {
+function Step({ step, chosen, now }) {
   const [Icon, tone] = stepIcons[step.state] || stepIcons.unknown;
   const empty = !step.output && !step.error;
   const [open, setOpen] = useState(step.state === "failed" || step.state === "running");
@@ -106,7 +106,7 @@ function Step({ step, chosen }) {
       <Icon className={`size-4 shrink-0 ${tone}`} aria-hidden="true" />
       <span className="step-name">{step.name}</span>
       <span className="step-error">{step.error}</span>
-      <span className="step-time">{step.state === "skipped" ? "Skipped" : formatDuration(step.duration_millis)}</span>
+      <span className="step-time">{step.state === "skipped" ? "Skipped" : stepTime(step, now)}</span>
       <ChevronRight className="step-chevron size-4" aria-hidden="true" />
     </button>
     {open && !empty && <StepOutput text={step.output || step.error} />}
@@ -116,6 +116,9 @@ function Step({ step, chosen }) {
 function Run({ run, number, presetSteps }) {
   const { events, error } = useRunEvents(run);
   const list = steps(events, run.stages || [], run.status);
+  const now = useNow(run.status === "running");
+  const current = run.status === "running" ? list.find(step => step.state === "running") : null;
+  const action = current ? latestAction(current.output) : "";
   // chosen counts each choice, so choosing the same step twice still opens it.
   const [chosen, setChosen] = useState({ name: "", times: 0 });
   const choose = name => setChosen(previous => ({ name, times: previous.times + 1 }));
@@ -123,11 +126,12 @@ function Run({ run, number, presetSteps }) {
     <div className="run-head">
       <h2>Attempt {number}</h2>
       <span>{run.status === "queued" ? "Waiting for a runner" : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
-      {run.started_at && <span>{formatDuration((run.ended_at ? Date.parse(run.ended_at) : Date.now()) - Date.parse(run.started_at))}</span>}
+      {run.started_at && <span>{formatDuration((run.ended_at ? Date.parse(run.ended_at) : now) - Date.parse(run.started_at))}</span>}
     </div>
+    {current && <p className="run-now" aria-live="polite"><span className="run-now-step">{current.name}</span>{action || "Working"}</p>}
     {error && <p className="form-error" role="alert">{error}</p>}
-    {presetSteps && <Pipeline nodes={pipeline(presetSteps, list, run.status)} onChoose={choose} />}
-    {list.length > 0 ? <ol className="steps">{list.map(step => <Step key={step.name} step={step} chosen={chosen.name === step.name ? chosen.times : 0} />)}</ol> : <p className="page-note">{run.status === "queued" ? "No step has started." : "Loading steps"}</p>}
+    {presetSteps && <Pipeline nodes={pipeline(presetSteps, list, run.status)} onChoose={choose} now={now} />}
+    {list.length > 0 ? <ol className="steps">{list.map(step => <Step key={step.name} step={step} chosen={chosen.name === step.name ? chosen.times : 0} now={now} />)}</ol> : <p className="page-note">{run.status === "queued" ? "No step has started." : "Loading steps"}</p>}
   </section>;
 }
 

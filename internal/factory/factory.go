@@ -25,6 +25,9 @@ var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 // steps, in order, in one empty workspace.
 type Preset struct {
 	Name string
+	// Description says in a sentence what a job on this preset does. The New
+	// job form shows it under the preset picker.
+	Description string
 	// Timeout covers all steps together. Zero means the server's run deadline.
 	Timeout time.Duration
 	Steps   []runner.Step
@@ -133,8 +136,9 @@ func parseDuration(field, value string) (time.Duration, error) {
 
 func parsePreset(name, body string) (Preset, error) {
 	var settings struct {
-		Timeout string `yaml:"timeout"`
-		Steps   []struct {
+		Description string `yaml:"description"`
+		Timeout     string `yaml:"timeout"`
+		Steps       []struct {
 			Name    string `yaml:"name"`
 			Run     string `yaml:"run"`
 			Timeout string `yaml:"timeout"`
@@ -147,7 +151,7 @@ func parsePreset(name, body string) (Preset, error) {
 	if err != nil {
 		return Preset{}, err
 	}
-	preset := Preset{Name: name, Timeout: timeout}
+	preset := Preset{Name: name, Description: strings.Join(strings.Fields(settings.Description), " "), Timeout: timeout}
 	if len(settings.Steps) == 0 {
 		return Preset{}, errors.New("a preset needs at least one step")
 	}
@@ -168,6 +172,9 @@ func parsePreset(name, body string) (Preset, error) {
 			return Preset{}, err
 		}
 		preset.Steps = append(preset.Steps, runner.Step{Name: step.Name, Run: step.Run, TimeoutMillis: stepTimeout.Milliseconds()})
+	}
+	if preset.Description == "" {
+		return Preset{}, errors.New("add a description: one sentence on what a job on this preset does")
 	}
 	return preset, nil
 }

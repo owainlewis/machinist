@@ -15,7 +15,8 @@ import (
 func startSteps(t *testing.T, test string) (*system, tickets.Ticket) {
 	t.Helper()
 	s := startWith(t, options{factory: func(t *testing.T, directory string) {
-		preset := fmt.Sprintf(`steps:
+		preset := fmt.Sprintf(`description: Test.
+steps:
   - name: checkout
     run: gh repo clone "$MACHINIST_REPO" . -- --quiet
   - name: build

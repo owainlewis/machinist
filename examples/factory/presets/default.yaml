@@ -3,6 +3,7 @@
 # Each run is a shell command, run with sh -e in one workspace, in order. The
 # first that fails ends the job. Scripts in factory/scripts are on PATH, and
 # factory/prompts is in $MACHINIST_DIR/prompts.
+description: Clone the repository, run Claude Code on the prompt and open one pull request.
 timeout: 60m
 
 steps:

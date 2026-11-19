@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardOf, formatDuration, jobState, newestFirst, prLink, runningTickets } from "./jobs.js";
+import { boardOf, formatDuration, jobState, newestFirst, prLink, runningJobs, runningTickets } from "./jobs.js";
 
 test("ticket states read as the run API's job states", () => {
   assert.equal(jobState({ state: "working" }), "queued");
@@ -42,4 +42,11 @@ test("the board puts each job in Queued, Running or Done", () => {
   assert.deepEqual(board.queued.map(job => job.ticket.id), ["q_old", "q_new"], "the next to run is on top");
   assert.deepEqual(board.running.map(job => job.ticket.id), ["r"]);
   assert.deepEqual(board.done.map(job => [job.ticket.id, job.state]), [["bad", "failed"], ["ok", "done"], ["stop", "cancelled"]]);
+});
+
+test("each running job carries the step it is on and its last action", () => {
+  const job = { ticket_id: "t_1", step: "work", action: "Run go test ./..." };
+  const found = runningJobs([{ jobs: [job] }, { jobs: [{ ticket_id: "t_2" }] }, {}]);
+  assert.equal(found.get("t_1"), job);
+  assert.deepEqual([...found.keys()], ["t_1", "t_2"]);
 });

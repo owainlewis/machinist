@@ -42,3 +42,25 @@ type StageResult struct {
 	DurationMillis int64    `json:"duration_millis,omitempty"`
 	Error          string   `json:"error,omitempty"`
 }
+
+// Totals adds up the tokens and cost the stages reported. It returns nil for
+// each that no stage reported.
+func Totals(stages []StageResult) (*int64, *float64) {
+	var tokens *int64
+	var cost *float64
+	for _, stage := range stages {
+		if stage.Tokens != nil {
+			if tokens == nil {
+				tokens = new(int64)
+			}
+			*tokens += *stage.Tokens
+		}
+		if stage.Cost != nil {
+			if cost == nil {
+				cost = new(float64)
+			}
+			*cost += *stage.Cost
+		}
+	}
+	return tokens, cost
+}

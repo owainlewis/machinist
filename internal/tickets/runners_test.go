@@ -1,6 +1,9 @@
 package tickets
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"github.com/owainlewis/machinist/internal/protocol"
 	"strings"
 	"testing"
 	"time"
@@ -118,5 +121,45 @@ func TestRevokingATokenRemovesItsRunner(t *testing.T) {
 	}
 	if runners, _ := fleet(t, store); len(runners) != 0 {
 		t.Fatalf("runners = %+v", runners)
+	}
+}
+
+func TestFleetShowsWhatARunningJobIsDoing(t *testing.T) {
+	store := openStore(t)
+	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	claim := claimRun(t, store, createTicket(t, store, "api:1"))
+	output := func(sequence int, stream, text string) json.RawMessage {
+		body, _ := json.Marshal(protocol.RunEvent{Sequence: int64(sequence), Type: "process.output", Stream: stream, Encoding: "base64", Data: base64.StdEncoding.EncodeToString([]byte(text))})
+		return body
+	}
+	started := func(sequence int, name, at string) json.RawMessage {
+		body, _ := json.Marshal(protocol.RunEvent{Sequence: int64(sequence), Type: "step.started", Message: "name=" + name, Time: at})
+		return body
+	}
+	ingest := func(events ...json.RawMessage) RunnerJob {
+		t.Helper()
+		if _, err := store.IngestRunEvents(t.Context(), claim.Run.ID, events); err != nil {
+			t.Fatal(err)
+		}
+		runners, _ := fleet(t, store)
+		return runners[0].Jobs[0]
+	}
+
+	if job := ingest(started(1, "checkout", "2026-11-10T09:00:00Z")); job.Step != "checkout" || job.StepStartedAt == nil || job.Action != "" {
+		t.Fatalf("job = %+v", job)
+	}
+	job := ingest(
+		started(2, "work", "2026-11-10T09:01:00Z"),
+		output(3, "stdout", "Claude Code started\n▸ Read go.mod\nThinking\n▸ Run go test ./...\n"),
+		output(4, "stderr", "▸ not an action on stderr\n"),
+		output(5, "stdout", "Plain output\n"),
+	)
+	if job.Step != "work" || !job.StepStartedAt.Equal(time.Date(2026, 11, 10, 9, 1, 0, 0, time.UTC)) || job.Action != "Run go test ./..." {
+		t.Fatalf("job = %+v", job)
+	}
+	if job := ingest(started(6, "publish", "2026-11-10T09:05:00Z")); job.Step != "publish" || job.Action != "" {
+		t.Fatalf("a new step kept the last one's action: %+v", job)
 	}
 }

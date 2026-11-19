@@ -112,6 +112,8 @@ cat > ` + output + `/prompt
 git status --porcelain > ` + output + `/status
 echo '- Used Postgres, because the request named no database.' > "$MACHINIST_DIR/assumptions.md"
 git commit --quiet --allow-empty -m 'use postgres'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit"}}]}}'
+echo '{"type":"result","subtype":"success","num_turns":2,"duration_ms":1000,"total_cost_usd":0.25,"usage":{"input_tokens":100,"output_tokens":20}}'
 `
 }
 
@@ -158,7 +160,7 @@ func startWith(t *testing.T, chosen options) *system {
 	if chosen.claude != nil {
 		writeFile(t, filepath.Join(bin, "claude"), chosen.claude(output), 0o700)
 	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+machinistBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GH_TOKEN", "fixture-github")
 	t.Setenv("ANTHROPIC_API_KEY", "fixture-anthropic")
 	t.Setenv("OPENAI_API_KEY", "fixture-openai")
@@ -375,6 +377,12 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	}
 	if got := stepStates(run); got != "checkout=succeeded work=succeeded publish=succeeded" {
 		t.Fatalf("steps = %s", got)
+	}
+	if work := run.Stages[1]; work.Tokens == nil || *work.Tokens != 120 || work.Cost == nil || *work.Cost != 0.25 {
+		t.Fatalf("work step usage = %+v", work)
+	}
+	if run.Tokens == nil || *run.Tokens != 120 || run.Cost == nil || *run.Cost != 0.25 {
+		t.Fatalf("run usage = tokens %v cost %v", run.Tokens, run.Cost)
 	}
 	if prompt := s.read(t, "prompt"); !strings.Contains(prompt, "THE REQUEST") || !strings.Contains(prompt, "untrusted") {
 		t.Fatalf("prompt:\n%s", prompt)

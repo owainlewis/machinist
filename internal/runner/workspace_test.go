@@ -190,3 +190,33 @@ func TestRunStepsRejectsNoStepsAndBadVars(t *testing.T) {
 		t.Fatal("bad var name accepted")
 	}
 }
+
+func TestEachStepRecordsTheUsageItsAgentReported(t *testing.T) {
+	result, _ := run(t, stepsRequest(
+		Step{Name: "plan", Run: `printf '{"tokens":100,"cost":0.25}' > "$MACHINIST_DIR/usage.json"`},
+		Step{Name: "build", Run: `true`},
+		Step{Name: "review", Run: `printf '{"tokens":40,"cost":0.05}' > "$MACHINIST_DIR/usage.json"`},
+	))
+	if result.State != StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+	plan, build, review := result.Stages[0], result.Stages[1], result.Stages[2]
+	if plan.Tokens == nil || *plan.Tokens != 100 || *plan.Cost != 0.25 || build.Tokens != nil || build.Cost != nil || *review.Tokens != 40 {
+		t.Fatalf("stages = %+v", result.Stages)
+	}
+	tokens, cost := protocol.Totals(result.Stages)
+	if *tokens != 140 || *cost != 0.3 {
+		t.Fatalf("totals = %d, %v", *tokens, *cost)
+	}
+}
+
+func TestStepsCanCallTheRunningMachinist(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _ := run(t, stepsRequest(Step{Name: "path", Run: `case ":$PATH:" in *":` + filepath.Dir(executable) + `:"*) exit 0;; esac; exit 1`}))
+	if result.State != StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+}

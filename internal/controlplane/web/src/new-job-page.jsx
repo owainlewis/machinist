@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
-import { canStart, initialPreset, keyFor, offersPresetChoice, runRequest, titleOf } from "./new-job.js";
+import { canStart, initialPreset, keyFor, runRequest, titleOf } from "./new-job.js";
 import { jobHref } from "./routes.js";
 
 // NewJobPage starts a job through the run API, like curl or a tracker would.
@@ -69,6 +69,16 @@ export function NewJobPage({ onSignedOut }) {
         </select>
       </div>
       <div>
+        <label className="field-label" htmlFor="new-job-preset">Preset</label>
+        <select id="new-job-preset" className="field-control" value={preset} onChange={event => setPreset(event.target.value)} aria-describedby="new-job-preset-about">
+          {options.presets.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
+        </select>
+        {chosen && <div id="new-job-preset-about" className="preset-about">
+          {chosen.description && <p>{chosen.description}</p>}
+          <ol className="preset-steps" aria-label="Steps">{chosen.steps.map(step => <li key={step}><span>{step}</span></li>)}</ol>
+        </div>}
+      </div>
+      <div>
         <label className="field-label" htmlFor="new-job-prompt">Prompt</label>
         <textarea id="new-job-prompt" className="field-control new-job-prompt" rows={14} value={prompt} onChange={event => setPrompt(event.target.value)} onKeyDown={submitOnShortcut} placeholder={"What should the agent do? Paste a spec or describe the change.\n\nThe first line becomes the job's title."} />
         <p className="field-hint">{title ? <>Title: <strong>{title}</strong></> : "The first line becomes the job's title."}</p>
@@ -77,12 +87,6 @@ export function NewJobPage({ onSignedOut }) {
       <div className="new-job-actions">
         <Button type="submit" disabled={!ready}><Play className="size-4" aria-hidden="true" />{pending ? "Starting" : "Start job"}</Button>
         <span className="field-hint new-job-shortcut">Ctrl or ⌘ + Enter</span>
-        {offersPresetChoice(options.presets) && <div className="new-job-preset">
-          <label htmlFor="new-job-preset">Preset</label>
-          <select id="new-job-preset" className="field-control" value={preset} onChange={event => setPreset(event.target.value)} title={chosen?.steps?.join(", ")}>
-            {options.presets.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
-          </select>
-        </div>}
       </div>
     </form>}
     {!options && error && <p className="form-error" role="alert">{error}</p>}

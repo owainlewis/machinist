@@ -41,7 +41,7 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
       const group = { name: "coding", jobs: { total: 3, active: 1, done: 1, failed: 1, cancelled: 0 }, run_millis: 90000 };
       return reply(200, { days, jobs: { total: 3, active: 1, done: 1, failed: 1, cancelled: 0 }, runs: { total: 4, succeeded: 3, failed: 1, cancelled: 0 }, success_rate: 0.75, run_millis: { median: 90000, p90: 300000 }, wait_millis: { median: 2000, p90: 9000 }, tokens: 12345, cost: 1.5, daily, presets: [group], repos: [{ ...group, name: "owner/repo" }] });
     }
-    if (url === "/api/v1/presets") return reply(200, { default: "coding", presets: [{ name: "coding", steps: ["checkout", "implement", "publish"] }, { name: "spec", steps: ["checkout", "write"] }] });
+    if (url === "/api/v1/presets") return reply(200, { default: "coding", presets: [{ name: "coding", description: "Implement the prompt and open a pull request.", steps: ["checkout", "implement", "publish"] }, { name: "spec", description: "Write a spec.", steps: ["checkout", "write"] }] });
     if (url === "/machinist/run" && options.method === "POST") {
       started.push(JSON.parse(options.body));
       if (holdRun) return new Promise(resolve => { releaseRun = () => resolve(reply(201, { id: "t_new", state: "queued" })); });
@@ -123,10 +123,12 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   assert.equal(document.querySelector('nav a[aria-current="page"]').textContent, "Jobs");
   assert.equal(document.querySelector("#new-job-preset").value, "coding", "the default preset is chosen");
   assert.equal(document.querySelector("#new-job-repo").value, "owner/repo");
-  assert.equal(document.querySelector("#new-job-preset").title, "checkout, implement, publish");
+  assert.equal(document.querySelector("#new-job-preset-about p").textContent, "Implement the prompt and open a pull request.");
+  assert.deepEqual([...document.querySelectorAll(".preset-steps li")].map(item => item.textContent), ["checkout", "implement", "publish"]);
   const start = () => [...document.querySelectorAll("form button")].find(button => /Start job/.test(button.textContent));
   assert.equal(start().disabled, true, "a job needs a prompt");
   await choose("#new-job-preset", "spec");
+  assert.equal(document.querySelector("#new-job-preset-about p").textContent, "Write a spec.");
   await type("#new-job-prompt", "  Write a spec for dark mode\n\nCover the settings page.  ");
   assert.match(document.querySelector(".field-hint").textContent, /Write a spec for dark mode/);
   await act(async () => start().click());

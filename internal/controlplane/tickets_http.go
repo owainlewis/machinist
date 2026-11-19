@@ -216,11 +216,12 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 	s.writeTicket(w, r, status, ticket)
 }
 
-// presetView is what the New job form shows of a preset: its name and the
-// names of its steps, in order.
+// presetView is what the New job form shows of a preset: its name, what it
+// does and the names of its steps, in order.
 type presetView struct {
-	Name  string   `json:"name"`
-	Steps []string `json:"steps"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Steps       []string `json:"steps"`
 }
 
 func presetViews(loaded *factory.Factory) []presetView {
@@ -230,7 +231,7 @@ func presetViews(loaded *factory.Factory) []presetView {
 		for _, step := range preset.Steps {
 			steps = append(steps, step.Name)
 		}
-		views = append(views, presetView{Name: name, Steps: steps})
+		views = append(views, presetView{Name: name, Description: preset.Description, Steps: steps})
 	}
 	sort.Slice(views, func(a, b int) bool { return views[a].Name < views[b].Name })
 	return views

@@ -25,7 +25,10 @@ func writeFiles(t *testing.T, files map[string]string) string {
 	return root
 }
 
-const defaultPreset = `timeout: 30m
+const defaultPreset = `description: >
+  Clone the repository
+  and run the tests.
+timeout: 30m
 
 steps:
   - name: checkout
@@ -54,7 +57,7 @@ func TestLoadReadsPresetsAndAutomations(t *testing.T) {
 		t.Fatal(err)
 	}
 	preset, ok := factory.Preset("default")
-	if !ok || preset.Name != "default" || preset.Timeout != 30*time.Minute || len(preset.Steps) != 2 {
+	if !ok || preset.Name != "default" || preset.Description != "Clone the repository and run the tests." || preset.Timeout != 30*time.Minute || len(preset.Steps) != 2 {
 		t.Fatalf("preset = %+v", preset)
 	}
 	if preset.Steps[0] != (runner.Step{Name: "checkout", Run: `gh repo clone "$MACHINIST_REPO" .`, TimeoutMillis: (5 * time.Minute).Milliseconds()}) || preset.Steps[1] != (runner.Step{Name: "test", Run: "go test ./...\n"}) {
@@ -76,7 +79,7 @@ func TestLoadReadsPresetsAndAutomations(t *testing.T) {
 }
 
 func TestPresetTimeoutIsOptional(t *testing.T) {
-	factory, err := Load(writeFiles(t, map[string]string{"presets/quick.yaml": "steps:\n  - name: only\n    run: \"true\"\n"}))
+	factory, err := Load(writeFiles(t, map[string]string{"presets/quick.yaml": "description: Quick.\nsteps:\n  - name: only\n    run: \"true\"\n"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +117,9 @@ func TestLoadRejectsInvalidFactories(t *testing.T) {
 		}},
 		{"bad timeout", "positive duration", func(files map[string]string) {
 			files["presets/default.yaml"] = "timeout: soon\n" + steps("  - name: b\n    run: \"true\"\n")
+		}},
+		{"no description", "add a description", func(files map[string]string) {
+			files["presets/default.yaml"] = "steps:\n  - name: b\n    run: \"true\"\n"
 		}},
 		{"bad step timeout", "step b: timeout", func(files map[string]string) {
 			files["presets/default.yaml"] = steps("  - name: b\n    run: \"true\"\n    timeout: -1m\n")

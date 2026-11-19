@@ -281,14 +281,14 @@ func TestStatsRoute(t *testing.T) {
 func TestPresetsRouteListsEachPresetsSteps(t *testing.T) {
 	f := newFixture(t)
 	f.server.presets = presetViews(&factory.Factory{Presets: map[string]factory.Preset{
-		"spec":    {Name: "spec", Steps: []runner.Step{{Name: "checkout"}, {Name: "write"}}},
-		"default": {Name: "default", Steps: []runner.Step{{Name: "work"}}},
+		"spec":    {Name: "spec", Description: "Write a spec.", Steps: []runner.Step{{Name: "checkout"}, {Name: "write"}}},
+		"default": {Name: "default", Description: "Do the work.", Steps: []runner.Step{{Name: "work"}}},
 	}})
 	response, body := f.call(t, http.MethodGet, "/api/v1/presets", f.token, nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
-	want := `{"default":"default","presets":[{"name":"default","steps":["work"]},{"name":"spec","steps":["checkout","write"]}]}`
+	want := `{"default":"default","presets":[{"name":"default","description":"Do the work.","steps":["work"]},{"name":"spec","description":"Write a spec.","steps":["checkout","write"]}]}`
 	if strings.TrimSpace(string(body)) != want {
 		t.Fatalf("body = %s", body)
 	}
