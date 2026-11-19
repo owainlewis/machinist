@@ -624,6 +624,36 @@ func (s *Store) Cancel(ctx context.Context, ticketID, by string) (Ticket, error)
 	return ticket, err
 }
 
+// ErrStillWorking means a ticket has a run going or about to, so it cannot run again yet.
+var ErrStillWorking = errors.New("the job is still running")
+
+// Rerun starts a ticket's preset again from the first step, on the same branch.
+// It works on any ticket with nothing running: done, failed, cancelled, or with
+// its pull request open. The request is logged as a comment from by, so the
+// next run sees it and the lost-runner count starts again.
+func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) {
+	var ticket Ticket
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		if ticket, err = loadTicket(ctx, tx, ticketID); err != nil {
+			return err
+		}
+		if ticket.State == StateWorking {
+			return ErrStillWorking
+		}
+		now := s.now()
+		if err = insertEntry(ctx, tx, ticketID, EntryComment, by, "Run the job again.", nil, now); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+			return err
+		}
+		ticket, err = loadTicket(ctx, tx, ticketID)
+		return err
+	})
+	return ticket, err
+}
+
 func cancelQueuedRuns(ctx context.Context, q querier, ticketID string, now time.Time) error {
 	_, err := q.ExecContext(ctx, `UPDATE runs SET status=?,ended_at=? WHERE ticket_id=? AND status=?`, RunCancelled, stamp(now), ticketID, RunQueued)
 	return err

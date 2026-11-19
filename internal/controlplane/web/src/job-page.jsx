@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronRight, CircleAlert, LoaderCircle, Minus } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleDashed, LoaderCircle, Minus, RotateCcw } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { State, relativeTime } from "./display.jsx";
 import { formatDuration, isFinished, jobState, prLink } from "./jobs.js";
-import { pollEvents, steps } from "./step-log.js";
+import { pipeline, pollEvents, steps } from "./step-log.js";
+import { Button } from "@/components/ui/button";
 
 const pollMillis = 2000;
 const eventPage = 128;
@@ -49,8 +50,31 @@ const stepIcons = {
   timed_out: [CircleAlert, "text-danger"],
   cancelled: [Minus, "text-muted-foreground"],
   skipped: [Minus, "text-faint"],
+  pending: [CircleDashed, "text-faint"],
   unknown: [Minus, "text-faint"],
 };
+
+const stateWords = { succeeded: "Passed", running: "Running", failed: "Failed", timed_out: "Timed out", cancelled: "Cancelled", skipped: "Skipped", pending: "Waiting", unknown: "" };
+
+// Pipeline draws the preset's steps left to right, joined in the order they
+// run. Each node shows how far the latest attempt got. Choosing one opens its
+// output below.
+function Pipeline({ nodes, onChoose }) {
+  return <section className="pipeline" aria-label="Pipeline">
+    <ol>{nodes.map((step, index) => {
+      const [Icon, tone] = stepIcons[step.state] || stepIcons.unknown;
+      const empty = !step.output && !step.error;
+      return <li key={step.name} data-state={step.state}>
+        {index > 0 && <span className="pipeline-edge" aria-hidden="true" />}
+        <button type="button" className="pipeline-node" disabled={empty} onClick={() => onChoose(step.name)} aria-label={`${step.name}: ${stateWords[step.state] || step.state}`}>
+          <Icon className={`size-4 shrink-0 ${tone}`} aria-hidden="true" />
+          <span className="pipeline-name">{step.name}</span>
+          <span className="pipeline-meta">{step.duration_millis != null && step.state !== "skipped" ? formatDuration(step.duration_millis) : stateWords[step.state]}</span>
+        </button>
+      </li>;
+    })}</ol>
+  </section>;
+}
 
 // The output pane follows new lines while the reader is at its end.
 function StepOutput({ text }) {
@@ -66,12 +90,18 @@ function StepOutput({ text }) {
   return <pre ref={pane} className="step-output" onScroll={scrolled}>{text}</pre>;
 }
 
-function Step({ step }) {
+function Step({ step, chosen }) {
   const [Icon, tone] = stepIcons[step.state] || stepIcons.unknown;
   const empty = !step.output && !step.error;
   const [open, setOpen] = useState(step.state === "failed" || step.state === "running");
+  const item = useRef(null);
   useEffect(() => { if (step.state === "failed" || step.state === "running") setOpen(true); }, [step.state]);
-  return <li className="step" data-state={step.state}>
+  useEffect(() => {
+    if (!chosen) return;
+    setOpen(true);
+    item.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [chosen]);
+  return <li ref={item} className="step" data-state={step.state}>
     <button type="button" className="step-row" aria-expanded={open} disabled={empty} onClick={() => setOpen(value => !value)}>
       <Icon className={`size-4 shrink-0 ${tone}`} aria-hidden="true" />
       <span className="step-name">{step.name}</span>
@@ -83,9 +113,12 @@ function Step({ step }) {
   </li>;
 }
 
-function Run({ run, number }) {
+function Run({ run, number, presetSteps }) {
   const { events, error } = useRunEvents(run);
   const list = steps(events, run.stages || [], run.status);
+  // chosen counts each choice, so choosing the same step twice still opens it.
+  const [chosen, setChosen] = useState({ name: "", times: 0 });
+  const choose = name => setChosen(previous => ({ name, times: previous.times + 1 }));
   return <section className="run" aria-label={`Attempt ${number}`}>
     <div className="run-head">
       <h2>Attempt {number}</h2>
@@ -93,7 +126,8 @@ function Run({ run, number }) {
       {run.started_at && <span>{formatDuration((run.ended_at ? Date.parse(run.ended_at) : Date.now()) - Date.parse(run.started_at))}</span>}
     </div>
     {error && <p className="form-error" role="alert">{error}</p>}
-    {list.length > 0 ? <ol className="steps">{list.map(step => <Step key={step.name} step={step} />)}</ol> : <p className="page-note">{run.status === "queued" ? "No step has started." : "Loading steps"}</p>}
+    {presetSteps && <Pipeline nodes={pipeline(presetSteps, list, run.status)} onChoose={choose} />}
+    {list.length > 0 ? <ol className="steps">{list.map(step => <Step key={step.name} step={step} chosen={chosen.name === step.name ? chosen.times : 0} />)}</ol> : <p className="page-note">{run.status === "queued" ? "No step has started." : "Loading steps"}</p>}
   </section>;
 }
 
@@ -109,8 +143,30 @@ function History({ entries }) {
   </section>;
 }
 
-export function JobView({ detail }) {
-  const { ticket, entries = [], runs = [] } = detail;
+// RunAgain starts the preset again from its first step, on the same branch.
+function RunAgain({ ticketID, onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function rerun() {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/v1/tickets/${encodeURIComponent(ticketID)}/rerun`, { method: "POST" });
+      await onDone?.();
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div className="run-again">
+    <Button variant="outline" size="sm" onClick={rerun} disabled={busy}><RotateCcw className="size-3.5" aria-hidden="true" />{busy ? "Starting" : "Run again"}</Button>
+    {error && <p className="form-error" role="alert">{error}</p>}
+  </div>;
+}
+
+export function JobView({ detail, onChange }) {
+  const { ticket, entries = [], runs = [], steps: presetSteps = [] } = detail;
   const state = jobState(ticket, runs.some(run => run.status === "running"));
   const pr = prLink(ticket);
   const prompt = entries.find(entry => entry.kind === "request")?.body || "";
@@ -120,7 +176,10 @@ export function JobView({ detail }) {
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
     <header className="job-head">
       <h1>{ticket.title || ticket.id}</h1>
-      <State value={state} />
+      <div className="job-actions">
+        <State value={state} />
+        {isFinished(state) && <RunAgain ticketID={ticket.id} onDone={onChange} />}
+      </div>
     </header>
     <dl className="job-facts">
       <div><dt>Repository</dt><dd>{ticket.repo}</dd></div>
@@ -131,7 +190,10 @@ export function JobView({ detail }) {
     </dl>
     {result && isFinished(state) && <section className="panel" aria-labelledby="job-result"><h2 id="job-result" className="label">Result</h2><p className="prose">{result}</p></section>}
     {prompt && <details className="panel prompt"><summary className="label">Prompt</summary><p className="prose">{prompt}</p></details>}
-    {attempts.length ? attempts.map(({ run, number }) => <Run key={run.id} run={run} number={number} />) : <p className="page-note">Waiting for a runner.</p>}
+    {attempts.length ? attempts.map(({ run, number }, index) => <Run key={run.id} run={run} number={number} presetSteps={index === 0 ? presetSteps : null} />) : <>
+      {presetSteps.length > 0 && <Pipeline nodes={pipeline(presetSteps, [], "")} onChoose={() => {}} />}
+      <p className="page-note">Waiting for a runner.</p>
+    </>}
     <History entries={entries} />
   </div>;
 }
@@ -163,5 +225,5 @@ export function JobPage({ jobID, onSignedOut }) {
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
     {error ? <p className="form-error" role="alert">{error}</p> : <p className="page-note" role="status">Loading job</p>}
   </div>;
-  return <>{error && <p className="form-error page-banner" role="alert">{error}</p>}<JobView detail={detail} /></>;
+  return <>{error && <p className="form-error page-banner" role="alert">{error}</p>}<JobView detail={detail} onChange={refresh} /></>;
 }

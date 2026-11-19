@@ -45,3 +45,12 @@ test("events stop being polled once a run has ended", () => {
   assert.equal(pollEvents({ status: "cancelled" }), true);
   assert.equal(pollEvents({ status: "cancelled", ended_at: "x" }), false);
 });
+
+test("the pipeline shows every preset step, and the ones not reached yet", async () => {
+  const { pipeline } = await import("./step-log.js");
+  const ran = [{ name: "checkout", state: "succeeded" }, { name: "plan", state: "running" }];
+  assert.deepEqual(pipeline(["checkout", "plan", "test"], ran, "running").map(step => [step.name, step.state]), [["checkout", "succeeded"], ["plan", "running"], ["test", "pending"]]);
+  assert.deepEqual(pipeline(["checkout", "plan", "test"], [], "").map(step => step.state), ["pending", "pending", "pending"]);
+  assert.deepEqual(pipeline(["checkout", "test"], [{ name: "checkout", state: "failed" }], "failed").map(step => step.state), ["failed", "skipped"]);
+  assert.deepEqual(pipeline(["new"], [{ name: "old", state: "succeeded" }], "succeeded").map(step => step.name), ["old"]);
+});

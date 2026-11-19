@@ -611,3 +611,29 @@ func TestOpenCancelsQueuedReviewerRunsFromBefore(t *testing.T) {
 		t.Fatalf("run = %+v, err = %v", got, err)
 	}
 }
+
+func TestRerunReopensAnEndedTicket(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:rerun")
+	if _, err := store.Rerun(t.Context(), ticket.ID, "alice"); err != ErrStillWorking {
+		t.Fatalf("working: err = %v", err)
+	}
+	if err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: StateFailed}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.Rerun(t.Context(), ticket.ID, "alice")
+	if err != nil || again.State != StateWorking {
+		t.Fatalf("ticket = %+v, err = %v", again, err)
+	}
+	entries, _ := store.Entries(t.Context(), ticket.ID)
+	last := entries[len(entries)-1]
+	if last.Kind != EntryComment || last.Author != "alice" {
+		t.Fatalf("entry = %+v", last)
+	}
+	if turns, _ := store.TurnsSinceHuman(t.Context(), ticket.ID); turns != 0 {
+		t.Fatalf("turns = %d", turns)
+	}
+	if _, err := store.Rerun(t.Context(), "t_missing", "alice"); err != ErrNotFound {
+		t.Fatalf("missing: err = %v", err)
+	}
+}
