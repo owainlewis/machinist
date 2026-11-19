@@ -142,6 +142,27 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, usage)
 }
 
+// maxStatsDays is the longest window the dashboard can ask for.
+const maxStatsDays = 90
+
+func (s *Server) stats(w http.ResponseWriter, r *http.Request, _ string) {
+	days := usageDays
+	if value := r.URL.Query().Get("days"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > maxStatsDays {
+			writeError(w, http.StatusBadRequest, errors.New("days must be a whole number from 1 to 90"))
+			return
+		}
+		days = parsed
+	}
+	stats, err := s.store.Stats(r.Context(), days)
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
 func (s *Server) listRepositories(w http.ResponseWriter, _ *http.Request, tokenName string) {
 	repositories := s.config.GitHub.Repositories
 	if repositories == nil {

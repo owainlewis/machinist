@@ -45,3 +45,25 @@ export function formatDuration(milliseconds) {
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
+
+// The board's columns. Queued jobs run oldest first, so the next to run is on
+// top. Running and ended jobs show the latest first. Done holds every ended
+// job, and its pill says whether it passed, failed or was cancelled.
+export const boardColumns = [
+  { key: "queued", label: "Queued" },
+  { key: "running", label: "Running" },
+  { key: "done", label: "Done" },
+];
+
+export function boardOf(tickets = [], running = new Set()) {
+  const columns = Object.fromEntries(boardColumns.map(column => [column.key, []]));
+  for (const ticket of tickets) {
+    const state = jobState(ticket, running.has(ticket.id));
+    columns[isFinished(state) ? "done" : state].push({ ticket, state });
+  }
+  const at = (job, field) => Date.parse(job.ticket[field]) || 0;
+  columns.queued.sort((a, b) => at(a, "created_at") - at(b, "created_at"));
+  columns.running.sort((a, b) => at(b, "updated_at") - at(a, "updated_at"));
+  columns.done.sort((a, b) => at(b, "updated_at") - at(a, "updated_at"));
+  return columns;
+}

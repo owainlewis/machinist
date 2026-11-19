@@ -104,7 +104,8 @@ from `curl`, a tracker, a webhook or an automation:
 
 | Page | What it does |
 | --- | --- |
-| Jobs | The newest jobs, with each one's repository, preset, pull request and state |
+| Dashboard | Jobs and runs over 7, 14 or 30 days: success rate, run and wait times, tokens, runs per day, and each preset and repository |
+| Jobs | Every job as a board of Queued, Running and Done, or as a list with each one's repository, preset, pull request and state |
 | New job | Pick a repository, paste a prompt or spec, and start a job. It calls the run API |
 | Job | One job: its result, its prompt, and every attempt with the output of each step |
 | Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
