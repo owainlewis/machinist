@@ -17,6 +17,7 @@ import (
 	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/ghclient"
+	"github.com/owainlewis/machinist/internal/githubapp"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -39,6 +40,7 @@ type Server struct {
 	schedule *sources.Schedule
 	version  string
 	log      io.Writer
+	presets  []presetView
 }
 
 func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Factory, version string, log io.Writer) (*Server, error) {
@@ -48,15 +50,25 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if err := loaded.Validate(machinistConfig.Server.DefaultPreset, machinistConfig.GitHub.Repositories); err != nil {
 		return nil, err
 	}
+	app, err := loadApp(machinistConfig, loaded)
+	if err != nil {
+		return nil, err
+	}
 	client := ghclient.New()
+	var tokens engine.TokenMinter
+	if app != nil {
+		client.WithToken(app.CachedToken)
+		tokens = app.Token
+	}
 	ticketEngine := engine.New(engine.Options{
-		Store:      store,
-		Factory:    loaded,
-		RunTimeout: machinistConfig.Server.RunDeadline(),
-		Handle:     machinistConfig.GitHub.Handle,
-		FindPR:     findPR(client),
-		Post:       client.PostComment,
-		Log:        log,
+		Store:       store,
+		Factory:     loaded,
+		RunTimeout:  machinistConfig.Server.RunDeadline(),
+		Handle:      machinistConfig.GitHub.Handle,
+		FindPR:      findPR(client),
+		Post:        client.PostComment,
+		GitHubToken: tokens,
+		Log:         log,
 	})
 	intake := &sources.Intake{
 		Client:        client,
@@ -75,9 +87,28 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		client:   client,
 		intake:   intake,
 		schedule: sources.NewSchedule(store, loaded.Automations, log),
+		presets:  presetViews(loaded),
 		version:  version,
 		log:      log,
 	}, nil
+}
+
+// loadApp loads the GitHub App, when one is configured. Its tokens last an
+// hour, so no run may be allowed longer than that.
+func loadApp(machinistConfig config.Config, loaded *factory.Factory) (*githubapp.App, error) {
+	settings := machinistConfig.GitHub.App
+	if settings == nil {
+		return nil, nil
+	}
+	if machinistConfig.Server.RunDeadline() > githubapp.TokenLifetime {
+		return nil, fmt.Errorf("run_timeout is %s, but GitHub App tokens last %s; set run_timeout to %s or less", machinistConfig.Server.RunDeadline(), githubapp.TokenLifetime, githubapp.TokenLifetime)
+	}
+	for name, preset := range loaded.Presets {
+		if preset.Timeout > githubapp.TokenLifetime {
+			return nil, fmt.Errorf("preset %q has a timeout of %s, but GitHub App tokens last %s; set it to %s or less", name, preset.Timeout, githubapp.TokenLifetime, githubapp.TokenLifetime)
+		}
+	}
+	return githubapp.Load(settings.ID, settings.PrivateKeyFile)
 }
 
 func findPR(client *ghclient.Client) engine.PRFinder {
@@ -119,6 +150,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/events", s.requireToken(s.ingestEvents))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.requireToken(s.complete))
 	mux.HandleFunc("GET /api/v1/repositories", s.requireToken(s.listRepositories))
+	mux.HandleFunc("GET /api/v1/presets", s.requireToken(s.listPresets))
 	mux.HandleFunc("GET /api/v1/automations", s.requireToken(s.listAutomations))
 	mux.HandleFunc("POST /api/v1/automations/{name}/run", s.requireToken(s.runAutomation))
 	mux.Handle("/", http.FileServer(http.FS(mustSub(webAssets, "web/dist"))))

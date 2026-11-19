@@ -1,8 +1,9 @@
 # Architecture
 
 Machinist has one Go control plane with an embedded React UI, and any number of runners.
-The UI is read-only: a list of jobs, a page for each job with every step's output, a
-dashboard of counts and rates from `GET /api/v1/stats`, and the runners. Jobs start through the [run API](docs/run-api.md)
+The UI shows a list of jobs, a page for each job with every step's output, a dashboard
+of counts and rates from `GET /api/v1/stats`, and the runners. Its one write is the New job
+form, which sends the same `POST /machinist/run` as any other caller. Jobs start through the [run API](docs/run-api.md)
 and run headless from start to finish.
 The control plane owns tickets, the ledger, schedules, the factory's presets and the UI. It
 never runs a step. Runners do, and they dial out, so a runner behind a firewall needs no
@@ -83,7 +84,11 @@ queue, so it is the same after a control plane restart.
 ## Credentials and the GitHub login
 
 Steps use `gh` and `git` directly, with the bot's token. They push branches and open pull
-requests themselves. Model and tracker credentials live on runners, never on the control
+requests themselves. With a [GitHub App](docs/github-app.md), the control plane holds the
+app's private key and makes a new token for each run when a runner claims it. The token
+reaches only that run's repository, lasts an hour, and travels in the run request; the
+runner uses it in place of its own `GH_TOKEN`. The control plane's own GitHub calls use
+cached tokens from the same app. Model and tracker credentials live on runners, never on the control
 plane. Branch protection and the login's permissions are what limit a step. At startup the control plane refuses a
 token that is not the bot's, and warns about an unprotected default branch or admin rights.
 
@@ -104,6 +109,7 @@ internal/tickets       tickets, runs, tokens, ledger, in SQLite
 internal/engine        the state table, run queue, leases and posted messages
 internal/sources       schedules and the one intake path
 internal/ghclient      gh, with no shell
+internal/githubapp     short-lived, one-repository tokens from a GitHub App
 internal/factory       loads presets and automations from files
 internal/controlplane  HTTP routes, sign-in and the embedded UI
 internal/agentrunner   the runner daemon, and the local and Kubernetes executors

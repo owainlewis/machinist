@@ -52,6 +52,17 @@ func TestRunCreatesAQueuedJobAndAKeyRepeatsIt(t *testing.T) {
 	}
 }
 
+func TestRunWithoutAPresetUsesTheDefault(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	request := runRequest("one-off")
+	request.Preset = ""
+	response, body := f.call(t, http.MethodPost, "/machinist/run", f.token, request)
+	if response.StatusCode != http.StatusCreated || decodeJob(t, body).Preset != "default" {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+}
+
 func TestRunRejectsBadRequests(t *testing.T) {
 	f := newFixture(t)
 	f.connect(t)

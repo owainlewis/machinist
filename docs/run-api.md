@@ -10,7 +10,6 @@ curl -sS -X POST "$MACHINIST_URL/machinist/run" \
   -H "Authorization: Bearer $MACHINIST_TOKEN" \
   -d '{
     "key": "linear:ENG-142",
-    "preset": "default",
     "vars": {"repo": "owner/name"},
     "prompt": "Add a retry to the upload client. See ENG-142."
   }'
@@ -19,7 +18,7 @@ curl -sS -X POST "$MACHINIST_URL/machinist/run" \
 | Field | Meaning |
 | --- | --- |
 | `key` | Your ID for the request, at most 200 bytes. The same key returns the same job, so retries are safe |
-| `preset` | An agent or job in the factory |
+| `preset` | Optional. A preset in the factory. Without one, the job uses `default_preset`, which clones the repository, lets Claude Code do the work and opens one pull request |
 | `vars.repo` | A repository from `github.repositories`. It is the only variable today |
 | `prompt` | The work. Its first line is the job's title |
 
