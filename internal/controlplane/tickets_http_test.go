@@ -254,6 +254,30 @@ func TestRerunRouteAndPresetSteps(t *testing.T) {
 	}
 }
 
+func TestStatsRoute(t *testing.T) {
+	f := newFixture(t)
+	f.assign(t, "r1")
+	response, body := f.call(t, http.MethodGet, "/api/v1/stats?days=7", f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	var stats tickets.Stats
+	if err := json.Unmarshal(body, &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Days != 7 || len(stats.Daily) != 7 || stats.Jobs.Total != 1 || stats.Jobs.Active != 1 || len(stats.Repos) != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	for _, query := range []string{"?days=0", "?days=91", "?days=week"} {
+		if response, _ := f.call(t, http.MethodGet, "/api/v1/stats"+query, f.token, nil); response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d", query, response.StatusCode)
+		}
+	}
+	if response, _ := f.call(t, http.MethodGet, "/api/v1/stats", "", nil); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+}
+
 func TestPresetsRouteListsEachPresetsSteps(t *testing.T) {
 	f := newFixture(t)
 	f.server.presets = presetViews(&factory.Factory{Presets: map[string]factory.Preset{
