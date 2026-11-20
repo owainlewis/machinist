@@ -484,3 +484,44 @@ func TestAJobIsNotCancelledBeforeItsIssueReachedInProgress(t *testing.T) {
 		t.Fatalf("issue state = %q", got)
 	}
 }
+
+func TestAMergedPullRequestMovesItsIssueToDoneOnce(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	if err := p.store.SetPRState(t.Context(), job.ID, 7, tickets.PRMerged, p.now); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	moves := p.linear.moves
+	p.poll(t)
+	if got := p.linear.stateOf("a1"); got != "s-done" || p.linear.moves != moves {
+		t.Fatalf("state = %q, moves = %d then %d", got, moves, p.linear.moves)
+	}
+	if got := p.linear.comments["a1"]; len(got) != 1 {
+		t.Fatalf("comments = %v", got)
+	}
+}
+
+func TestAClosedPullRequestIsCommentedOnItsIssue(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.store.SetPRState(t.Context(), job.ID, 7, tickets.PRClosed, p.now); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poll(t)
+	want := []string{"Machinist opened a pull request: https://github.com/owner/repo/pull/7", "Machinist's pull request was closed without merging: https://github.com/owner/repo/pull/7"}
+	if got := p.linear.comments["a1"]; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("comments = %v", got)
+	}
+	if got := p.linear.stateOf("a1"); got != "s-progress" {
+		t.Fatalf("state = %q", got)
+	}
+}

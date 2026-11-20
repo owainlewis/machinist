@@ -23,6 +23,21 @@ export function isFinished(state) {
   return ["done", "failed", "cancelled"].includes(state);
 }
 
+const prStateLabels = { open: "Open", merged: "Merged", closed: "Closed" };
+
+// prState is what Machinist last read about the job's pull request on GitHub:
+// Open, Merged or Closed. A job from before Machinist tracked it says nothing.
+export function prState(ticket) {
+  return ticket?.pr_number ? prStateLabels[ticket.pr_state] || "" : "";
+}
+
+// prSummary is the pull request's number and state, such as "#12 · Merged".
+export function prSummary(ticket) {
+  if (!ticket?.pr_number) return "";
+  const state = prState(ticket);
+  return state ? `#${ticket.pr_number} · ${state}` : `#${ticket.pr_number}`;
+}
+
 export function prLink(ticket) {
   return ticket?.pr_number ? `https://github.com/${ticket.repo}/pull/${ticket.pr_number}` : "";
 }

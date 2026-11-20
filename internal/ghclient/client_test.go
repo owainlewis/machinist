@@ -34,6 +34,12 @@ func TestFindPRPrefersOpenAndIgnoresForks(t *testing.T) {
 	if found, err = client.FindPR(t.Context(), "owner/repo", "machinist/t_1"); err != nil || found.Number != 4 {
 		t.Fatalf("found = %+v, err = %v", found, err)
 	}
+	github.SetBranchPRs("machinist/t_1", []map[string]any{
+		{"number": 4, "state": "MERGED", "isCrossRepository": false, "mergedAt": "2026-11-20T10:30:00Z", "closedAt": "2026-11-20T10:30:00Z"},
+	})
+	if found, err = client.FindPR(t.Context(), "owner/repo", "machinist/t_1"); err != nil || found.State != StateMerged || found.MergedAt.Format(time.RFC3339) != "2026-11-20T10:30:00Z" {
+		t.Fatalf("found = %+v, err = %v", found, err)
+	}
 }
 
 func TestPostCommentSendsBodyOnStdin(t *testing.T) {

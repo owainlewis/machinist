@@ -26,6 +26,11 @@ const (
 	StateFailed    = "failed"
 	StateCancelled = "cancelled"
 
+	// A pull request's state, as Machinist last read it from GitHub.
+	PROpen   = "open"
+	PRMerged = "merged"
+	PRClosed = "closed"
+
 	RunKindAgent = "agent"
 
 	RunQueued      = "queued"
@@ -60,7 +65,7 @@ const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
   state TEXT NOT NULL, agent TEXT NOT NULL, pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
-  merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
   WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
 CREATE TABLE IF NOT EXISTS ticket_entries (
@@ -103,8 +108,12 @@ type Ticket struct {
 	CreatedBy    string     `json:"created_by"`
 	HumanCommits *int       `json:"human_commits,omitempty"`
 	MergedAt     *time.Time `json:"merged_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	// PRState is open, merged or closed, and PRStateAt is when Machinist saw
+	// it change. Both are empty until the job has a pull request.
+	PRState   string     `json:"pr_state,omitempty"`
+	PRStateAt *time.Time `json:"pr_state_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // Branch is the one branch every run of this ticket works on.
@@ -215,6 +224,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "tickets", "pr_state TEXT", "pr_state_at TEXT"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Reviewer runs are gone. Cancel any a database from before still queues.
 	// Jobs no longer wait for answers, so one left waiting has failed.
 	for _, statement := range []string{
@@ -286,16 +299,16 @@ func nullableString(value string) any {
 	return value
 }
 
-const ticketColumns = `id,source,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at`
+const ticketColumns = `id,source,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scanTicket(row scanner) (Ticket, error) {
 	var ticket Ticket
 	var issue, pr, commits sql.NullInt64
-	var merged sql.NullString
+	var merged, prStateAt sql.NullString
 	var created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated); err != nil {
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
@@ -307,6 +320,7 @@ func scanTicket(row scanner) (Ticket, error) {
 		ticket.HumanCommits = &count
 	}
 	ticket.MergedAt = parseTime(merged)
+	ticket.PRStateAt = parseTime(prStateAt)
 	ticket.CreatedAt = *parseTime(sql.NullString{String: created, Valid: true})
 	ticket.UpdatedAt = *parseTime(sql.NullString{String: updated, Valid: true})
 	return ticket, nil
@@ -674,6 +688,13 @@ func queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness 
 func applyTransition(ctx context.Context, q querier, ticket Ticket, transition Transition, now time.Time) error {
 	if _, err := q.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=COALESCE(?,pr_number),updated_at=? WHERE id=?`, transition.State, nullableInt(transition.PRNumber), stamp(now), ticket.ID); err != nil {
 		return err
+	}
+	// A job that ends with an open pull request is watched until it merges or
+	// closes.
+	if transition.State == StatePRReady {
+		if _, err := q.ExecContext(ctx, `UPDATE tickets SET pr_state=?,pr_state_at=? WHERE id=?`, PROpen, stamp(now), ticket.ID); err != nil {
+			return err
+		}
 	}
 	if transition.Report != "" {
 		if err := insertEntry(ctx, q, ticket.ID, EntryReport, ticket.Agent, transition.Report, nil, now); err != nil {
@@ -1135,4 +1156,35 @@ func (s *Store) TokenName(ctx context.Context, token string) (string, error) {
 		return "", ErrNotFound
 	}
 	return name, err
+}
+
+// addColumns adds columns that a database from an older Machinist lacks.
+func addColumns(db *sql.DB, table string, columns ...string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, column := range columns {
+		name, _, _ := strings.Cut(column, " ")
+		if have[name] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column); err != nil {
+			return err
+		}
+	}
+	return nil
 }

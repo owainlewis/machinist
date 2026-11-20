@@ -61,11 +61,13 @@ Work comes from the Assign box, the [run API](docs/run-api.md) at `POST /machini
 automation schedules and [Linear](docs/linear.md). A tracker such as Linear is a
 `sources.Tracker`: a `sources.Poller` asks it for new assignments every minute, starts their
 jobs through the same intake, and writes each job's news back once (In Progress, the pull
-request link, or the failure). It cancels a job whose issue leaves Machinist or every started
+request link, Done on merge, a comment on close, or the failure). It cancels a job whose issue leaves Machinist or every started
 state. What it has written is in `tracker_reports`, and how far it has read is its cursor. The run API shows tickets as jobs. Each
 request has a unique source key, so sending one twice has no effect. Machinist does not read
-GitHub comments or follow pull requests. A ticket stays `pr_ready` once its pull request is
-open.
+GitHub comments. A ticket stays `pr_ready` while its pull request is open. Every minute the
+engine asks GitHub about the pull request on each `pr_ready` ticket's branch (`engine.CheckPRs`),
+and a merge or close moves the ticket to `done` with `pr_state` and `pr_state_at` set. A
+tracker is told about the merge or close on its next poll.
 
 Only the control plane posts Machinist's own messages, from rows it has stored. A crash
 between posting and recording can post a message twice.

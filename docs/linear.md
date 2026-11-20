@@ -47,6 +47,10 @@ Machinist writes to Linear itself. The agent gets no Linear access.
 - **Pickup.** The issue moves to **In Progress**, or the team's first started state if it
   has none by that name.
 - **Pull request.** Machinist comments the pull request's link on the issue.
+- **Merge.** When the pull request merges, the issue moves to **Done**, or the team's first
+  completed state.
+- **Closed.** When the pull request closes without merging, Machinist comments on the issue
+  and leaves its state alone.
 - **Failure.** The issue moves back to **Todo**, or the team's first unstarted state, with a
   comment that gives the reason.
 - **Cancel.** If someone unassigns the issue from Machinist, or moves it out of every

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardOf, formatDuration, jobState, newestFirst, prLink, runningJobs, runningTickets } from "./jobs.js";
+import { boardOf, formatDuration, jobState, newestFirst, prLink, prState, prSummary, runningJobs, runningTickets } from "./jobs.js";
 
 test("ticket states read as the run API's job states", () => {
   assert.equal(jobState({ state: "working" }), "queued");
@@ -49,4 +49,15 @@ test("each running job carries the step it is on and its last action", () => {
   const found = runningJobs([{ jobs: [job] }, { jobs: [{ ticket_id: "t_2" }] }, {}]);
   assert.equal(found.get("t_1"), job);
   assert.deepEqual([...found.keys()], ["t_1", "t_2"]);
+});
+
+test("a job's pull request says whether it is open, merged or closed", () => {
+  assert.equal(prState({ pr_number: 4, pr_state: "open" }), "Open");
+  assert.equal(prState({ pr_number: 4, pr_state: "merged" }), "Merged");
+  assert.equal(prState({ pr_number: 4, pr_state: "closed" }), "Closed");
+  assert.equal(prState({ pr_number: 4 }), "");
+  assert.equal(prState({ pr_state: "open" }), "");
+  assert.equal(prSummary({ pr_number: 4, pr_state: "merged" }), "#4 · Merged");
+  assert.equal(prSummary({ pr_number: 4 }), "#4");
+  assert.equal(prSummary({}), "");
 });
