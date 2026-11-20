@@ -42,14 +42,14 @@ GitHub login and the model credential. Give each person and runner their own, so
 revoked with `machinist token revoke`. Tokens are stored as hashes.
 
 **Keep the control plane private.** Every route needs a token, except `/healthz`, sign-in,
-static assets and `/webhooks/linear`. Tokens are sent in the clear unless the network or TLS protects them, and
+and static assets. Tokens are sent in the clear unless the network or TLS protects them, and
 nothing stops an operator exposing the address publicly. Keep it on a private network, or
 set `tls_cert` and `tls_key`.
 
-**The Linear webhook is public by design.** It is on only when `linear.teams` is set, and it
-accepts a request only with a valid `Linear-Signature` and a timestamp less than a minute
-old. Expose that one path through a proxy, not the whole control plane. Only the Linear users in
-`linear.allowed_users` can start a job, and the issue's text becomes its prompt.
+**Linear is read by polling.** Machinist calls Linear; Linear never calls Machinist, so
+nothing about Linear needs a public route. `LINEAR_API_TOKEN` stays in the control plane's
+environment, and the agent never gets it or any other way to write to Linear. Only the Linear
+users in `linear.allowed_users` can start a job, and the issue's text becomes its prompt.
 See [Linear](docs/linear.md).
 
 **Local runners.** Concurrent runs under one OS user can read each other's files and

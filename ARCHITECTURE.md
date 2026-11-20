@@ -58,9 +58,11 @@ The full state table is in the
 ## Intake
 
 Work comes from the Assign box, the [run API](docs/run-api.md) at `POST /machinist/run`,
-automation schedules and the [Linear webhook](docs/linear.md) at `POST /webhooks/linear`. The
-webhook is the one route without a Machinist token: it checks Linear's signature and
-timestamp instead. The run API shows tickets as jobs. Each
+automation schedules and [Linear](docs/linear.md). A tracker such as Linear is a
+`sources.Tracker`: a `sources.Poller` asks it for new assignments every minute, starts their
+jobs through the same intake, and writes each job's news back once (In Progress, the pull
+request link, or the failure). It cancels a job whose issue leaves Machinist or every started
+state. What it has written is in `tracker_reports`, and how far it has read is its cursor. The run API shows tickets as jobs. Each
 request has a unique source key, so sending one twice has no effect. Machinist does not read
 GitHub comments or follow pull requests. A ticket stays `pr_ready` once its pull request is
 open.

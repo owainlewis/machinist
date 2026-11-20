@@ -174,21 +174,27 @@ func TestLinearIsOffUntilTeamsAreSet(t *testing.T) {
 	}
 }
 
-func TestLinearNeedsASecretAndATrigger(t *testing.T) {
+func TestLinearNeedsATokenAndATrigger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n  allowed_users: [owain]\n  teams:\n    ENG: owner/repo\n")
-	t.Setenv(LinearSecretEnv, "")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), LinearSecretEnv) {
-		t.Fatalf("no secret: error = %v", err)
+	t.Setenv(LinearTokenEnv, "")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), LinearTokenEnv) {
+		t.Fatalf("no token: error = %v", err)
 	}
-	t.Setenv(LinearSecretEnv, "short")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "at least") {
-		t.Fatalf("short secret: error = %v", err)
-	}
-	t.Setenv(LinearSecretEnv, "lin_wh_0123456789abcdef")
+	t.Setenv(LinearTokenEnv, " lin_oauth_token ")
 	loaded, err := LoadConfig(path)
-	if err != nil || loaded.Linear.Secret != "lin_wh_0123456789abcdef" || loaded.Linear.MaxJobsPerHour != 20 {
+	if err != nil || loaded.Linear.Token != "lin_oauth_token" || loaded.Linear.MaxJobsPerHour != 20 || loaded.Linear.Poll != time.Minute {
 		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
+	}
+	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n  allowed_users: [owain]\n  poll_interval: 2m\n  teams:\n    ENG: owner/repo\n")
+	if loaded, err := LoadConfig(path); err != nil || loaded.Linear.Poll != 2*time.Minute {
+		t.Fatalf("poll = %v, err = %v", loaded.Linear.Poll, err)
+	}
+	for _, interval := range []string{"1s", "soon"} {
+		writeTestFile(t, path, "linear:\n  app_user_id: app-user\n  allowed_users: [owain]\n  poll_interval: "+interval+"\n  teams:\n    ENG: owner/repo\n")
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "poll_interval") {
+			t.Fatalf("poll_interval %s: error = %v", interval, err)
+		}
 	}
 	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n  teams:\n    ENG: owner/repo\n")
 	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "allowed_users") {
@@ -198,8 +204,8 @@ func TestLinearNeedsASecretAndATrigger(t *testing.T) {
 	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "app_user_id") {
 		t.Fatalf("no trigger: error = %v", err)
 	}
-	writeTestFile(t, path, "linear:\n  secret: in-the-file\n  teams:\n    ENG: owner/repo\n")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown key secret") {
-		t.Fatalf("secret in the file: error = %v", err)
+	writeTestFile(t, path, "linear:\n  token: in-the-file\n  teams:\n    ENG: owner/repo\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown key token") {
+		t.Fatalf("token in the file: error = %v", err)
 	}
 }

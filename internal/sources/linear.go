@@ -1,165 +1,335 @@
 package sources
 
 import (
+	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
+	"io"
+	"net/http"
+	"sort"
 	"strings"
 	"time"
-
-	"github.com/owainlewis/machinist/internal/tickets"
 )
 
-// MaxLinearSkew is how far a webhook's timestamp may be from now. Linear sends
-// each delivery at once, so an older one is a replay.
-const MaxLinearSkew = time.Minute
+// LinearEndpoint is Linear's GraphQL API.
+const LinearEndpoint = "https://api.linear.app/graphql"
 
-// ErrLinearUnsigned means a request is not from Linear, or is a replay.
-var ErrLinearUnsigned = errors.New("the request is not signed by Linear")
+const (
+	// linearPage and linearHistory keep one query well inside Linear's
+	// complexity limit.
+	linearPage    = 25
+	linearHistory = 20
+	// maxLinearPages bounds one poll. Anything left is read on the next one.
+	maxLinearPages  = 8
+	maxLinearAnswer = 4 << 20
+)
 
-// LinearRules decide which Linear issues start jobs, and where. Assigning an
-// issue to the Machinist app is the only trigger.
-type LinearRules struct {
-	Secret    string
+// Linear reads issues assigned to the Machinist app from Linear's API, moves
+// them between states and comments on them. It is a Tracker.
+type Linear struct {
+	// Token is the Machinist app's Linear access token.
+	Token string
+	// AppUserID is the app's Linear user. Issues assigned to it are work.
 	AppUserID string
-	// AllowedUsers may start jobs. The event's actor must be one of them.
-	AllowedUsers []string
-	Preset       string
-	// Teams maps a team key to a repository.
-	Teams map[string]string
+	// Teams are the connected team keys. Other teams are never read.
+	Teams    []string
+	Endpoint string
+	Client   *http.Client
 }
 
-// LinearEvent is the part of a Linear webhook payload Machinist reads.
-type LinearEvent struct {
-	Action    string `json:"action"`
-	Type      string `json:"type"`
-	Timestamp int64  `json:"webhookTimestamp"`
-	// Actor is who made the change.
-	Actor struct {
-		ID   string `json:"id"`
-		Type string `json:"type"`
-	} `json:"actor"`
-	Data struct {
-		ID          string `json:"id"`
-		Identifier  string `json:"identifier"`
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		URL         string `json:"url"`
-		AssigneeID  string `json:"assigneeId"`
-		Team        struct {
-			Key string `json:"key"`
-		} `json:"team"`
-	} `json:"data"`
-	// UpdatedFrom holds the old value of each field an update changed.
-	UpdatedFrom map[string]json.RawMessage `json:"updatedFrom"`
+var _ Tracker = (*Linear)(nil)
+
+func (l *Linear) Name() string { return "linear" }
+
+type linearIssue struct {
+	ID          string    `json:"id"`
+	Identifier  string    `json:"identifier"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	URL         string    `json:"url"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	Team        struct {
+		Key string `json:"key"`
+	} `json:"team"`
+	History struct {
+		Nodes []struct {
+			CreatedAt    time.Time `json:"createdAt"`
+			ActorID      string    `json:"actorId"`
+			ToAssigneeID string    `json:"toAssigneeId"`
+		} `json:"nodes"`
+	} `json:"history"`
 }
 
-// VerifyLinear checks the Linear-Signature header, an HMAC-SHA256 of the raw
-// body, and that the delivery is fresh. It returns the parsed event.
-func VerifyLinear(secret string, body []byte, signature string, now time.Time) (LinearEvent, error) {
-	got, err := hex.DecodeString(strings.TrimSpace(signature))
-	if err != nil || secret == "" {
-		return LinearEvent{}, ErrLinearUnsigned
+// Assignments returns the issues assigned to the app in connected teams and
+// updated after since, oldest first.
+func (l *Linear) Assignments(ctx context.Context, since time.Time) ([]Assignment, error) {
+	query := fmt.Sprintf(`query Assigned($after: String) {
+  issues(first: %d, after: $after, orderBy: updatedAt, filter: {assignee: {id: {eq: %s}}, team: {key: {in: %s}}, updatedAt: {gt: %s}}) {
+    nodes { id identifier title description url updatedAt team { key }
+      history(first: %d) { nodes { createdAt actorId toAssigneeId } } }
+    pageInfo { hasNextPage endCursor }
+  }
+}`, linearPage, quote(l.AppUserID), quote(l.Teams), quote(since.UTC().Format(time.RFC3339Nano)), linearHistory)
+	var assignments []Assignment
+	var after *string
+	for page := 0; page < maxLinearPages; page++ {
+		var answer struct {
+			Issues struct {
+				Nodes    []linearIssue `json:"nodes"`
+				PageInfo struct {
+					HasNextPage bool   `json:"hasNextPage"`
+					EndCursor   string `json:"endCursor"`
+				} `json:"pageInfo"`
+			} `json:"issues"`
+		}
+		if err := l.do(ctx, query, map[string]any{"after": after}, &answer); err != nil {
+			return nil, err
+		}
+		for _, issue := range answer.Issues.Nodes {
+			assignments = append(assignments, l.assignment(issue))
+		}
+		if !answer.Issues.PageInfo.HasNextPage {
+			break
+		}
+		cursor := answer.Issues.PageInfo.EndCursor
+		after = &cursor
 	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	if !hmac.Equal(got, mac.Sum(nil)) {
-		return LinearEvent{}, ErrLinearUnsigned
-	}
-	var event LinearEvent
-	if err := json.Unmarshal(body, &event); err != nil {
-		return LinearEvent{}, invalid("the payload is not JSON: %v", err)
-	}
-	sent := time.UnixMilli(event.Timestamp)
-	if event.Timestamp == 0 || now.Sub(sent).Abs() > MaxLinearSkew {
-		return LinearEvent{}, fmt.Errorf("%w: webhookTimestamp is more than %s from now", ErrLinearUnsigned, MaxLinearSkew)
-	}
-	return event, nil
+	sort.SliceStable(assignments, func(a, b int) bool { return assignments[a].UpdatedAt.Before(assignments[b].UpdatedAt) })
+	return assignments, nil
 }
 
-// LinearJob is a job a Linear issue asked for.
-type LinearJob struct {
-	Key, Repo, Preset, Prompt string
-}
-
-// Decide returns the job an event starts, or the reason it starts none.
-func (rules LinearRules) Decide(event LinearEvent) (LinearJob, string) {
-	if event.Type != "Issue" || (event.Action != "create" && event.Action != "update") {
-		return LinearJob{}, "not an issue being created or updated"
-	}
-	if event.Data.ID == "" {
-		return LinearJob{}, "the issue has no id"
-	}
-	repository, ok := rules.team(event.Data.Team.Key)
-	if !ok {
-		return LinearJob{}, fmt.Sprintf("team %q is not connected", event.Data.Team.Key)
-	}
-	if !rules.assignedToApp(event) {
-		return LinearJob{}, "the issue was not just assigned to the Machinist app"
-	}
-	if event.Actor.ID == "" || !slices.Contains(rules.AllowedUsers, event.Actor.ID) {
-		return LinearJob{}, fmt.Sprintf("user %q may not start jobs", event.Actor.ID)
-	}
-	return LinearJob{Key: "linear:" + event.Data.ID, Repo: repository, Preset: rules.Preset, Prompt: linearPrompt(event)}, ""
-}
-
-func (rules LinearRules) team(key string) (string, bool) {
-	for team, repository := range rules.Teams {
-		if key != "" && strings.EqualFold(team, key) {
-			return repository, true
+// assignment finds who assigned the issue to the app: the actor of the latest
+// history entry that moved it to the app.
+func (l *Linear) assignment(issue linearIssue) Assignment {
+	var actor string
+	var at time.Time
+	for _, entry := range issue.History.Nodes {
+		if entry.ToAssigneeID == l.AppUserID && entry.ActorID != "" && !entry.CreatedAt.Before(at) {
+			actor, at = entry.ActorID, entry.CreatedAt
 		}
 	}
-	return "", false
+	return Assignment{
+		Key:        "linear:" + issue.ID,
+		Issue:      issue.ID,
+		Identifier: issue.Identifier,
+		Title:      issue.Title,
+		Body:       issue.Description,
+		URL:        issue.URL,
+		Team:       issue.Team.Key,
+		Actor:      actor,
+		UpdatedAt:  issue.UpdatedAt,
+	}
 }
 
-// assignedToApp reports whether this event assigned the issue to the app.
-func (rules LinearRules) assignedToApp(event LinearEvent) bool {
-	if rules.AppUserID == "" || event.Data.AssigneeID != rules.AppUserID {
-		return false
+// Comment posts body on an issue as the app.
+func (l *Linear) Comment(ctx context.Context, issue, body string) error {
+	var answer struct {
+		CommentCreate struct {
+			Success bool `json:"success"`
+		} `json:"commentCreate"`
 	}
-	if event.Action == "create" {
-		return true
+	mutation := `mutation Comment($issue: String!, $body: String!) { commentCreate(input: {issueId: $issue, body: $body}) { success } }`
+	if err := l.do(ctx, mutation, map[string]any{"issue": issue, "body": body}, &answer); err != nil {
+		return err
 	}
-	raw, changed := event.UpdatedFrom["assigneeId"]
-	if !changed {
-		return false
+	if !answer.CommentCreate.Success {
+		return errors.New("linear did not create the comment")
 	}
-	var before *string
-	if json.Unmarshal(raw, &before) != nil {
-		return false
-	}
-	return before == nil || *before != rules.AppUserID
+	return nil
 }
 
-func linearPrompt(event LinearEvent) string {
-	issue := event.Data
-	prompt := strings.TrimSpace(issue.Title)
-	if description := strings.TrimSpace(issue.Description); description != "" {
-		prompt += "\n\n" + description
+// Start moves an issue to its team's In Progress state, or the first started
+// state if the team has none by that name.
+func (l *Linear) Start(ctx context.Context, issue string) error {
+	states, err := l.teamStates(ctx, issue)
+	if err != nil {
+		return err
 	}
-	if issue.Identifier != "" || issue.URL != "" {
-		prompt += fmt.Sprintf("\n\nLinear issue %s: %s", issue.Identifier, issue.URL)
+	state, ok := pickState(states, "started", "In Progress")
+	if !ok {
+		return errors.New("linear: the team has no started state")
 	}
-	return prompt
+	return l.move(ctx, issue, state)
 }
 
-// Linear starts the job a Linear issue asked for. The same issue always
-// returns its first job, so Linear's retries are safe.
-func (i *Intake) Linear(ctx context.Context, job LinearJob) (tickets.Ticket, bool, error) {
-	return i.start(ctx, start{source: "linear", key: job.Key, preset: job.Preset, repo: job.Repo, prompt: job.Prompt, by: "linear"})
+// Fail moves an issue back to its team's first unstarted state, such as Todo,
+// and comments why.
+func (l *Linear) Fail(ctx context.Context, issue, reason string) error {
+	states, err := l.teamStates(ctx, issue)
+	if err != nil {
+		return err
+	}
+	state, ok := pickState(states, "unstarted", "Todo")
+	if !ok {
+		return errors.New("linear: the team has no unstarted state")
+	}
+	if err := l.move(ctx, issue, state); err != nil {
+		return err
+	}
+	return l.Comment(ctx, issue, "Machinist's job failed: "+reason)
 }
 
-// LinearExisting returns the job an issue already started, if any. The webhook
-// checks it first, so a retry never counts against the hourly cap.
-func (i *Intake) LinearExisting(ctx context.Context, job LinearJob) (tickets.Ticket, bool, error) {
-	ticket, err := i.Store.TicketBySourceKey(ctx, job.Key)
-	if errors.Is(err, tickets.ErrNotFound) {
-		return tickets.Ticket{}, false, nil
+// States reads whether each issue is still assigned to the app and started.
+func (l *Linear) States(ctx context.Context, issues []string) (map[string]IssueState, error) {
+	states := map[string]IssueState{}
+	for len(issues) > 0 {
+		batch := issues[:min(len(issues), linearPage)]
+		issues = issues[len(batch):]
+		var answer struct {
+			Issues struct {
+				Nodes []struct {
+					ID       string `json:"id"`
+					Assignee *struct {
+						ID string `json:"id"`
+					} `json:"assignee"`
+					State struct {
+						Type string `json:"type"`
+					} `json:"state"`
+				} `json:"nodes"`
+			} `json:"issues"`
+		}
+		query := `query States($ids: [ID!]) { issues(first: 50, filter: {id: {in: $ids}}) { nodes { id assignee { id } state { type } } } }`
+		if err := l.do(ctx, query, map[string]any{"ids": batch}, &answer); err != nil {
+			return nil, err
+		}
+		for _, node := range answer.Issues.Nodes {
+			states[node.ID] = IssueState{
+				Assigned: node.Assignee != nil && node.Assignee.ID == l.AppUserID,
+				Active:   node.State.Type == "started",
+			}
+		}
 	}
-	return ticket, err == nil, err
+	return states, nil
+}
+
+type linearState struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	Position float64 `json:"position"`
+}
+
+func (l *Linear) teamStates(ctx context.Context, issue string) ([]linearState, error) {
+	var answer struct {
+		Issue *struct {
+			Team struct {
+				States struct {
+					Nodes []linearState `json:"nodes"`
+				} `json:"states"`
+			} `json:"team"`
+		} `json:"issue"`
+	}
+	query := `query TeamStates($issue: String!) { issue(id: $issue) { team { states { nodes { id name type position } } } } }`
+	if err := l.do(ctx, query, map[string]any{"issue": issue}, &answer); err != nil {
+		return nil, err
+	}
+	if answer.Issue == nil {
+		return nil, errors.New("linear: the issue is gone")
+	}
+	return answer.Issue.Team.States.Nodes, nil
+}
+
+// pickState chooses the state of a type with the given name, or else the
+// first state of that type on the team's board.
+func pickState(states []linearState, kind, name string) (string, bool) {
+	var first *linearState
+	for i, state := range states {
+		if state.Type != kind {
+			continue
+		}
+		if strings.EqualFold(state.Name, name) {
+			return state.ID, true
+		}
+		if first == nil || state.Position < first.Position {
+			first = &states[i]
+		}
+	}
+	if first == nil {
+		return "", false
+	}
+	return first.ID, true
+}
+
+func (l *Linear) move(ctx context.Context, issue, state string) error {
+	var answer struct {
+		IssueUpdate struct {
+			Success bool `json:"success"`
+		} `json:"issueUpdate"`
+	}
+	mutation := `mutation Move($issue: String!, $state: String!) { issueUpdate(id: $issue, input: {stateId: $state}) { success } }`
+	if err := l.do(ctx, mutation, map[string]any{"issue": issue, "state": state}, &answer); err != nil {
+		return err
+	}
+	if !answer.IssueUpdate.Success {
+		return errors.New("linear did not update the issue")
+	}
+	return nil
+}
+
+func quote(value any) string {
+	data, _ := json.Marshal(value)
+	return string(data)
+}
+
+func (l *Linear) do(ctx context.Context, query string, variables map[string]any, into any) error {
+	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
+	if err != nil {
+		return err
+	}
+	endpoint := l.Endpoint
+	if endpoint == "" {
+		endpoint = LinearEndpoint
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	// A personal API key is sent as it is. An app's OAuth token is a bearer token.
+	if strings.HasPrefix(l.Token, "lin_api_") {
+		request.Header.Set("Authorization", l.Token)
+	} else {
+		request.Header.Set("Authorization", "Bearer "+l.Token)
+	}
+	client := l.Client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxLinearAnswer))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("linear: %w", ErrRateLimited)
+	}
+	var answer struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message    string `json:"message"`
+			Extensions struct {
+				Code string `json:"code"`
+			} `json:"extensions"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(data, &answer); err != nil {
+		return fmt.Errorf("linear: status %d: the answer is not JSON", response.StatusCode)
+	}
+	if len(answer.Errors) > 0 {
+		first := answer.Errors[0]
+		if first.Extensions.Code == "RATELIMITED" {
+			return fmt.Errorf("linear: %w", ErrRateLimited)
+		}
+		return fmt.Errorf("linear: %s", first.Message)
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("linear: status %d", response.StatusCode)
+	}
+	return json.Unmarshal(answer.Data, into)
 }
