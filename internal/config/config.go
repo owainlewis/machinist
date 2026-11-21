@@ -58,9 +58,10 @@ type GitHubApp struct {
 	PrivateKeyFile string `yaml:"private_key_file"`
 }
 
-// Linear starts jobs from a Linear webhook. It is off until teams lists at
-// least one team. The signing secret comes from LINEAR_WEBHOOK_SECRET, never
-// from this file, so the file can live in git.
+// Linear starts jobs from issues assigned to the Machinist app, by asking
+// Linear's API for them on an interval. It is off until teams lists at least
+// one team. The access token comes from LINEAR_API_TOKEN, never from this file,
+// so the file can live in git.
 type Linear struct {
 	// AppUserID is the Machinist app's Linear user. Assigning an issue to it
 	// starts a job.
@@ -75,19 +76,24 @@ type Linear struct {
 	Teams map[string]string `yaml:"teams"`
 	// MaxJobsPerHour caps the jobs Linear can start in any hour.
 	MaxJobsPerHour int `yaml:"max_jobs_per_hour"`
-	// Secret signs every webhook request. It is read from the environment.
-	Secret string `yaml:"-"`
+	// PollInterval is how often Machinist asks Linear for new assignments,
+	// such as 60s. Poll holds it parsed.
+	PollInterval string        `yaml:"poll_interval"`
+	Poll         time.Duration `yaml:"-"`
+	// Token is the app's access token. It is read from the environment.
+	Token string `yaml:"-"`
 }
 
-// Enabled reports whether the Linear webhook is switched on.
+// Enabled reports whether Machinist takes work from Linear.
 func (l Linear) Enabled() bool { return len(l.Teams) > 0 }
 
-// LinearSecretEnv names the variable that holds the webhook signing secret.
-const LinearSecretEnv = "LINEAR_WEBHOOK_SECRET"
+// LinearTokenEnv names the variable that holds the app's access token.
+const LinearTokenEnv = "LINEAR_API_TOKEN"
 
 const (
 	defaultLinearJobsPerHour = 20
-	minLinearSecretBytes     = 16
+	defaultLinearPoll        = time.Minute
+	minLinearPoll            = 10 * time.Second
 )
 
 type Config struct {
@@ -135,7 +141,7 @@ func LoadConfig(path string) (Config, error) {
 	if err := applyAppDefaults(machinistConfig.GitHub.App, machinistConfig.Server.configDir); err != nil {
 		return Config{}, err
 	}
-	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv(LinearSecretEnv))
+	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv(LinearTokenEnv))
 	if err != nil {
 		return Config{}, err
 	}
@@ -232,17 +238,25 @@ func applyServerDefaults(server Server) (Server, error) {
 	return server, nil
 }
 
-func applyLinearDefaults(linear Linear, secret string) (Linear, error) {
+func applyLinearDefaults(linear Linear, token string) (Linear, error) {
 	if !linear.Enabled() {
 		if linear.AppUserID != "" || linear.Preset != "" || len(linear.AllowedUsers) > 0 {
-			return Linear{}, errors.New("linear: set teams to switch the webhook on, or remove the linear section")
+			return Linear{}, errors.New("linear: set teams to take work from Linear, or remove the linear section")
 		}
 		return linear, nil
 	}
-	if len(strings.TrimSpace(secret)) < minLinearSecretBytes {
-		return Linear{}, fmt.Errorf("linear: %s must hold the webhook's signing secret, at least %d characters", LinearSecretEnv, minLinearSecretBytes)
+	if strings.TrimSpace(token) == "" {
+		return Linear{}, fmt.Errorf("linear: set %s to the Machinist app's Linear access token", LinearTokenEnv)
 	}
-	linear.Secret = strings.TrimSpace(secret)
+	linear.Token = strings.TrimSpace(token)
+	linear.Poll = defaultLinearPoll
+	if linear.PollInterval != "" {
+		poll, err := time.ParseDuration(linear.PollInterval)
+		if err != nil || poll < minLinearPoll {
+			return Linear{}, fmt.Errorf("linear: poll_interval must be a duration of at least %s, such as 60s", minLinearPoll)
+		}
+		linear.Poll = poll
+	}
 	linear.AppUserID = strings.TrimSpace(linear.AppUserID)
 	if linear.AppUserID == "" {
 		return Linear{}, errors.New("linear: set app_user_id to the Machinist app's Linear user, so only issues assigned to it start jobs")

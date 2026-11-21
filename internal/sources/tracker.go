@@ -1,0 +1,383 @@
+package sources
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/owainlewis/machinist/internal/tickets"
+)
+
+// maxBackoff caps how long a failing tracker waits between polls.
+const maxBackoff = 5 * time.Minute
+
+// ErrRateLimited means the tracker asked Machinist to slow down.
+var ErrRateLimited = errors.New("rate limited")
+
+// Assignment is an issue that was handed to Machinist in a tracker.
+type Assignment struct {
+	// Key is stable for the issue, such as linear:<issue id>. One issue starts
+	// one job, ever.
+	Key string
+	// Issue is the tracker's ID for the issue, used to comment on it.
+	Issue      string
+	Identifier string
+	Title      string
+	Body       string
+	URL        string
+	Team       string
+	// Actor is the user who made the assignment. Empty means it could not be
+	// found, and the assignment is ignored.
+	Actor     string
+	UpdatedAt time.Time
+}
+
+// IssueState is what Machinist needs to know about an issue with a job going.
+type IssueState struct {
+	// Assigned is whether the issue is still assigned to Machinist.
+	Assigned bool
+	// Active is whether the issue is still in a started state, such as In
+	// Progress.
+	Active bool
+}
+
+// Tracker is one place work comes from, such as Linear. Machinist, not the
+// agent, writes to it: the agent reads issue text that anyone in the tracker
+// may have written, so it never gets a way to change the tracker.
+type Tracker interface {
+	// Name is the tracker's ticket source, such as linear.
+	Name() string
+	// Assignments returns issues assigned to Machinist and updated after
+	// since, oldest first.
+	Assignments(ctx context.Context, since time.Time) ([]Assignment, error)
+	// Start moves an issue to In Progress.
+	Start(ctx context.Context, issue string) error
+	// Comment posts body on an issue.
+	Comment(ctx context.Context, issue, body string) error
+	// Fail moves an issue back out of In Progress and says why.
+	Fail(ctx context.Context, issue, reason string) error
+	// States reads issues by ID. An issue missing from the answer is gone.
+	States(ctx context.Context, issues []string) (map[string]IssueState, error)
+}
+
+// TrackerRules decide which assignments start jobs, and where.
+type TrackerRules struct {
+	// AllowedUsers may send work. An assignment by anyone else is ignored.
+	AllowedUsers []string
+	Preset       string
+	// Teams maps a team key to a repository.
+	Teams map[string]string
+}
+
+// Decide returns the job an assignment starts, or the reason it starts none.
+func (rules TrackerRules) Decide(assignment Assignment) (start, string) {
+	repository, ok := rules.team(assignment.Team)
+	if !ok {
+		return start{}, fmt.Sprintf("team %q is not connected", assignment.Team)
+	}
+	if assignment.Actor == "" {
+		return start{}, "who assigned it is not known"
+	}
+	if !slices.Contains(rules.AllowedUsers, assignment.Actor) {
+		return start{}, fmt.Sprintf("user %q may not start jobs", assignment.Actor)
+	}
+	return start{key: assignment.Key, preset: rules.Preset, repo: repository, prompt: trackerPrompt(assignment)}, ""
+}
+
+func (rules TrackerRules) team(key string) (string, bool) {
+	for team, repository := range rules.Teams {
+		if key != "" && strings.EqualFold(team, key) {
+			return repository, true
+		}
+	}
+	return "", false
+}
+
+func trackerPrompt(assignment Assignment) string {
+	prompt := strings.TrimSpace(assignment.Title)
+	if body := strings.TrimSpace(assignment.Body); body != "" {
+		prompt += "\n\n" + body
+	}
+	if assignment.Identifier != "" || assignment.URL != "" {
+		prompt += fmt.Sprintf("\n\nIssue %s: %s", assignment.Identifier, assignment.URL)
+	}
+	return prompt
+}
+
+// Poller asks a tracker for new assignments on an interval and starts their
+// jobs. Nothing calls Machinist from outside, so it needs no public route.
+type Poller struct {
+	Tracker Tracker
+	Rules   TrackerRules
+	Intake  *Intake
+	Store   *tickets.Store
+	// Interval is the time between polls while the tracker answers.
+	Interval time.Duration
+	// MaxJobsPerHour caps the jobs the tracker can start in any hour.
+	MaxJobsPerHour int
+	Log            io.Writer
+	now            func() time.Time
+	sleep          func(context.Context, time.Duration) bool
+
+	mu      sync.Mutex
+	started []time.Time
+}
+
+// Run polls at once, then after every interval until ctx ends. After a
+// failure it waits twice as long as before, up to five minutes.
+func (p *Poller) Run(ctx context.Context) {
+	wait := p.Interval
+	for {
+		err := p.Poll(ctx)
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err != nil:
+			wait = min(max(wait*2, p.Interval), maxBackoff)
+			fmt.Fprintf(p.log(), "machinist: %s: %v; next poll in %s\n", p.Tracker.Name(), err, wait)
+		default:
+			wait = p.Interval
+		}
+		if !p.wait(ctx, wait) {
+			return
+		}
+	}
+}
+
+func (p *Poller) wait(ctx context.Context, d time.Duration) bool {
+	if p.sleep != nil {
+		return p.sleep(ctx, d)
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (p *Poller) log() io.Writer {
+	if p.Log == nil {
+		return io.Discard
+	}
+	return p.Log
+}
+
+func (p *Poller) clock() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
+}
+
+// Poll starts a job for each new assignment, then tells the tracker what
+// happened to each job. The cursor moves past an assignment only once it is
+// handled, so a restart neither misses nor repeats one.
+func (p *Poller) Poll(ctx context.Context) error {
+	name := p.Tracker.Name()
+	since, found, err := p.Store.Cursor(ctx, name, "")
+	if err != nil {
+		return err
+	}
+	if !found {
+		// The first poll starts from now, so turning the tracker on does not
+		// start a job for every issue it was ever given.
+		since = p.clock()
+		if err := p.Store.SetCursor(ctx, name, "", since); err != nil {
+			return err
+		}
+	}
+	assignments, err := p.Tracker.Assignments(ctx, since)
+	if err != nil {
+		return err
+	}
+	started := 0
+	for _, assignment := range assignments {
+		outcome, err := p.handle(ctx, assignment)
+		if err != nil {
+			return err
+		}
+		if outcome == handledLater {
+			break
+		}
+		if outcome == handledStarted {
+			started++
+		}
+		if assignment.UpdatedAt.After(since) {
+			since = assignment.UpdatedAt
+			if err := p.Store.SetCursor(ctx, name, "", since); err != nil {
+				return err
+			}
+		}
+	}
+	fmt.Fprintf(p.log(), "machinist: %s: %d assignments, %d jobs started\n", name, len(assignments), started)
+	return p.sync(ctx)
+}
+
+type handled int
+
+const (
+	handledLater handled = iota
+	handledStarted
+	handledSkipped
+)
+
+// handle starts an assignment's job. handledLater means the hourly cap is
+// reached and the assignment waits for a later poll.
+func (p *Poller) handle(ctx context.Context, assignment Assignment) (handled, error) {
+	name := p.Tracker.Name()
+	job, reason := p.Rules.Decide(assignment)
+	if reason != "" {
+		fmt.Fprintf(p.log(), "machinist: %s issue %s ignored: %s\n", name, assignment.Identifier, reason)
+		return handledSkipped, nil
+	}
+	if _, err := p.Store.TicketBySourceKey(ctx, job.key); err == nil {
+		return handledSkipped, nil
+	} else if !errors.Is(err, tickets.ErrNotFound) {
+		return handledLater, err
+	}
+	if !p.allow(p.clock()) {
+		fmt.Fprintf(p.log(), "machinist: %s issue %s waits: %d jobs started in the last hour\n", name, assignment.Identifier, p.MaxJobsPerHour)
+		return handledLater, nil
+	}
+	job.source, job.by = name, name
+	ticket, _, err := p.Intake.start(ctx, job)
+	if errors.Is(err, ErrInvalidRequest) {
+		fmt.Fprintf(p.log(), "machinist: %s issue %s ignored: %v\n", name, assignment.Identifier, err)
+		return handledSkipped, nil
+	}
+	if err != nil {
+		return handledLater, err
+	}
+	fmt.Fprintf(p.log(), "machinist: %s issue %s started job %s\n", name, assignment.Identifier, ticket.ID)
+	return handledStarted, nil
+}
+
+// allow counts a job against the hourly cap, if there is room.
+func (p *Poller) allow(now time.Time) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	kept := p.started[:0]
+	for _, at := range p.started {
+		if now.Sub(at) < time.Hour {
+			kept = append(kept, at)
+		}
+	}
+	p.started = kept
+	if p.MaxJobsPerHour > 0 && len(p.started) >= p.MaxJobsPerHour {
+		return false
+	}
+	p.started = append(p.started, now)
+	return true
+}
+
+// maxReason bounds the failure reason Machinist writes on an issue.
+const maxReason = 500
+
+// sync tells the tracker what happened to each job, once: In Progress when it
+// starts, the pull request when there is one, and the reason when it fails.
+// A job whose issue has left In Progress or Machinist is cancelled.
+func (p *Poller) sync(ctx context.Context) error {
+	name := p.Tracker.Name()
+	jobs, err := p.Store.TrackerJobs(ctx, name)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	watched := map[string]tickets.TrackerJob{}
+	for _, job := range jobs {
+		issue, ok := strings.CutPrefix(job.SourceKey, name+":")
+		if !ok {
+			continue
+		}
+		if err := p.syncJob(ctx, issue, job); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", job.SourceKey, err))
+			continue
+		}
+		// Only a job whose issue Machinist moved to In Progress on an
+		// earlier poll is watched, so a slow write is never read as a move.
+		if job.State == tickets.StateWorking && job.Reported[tickets.ReportStarted] {
+			watched[issue] = job
+		}
+	}
+	if err := p.cancelMoved(ctx, watched); err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+func (p *Poller) syncJob(ctx context.Context, issue string, job tickets.TrackerJob) error {
+	report := func(kind string, write func() error) error {
+		if job.Reported[kind] {
+			return nil
+		}
+		if err := write(); err != nil {
+			return err
+		}
+		return p.Store.MarkReported(ctx, job.TicketID, kind)
+	}
+	if job.State == tickets.StateWorking {
+		if err := report(tickets.ReportStarted, func() error { return p.Tracker.Start(ctx, issue) }); err != nil {
+			return fmt.Errorf("move to In Progress: %w", err)
+		}
+	}
+	if job.PRNumber > 0 {
+		link := fmt.Sprintf("https://github.com/%s/pull/%d", job.Repo, job.PRNumber)
+		if err := report(tickets.ReportPR, func() error { return p.Tracker.Comment(ctx, issue, "Machinist opened a pull request: "+link) }); err != nil {
+			return fmt.Errorf("comment the pull request: %w", err)
+		}
+	}
+	if job.State == tickets.StateFailed {
+		reason, err := p.Store.LatestMessage(ctx, job.TicketID)
+		if err != nil {
+			return err
+		}
+		if runes := []rune(reason); len(runes) > maxReason {
+			reason = string(runes[:maxReason-1]) + "…"
+		}
+		if reason == "" {
+			reason = "The job failed."
+		}
+		if err := report(tickets.ReportFailed, func() error { return p.Tracker.Fail(ctx, issue, reason) }); err != nil {
+			return fmt.Errorf("report the failure: %w", err)
+		}
+	}
+	return nil
+}
+
+// cancelMoved cancels each job whose issue was unassigned from Machinist or
+// moved out of In Progress.
+func (p *Poller) cancelMoved(ctx context.Context, watched map[string]tickets.TrackerJob) error {
+	if len(watched) == 0 {
+		return nil
+	}
+	issues := make([]string, 0, len(watched))
+	for issue := range watched {
+		issues = append(issues, issue)
+	}
+	slices.Sort(issues)
+	states, err := p.Tracker.States(ctx, issues)
+	if err != nil {
+		return err
+	}
+	name := p.Tracker.Name()
+	for _, issue := range issues {
+		state, found := states[issue]
+		if found && state.Assigned && state.Active {
+			continue
+		}
+		job := watched[issue]
+		if _, err := p.Store.Cancel(ctx, job.TicketID, name); err != nil && !errors.Is(err, tickets.ErrTicketEnded) {
+			return err
+		}
+		fmt.Fprintf(p.log(), "machinist: %s issue %s left In Progress or Machinist; cancelled job %s\n", name, issue, job.TicketID)
+	}
+	return nil
+}

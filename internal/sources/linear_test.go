@@ -1,136 +1,486 @@
 package sources
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/owainlewis/machinist/internal/tickets"
 )
 
-const testLinearSecret = "lin_wh_test_secret_0123456789"
+const appUser = "app-user"
 
-func sign(body []byte) string {
-	mac := hmac.New(sha256.New, []byte(testLinearSecret))
-	mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil))
+type fakeIssue struct {
+	linearIssue
+	actor    string
+	assignee string
+	state    string
 }
 
-// linearEvent is an issue event. assignee is the issue's assignee now, and
-// updatedFrom holds the old values an update changed.
-func linearEvent(t *testing.T, action string, at time.Time, assignee string, updatedFrom map[string]any) []byte {
+// fakeStates is every fake team's board. In Review is a second started state.
+var fakeStates = []linearState{
+	{ID: "s-backlog", Name: "Backlog", Type: "backlog", Position: 0},
+	{ID: "s-todo", Name: "Todo", Type: "unstarted", Position: 1},
+	{ID: "s-progress", Name: "In Progress", Type: "started", Position: 2},
+	{ID: "s-review", Name: "In Review", Type: "started", Position: 3},
+	{ID: "s-done", Name: "Done", Type: "completed", Position: 4},
+}
+
+func stateType(id string) string {
+	for _, state := range fakeStates {
+		if state.ID == id {
+			return state.Type
+		}
+	}
+	return ""
+}
+
+// fakeLinear answers the calls Machinist makes to Linear's GraphQL API.
+type fakeLinear struct {
+	mu       sync.Mutex
+	issues   []fakeIssue
+	comments map[string][]string
+	limited  int
+	// brokenMoves is how many issueUpdate calls fail before one works.
+	brokenMoves int
+	moves       int
+	queries     []string
+	auth        string
+}
+
+var sinceInQuery = regexp.MustCompile(`updatedAt: \{gt: "([^"]+)"\}`)
+
+func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.auth = r.Header.Get("Authorization")
+	var request struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&request)
+	f.queries = append(f.queries, request.Query)
+	if f.limited > 0 {
+		f.limited--
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"slow down","extensions":{"code":"RATELIMITED"}}]}`))
+		return
+	}
+	answer := func(data any) { _ = json.NewEncoder(w).Encode(map[string]any{"data": data}) }
+	switch {
+	case strings.Contains(request.Query, "issueUpdate"):
+		if f.brokenMoves > 0 {
+			f.brokenMoves--
+			_, _ = w.Write([]byte(`{"errors":[{"message":"something broke"}]}`))
+			return
+		}
+		f.moves++
+		issue := f.issue(request.Variables["issue"].(string))
+		issue.state = request.Variables["state"].(string)
+		answer(map[string]any{"issueUpdate": map[string]any{"success": true}})
+		return
+	case strings.Contains(request.Query, "TeamStates"):
+		answer(map[string]any{"issue": map[string]any{"team": map[string]any{"states": map[string]any{"nodes": fakeStates}}}})
+		return
+	case strings.Contains(request.Query, "query States"):
+		nodes := []map[string]any{}
+		for _, id := range request.Variables["ids"].([]any) {
+			if issue := f.issue(id.(string)); issue != nil {
+				node := map[string]any{"id": issue.ID, "state": map[string]any{"type": stateType(issue.state)}}
+				if issue.assignee != "" {
+					node["assignee"] = map[string]any{"id": issue.assignee}
+				}
+				nodes = append(nodes, node)
+			}
+		}
+		answer(map[string]any{"issues": map[string]any{"nodes": nodes}})
+		return
+	}
+	if strings.Contains(request.Query, "commentCreate") {
+		issue, _ := request.Variables["issue"].(string)
+		body, _ := request.Variables["body"].(string)
+		f.comments[issue] = append(f.comments[issue], body)
+		_, _ = w.Write([]byte(`{"data":{"commentCreate":{"success":true}}}`))
+		return
+	}
+	since, _ := time.Parse(time.RFC3339Nano, sinceInQuery.FindStringSubmatch(request.Query)[1])
+	nodes := []linearIssue{}
+	for _, issue := range f.issues {
+		if issue.assignee == appUser && issue.UpdatedAt.After(since) {
+			nodes = append(nodes, issue.linearIssue)
+		}
+	}
+	// Linear lists the most recently updated first.
+	for a, b := 0, len(nodes)-1; a < b; a, b = a+1, b-1 {
+		nodes[a], nodes[b] = nodes[b], nodes[a]
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issues": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false}}}})
+}
+
+func (f *fakeLinear) issue(id string) *fakeIssue {
+	for index := range f.issues {
+		if f.issues[index].ID == id {
+			return &f.issues[index]
+		}
+	}
+	return nil
+}
+
+// set changes an issue as a person in Linear would.
+func (f *fakeLinear) set(id string, change func(*fakeIssue)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change(f.issue(id))
+}
+
+func (f *fakeLinear) stateOf(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.issue(id).state
+}
+
+// assign adds an issue that actor assigned to the app at the given time.
+func (f *fakeLinear) assign(id, team, actor string, at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	issue := linearIssue{ID: id, Identifier: strings.ToUpper(team) + "-" + id, Title: "Fix " + id, Description: "The details of " + id, URL: "https://linear.app/x/issue/" + id, UpdatedAt: at}
+	issue.Team.Key = team
+	if actor != "" {
+		issue.History.Nodes = append(issue.History.Nodes, struct {
+			CreatedAt    time.Time `json:"createdAt"`
+			ActorID      string    `json:"actorId"`
+			ToAssigneeID string    `json:"toAssigneeId"`
+		}{CreatedAt: at.Add(-time.Hour), ActorID: "someone-earlier", ToAssigneeID: appUser}, struct {
+			CreatedAt    time.Time `json:"createdAt"`
+			ActorID      string    `json:"actorId"`
+			ToAssigneeID string    `json:"toAssigneeId"`
+		}{CreatedAt: at, ActorID: actor, ToAssigneeID: appUser})
+	}
+	f.issues = append(f.issues, fakeIssue{linearIssue: issue, actor: actor, assignee: appUser, state: "s-todo"})
+}
+
+type polling struct {
+	poller *Poller
+	linear *fakeLinear
+	store  *tickets.Store
+	now    time.Time
+	log    *bytes.Buffer
+}
+
+func newPolling(t *testing.T) *polling {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
-		"action": action, "type": "Issue", "webhookTimestamp": at.UnixMilli(), "updatedFrom": updatedFrom,
-		"actor": map[string]string{"id": "owain", "type": "user"},
-		"data": map[string]any{
-			"id": "issue-1", "identifier": "ENG-12", "title": "Fix the export button", "description": "It does nothing on Safari.",
-			"url": "https://linear.app/team/issue/ENG-12", "assigneeId": assignee, "team": map[string]string{"key": "ENG"},
-		},
-	})
+	intake, _ := newIntake(t)
+	intake.Presets = func(name string) bool { return name == "default" }
+	fake := &fakeLinear{comments: map[string][]string{}}
+	server := httptest.NewServer(fake)
+	t.Cleanup(server.Close)
+	p := &polling{linear: fake, store: intake.Store, now: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC), log: &bytes.Buffer{}}
+	p.poller = &Poller{
+		Tracker:        &Linear{Token: "lin_oauth_token", AppUserID: appUser, Teams: []string{"ENG"}, Endpoint: server.URL, Client: server.Client()},
+		Rules:          TrackerRules{AllowedUsers: []string{"owain"}, Preset: "default", Teams: map[string]string{"ENG": "owner/repo"}},
+		Intake:         intake,
+		Store:          intake.Store,
+		Interval:       time.Minute,
+		MaxJobsPerHour: 20,
+		Log:            p.log,
+		now:            func() time.Time { return p.now },
+	}
+	intake.Store.SetClock(func() time.Time { return p.now })
+	return p
+}
+
+func (p *polling) poll(t *testing.T) {
+	t.Helper()
+	if err := p.poller.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (p *polling) tickets(t *testing.T) []tickets.Ticket {
+	t.Helper()
+	listed, err := p.store.ListTickets(t.Context(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return body
+	return listed
 }
 
-func TestVerifyLinearAcceptsOnlyFreshSignedDeliveries(t *testing.T) {
-	now := time.Now()
-	body := linearEvent(t, "create", now, "", nil)
-	if event, err := VerifyLinear(testLinearSecret, body, sign(body), now); err != nil || event.Data.Identifier != "ENG-12" {
-		t.Fatalf("event = %+v, err = %v", event, err)
+func TestAnAssignmentStartsOneJob(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.assign("a1", "ENG", "owain", p.now)
+	p.poll(t)
+	listed := p.tickets(t)
+	if len(listed) != 1 {
+		t.Fatalf("tickets = %+v", listed)
 	}
-	for name, check := range map[string]func() error{
-		"no signature": func() error { _, err := VerifyLinear(testLinearSecret, body, "", now); return err },
-		"wrong secret": func() error { _, err := VerifyLinear("another_secret_0123456789", body, sign(body), now); return err },
-		"changed body": func() error {
-			_, err := VerifyLinear(testLinearSecret, append([]byte(" "), body...), sign(body), now)
-			return err
-		},
-		"replayed": func() error {
-			_, err := VerifyLinear(testLinearSecret, body, sign(body), now.Add(2*time.Minute))
-			return err
-		},
-		"no secret": func() error { _, err := VerifyLinear("", body, sign(body), now); return err },
-	} {
-		if err := check(); !errors.Is(err, ErrLinearUnsigned) {
-			t.Errorf("%s: err = %v", name, err)
+	job := listed[0]
+	if job.Source != "linear" || job.Repo != "owner/repo" || job.Agent != "default" || job.Title != "Fix a1" || job.CreatedBy != "linear" {
+		t.Fatalf("job = %+v", job)
+	}
+	entries, _ := p.store.Entries(t.Context(), job.ID)
+	if prompt := entries[0].Body; !strings.Contains(prompt, "The details of a1") || !strings.Contains(prompt, "https://linear.app/x/issue/a1") {
+		t.Fatalf("prompt = %q", prompt)
+	}
+	if p.linear.auth != "Bearer lin_oauth_token" {
+		t.Fatalf("authorization = %q", p.linear.auth)
+	}
+	var query string
+	for _, sent := range p.linear.queries {
+		if strings.Contains(sent, "query Assigned") {
+			query = sent
 		}
 	}
-}
+	for _, want := range []string{`assignee: {id: {eq: "app-user"}}`, `team: {key: {in: ["ENG"]}}`, "toAssigneeId"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("query lacks %s:\n%s", want, query)
+		}
+	}
 
-func decide(t *testing.T, rules LinearRules, body []byte) (LinearJob, string) {
-	t.Helper()
-	var event LinearEvent
-	if err := json.Unmarshal(body, &event); err != nil {
+	// The same issue again, a later edit to it, and a restart all start nothing.
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.mu.Lock()
+	p.linear.issues[0].UpdatedAt = p.now
+	p.linear.mu.Unlock()
+	p.poll(t)
+	restarted := &Poller{Tracker: p.poller.Tracker, Rules: p.poller.Rules, Intake: p.poller.Intake, Store: p.store, Interval: time.Minute, MaxJobsPerHour: 20, now: p.poller.now}
+	if err := restarted.Poll(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	return rules.Decide(event)
-}
-
-func TestLinearStartsAJobWhenAnIssueIsAssignedToTheApp(t *testing.T) {
-	rules := LinearRules{AppUserID: "app-user", AllowedUsers: []string{"owain"}, Preset: "coding", Teams: map[string]string{"eng": "owner/repo"}}
-	now := time.Now()
-	job, reason := decide(t, rules, linearEvent(t, "update", now, "app-user", map[string]any{"assigneeId": nil}))
-	if reason != "" || job.Key != "linear:issue-1" || job.Repo != "owner/repo" || job.Preset != "coding" {
-		t.Fatalf("job = %+v, reason = %q", job, reason)
-	}
-	if !strings.HasPrefix(job.Prompt, "Fix the export button\n\nIt does nothing on Safari.") || !strings.Contains(job.Prompt, "Linear issue ENG-12: https://linear.app/team/issue/ENG-12") {
-		t.Fatalf("prompt = %q", job.Prompt)
-	}
-	started := map[string][]byte{
-		"created assigned":    linearEvent(t, "create", now, "app-user", nil),
-		"moved from a person": linearEvent(t, "update", now, "app-user", map[string]any{"assigneeId": "someone"}),
-	}
-	for name, body := range started {
-		if _, reason := decide(t, rules, body); reason != "" {
-			t.Errorf("%s: %s", name, reason)
-		}
-	}
-	ignored := map[string][]byte{
-		"assigned to a person":        linearEvent(t, "update", now, "someone", map[string]any{"assigneeId": nil}),
-		"unassigned":                  linearEvent(t, "create", now, "", nil),
-		"edited while the app has it": linearEvent(t, "update", now, "app-user", map[string]any{"title": "Old"}),
-		"reassigned to the app again": linearEvent(t, "update", now, "app-user", map[string]any{"assigneeId": "app-user"}),
-		"removed":                     linearEvent(t, "remove", now, "app-user", nil),
-	}
-	for name, body := range ignored {
-		if _, reason := decide(t, rules, body); reason == "" {
-			t.Errorf("%s started a job", name)
-		}
-	}
-	other := LinearRules{AppUserID: "app-user", AllowedUsers: []string{"owain"}, Teams: map[string]string{"OPS": "owner/repo"}}
-	if _, reason := decide(t, other, linearEvent(t, "create", now, "app-user", nil)); !strings.Contains(reason, "not connected") {
-		t.Errorf("other team: reason = %q", reason)
-	}
-	stranger := LinearRules{AppUserID: "app-user", AllowedUsers: []string{"someone-else"}, Teams: map[string]string{"ENG": "owner/repo"}}
-	if _, reason := decide(t, stranger, linearEvent(t, "create", now, "app-user", nil)); !strings.Contains(reason, "may not start jobs") {
-		t.Errorf("unlisted user: reason = %q", reason)
-	}
-	var noActor map[string]any
-	_ = json.Unmarshal(linearEvent(t, "create", now, "app-user", nil), &noActor)
-	delete(noActor, "actor")
-	body, _ := json.Marshal(noActor)
-	if _, reason := decide(t, rules, body); !strings.Contains(reason, "may not start jobs") {
-		t.Errorf("no actor: reason = %q", reason)
-	}
-	if _, reason := decide(t, LinearRules{Teams: map[string]string{"ENG": "owner/repo"}}, linearEvent(t, "create", now, "", nil)); reason == "" {
-		t.Error("no app user started a job")
+	if listed := p.tickets(t); len(listed) != 1 {
+		t.Fatalf("tickets = %+v", listed)
 	}
 }
 
-func TestLinearJobIsCreatedOncePerIssue(t *testing.T) {
-	intake, _ := newIntake(t)
-	intake.Presets = func(name string) bool { return name == "coding" }
-	job := LinearJob{Key: "linear:issue-1", Repo: "owner/repo", Preset: "coding", Prompt: "Fix it\n\nDetail"}
-	first, created, err := intake.Linear(t.Context(), job)
-	if err != nil || !created || first.Source != "linear" || first.CreatedBy != "linear" || first.Title != "Fix it" {
-		t.Fatalf("ticket = %+v, created = %v, err = %v", first, created, err)
+func TestTheFirstPollStartsNothingAlreadyAssigned(t *testing.T) {
+	p := newPolling(t)
+	p.linear.assign("old", "ENG", "owain", p.now.Add(-time.Hour))
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 0 {
+		t.Fatalf("tickets = %+v", listed)
 	}
-	if again, found, err := intake.LinearExisting(t.Context(), job); err != nil || !found || again.ID != first.ID {
-		t.Fatalf("again = %+v, found = %v, err = %v", again, found, err)
+}
+
+func TestOnlyAllowedUsersInConnectedTeamsStartJobs(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.assign("stranger", "ENG", "mallory", p.now)
+	p.linear.assign("unknown", "ENG", "", p.now)
+	p.linear.assign("elsewhere", "OPS", "owain", p.now)
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 0 {
+		t.Fatalf("tickets = %+v", listed)
+	}
+	for _, want := range []string{`user "mallory" may not start jobs`, "who assigned it is not known", `team "OPS" is not connected`} {
+		if !strings.Contains(p.log.String(), want) {
+			t.Fatalf("log lacks %q:\n%s", want, p.log)
+		}
+	}
+}
+
+func TestTheActorIsWhoMadeTheLatestAssignment(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	// someone-earlier assigned it first; owain assigned it again last.
+	p.linear.assign("again", "ENG", "owain", p.now)
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 {
+		t.Fatalf("tickets = %+v", listed)
+	}
+}
+
+func TestTheHourlyCapHoldsAnAssignmentForALaterPoll(t *testing.T) {
+	p := newPolling(t)
+	p.poller.MaxJobsPerHour = 1
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.assign("first", "ENG", "owain", p.now)
+	p.linear.assign("second", "ENG", "owain", p.now.Add(time.Second))
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 {
+		t.Fatalf("tickets = %+v", listed)
+	}
+	p.now = p.now.Add(time.Hour)
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 2 {
+		t.Fatalf("the held assignment did not start: %+v", listed)
+	}
+}
+
+func TestAPullRequestIsCommentedOnItsIssueOnce(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.assign("a1", "ENG", "owain", p.now)
+	p.poll(t)
+	job := p.tickets(t)[0]
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poll(t)
+	if got := p.linear.comments["a1"]; len(got) != 1 || got[0] != "Machinist opened a pull request: https://github.com/owner/repo/pull/7" {
+		t.Fatalf("comments = %v", got)
+	}
+}
+
+func TestRateLimitsBackOffUpToFiveMinutes(t *testing.T) {
+	p := newPolling(t)
+	p.linear.limited = 4
+	var waits []time.Duration
+	ctx, cancel := context.WithCancel(t.Context())
+	p.poller.sleep = func(_ context.Context, d time.Duration) bool {
+		waits = append(waits, d)
+		if len(waits) == 6 {
+			cancel()
+			return false
+		}
+		return true
+	}
+	p.poller.Run(ctx)
+	want := []time.Duration{2 * time.Minute, 4 * time.Minute, 5 * time.Minute, 5 * time.Minute, time.Minute, time.Minute}
+	if len(waits) != len(want) {
+		t.Fatalf("waits = %v", waits)
+	}
+	for index := range want {
+		if waits[index] != want[index] {
+			t.Fatalf("waits = %v, want %v", waits, want)
+		}
+	}
+	if !strings.Contains(p.log.String(), "rate limited; next poll in 2m0s") {
+		t.Fatalf("log:\n%s", p.log)
+	}
+	if err := p.poller.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	p.linear.limited = 1
+	if err := p.poller.Poll(t.Context()); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAPersonalAPIKeyIsSentAsItIs(t *testing.T) {
+	p := newPolling(t)
+	p.poller.Tracker.(*Linear).Token = "lin_api_key"
+	p.poll(t)
+	if p.linear.auth != "lin_api_key" {
+		t.Fatalf("authorization = %q", p.linear.auth)
+	}
+}
+
+// started polls until one job is going on issue a1, and returns it.
+func (p *polling) started(t *testing.T) tickets.Ticket {
+	t.Helper()
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.assign("a1", "ENG", "owain", p.now)
+	p.poll(t)
+	listed := p.tickets(t)
+	if len(listed) != 1 {
+		t.Fatalf("tickets = %+v", listed)
+	}
+	return listed[0]
+}
+
+func (p *polling) state(t *testing.T, id string) string {
+	t.Helper()
+	ticket, err := p.store.Ticket(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ticket.State
+}
+
+func TestPickingUpAnIssueMovesItToInProgressOnce(t *testing.T) {
+	p := newPolling(t)
+	p.started(t)
+	if got := p.linear.stateOf("a1"); got != "s-progress" {
+		t.Fatalf("state = %q", got)
+	}
+	p.poll(t)
+	p.poll(t)
+	if p.linear.moves != 1 {
+		t.Fatalf("moves = %d", p.linear.moves)
+	}
+}
+
+func TestAFailedJobMovesItsIssueBackWithTheReason(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: "The tests would not pass."}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poll(t)
+	if got := p.linear.stateOf("a1"); got != "s-todo" {
+		t.Fatalf("state = %q", got)
+	}
+	if got := p.linear.comments["a1"]; len(got) != 1 || got[0] != "Machinist's job failed: The tests would not pass." {
+		t.Fatalf("comments = %v", got)
+	}
+}
+
+func TestMovingOrUnassigningAnIssueCancelsItsJob(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*fakeIssue)
+		cancel bool
+	}{
+		{"unassigned", func(issue *fakeIssue) { issue.assignee = "" }, true},
+		{"assigned to someone else", func(issue *fakeIssue) { issue.assignee = "owain" }, true},
+		{"moved to Todo", func(issue *fakeIssue) { issue.state = "s-todo" }, true},
+		{"moved to Done", func(issue *fakeIssue) { issue.state = "s-done" }, true},
+		{"moved to In Review", func(issue *fakeIssue) { issue.state = "s-review" }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newPolling(t)
+			job := p.started(t)
+			p.poll(t)
+			if got := p.state(t, job.ID); got != tickets.StateWorking {
+				t.Fatalf("state before the change = %q", got)
+			}
+			p.linear.set("a1", test.change)
+			p.poll(t)
+			want := tickets.StateWorking
+			if test.cancel {
+				want = tickets.StateCancelled
+			}
+			if got := p.state(t, job.ID); got != want {
+				t.Fatalf("state = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestAJobIsNotCancelledBeforeItsIssueReachedInProgress(t *testing.T) {
+	p := newPolling(t)
+	p.linear.brokenMoves = 1
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.assign("a1", "ENG", "owain", p.now)
+	if err := p.poller.Poll(t.Context()); err == nil || !strings.Contains(err.Error(), "something broke") {
+		t.Fatalf("err = %v", err)
+	}
+	job := p.tickets(t)[0]
+	// The issue is still in Todo, because the move failed. That is not a
+	// person moving it, so the job keeps going and the move is tried again.
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("state = %q", got)
+	}
+	if got := p.linear.stateOf("a1"); got != "s-progress" {
+		t.Fatalf("issue state = %q", got)
 	}
 }

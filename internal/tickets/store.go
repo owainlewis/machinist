@@ -78,6 +78,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_active_token_per_name ON tokens(name) WHER
 CREATE TABLE IF NOT EXISTS runners (
   name TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT '', harnesses TEXT NOT NULL DEFAULT '', slots INTEGER NOT NULL DEFAULT 1, last_contact TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS source_cursors (source TEXT NOT NULL, repo TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(source, repo));
+CREATE TABLE IF NOT EXISTS tracker_reports (ticket_id TEXT NOT NULL, kind TEXT NOT NULL, reported_at TEXT NOT NULL, PRIMARY KEY(ticket_id, kind));
 CREATE TABLE IF NOT EXISTS ignored_source_keys (key TEXT PRIMARY KEY, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_activity_events (run TEXT NOT NULL, sequence INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(run, sequence));
 CREATE TABLE IF NOT EXISTS run_progress (run TEXT PRIMARY KEY, step TEXT NOT NULL DEFAULT '', step_started_at TEXT, action TEXT NOT NULL DEFAULT '', partial TEXT NOT NULL DEFAULT '');

@@ -42,12 +42,11 @@ type Server struct {
 	schedule *sources.Schedule
 	version  string
 	log      io.Writer
-	// linearRules and linearCap serve the Linear webhook, when it is on.
-	linearRules sources.LinearRules
-	linearCap   *hourlyCap
-	now         func() time.Time
-	presets     []presetView
-	factory     *factory.Factory
+	// linear takes work from Linear, when it is on.
+	linear  *sources.Poller
+	now     func() time.Time
+	presets []presetView
+	factory *factory.Factory
 }
 
 func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Factory, version string, log io.Writer) (*Server, error) {
@@ -87,47 +86,57 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 			return ok
 		},
 	}
-	linearRules, err := linearRules(machinistConfig, loaded)
+	linear, err := linearPoller(machinistConfig, loaded, intake, store, log)
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
-		linearRules: linearRules,
-		linearCap:   &hourlyCap{limit: machinistConfig.Linear.MaxJobsPerHour},
-		now:         time.Now,
-		config:      machinistConfig,
-		store:       store,
-		engine:      ticketEngine,
-		client:      client,
-		intake:      intake,
-		schedule:    sources.NewSchedule(store, loaded.Automations, log),
-		version:     version,
-		presets:     presetViews(loaded),
-		factory:     loaded,
-		log:         log,
+		linear:   linear,
+		now:      time.Now,
+		config:   machinistConfig,
+		store:    store,
+		engine:   ticketEngine,
+		client:   client,
+		intake:   intake,
+		schedule: sources.NewSchedule(store, loaded.Automations, log),
+		version:  version,
+		presets:  presetViews(loaded),
+		factory:  loaded,
+		log:      log,
 	}, nil
 }
 
-// linearRules checks the Linear section against the factory and the connected
-// repositories, so a mistake stops startup instead of dropping webhooks.
-func linearRules(machinistConfig config.Config, loaded *factory.Factory) (sources.LinearRules, error) {
+// linearPoller checks the Linear section against the factory and the
+// connected repositories, so a mistake stops startup instead of dropping work.
+func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake *sources.Intake, store *tickets.Store, log io.Writer) (*sources.Poller, error) {
 	linear := machinistConfig.Linear
 	if !linear.Enabled() {
-		return sources.LinearRules{}, nil
+		return nil, nil
 	}
 	preset := linear.Preset
 	if preset == "" {
 		preset = machinistConfig.Server.DefaultPreset
 	}
 	if _, ok := loaded.Preset(preset); !ok {
-		return sources.LinearRules{}, fmt.Errorf("linear.preset %q is not in the factory", preset)
+		return nil, fmt.Errorf("linear.preset %q is not in the factory", preset)
 	}
+	teams := make([]string, 0, len(linear.Teams))
 	for team, repository := range linear.Teams {
 		if !slices.ContainsFunc(machinistConfig.GitHub.Repositories, func(connected string) bool { return strings.EqualFold(connected, repository) }) {
-			return sources.LinearRules{}, fmt.Errorf("linear.teams.%s: %s is not in github.repositories", team, repository)
+			return nil, fmt.Errorf("linear.teams.%s: %s is not in github.repositories", team, repository)
 		}
+		teams = append(teams, team)
 	}
-	return sources.LinearRules{Secret: linear.Secret, AppUserID: linear.AppUserID, AllowedUsers: linear.AllowedUsers, Preset: preset, Teams: linear.Teams}, nil
+	slices.Sort(teams)
+	return &sources.Poller{
+		Tracker:        &sources.Linear{Token: linear.Token, AppUserID: linear.AppUserID, Teams: teams},
+		Rules:          sources.TrackerRules{AllowedUsers: linear.AllowedUsers, Preset: preset, Teams: linear.Teams},
+		Intake:         intake,
+		Store:          store,
+		Interval:       linear.Poll,
+		MaxJobsPerHour: linear.MaxJobsPerHour,
+		Log:            log,
+	}, nil
 }
 
 // loadApp loads the GitHub App, when one is configured. Its tokens last an
@@ -179,9 +188,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/usage", s.requireToken(s.usage))
 	mux.HandleFunc("GET /api/v1/stats", s.requireToken(s.stats))
 	mux.HandleFunc("POST /machinist/run", s.requireToken(s.runJob))
-	if s.config.Linear.Enabled() {
-		mux.HandleFunc("POST /webhooks/linear", s.linearWebhook)
-	}
 	mux.HandleFunc("GET /machinist/jobs", s.requireToken(s.listJobs))
 	mux.HandleFunc("GET /machinist/jobs/{id}", s.requireToken(s.getJob))
 	mux.HandleFunc("POST /machinist/jobs/{id}/cancel", s.requireToken(s.cancelJob))
@@ -245,6 +251,13 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	go func() { s.engine.Run(engineContext); close(engineDone) }()
 	scheduleDone := make(chan struct{})
 	go func() { s.schedule.Run(engineContext); close(scheduleDone) }()
+	linearDone := make(chan struct{})
+	go func() {
+		if s.linear != nil {
+			s.linear.Run(engineContext)
+		}
+		close(linearDone)
+	}()
 
 	select {
 	case err = <-served:
@@ -256,6 +269,7 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	stopEngine()
 	<-engineDone
 	<-scheduleDone
+	<-linearDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

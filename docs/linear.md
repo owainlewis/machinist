@@ -1,20 +1,22 @@
 # Start jobs from Linear
 
 Machinist is a user in Linear. When an allowed person assigns an issue in a connected team
-to the Machinist app, Machinist starts a job in that team's repository. The job's prompt is the issue's title,
-description and link. Each issue starts one job, ever: assigning it again, or Linear
-retrying a delivery, returns the first job.
+to the Machinist app, Machinist starts a job in that team's repository. The job's prompt is
+the issue's title, description and link. Each issue starts one job, ever.
+
+Machinist asks Linear for new assignments every minute. Nothing calls Machinist from
+outside, so the control plane needs no public address.
 
 ## Set it up
 
 1. In Linear, open **Settings → API → Applications** and create an app called Machinist.
-   - Switch on its webhook. URL: `https://<your host>/webhooks/linear`. Resource: **Issues**.
-   - Install it in the workspace with `actor=app`, so it appears as a user you can assign.
+   Install it in the workspace with `actor=app`, so it appears as a user you can assign.
+   It needs read and write access to issues and comments. It needs no webhook.
 2. Find the user IDs. With the app's access token, the GraphQL query `{ viewer { id } }`
    against `https://api.linear.app/graphql` returns the app's ID. With your own API key,
    `{ users { nodes { id name } } }` lists everyone else's.
-3. Copy the webhook's signing secret into `LINEAR_WEBHOOK_SECRET` in the control plane's
-   environment, next to `GH_TOKEN`. Never put it in `config.yaml`.
+3. Put the app's access token in `LINEAR_API_TOKEN` in the control plane's environment,
+   next to `GH_TOKEN`. Never put it in `config.yaml`.
 4. Add a `linear` section to `config.yaml` and restart the control plane:
 
 ```yaml
@@ -24,7 +26,6 @@ linear:
     - <your Linear user ID>
   teams:
     ENG: owner/name
-  max_jobs_per_hour: 20
 ```
 
 | Key | Meaning |
@@ -32,49 +33,40 @@ linear:
 | `app_user_id` | The Machinist app's Linear user. Assigning an issue to it starts a job |
 | `allowed_users` | The Linear user IDs who may start jobs. An assignment by anyone else is ignored |
 | `preset` | The preset Linear jobs use. Defaults to `server.default_preset` |
-| `teams` | Linear team key to repository. Each repository must be in `github.repositories`. Issues from other teams are ignored |
+| `teams` | Linear team key to repository. Each repository must be in `github.repositories`. Issues from other teams are never read |
+| `poll_interval` | Time between polls. Defaults to `60s`, and must be at least `10s` |
 | `max_jobs_per_hour` | The most jobs Linear can start in any hour. Defaults to 20 |
 
-Startup stops if the secret is missing or shorter than 16 characters, `app_user_id` or
-`allowed_users` is empty, a team's repository is not connected, or the preset does not exist.
+Startup stops if `LINEAR_API_TOKEN` is missing, `app_user_id` or `allowed_users` is empty,
+a team's repository is not connected, or the preset does not exist.
 
-## Expose only the webhook
+## What Machinist does in Linear
 
-`server.listen` should stay private, because it serves the UI and the API. Put a reverse
-proxy in front that forwards only `/webhooks/linear`. With Caddy:
+Machinist writes to Linear itself. The agent gets no Linear access.
 
-```text
-machinist.example.com {
-  handle /webhooks/linear {
-    reverse_proxy 127.0.0.1:7331
-  }
-  respond 404
-}
-```
+- **Pickup.** The issue moves to **In Progress**, or the team's first started state if it
+  has none by that name.
+- **Pull request.** Machinist comments the pull request's link on the issue.
+- **Failure.** The issue moves back to **Todo**, or the team's first unstarted state, with a
+  comment that gives the reason.
+- **Cancel.** If someone unassigns the issue from Machinist, or moves it out of every
+  started state, Machinist cancels the job on the next poll. Moving it to another started
+  state, such as **In Review**, does not.
 
-## What protects the route
+Each of these happens once per job. If a write to Linear fails, the next poll tries again.
 
-The route needs no Machinist token, so every request is checked:
+## How polling works
 
-- **Signature.** `Linear-Signature` must be the HMAC-SHA256 of the raw body with the
-  signing secret. The comparison takes constant time.
-- **Freshness.** `webhookTimestamp` must be within one minute of now, so a captured
-  delivery cannot be replayed later. A replay inside that minute finds the issue's
-  existing job.
-- **Size.** Bodies over 256 KiB are refused.
-- **Trigger.** Only an issue from a connected team that was just assigned to the app starts
-  a job, and only when the change's `actor` is in `allowed_users`. Other edits, including edits to an issue the app already has, do nothing.
-- **Cap.** Past `max_jobs_per_hour`, Machinist answers `429` and logs it, and Linear retries
-  later. Retries of an existing job do not count.
+- The first poll starts from now, so turning Linear on does not start jobs for issues that
+  were already assigned.
+- Machinist stores how far it has read, so a restart neither misses nor repeats an
+  assignment.
+- Who assigned the issue is read from the issue's history. An assignment by anyone outside
+  `allowed_users`, or by someone Machinist cannot find, is ignored and logged.
+- Past `max_jobs_per_hour`, an assignment waits and is picked up by a later poll.
+- When Linear fails or rate-limits a poll, the wait doubles each time, up to five minutes,
+  and goes back to `poll_interval` once a poll succeeds.
 
 The issue's text becomes the prompt, and anyone who can edit the issue wrote part of it.
 `prompts/rules.md` tells the agent that the prompt cannot change its rules. Allow only people
 you trust to send work, and read an issue before you assign it.
-
-| Answer | Means |
-| --- | --- |
-| `201 {"job": "..."}` | A job started |
-| `200 {"job": "..."}` | The issue already has this job |
-| `200 {"ignored": "..."}` | Nothing to do, and why |
-| `401` | Bad or missing signature, or a stale timestamp |
-| `429` | The hourly cap is reached |
