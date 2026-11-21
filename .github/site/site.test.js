@@ -109,6 +109,19 @@ test('setup snippets match the quick start in the README', async () => {
   }
 });
 
+test('the page says what Machinist is and who it is for, in plain words', async () => {
+  const source = await read('./index.html');
+  const socialCard = await read('./social-card.svg');
+  assert.match(source, /<h1 id="hero-title">A software factory that runs on your own servers<\/h1>/);
+  assert.match(source, /<h2 id="who-title">Teams and solo developers<\/h2>/);
+  for (const text of [source, socialCard]) {
+    assert.match(text, /software factory/);
+    assert.match(text, /solo developers/);
+  }
+  // Slogans from the old copy that said nothing about the product.
+  assert.doesNotMatch(source, /production line|babysitting|bottleneck|Get merged pull requests|—/);
+});
+
 test('public identity matches the web app: Inter, indigo and the M tile, dark only', async () => {
   const source = await read('./index.html');
   const styles = await read('./styles.css');
@@ -122,7 +135,6 @@ test('public identity matches the web app: Inter, indigo and the M tile, dark on
   }
   assert.match(styles, /Inter Variable/);
   assert.match(source, /class="brand-mark"/);
-  assert.match(source, /Assign the work\.<br>Get merged pull requests\./);
   assert.match(source, /<meta name="color-scheme" content="dark">/);
   assert.doesNotMatch(source, /technical-drawings|fonts\.googleapis\.com|machinist-bot/);
   assert.doesNotMatch(styles, /Manrope|Newsreader|#1d6683/);
