@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -80,18 +81,15 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": s.presetSteps(ticket.Agent)})
 }
 
-// presetSteps names the steps of a preset, in order, so the UI can draw a job's
-// pipeline before its first run starts. A preset that is gone has none.
-func (s *Server) presetSteps(name string) []string {
+// presetSteps lists the steps of a preset, in order, with the agents each
+// runs, so the UI can draw a job's pipeline before its first run starts. A
+// preset that is gone has none.
+func (s *Server) presetSteps(name string) []stepView {
 	preset, ok := s.factory.Preset(name)
 	if !ok {
-		return []string{}
+		return []stepView{}
 	}
-	names := make([]string, 0, len(preset.Steps))
-	for _, step := range preset.Steps {
-		names = append(names, step.Name)
-	}
-	return names
+	return stepViews(s.factory, preset)
 }
 
 func (s *Server) rerunTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
@@ -221,21 +219,31 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 }
 
 // presetView is what the New job form shows of a preset: its name, what it
-// does and the names of its steps, in order.
+// does and its steps, in order.
 type presetView struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Steps       []string `json:"steps"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Steps       []stepView `json:"steps"`
+}
+
+// stepView is one step and the agents it runs, with their harness and model.
+type stepView struct {
+	Name   string           `json:"name"`
+	Agents []protocol.Agent `json:"agents"`
+}
+
+func stepViews(loaded *factory.Factory, preset factory.Preset) []stepView {
+	steps := make([]stepView, 0, len(preset.Steps))
+	for _, step := range preset.Steps {
+		steps = append(steps, stepView{Name: step.Name, Agents: loaded.StepAgents(step.Run)})
+	}
+	return steps
 }
 
 func presetViews(loaded *factory.Factory) []presetView {
 	views := make([]presetView, 0, len(loaded.Presets))
 	for name, preset := range loaded.Presets {
-		steps := make([]string, 0, len(preset.Steps))
-		for _, step := range preset.Steps {
-			steps = append(steps, step.Name)
-		}
-		views = append(views, presetView{Name: name, Description: preset.Description, Steps: steps})
+		views = append(views, presetView{Name: name, Description: preset.Description, Steps: stepViews(loaded, preset)})
 	}
 	sort.Slice(views, func(a, b int) bool { return views[a].Name < views[b].Name })
 	return views

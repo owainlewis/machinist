@@ -41,7 +41,7 @@ export function steps(events = [], stages = [], runStatus = "") {
     const step = started.get(stage.name) || { name: stage.name, output: "" };
     let state = stage.state;
     if (!state) state = going && index === named.length - 1 ? "running" : going ? "succeeded" : "unknown";
-    return { ...step, state, duration_millis: stage.duration_millis, error: stage.error || "" };
+    return { ...step, state, duration_millis: stage.duration_millis, error: stage.error || "", agents: stage.agents || [] };
   });
 }
 
@@ -66,11 +66,19 @@ export function pollEvents(run) {
 // in order, with what the latest run says about each. Steps the run has not
 // reached are pending while it goes, and skipped once it has ended. A run of an
 // older preset shows its own steps.
+//
+// Each step names the agents that run it: the ones the run recorded once the
+// step has finished, and otherwise the ones the preset says it runs.
 export function pipeline(presetSteps = [], ran = [], runStatus = "") {
   const going = !runStatus || runStatus === "running" || runStatus === "queued";
+  const preset = presetSteps.map(step => typeof step === "string" ? { name: step, agents: [] } : { name: step.name, agents: step.agents || [] });
+  const planned = new Map(preset.map(step => [step.name, step.agents]));
   const seen = new Map(ran.map(step => [step.name, step]));
-  const names = ran.length && ran.some(step => !presetSteps.includes(step.name)) ? ran.map(step => step.name) : presetSteps.length ? presetSteps : ran.map(step => step.name);
-  return names.map(name => seen.get(name) || { name, output: "", error: "", state: going ? "pending" : "skipped" });
+  const names = ran.length && ran.some(step => !planned.has(step.name)) ? ran.map(step => step.name) : preset.length ? preset.map(step => step.name) : ran.map(step => step.name);
+  return names.map(name => {
+    const step = seen.get(name) || { name, output: "", error: "", state: going ? "pending" : "skipped" };
+    return { ...step, agents: step.agents?.length ? step.agents : planned.get(name) || [] };
+  });
 }
 
 // stepTime is how long a step took, or, while it runs, how long it has run.

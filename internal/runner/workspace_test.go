@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -207,6 +208,20 @@ func TestEachStepRecordsTheUsageItsAgentReported(t *testing.T) {
 	tokens, cost := protocol.Totals(result.Stages)
 	if *tokens != 140 || *cost != 0.3 {
 		t.Fatalf("totals = %d, %v", *tokens, *cost)
+	}
+}
+
+// A step records which agents ran it, even one that reported no usage, and
+// an agent that reported nothing records no zero cost.
+func TestEachStepRecordsTheAgentsThatRanIt(t *testing.T) {
+	result, _ := run(t, stepsRequest(
+		Step{Name: "review", Run: `printf '{"tokens":0,"cost":0,"agents":[{"name":"review","harness":"agy","model":"gemini-4-neon-high"},{"name":"revise","harness":"claude"}]}' > "$MACHINIST_DIR/usage.json"`},
+		Step{Name: "build", Run: `true`},
+	))
+	review, build := result.Stages[0], result.Stages[1]
+	want := []protocol.Agent{{Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}, {Name: "revise", Harness: "claude"}}
+	if !slices.Equal(review.Agents, want) || review.Tokens != nil || review.Cost != nil || build.Agents != nil {
+		t.Fatalf("stages = %+v", result.Stages)
 	}
 }
 

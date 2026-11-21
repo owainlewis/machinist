@@ -41,7 +41,7 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
       const group = { name: "coding", jobs: { total: 3, active: 1, done: 1, failed: 1, cancelled: 0 }, run_millis: 90000 };
       return reply(200, { days, jobs: { total: 3, active: 1, done: 1, failed: 1, cancelled: 0 }, runs: { total: 4, succeeded: 3, failed: 1, cancelled: 0 }, success_rate: 0.75, run_millis: { median: 90000, p90: 300000 }, wait_millis: { median: 2000, p90: 9000 }, tokens: 12345, cost: 1.5, daily, presets: [group], repos: [{ ...group, name: "owner/repo" }] });
     }
-    if (url === "/api/v1/presets") return reply(200, { default: "coding", presets: [{ name: "coding", description: "Implement the prompt and open a pull request.", steps: ["checkout", "implement", "publish"] }, { name: "spec", description: "Write a spec.", steps: ["checkout", "write"] }] });
+    if (url === "/api/v1/presets") return reply(200, { default: "coding", presets: [{ name: "coding", description: "Implement the prompt and open a pull request.", steps: [{ name: "checkout", agents: [] }, { name: "implement", agents: [{ name: "implement", harness: "claude" }] }, { name: "publish", agents: [{ name: "publish", harness: "claude" }] }] }, { name: "spec", description: "Write a spec.", steps: [{ name: "checkout", agents: [] }, { name: "write", agents: [{ name: "writer", harness: "agy", model: "gemini-4-neon-high" }] }] }] });
     if (url === "/machinist/run" && options.method === "POST") {
       started.push(JSON.parse(options.body));
       if (holdRun) return new Promise(resolve => { releaseRun = () => resolve(reply(201, { id: "t_new", state: "queued" })); });
@@ -49,7 +49,7 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
     }
     if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
     if (url === "/api/v1/tickets/t_old") return new Promise(resolve => { releaseOld = () => resolve(reply(200, { ticket: older, entries: [], runs: [] })); });
-    if (url === "/api/v1/tickets/t_new") return reply(200, { ticket, entries: [{ id: 1, kind: "request", author: "alice", body: "Center the toasts\n\nThey sit off to the right.", created_at: now }], runs: [run], steps: ["checkout", "test", "publish"] });
+    if (url === "/api/v1/tickets/t_new") return reply(200, { ticket, entries: [{ id: 1, kind: "request", author: "alice", body: "Center the toasts\n\nThey sit off to the right.", created_at: now }], runs: [run], steps: [{ name: "checkout", agents: [] }, { name: "test", agents: [] }, { name: "publish", agents: [{ name: "publish", harness: "codex", model: "gpt-5-codex" }] }] });
     if (url === "/api/v1/runs/run_1/events?after=0") return reply(200, { cursor: events.length, events });
     throw new Error(`unexpected ${url}`);
   };
@@ -98,6 +98,7 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   await eventually(() => assert.ok([...document.querySelectorAll(".step-output")].some(pane => /Cloning into/.test(pane.textContent))));
   assert.equal(document.querySelector('.step[data-state="skipped"] .step-row').disabled, true);
   assert.deepEqual([...document.querySelectorAll(".pipeline-node")].map(node => node.getAttribute("aria-label")), ["checkout: Passed", "test: Failed", "publish: Skipped"]);
+  assert.deepEqual([...document.querySelectorAll(".pipeline .agent-badge")].map(badge => badge.title), ["Agent publish, on Codex, model gpt-5-codex"]);
   await act(async () => document.querySelector('.step[data-state="succeeded"] .step-row').click());
   await act(async () => document.querySelector('.pipeline li[data-state="succeeded"] .pipeline-node').click());
   await eventually(() => assert.ok([...document.querySelectorAll(".step-output")].some(pane => /Cloning into/.test(pane.textContent))));
@@ -125,6 +126,7 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   assert.equal(document.querySelector("#new-job-repo").value, "owner/repo");
   assert.equal(document.querySelector("#new-job-preset-about p").textContent, "Implement the prompt and open a pull request.");
   assert.deepEqual([...document.querySelectorAll(".preset-steps li")].map(item => item.textContent), ["checkout", "implement", "publish"]);
+  assert.deepEqual([...document.querySelectorAll(".preset-agents .agent-badge")].map(badge => badge.title), ["Agent implement, on Claude Code, model the harness default", "Agent publish, on Claude Code, model the harness default"]);
   const start = () => [...document.querySelectorAll("form button")].find(button => /Start job/.test(button.textContent));
   assert.equal(start().disabled, true, "a job needs a prompt");
   await choose("#new-job-preset", "spec");

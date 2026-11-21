@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/owainlewis/machinist/internal/harness"
+	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/spf13/cobra"
 )
@@ -32,7 +33,9 @@ func newAgentCommand(options *commandOptions) *cobra.Command {
 				return err
 			}
 			argv, stdin := agent.Command(system, task)
-			code, err := harness.Run(command.Context(), agent.Format(), argv, strings.NewReader(stdin), options.stdout, options.stderr, filepath.Join(control, harness.UsageFile))
+			usagePath := filepath.Join(control, harness.UsageFile)
+			harness.RecordAgent(usagePath, protocol.Agent{Name: agent.Name, Harness: agent.Harness, Model: agent.Model})
+			code, err := harness.Run(command.Context(), agent.Format(), argv, strings.NewReader(stdin), options.stdout, options.stderr, usagePath)
 			if err != nil {
 				return fmt.Errorf("agent %s: %w", agent.Name, err)
 			}

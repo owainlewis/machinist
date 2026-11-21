@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleDashed, LoaderCircle, Minus, RotateCcw } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
+import { AgentBadges } from "./agent-badge.jsx";
 import { State, relativeTime, useNow } from "./display.jsx";
 import { formatDuration, isFinished, jobState, prLink, prState } from "./jobs.js";
 import { latestAction, pipeline, pollEvents, stepTime, steps } from "./step-log.js";
@@ -80,6 +81,7 @@ function Pipeline({ nodes, onChoose, now = Date.now() }) {
           <Icon className={`size-4 shrink-0 ${tone}`} aria-hidden="true" />
           <span className="pipeline-name">{step.name}</span>
           <span className="pipeline-meta">{step.state !== "skipped" && stepTime(step, now) || stateWords[step.state]}</span>
+          <AgentBadges agents={step.agents} step={step.name} className="pipeline-agents" />
         </button>
       </li>;
     })}</ol>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { latestAction, outputLimit, pollEvents, stepTime, steps } from "./step-log.js";
+import { latestAction, outputLimit, pipeline, pollEvents, stepTime, steps } from "./step-log.js";
 
 const output = (text, stream = "stdout") => ({ type: "process.output", stream, encoding: "base64", data: Buffer.from(text).toString("base64") });
 const started = name => ({ type: "step.started", message: `name=${name}`, time: "2026-11-17T21:24:57Z" });
@@ -66,4 +66,13 @@ test("a running step counts up from when it started, and an ended one shows how 
   assert.equal(stepTime({ state: "running", started_at: "2026-11-19T15:00:00Z" }, start + 192000), "3m 12s");
   assert.equal(stepTime({ state: "succeeded", started_at: "2026-11-19T15:00:00Z", duration_millis: 45000 }, start + 999999), "45s");
   assert.equal(stepTime({ state: "pending" }), "");
+});
+
+test("pipeline names each step's agents, from the run once it ran and the preset before", () => {
+  const review = { name: "review", harness: "agy", model: "gemini-4-neon-high" };
+  const implement = { name: "implement", harness: "claude" };
+  const preset = [{ name: "checkout", agents: [] }, { name: "implement", agents: [implement] }, { name: "review", agents: [review] }];
+  const ran = [{ name: "checkout", state: "succeeded", agents: [] }, { name: "implement", state: "succeeded", agents: [{ ...implement, model: "opus" }] }];
+  assert.deepEqual(pipeline(preset, ran, "running").map(step => step.agents), [[], [{ ...implement, model: "opus" }], [review]]);
+  assert.deepEqual(steps([], [{ name: "review", state: "succeeded", agents: [review] }], "succeeded")[0].agents, [review]);
 });

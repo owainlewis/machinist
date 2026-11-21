@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -233,9 +234,9 @@ func TestRerunRouteAndPresetSteps(t *testing.T) {
 	ticket := f.assign(t, "r1")
 	response, body := f.call(t, http.MethodGet, "/api/v1/tickets/"+ticket.ID, f.token, nil)
 	var detail struct {
-		Steps []string `json:"steps"`
+		Steps []stepView `json:"steps"`
 	}
-	if err := json.Unmarshal(body, &detail); err != nil || response.StatusCode != http.StatusOK || strings.Join(detail.Steps, ",") != "work" {
+	if err := json.Unmarshal(body, &detail); err != nil || response.StatusCode != http.StatusOK || len(detail.Steps) != 1 || detail.Steps[0].Name != "work" {
 		t.Fatalf("status = %d, detail = %+v, err = %v", response.StatusCode, detail, err)
 	}
 	path := "/api/v1/tickets/" + ticket.ID + "/rerun"
@@ -280,15 +281,26 @@ func TestStatsRoute(t *testing.T) {
 
 func TestPresetsRouteListsEachPresetsSteps(t *testing.T) {
 	f := newFixture(t)
-	f.server.presets = presetViews(&factory.Factory{Presets: map[string]factory.Preset{
-		"spec":    {Name: "spec", Description: "Write a spec.", Steps: []runner.Step{{Name: "checkout"}, {Name: "write"}}},
-		"default": {Name: "default", Description: "Do the work.", Steps: []runner.Step{{Name: "work"}}},
-	}})
+	f.server.presets = presetViews(&factory.Factory{
+		Presets: map[string]factory.Preset{
+			"spec":    {Name: "spec", Description: "Write a spec.", Steps: []runner.Step{{Name: "checkout", Run: "checkout.sh"}, {Name: "write", Run: "machinist agent writer"}}},
+			"default": {Name: "default", Description: "Do the work.", Steps: []runner.Step{{Name: "work", Run: "review.sh"}}},
+		},
+		Agents: map[string]harness.Agent{
+			"writer": {Name: "writer", Harness: "claude"},
+			"review": {Name: "review", Harness: "agy", Model: "gemini-4-neon-high"},
+			"revise": {Name: "revise", Harness: "codex"},
+		},
+		Files: map[string]string{"scripts/review.sh": "#!/bin/sh\nmachinist agent review\nmachinist   agent revise\nmachinist agent ghost\n"},
+	})
 	response, body := f.call(t, http.MethodGet, "/api/v1/presets", f.token, nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
-	want := `{"default":"default","presets":[{"name":"default","description":"Do the work.","steps":["work"]},{"name":"spec","description":"Write a spec.","steps":["checkout","write"]}]}`
+	// Each step names the agents it runs: its own command, or a script it runs.
+	want := `{"default":"default","presets":[` +
+		`{"name":"default","description":"Do the work.","steps":[{"name":"work","agents":[{"name":"review","harness":"agy","model":"gemini-4-neon-high"},{"name":"revise","harness":"codex"}]}]},` +
+		`{"name":"spec","description":"Write a spec.","steps":[{"name":"checkout","agents":[]},{"name":"write","agents":[{"name":"writer","harness":"claude"}]}]}]}`
 	if strings.TrimSpace(string(body)) != want {
 		t.Fatalf("body = %s", body)
 	}

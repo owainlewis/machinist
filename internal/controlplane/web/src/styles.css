@@ -196,7 +196,7 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .pipeline-node { display: grid; width: 100%; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 8px; align-items: center; border: 1px solid var(--border); border-radius: 10px; background: var(--background); padding: 8px 10px; text-align: left; }
 .pipeline-node:not(:disabled):hover { border-color: color-mix(in srgb, var(--foreground) 25%, var(--border)); }
 .pipeline-node:disabled { cursor: default; }
-.pipeline-node svg { grid-row: span 2; }
+.pipeline-node > svg { grid-row: span 2; }
 .pipeline-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 500; white-space: nowrap; }
 .pipeline-meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pipeline li[data-state="running"] .pipeline-node { border-color: var(--info); box-shadow: 0 0 0 3px var(--info-soft); }
@@ -357,3 +357,19 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
   .project-row { flex-direction: column; align-items: flex-start; }
 }
 .nav-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 999px; background: var(--warning); }
+
+/* Agent badges: which agent runs a step, on which harness and model. */
+.agent-badges { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.agent-badge { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--muted); padding: 1px 6px 1px 5px; font-size: 11px; line-height: 16px; color: var(--muted-foreground); white-space: nowrap; }
+.agent-badge-mark { width: 12px; height: 12px; flex: none; color: var(--foreground); }
+.agent-badge-name { color: var(--foreground); font-weight: 500; }
+.agent-badge-model { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+.pipeline-agents { grid-column: 2; margin-top: 6px; }
+.pipeline li[data-state="skipped"] .agent-badge, .pipeline li[data-state="pending"] .agent-badge { opacity: .7; }
+.preset-step-mark { display: inline-block; width: 11px; height: 11px; margin-left: 5px; vertical-align: -1px; color: var(--foreground); }
+.preset-agents { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; }
+.preset-agents-label { color: var(--faint); font-size: 12px; }
+.board-card-now .agent-badges { margin: 2px 0; }
+.runner-jobs .agent-badges { flex: none; }
+.runner-job-step { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+

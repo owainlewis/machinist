@@ -2,9 +2,12 @@ package harness
 
 import (
 	"bytes"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 func TestParseAgentReadsFrontMatterAndPrompt(t *testing.T) {
@@ -188,6 +191,20 @@ a warning line
 		t.Fatalf("output = %q, want %q", out.String(), want)
 	}
 	if usage == nil || usage.Tokens != 10 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+// A step that runs two agents lists both, in order, and adds their usage.
+func TestRecordAgentListsEveryAgentInAStep(t *testing.T) {
+	path := filepath.Join(t.TempDir(), UsageFile)
+	RecordAgent(path, protocol.Agent{Name: "revise", Harness: "claude"})
+	addUsage(path, Usage{Tokens: 10, Cost: 0.5})
+	RecordAgent(path, protocol.Agent{Name: "review", Harness: "agy", Model: "gemini-4-neon-high"})
+	addUsage(path, Usage{Tokens: 5})
+	usage := readUsage(path)
+	want := []protocol.Agent{{Name: "revise", Harness: "claude"}, {Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}}
+	if !slices.Equal(usage.Agents, want) || usage.Tokens != 15 || usage.Cost != 0.5 {
 		t.Fatalf("usage = %+v", usage)
 	}
 }
