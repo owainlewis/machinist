@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
 import { repoName, setupLine } from "./setup.js";
 
+const refreshMillis = 10_000;
+
 function CheckRow({ check }) {
   const tone = check.ok ? "pill-success" : check.required ? "pill-warning" : "";
   const Icon = check.ok ? Check : CircleAlert;
@@ -57,7 +59,24 @@ export function SetupPage({ onSignedOut, onChange }) {
     }
   }, [onSignedOut, onChange]);
 
-  useEffect(() => { handle(() => api("/api/v1/setup")); }, [handle]);
+  // Runners start and the app gets installed outside this page, so the
+  // checklist checks again every few seconds while it is open, and when the
+  // window comes back into focus.
+  useEffect(() => {
+    handle(() => api("/api/v1/setup"));
+    const timer = window.setInterval(refresh, refreshMillis);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+    async function refresh() {
+      try {
+        const next = await api("/api/v1/setup");
+        setSetup(next);
+        onChange?.(next);
+      } catch (failure) {
+        if (failure instanceof SignedOutError) onSignedOut();
+      }
+    }
+  }, [handle, onChange, onSignedOut]);
 
   async function add(event) {
     event.preventDefault();

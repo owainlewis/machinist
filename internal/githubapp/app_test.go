@@ -257,9 +257,18 @@ func TestIdentityIsTheAppsBotAccount(t *testing.T) {
 }
 
 func TestInstalledSaysWhyTheAppCannotReachARepository(t *testing.T) {
-	app, _ := newApp(t)
+	app, fake := newApp(t)
 	if err := app.Installed(t.Context(), "owner/repo"); err != nil {
 		t.Fatal(err)
+	}
+	// Removing the app from a repository shows up at once, even after a
+	// token for it was cached.
+	if _, err := app.Token(t.Context(), "owner/repo"); err != nil {
+		t.Fatal(err)
+	}
+	delete(fake.installed, "owner/repo")
+	if err := app.Installed(t.Context(), "owner/repo"); err == nil {
+		t.Fatal("a removed installation still counted as installed")
 	}
 	if err := app.Installed(t.Context(), "owner/missing"); err == nil || !strings.Contains(err.Error(), "not installed on owner/missing") {
 		t.Fatalf("err = %v", err)

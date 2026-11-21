@@ -14,10 +14,11 @@ test("a new install opens on setup, and adding a project finishes it", { timeout
     if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
   }
   let projects = [];
+  let runner = false;
   const added = [];
   const setup = () => ({
     ready: projects.length > 0,
-    checks: [check("GitHub", true), check("Runner", true), check("Projects", projects.length > 0), check("Linear", false, false)],
+    checks: [check("GitHub", true), check("Runner", runner), check("Projects", projects.length > 0), check("Linear", false, false)],
     projects,
     install_url: "https://github.com/apps/machinistagent/installations/new",
   });
@@ -56,6 +57,11 @@ test("a new install opens on setup, and adding a project finishes it", { timeout
   await eventually(() => assert.equal(window.location.hash, "#/setup"));
   window.dispatchEvent(new window.HashChangeEvent("hashchange"));
   await eventually(() => assert.equal(document.querySelector("h1")?.textContent, "Setup"));
+  await eventually(() => assert.match(document.querySelector(".page-sub").textContent, /1 of 3 required steps/));
+
+  // A runner started elsewhere shows up when the window comes back into focus.
+  runner = true;
+  await act(async () => window.dispatchEvent(new window.Event("focus")));
   await eventually(() => assert.match(document.querySelector(".page-sub").textContent, /2 of 3 required steps/));
   assert.ok(document.querySelector('[aria-label="Setup needs attention"]'));
   assert.match(document.querySelector(".setup-checks").textContent, /Fix Projects/);

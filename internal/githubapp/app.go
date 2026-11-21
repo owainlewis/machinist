@@ -240,6 +240,9 @@ func (a *App) Installed(ctx context.Context, repository string) error {
 	if !repositoryPattern.MatchString(repository) {
 		return fmt.Errorf("%q is not a repository name like owner/name", repository)
 	}
+	// Ask GitHub every time: the app may have been removed from the
+	// repository since its installation was cached.
+	a.forget(repository)
 	_, err := a.installation(ctx, repository)
 	return err
 }
