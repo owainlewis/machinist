@@ -138,6 +138,29 @@ Set `listen` to a private address on the control plane, and create a token for t
 On the other machine, set `control_plane` and `token_file` in `runner.yaml`. See
 [Runners](runners.md). The runner dials out, so it needs no inbound route.
 
+## Upgrade
+
+As root, keep the old binary and install the new one in its place with the same owner and mode:
+
+```sh
+cp -p /usr/local/bin/machinist /usr/local/bin/machinist.previous
+install -o root -g root -m 0755 ./machinist /usr/local/bin/machinist
+```
+
+When no job is running, restart both services and check that `/healthz` reports the new version:
+
+```sh
+systemctl restart machinist-control-plane machinist-runner
+curl -fsS http://127.0.0.1:7331/healthz
+```
+
+To roll back, install the previous binary the same way and restart both:
+
+```sh
+install -o root -g root -m 0755 /usr/local/bin/machinist.previous /usr/local/bin/machinist
+systemctl restart machinist-control-plane machinist-runner
+```
+
 ## Back up
 
 Back up `.machinist/tickets.db` with a consistent SQLite copy, and your factory
