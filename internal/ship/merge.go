@@ -43,6 +43,7 @@ type MergeOptions struct {
 
 const (
 	defaultPoll       = 15 * time.Second
+	waitReminder      = 5 * time.Minute
 	defaultStartWait  = 30 * time.Second
 	defaultStartTries = 5
 	maxBranchUpdates  = 3
@@ -185,7 +186,9 @@ func findPR(ctx context.Context, options MergeOptions) (pullRequest, bool, error
 // none have appeared after StartTries waits.
 func awaitChecks(ctx context.Context, options MergeOptions, pr pullRequest) error {
 	empty := 0
-	announced := false
+	// The step prints whenever the count of pending checks changes, and at
+	// least every few minutes, so its idle timeout never stops a long wait.
+	lastPending, lastSaid := -1, time.Time{}
 	for {
 		checks, err := readChecks(ctx, options, pr.Number)
 		if err != nil {
@@ -215,9 +218,9 @@ func awaitChecks(ctx context.Context, options MergeOptions, pr pullRequest) erro
 			fmt.Fprintf(options.Log, "All %d checks passed\n", len(checks))
 			return nil
 		}
-		if !announced {
+		if pending != lastPending || time.Since(lastSaid) >= waitReminder {
 			fmt.Fprintf(options.Log, "▸ Wait for %d of %d checks on pull request #%d\n", pending, len(checks), pr.Number)
-			announced = true
+			lastPending, lastSaid = pending, time.Now()
 		}
 		if !options.Sleep(ctx, options.Poll) {
 			return ctx.Err()

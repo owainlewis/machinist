@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -20,6 +21,10 @@ import (
 const (
 	outputChunkBytes = 32 << 10
 	outputDrainGrace = time.Second
+	// stopGrace is how long a step has to exit after SIGTERM, on a timeout or
+	// when it goes quiet, before it is killed. A step can use it to write
+	// usage.json or clean up.
+	stopGrace = 5 * time.Second
 )
 
 type State string
@@ -36,6 +41,9 @@ type Command struct {
 	Name    string
 	Args    []string
 	Timeout time.Duration
+	// IdleTimeout stops the process once it has printed nothing for this
+	// long. Zero means no idle limit.
+	IdleTimeout time.Duration
 }
 
 type Options struct {
@@ -203,8 +211,10 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	streamErrors := make(chan error, 2)
 	var streams sync.WaitGroup
 	streams.Add(2)
-	go pumpStream(&streams, stdoutReader, options.Stdout, "stdout", log, streamErrors)
-	go pumpStream(&streams, stderrReader, options.Stderr, "stderr", log, streamErrors)
+	var lastOutput atomic.Int64
+	lastOutput.Store(time.Now().UnixNano())
+	go pumpStream(&streams, stdoutReader, options.Stdout, "stdout", log, streamErrors, &lastOutput)
+	go pumpStream(&streams, stderrReader, options.Stderr, "stderr", log, streamErrors, &lastOutput)
 	streamsDone := make(chan struct{})
 	go func() {
 		streams.Wait()
@@ -218,7 +228,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 
 	closeInput := func() { _ = stdinWriter.Close() }
 	closeStreams := func() { closeFiles(stdoutReader, stderrReader) }
-	state, exitCode, outcome := supervise(ctx, command.Process, processOwner, options.Command.Timeout, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr)
+	state, exitCode, outcome := supervise(ctx, command.Process, processOwner, options.Command.Timeout, options.Command.IdleTimeout, &lastOutput, processResult, inputResult, streamErrors, streamsDone, closeInput, closeStreams, options.Stdout, options.Stderr)
 	var cleanupFailure *processCleanupError
 	result.CleanupUnconfirmed = errors.As(outcome, &cleanupFailure)
 	result.ProcessStopped = !result.CleanupUnconfirmed
@@ -234,7 +244,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	return result, nil
 }
 
-func supervise(ctx context.Context, process *os.Process, processOwner string, timeout time.Duration, processResult <-chan processWait, inputResult <-chan error, streamErrors <-chan error, streamsDone <-chan struct{}, closeInput, closeStreams func(), outputWriters ...io.Writer) (State, int, error) {
+func supervise(ctx context.Context, process *os.Process, processOwner string, timeout, idleTimeout time.Duration, lastOutput *atomic.Int64, processResult <-chan processWait, inputResult <-chan error, streamErrors <-chan error, streamsDone <-chan struct{}, closeInput, closeStreams func(), outputWriters ...io.Writer) (State, int, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	timeoutAt := time.Now().Add(timeout)
@@ -253,6 +263,33 @@ func supervise(ctx context.Context, process *os.Process, processOwner string, ti
 			waited.err = errors.Join(waited.err, &processCleanupError{cleanupErr})
 		}
 		return waited
+	}
+	// stop asks the process group to exit with SIGTERM, gives it stopGrace,
+	// and then stops whatever is left as abort does.
+	stop := func() processWait {
+		if signalProcessGroup(process, syscall.SIGTERM) == nil {
+			grace := time.NewTimer(stopGrace)
+			defer grace.Stop()
+			select {
+			case waited := <-processResult:
+				setOutputDeadline(time.Now(), outputWriters...)
+				cleanupErr := terminateProcessTree(process, processOwner)
+				closeInput()
+				closeStreams()
+				if cleanupErr != nil {
+					waited.err = errors.Join(waited.err, &processCleanupError{cleanupErr})
+				}
+				return waited
+			case <-grace.C:
+			}
+		}
+		return abort()
+	}
+	var idle <-chan time.Time
+	if idleTimeout > 0 {
+		ticker := time.NewTicker(max(min(idleTimeout/10, time.Second), 10*time.Millisecond))
+		defer ticker.Stop()
+		idle = ticker.C
 	}
 
 	for {
@@ -297,13 +334,24 @@ func supervise(ctx context.Context, process *os.Process, processOwner string, ti
 			}
 			return StateCancelled, 130, errors.New("run cancelled")
 		case <-timer.C:
-			waited := abort()
+			waited := stop()
 			_ = awaitInput(inputResult, inputDone, inputErr)
 			awaitAbortedStreams(streamsDone)
 			if waited.err != nil {
 				return StateFailed, 1, fmt.Errorf("timeout cleanup failed: %w", waited.err)
 			}
 			return StateTimedOut, 124, fmt.Errorf("command exceeded timeout %s", timeout)
+		case now := <-idle:
+			if now.Sub(time.Unix(0, lastOutput.Load())) < idleTimeout {
+				continue
+			}
+			waited := stop()
+			_ = awaitInput(inputResult, inputDone, inputErr)
+			awaitAbortedStreams(streamsDone)
+			if waited.err != nil {
+				return StateFailed, 1, fmt.Errorf("idle timeout cleanup failed: %w", waited.err)
+			}
+			return StateTimedOut, 124, fmt.Errorf("stopped after printing nothing for %s", idleTimeout)
 		}
 	}
 }
@@ -383,13 +431,14 @@ func resolveDirectory(value string) (string, error) {
 	return filepath.EvalSymlinks(absPath)
 }
 
-func pumpStream(group *sync.WaitGroup, source *os.File, destination io.Writer, stream string, log *eventLog, errorsChannel chan<- error) {
+func pumpStream(group *sync.WaitGroup, source *os.File, destination io.Writer, stream string, log *eventLog, errorsChannel chan<- error, lastOutput *atomic.Int64) {
 	defer group.Done()
 	defer source.Close()
 	buffer := make([]byte, outputChunkBytes)
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
+			lastOutput.Store(time.Now().UnixNano())
 			chunk := buffer[:count]
 			if err := log.appendOutput(stream, chunk); err != nil {
 				sendError(errorsChannel, err)

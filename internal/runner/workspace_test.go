@@ -172,6 +172,29 @@ func TestStepTimeoutAndRunTimeout(t *testing.T) {
 	}
 }
 
+func TestAQuietStepIsStoppedAndABusyOneIsNot(t *testing.T) {
+	quiet := Step{Name: "quiet", Run: "echo start; sleep 30", IdleTimeoutMillis: 300}
+	result, _ := run(t, stepsRequest(quiet))
+	if result.State != StateTimedOut || result.Stages[0].State != string(StateTimedOut) || !strings.Contains(result.Error, "printing nothing for 300ms") {
+		t.Fatalf("result = %+v", result)
+	}
+	busy := Step{Name: "busy", Run: "for i in 1 2 3 4 5 6; do echo $i; sleep 0.1; done", IdleTimeoutMillis: 300}
+	if result, _ := run(t, stepsRequest(busy)); result.State != StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestAStoppedStepGetsSIGTERMFirstAndKeepsItsUsage(t *testing.T) {
+	step := Step{Name: "agent", Run: `trap 'printf "{\"tokens\":7,\"cost\":0.5}" > "$MACHINIST_DIR/usage.json"; exit 143' TERM; echo start; while :; do sleep 0.05; done`, IdleTimeoutMillis: 300}
+	result, _ := run(t, stepsRequest(step))
+	if result.State != StateTimedOut {
+		t.Fatalf("result = %+v", result)
+	}
+	if cost := result.Stages[0].Cost; cost == nil || *cost != 0.5 {
+		t.Fatalf("stage = %+v", result.Stages[0])
+	}
+}
+
 func TestControlFilesMustBeSmallRegularFiles(t *testing.T) {
 	result, _ := run(t, stepsRequest(Step{Name: "link", Run: `ln -s /etc/passwd "$MACHINIST_DIR/result.md"`}))
 	if result.State != StateFailed || !strings.Contains(result.Error, "not a regular file") {

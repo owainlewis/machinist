@@ -152,10 +152,11 @@ func parsePreset(name, body string, agents map[string]harness.Agent) (Preset, er
 		Description string `yaml:"description"`
 		Timeout     string `yaml:"timeout"`
 		Steps       []struct {
-			Name    string `yaml:"name"`
-			Run     string `yaml:"run"`
-			Agent   string `yaml:"agent"`
-			Timeout string `yaml:"timeout"`
+			Name        string `yaml:"name"`
+			Run         string `yaml:"run"`
+			Agent       string `yaml:"agent"`
+			Timeout     string `yaml:"timeout"`
+			IdleTimeout string `yaml:"idle_timeout"`
 		} `yaml:"steps"`
 	}
 	if err := config.DecodeStrict(name, []byte(body), &settings); err != nil {
@@ -194,7 +195,11 @@ func parsePreset(name, body string, agents map[string]harness.Agent) (Preset, er
 		if err != nil {
 			return Preset{}, err
 		}
-		preset.Steps = append(preset.Steps, runner.Step{Name: step.Name, Run: run, TimeoutMillis: stepTimeout.Milliseconds()})
+		idleTimeout, err := parseDuration("step "+step.Name+": idle_timeout", step.IdleTimeout)
+		if err != nil {
+			return Preset{}, err
+		}
+		preset.Steps = append(preset.Steps, runner.Step{Name: step.Name, Run: run, TimeoutMillis: stepTimeout.Milliseconds(), IdleTimeoutMillis: idleTimeout.Milliseconds()})
 	}
 	if preset.Description == "" {
 		return Preset{}, errors.New("add a description: one sentence on what a job on this preset does")

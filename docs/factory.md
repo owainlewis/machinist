@@ -36,6 +36,7 @@ steps:
     agent: implement   # runs factory/agents/implement.md
 
   - name: test
+    idle_timeout: 30m # stop it after this long with no output; optional
     run: go test ./...
 ```
 
@@ -52,6 +53,14 @@ branches, loops or parallel steps. To review and then fix, write the review step
 the fix step.
 
 Each step is a new process. Steps hand work on through files in the workspace.
+
+A step that prints nothing for its `idle_timeout`, 15 minutes unless the step sets one, is
+stopped and the job fails saying so. So a hung agent frees its runner slot instead of
+holding it until the run's deadline. An agent prints a line for each message and action,
+so only a single tool call that long stays quiet; give such a step a longer `idle_timeout`.
+A step that hits either timeout gets SIGTERM and five seconds to exit cleanly before it is
+killed. Usage a harness reported before then is kept; one that reports cost only when it
+finishes, such as Claude Code, shows none.
 
 ### Agents
 

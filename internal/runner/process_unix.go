@@ -159,3 +159,12 @@ func ownedProcesses(owner string) ([]int, error) {
 	}
 	return result, nil
 }
+
+// signalProcessGroup sends sig to the command's process group, so a shell
+// step's children get it too.
+func signalProcessGroup(process *os.Process, sig syscall.Signal) error {
+	if process == nil {
+		return nil
+	}
+	return syscall.Kill(-process.Pid, sig)
+}
