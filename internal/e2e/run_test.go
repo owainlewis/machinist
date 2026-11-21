@@ -102,11 +102,27 @@ func newRemote(t *testing.T) string {
 	return remote
 }
 
+// fakePublish is what the fake claude does in the publish step: what
+// prompts/publish.md asks, with the fake gh.
+const fakePublish = `case "$*" in *"Your step is to ship the change"*)
+  cat > /dev/null
+  if [ -z "$(git log --oneline origin/HEAD..HEAD)" ]; then echo "The work needed no change." > "$MACHINIST_DIR/result.md"; exit 0; fi
+  git push --quiet -u origin HEAD
+  { echo "## Summary"; echo; echo "Uses Postgres."; echo; echo "## Assumptions"; echo; cat "$MACHINIST_DIR/assumptions.md"; } > "$MACHINIST_DIR/body.md"
+  gh pr create --head "$MACHINIST_BRANCH" --title "Use Postgres" --body-file "$MACHINIST_DIR/body.md" > /dev/null
+  number=$(gh pr view "$MACHINIST_BRANCH" | sed 's/.*\///')
+  gh pr checks "$number" --watch --required
+  gh pr merge "$number" --merge --delete-branch
+  gh pr view "$MACHINIST_BRANCH" > "$MACHINIST_DIR/result.md"
+  exit 0;;
+esac
+`
+
 // claudeScript cannot ask which database to use, so it picks one, says so in
 // assumptions.md and commits.
 func claudeScript(output string) string {
 	return `#!/bin/sh
-env > ` + output + `/env
+` + fakePublish + `env > ` + output + `/env
 printf '%s' "$*" > ` + output + `/args
 cat > ` + output + `/prompt
 git status --porcelain > ` + output + `/status
@@ -387,7 +403,7 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	if prompt := s.read(t, "prompt"); !strings.Contains(prompt, "THE REQUEST") || !strings.Contains(prompt, "untrusted") {
 		t.Fatalf("prompt:\n%s", prompt)
 	}
-	if args := s.read(t, "args"); !strings.Contains(args, "running headless") || !strings.Contains(args, "Do the work in the prompt") {
+	if args := s.read(t, "args"); !strings.Contains(args, "running headless") || !strings.Contains(args, "Do the work in the prompt") || !strings.Contains(args, "Never push") {
 		t.Fatalf("system prompt:\n%s", args)
 	}
 	if status := s.read(t, "status"); status != "" {
@@ -411,8 +427,16 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	if author := git(t, s.remote, "log", "-1", "--format=%s %ae", finished.Branch()); author != "use postgres machinist-bot@users.noreply.github.com" {
 		t.Fatalf("pushed commit = %s", author)
 	}
-	if body := s.github.PRBody(7); !strings.Contains(body, "## Assumptions") || !strings.Contains(body, "Used Postgres") {
+	if body := s.github.PRBody(7); !strings.Contains(body, "## Summary") || !strings.Contains(body, "## Assumptions") || !strings.Contains(body, "Used Postgres") {
 		t.Fatalf("PR body:\n%s", body)
+	}
+	if merged := s.github.Merged(); len(merged) != 1 || merged[0] != "7" {
+		t.Fatalf("merged = %v", merged)
+	}
+	for _, call := range s.github.Calls() {
+		if strings.Contains(call, "--draft") {
+			t.Fatalf("the pull request was a draft: %s", call)
+		}
 	}
 	entries, err := s.store.Entries(t.Context(), created.ID)
 	if err != nil || entries[len(entries)-1].Body != "https://github.com/owner/repo/pull/7" {

@@ -38,7 +38,8 @@ file in your repository. It runs Codex on your VM every weekday at 9, and anyone
   Each team writes the jobs it uses.
 - **A preset is a straight list of shell steps.** Steps run in order in one workspace, and
   the first that fails ends the run. There are no loops, branches or gates inside a preset.
-- **Machinist does not merge.** A person reviews and merges every pull request. Branch
+- **Jobs ship themselves.** The default preset opens a pull request, waits for its checks
+  and merges it. How it ships is a prompt in the factory that a team edits. Branch
   protection and the GitHub token's permissions are the real limits on a step.
 - **Simple over clever.** Fewer settings, fewer presets, short docs.
 

@@ -11,6 +11,7 @@ import (
 // pausingScript waits for the test to release it, so a restart lands mid-run.
 func pausingScript(output string) string {
 	return `#!/bin/sh
+` + fakePublish + `
 cat > /dev/null
 : > ` + output + `/started
 while [ ! -f ` + output + `/release ]; do sleep 0.05; done
