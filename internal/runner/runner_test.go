@@ -508,6 +508,32 @@ func TestExecuteCancellationInterruptsBlockedOutputPipe(t *testing.T) {
 	assertBlockedOutputStops(t, ctx, time.Minute, StateCancelled, 130)
 }
 
+func TestExecuteTimeoutReturnsWhenOutputWriterBlocks(t *testing.T) {
+	assertBlockingWriterStops(t, context.Background(), 100*time.Millisecond, StateTimedOut, 124)
+}
+
+func TestExecuteCancellationReturnsWhenOutputWriterBlocks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	assertBlockingWriterStops(t, ctx, time.Minute, StateCancelled, 130)
+}
+
+// blockingWriter is an io.Writer without SetWriteDeadline whose Write blocks
+// until release is closed.
+type blockingWriter struct{ release chan struct{} }
+
+func (writer blockingWriter) Write(data []byte) (int, error) {
+	<-writer.release
+	return 0, errors.New("released")
+}
+
+func assertBlockingWriterStops(t *testing.T, ctx context.Context, timeout time.Duration, wantState State, wantExitCode int) {
+	t.Helper()
+	writer := blockingWriter{release: make(chan struct{})}
+	defer close(writer.release)
+	assertOutputStops(t, ctx, timeout, writer, wantState, wantExitCode)
+}
+
 func TestExecuteRecordsCommandStartFailure(t *testing.T) {
 	result, err := Execute(context.Background(), Options{
 		Command:       Command{Name: "missing", Args: []string{filepath.Join(t.TempDir(), "not-an-agent")}, Timeout: time.Second},
@@ -570,24 +596,43 @@ func assertBlockedOutputStops(t *testing.T, ctx context.Context, timeout time.Du
 	}
 	defer reader.Close()
 	defer writer.Close()
-	started := time.Now()
-	result, err := Execute(ctx, Options{
-		Command:       helperAgent("flood", timeout),
-		Directory:     newGitRepository(t),
-		Prompt:        testPrompt,
-		Environment:   os.Environ(),
-		DataDirectory: t.TempDir(),
-		Stdout:        writer,
-		Stderr:        io.Discard,
-	})
-	var outcome *OutcomeError
-	if !errors.As(err, &outcome) || outcome.ExitCode != wantExitCode || outcome.State != wantState {
-		t.Fatalf("error = %#v", err)
+	assertOutputStops(t, ctx, timeout, writer, wantState, wantExitCode)
+}
+
+func assertOutputStops(t *testing.T, ctx context.Context, timeout time.Duration, stdout io.Writer, wantState State, wantExitCode int) {
+	t.Helper()
+	type execution struct {
+		result Result
+		err    error
 	}
-	if time.Since(started) > 2*time.Second {
+	done := make(chan execution, 1)
+	started := time.Now()
+	go func() {
+		result, err := Execute(ctx, Options{
+			Command:       helperAgent("flood", timeout),
+			Directory:     newGitRepository(t),
+			Prompt:        testPrompt,
+			Environment:   os.Environ(),
+			DataDirectory: t.TempDir(),
+			Stdout:        stdout,
+			Stderr:        io.Discard,
+		})
+		done <- execution{result: result, err: err}
+	}()
+	var finished execution
+	select {
+	case finished = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return after the output writer blocked")
+	}
+	var outcome *OutcomeError
+	if !errors.As(finished.err, &outcome) || outcome.ExitCode != wantExitCode || outcome.State != wantState {
+		t.Fatalf("error = %#v", finished.err)
+	}
+	if time.Since(started) > 2*time.Second+outputDrainGrace {
 		t.Fatalf("blocked output stopped after %s", time.Since(started))
 	}
-	assertPersistedState(t, result, wantState, wantExitCode)
+	assertPersistedState(t, finished.result, wantState, wantExitCode)
 }
 
 func newGitRepository(t *testing.T) string {
