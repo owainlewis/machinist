@@ -39,8 +39,23 @@ type fakeGitHub struct {
 }
 
 func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/users/") {
+		f.lookups.Add(1)
+		if r.Header.Get("Authorization") != "" {
+			f.t.Errorf("the users API got an app JWT")
+		}
+		if r.URL.Path != "/users/machinistagent[bot]" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"login":"machinistagent[bot]","id":359318932,"type":"Bot"}`))
+		return
+	}
 	f.checkJWT(r.Header.Get("Authorization"))
 	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/app":
+		f.lookups.Add(1)
+		_, _ = w.Write([]byte(`{"id":1,"slug":"machinistagent"}`))
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/installation"):
 		f.lookups.Add(1)
 		repository := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/"), "/installation")
@@ -223,5 +238,20 @@ func TestTokenIsAlwaysNew(t *testing.T) {
 	}
 	if len(fake.tokenRequests) != 2 {
 		t.Fatalf("token requests = %d", len(fake.tokenRequests))
+	}
+}
+
+// Commits made with the app's tokens name its bot account, so GitHub shows
+// the app, not a person, as their author.
+func TestIdentityIsTheAppsBotAccount(t *testing.T) {
+	app, fake := newApp(t)
+	for range 2 {
+		identity, err := app.Identity(t.Context())
+		if err != nil || identity != (Identity{Name: "machinistagent[bot]", Email: "359318932+machinistagent[bot]@users.noreply.github.com"}) {
+			t.Fatalf("identity = %+v, err = %v", identity, err)
+		}
+	}
+	if lookups := fake.lookups.Load(); lookups != 2 {
+		t.Fatalf("looked up %d times, want 2 (the app and its bot user, once)", lookups)
 	}
 }

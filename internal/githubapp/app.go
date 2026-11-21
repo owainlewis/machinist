@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -59,6 +60,14 @@ type App struct {
 	mu            sync.Mutex
 	installations map[string]int64
 	cached        map[string]token
+	identity      *Identity
+}
+
+// Identity is the app's bot account, which commits made with its tokens should
+// name so GitHub shows them as the app's.
+type Identity struct {
+	Name  string
+	Email string
 }
 
 type token struct {
@@ -224,11 +233,51 @@ func (a *App) forget(repository string) {
 	a.mu.Unlock()
 }
 
+// Identity looks up the app's bot account once: GitHub names it after the
+// app's slug, and its commit email carries the bot user's ID.
+func (a *App) Identity(ctx context.Context) (Identity, error) {
+	a.mu.Lock()
+	known := a.identity
+	a.mu.Unlock()
+	if known != nil {
+		return *known, nil
+	}
+	var app struct {
+		Slug string `json:"slug"`
+	}
+	if _, err := a.call(ctx, http.MethodGet, "/app", nil, &app); err != nil {
+		return Identity{}, fmt.Errorf("look up the GitHub App: %w", err)
+	}
+	if app.Slug == "" {
+		return Identity{}, errors.New("look up the GitHub App: GitHub gave no slug")
+	}
+	name := app.Slug + "[bot]"
+	var user struct {
+		ID int64 `json:"id"`
+	}
+	// The users API takes no app JWT, and a bot's account is public.
+	if _, err := a.request(ctx, http.MethodGet, "/users/"+url.PathEscape(name), "", nil, &user); err != nil {
+		return Identity{}, fmt.Errorf("look up the GitHub App's bot user %s: %w", name, err)
+	}
+	if user.ID == 0 {
+		return Identity{}, fmt.Errorf("look up the GitHub App's bot user %s: GitHub gave no ID", name)
+	}
+	identity := Identity{Name: name, Email: fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, name)}
+	a.mu.Lock()
+	a.identity = &identity
+	a.mu.Unlock()
+	return identity, nil
+}
+
 func (a *App) call(ctx context.Context, method, path string, body, reply any) (int, error) {
 	token, err := a.jwt()
 	if err != nil {
 		return 0, err
 	}
+	return a.request(ctx, method, path, token, body, reply)
+}
+
+func (a *App) request(ctx context.Context, method, path, token string, body, reply any) (int, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -241,7 +290,9 @@ func (a *App) call(ctx context.Context, method, path string, body, reply any) (i
 	if err != nil {
 		return 0, err
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if body != nil {
