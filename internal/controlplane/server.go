@@ -62,9 +62,14 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	}
 	client := ghclient.New()
 	var tokens engine.TokenMinter
+	var identity engine.IdentityFinder
 	if app != nil {
 		client.WithToken(app.CachedToken)
 		tokens = app.Token
+		identity = func(ctx context.Context) (string, string, error) {
+			found, err := app.Identity(ctx)
+			return found.Name, found.Email, err
+		}
 	}
 	ticketEngine := engine.New(engine.Options{
 		Store:       store,
@@ -75,6 +80,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		FindPR:      findPR(client),
 		Post:        client.PostComment,
 		GitHubToken: tokens,
+		Identity:    identity,
 		Log:         log,
 	})
 	intake := &sources.Intake{

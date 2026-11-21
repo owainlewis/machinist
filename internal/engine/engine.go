@@ -43,6 +43,9 @@ type PRFinder func(ctx context.Context, repository, branch string) (*PR, error)
 // TokenMinter returns a short-lived GitHub token for one repository.
 type TokenMinter func(ctx context.Context, repository string) (string, error)
 
+// IdentityFinder returns the name and email that runs commit as.
+type IdentityFinder func(ctx context.Context) (name, email string, err error)
+
 type Options struct {
 	Store      *tickets.Store
 	Factory    *factory.Factory
@@ -56,6 +59,10 @@ type Options struct {
 	// GitHubToken, when set, gives each run its own token for its repository.
 	// Without it, a runner uses its own GH_TOKEN.
 	GitHubToken TokenMinter
+	// Identity, when set, is the git author of every run, in place of Handle.
+	// With a GitHub App it is the app's bot account, so commits show as the
+	// app's and not a person's.
+	Identity IdentityFinder
 	// PRInterval is the time between checks of open pull requests.
 	PRInterval time.Duration
 	Log        io.Writer
@@ -167,6 +174,16 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 			})
 		}
 	}
+	gitName, gitEmail := e.Handle, BotEmail(e.Handle)
+	if e.Identity != nil {
+		gitName, gitEmail, err = e.Identity(ctx)
+		if err != nil {
+			message := fmt.Sprintf("Machinist could not look up the GitHub App's bot account: %v.", err)
+			return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
+				return tickets.Transition{State: tickets.StateFailed, Message: message}
+			})
+		}
+	}
 	return &runner.RunRequest{
 		RunID:         claim.Run.ID,
 		TicketID:      claim.Ticket.ID,
@@ -178,8 +195,8 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		Files:         e.Factory.Files,
 		Steps:         preset.Steps,
 		TimeoutMillis: timeout.Milliseconds(),
-		GitName:       e.Handle,
-		GitEmail:      BotEmail(e.Handle),
+		GitName:       gitName,
+		GitEmail:      gitEmail,
 		GitHubToken:   token,
 	}, nil
 }

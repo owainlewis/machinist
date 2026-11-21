@@ -63,6 +63,10 @@ ten minutes before it expires.
 9.  Restart the control plane. It reads the key at startup and stops with an error if it
     cannot use it.
 
+Runs also commit as the app's bot account, such as `machinistagent[bot]`, so GitHub shows
+the app as the author of every commit, pull request, comment and merge. Machinist looks the
+account up from the app the first time a run starts.
+
 Runners no longer need `GH_TOKEN`. A runner that still has one uses it only for a run that
 arrives without a token, and for `machinist runner check`, which runs without the control
 plane.
