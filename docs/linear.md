@@ -2,7 +2,9 @@
 
 Machinist is a user in Linear. When an allowed person assigns an issue in a connected team
 to the Machinist app, Machinist starts a job in that team's repository. The job's prompt is
-the issue's title, description and link. Each issue starts one job, ever.
+the issue's title, description and link. Each issue starts one job, ever, and the
+conversation stays on that job: a reply on the issue runs the same job again on the same
+branch.
 
 Machinist asks Linear for new assignments every minute. Nothing calls Machinist from
 outside, so the control plane needs no public address.
@@ -45,14 +47,22 @@ a team's repository is not connected, or the preset does not exist.
 Machinist writes to Linear itself. The agent gets no Linear access.
 
 - **Pickup.** The issue moves to **In Progress**, or the team's first started state if it
-  has none by that name.
+  has none by that name, and Machinist comments that it is working on it.
 - **Pull request.** Machinist comments the pull request's link on the issue.
 - **Merge.** When the pull request merges, the issue moves to **Done**, or the team's first
   completed state.
 - **Closed.** When the pull request closes without merging, Machinist comments on the issue
   and leaves its state alone.
+- **No pull request.** When the job ends with nothing to change, such as an issue that is
+  missing what the agent needs, the issue moves back to **Todo** with the job's result as a
+  comment. The implement agent checks first that the issue is something it can do in the
+  repository, and when it is not, says what it needs instead of guessing.
 - **Failure.** The issue moves back to **Todo**, or the team's first unstarted state, with a
   comment that gives the reason.
+- **Replies.** A comment on the issue from someone in `allowed_users`, left after the job
+  ended, runs the job again with the comment added to its log, on the same branch and pull
+  request. A reply left while the job runs waits until the run ends. Comments by anyone
+  else, and Machinist's own, are ignored.
 - **Cancel.** If someone unassigns the issue from Machinist, or moves it out of every
   started state, Machinist cancels the job on the next poll. Moving it to another started
   state, such as **In Review**, does not.
