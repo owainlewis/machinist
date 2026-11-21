@@ -47,6 +47,8 @@ type Server struct {
 	now     func() time.Time
 	presets []presetView
 	factory *factory.Factory
+	// app is the GitHub App, or nil when there is none.
+	app githubApp
 }
 
 func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Factory, version string, log io.Writer) (*Server, error) {
@@ -97,7 +99,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
+	server := &Server{
 		linear:   linear,
 		now:      time.Now,
 		config:   machinistConfig,
@@ -110,7 +112,11 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		presets:  presetViews(loaded),
 		factory:  loaded,
 		log:      log,
-	}, nil
+	}
+	if app != nil {
+		server.app = app
+	}
+	return server, nil
 }
 
 // linearPoller checks the Linear section against the factory and the
@@ -211,6 +217,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/events", s.requireToken(s.ingestEvents))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.requireToken(s.complete))
 	mux.HandleFunc("GET /api/v1/repositories", s.requireToken(s.listRepositories))
+	mux.HandleFunc("GET /api/v1/setup", s.requireToken(s.getSetup))
+	mux.HandleFunc("POST /api/v1/projects", s.requireToken(s.addProject))
+	mux.HandleFunc("DELETE /api/v1/projects/{owner}/{name}", s.requireToken(s.removeProject))
 	mux.HandleFunc("GET /api/v1/presets", s.requireToken(s.listPresets))
 	mux.HandleFunc("GET /api/v1/automations", s.requireToken(s.listAutomations))
 	mux.HandleFunc("POST /api/v1/automations/{name}/run", s.requireToken(s.runAutomation))

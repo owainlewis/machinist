@@ -12,7 +12,7 @@ software.
 - **Runs anywhere.** A runner is a small daemon that asks the control plane for work. Start
   one on a Mac, a VM or a Kubernetes cluster. The control plane treats them all the same.
 - **A workflow you define.** A preset is a list of steps: clone, plan, build, test,
-  review, open a pull request. A step runs an agent (Claude Code, Codex or Pi, each with
+  review, open a pull request. A step runs an agent (Claude Code, Codex, Pi or agy, each with
   its own model and prompt) or any shell command. A test
   step is a gate an agent cannot skip.
 - **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.

@@ -117,3 +117,30 @@ func TestAssignReportsGitHubFailureAsNotTheCallersFault(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+// A repository added in the web app takes jobs like one in config.yaml, and
+// stops once it is removed.
+func TestAssignAcceptsARepositoryAddedInTheApp(t *testing.T) {
+	intake, _ := newIntake(t)
+	ctx := t.Context()
+	request := AssignRequest{RequestID: "r1", Repo: "owner/added", Title: "Add a thing", Body: "All the detail"}
+	if _, _, err := intake.Assign(ctx, request, "alice"); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("before adding, err = %v", err)
+	}
+	if err := intake.Store.AddProject(ctx, "owner/added", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if connected, err := intake.Connected(ctx); err != nil || strings.Join(connected, ",") != "owner/repo,owner/added" {
+		t.Fatalf("connected = %v, err = %v", connected, err)
+	}
+	if ticket, created, err := intake.Assign(ctx, request, "alice"); err != nil || !created || ticket.Repo != "owner/added" {
+		t.Fatalf("ticket = %+v, created = %v, err = %v", ticket, created, err)
+	}
+	if _, err := intake.Store.RemoveProject(ctx, "owner/added"); err != nil {
+		t.Fatal(err)
+	}
+	request.RequestID = "r2"
+	if _, _, err := intake.Assign(ctx, request, "alice"); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("after removing, err = %v", err)
+	}
+}

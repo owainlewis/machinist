@@ -62,6 +62,9 @@ ten minutes before it expires.
 
 9.  Restart the control plane. It reads the key at startup and stops with an error if it
     cannot use it.
+10. Open the Setup page in the web app. It shows the app's bot account and flags any project
+    the app is not installed on. Add more projects there, with no restart. Each one needs the
+    app installed on it first.
 
 Runs also commit as the app's bot account, such as `machinistagent[bot]`, so GitHub shows
 the app as the author of every commit, pull request, comment and merge. Machinist looks the

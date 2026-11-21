@@ -136,7 +136,7 @@ func TestStaticUIIsOpenAndHasSecurityHeaders(t *testing.T) {
 
 func TestRepositoriesRouteTellsTheUIItIsSignedIn(t *testing.T) {
 	f := newFixture(t)
-	f.server.config.GitHub.Repositories = []string{"owner/repo"}
+	f.connect(t)
 	response, body := f.call(t, http.MethodGet, "/api/v1/repositories", f.token, nil)
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "owner/repo") {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
