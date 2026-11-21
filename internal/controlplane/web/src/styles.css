@@ -77,7 +77,8 @@ code { font-size: .92em; }
 .app-main { min-width: 0; flex: 1; }
 .app-sidebar { position: sticky; top: 0; z-index: 20; display: flex; width: 220px; height: 100vh; flex: none; flex-direction: column; gap: 4px; border-right: 1px solid var(--border); background: var(--sidebar); padding: 20px 12px; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; }
-.brand-mark { display: grid; width: 24px; height: 24px; flex: none; place-items: center; border-radius: 6px; background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 700; }
+.brand-mark { display: grid; width: 24px; height: 24px; flex: none; place-items: center; border-radius: 6px; background: var(--primary); }
+.brand-mark svg { width: 100%; height: 100%; }
 .brand-wordmark { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .primary-nav { display: flex; flex-direction: column; gap: 4px; }
 .sidebar-foot { display: flex; flex-direction: column; gap: 4px; margin-top: auto; }

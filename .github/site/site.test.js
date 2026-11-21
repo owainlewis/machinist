@@ -146,7 +146,7 @@ test('the site and README show only the harnesses Machinist supports, with their
   }
 });
 
-test('public identity matches the web app: Inter, indigo and the M tile, dark only', async () => {
+test('public identity matches the web app: Inter, indigo and the stacked-runs mark, dark only', async () => {
   const source = await read('./index.html');
   const styles = await read('./styles.css');
   const app = await read('../../internal/controlplane/web/src/styles.css');
@@ -165,6 +165,17 @@ test('public identity matches the web app: Inter, indigo and the M tile, dark on
   assert.match(mark, /#4c6ef5/);
   assert.match(socialCard, /width="1200" height="630"/);
   assert.match(socialCard, /#4c6ef5/);
+});
+
+test('the site, README, web app and social card all use the same stacked-runs mark', async () => {
+  const bars = ['x="14" y="16"', 'x="19" y="28"', 'x="24" y="40"'];
+  const favicon = await read('./favicon.svg');
+  assert.equal(await read('../assets/machinist-mark.svg'), favicon, 'README mark matches the site favicon');
+  assert.equal(await read('../../internal/controlplane/web/public/favicon.svg'), favicon, 'web app favicon matches the site favicon');
+  for (const [name, text] of [['favicon', favicon], ['site', await read('./index.html')], ['web app', await read('../../internal/controlplane/web/src/components/ui/brand.jsx')], ['social card', await read('./social-card.svg')]]) {
+    for (const bar of bars) assert.ok(text.includes(bar), `${name} draws the bar at ${bar}`);
+    assert.doesNotMatch(text, /aria-hidden="true">M</, `${name} no longer uses the letter M`);
+  }
 });
 
 test('the explainer video and its poster ship with the site', async () => {

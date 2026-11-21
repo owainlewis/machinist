@@ -224,7 +224,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/automations", s.requireToken(s.listAutomations))
 	mux.HandleFunc("POST /api/v1/automations/{name}/run", s.requireToken(s.runAutomation))
 	mux.Handle("/", http.FileServer(http.FS(mustSub(webAssets, "web/dist"))))
-	return securityHeaders(mux)
+	var handler http.Handler = mux
+	if isLoopbackListen(s.config.Server.Listen) {
+		handler = loopbackHostOnly(handler)
+	}
+	return securityHeaders(handler)
 }
 
 func mustSub(files fs.FS, directory string) fs.FS {
