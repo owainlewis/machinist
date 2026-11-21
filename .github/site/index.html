@@ -3,196 +3,195 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Machinist runs coding-agent jobs locally, on a VM, or in Kubernetes. Connect GitHub, review changes, and automate repository maintenance.">
-    <meta name="theme-color" content="#f3f4f1">
-    <title>Machinist | The open-source software factory</title>
+    <meta name="description" content="Machinist is an open-source job runner for coding agents. Assign work from the web app, the run API or Linear, and every job runs the same steps on machines you control.">
+    <meta name="theme-color" content="#161618">
+    <meta name="color-scheme" content="dark">
+    <title>Machinist | A job runner for coding agents</title>
     <link rel="canonical" href="https://machinist.sh/">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://machinist.sh/">
-    <meta property="og:title" content="Machinist | The open-source software factory">
-    <meta property="og:description" content="Run coding agents on infrastructure you control, with GitHub PR delivery and repository automations.">
+    <meta property="og:title" content="Machinist | A job runner for coding agents">
+    <meta property="og:description" content="Assign the work. Get merged pull requests. Self-hosted and open source.">
     <meta property="og:image" content="https://machinist.sh/og.png">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Machinist | The open-source software factory">
-    <meta name="twitter:description" content="Run coding agents on infrastructure you control, with GitHub PR delivery and repository automations.">
+    <meta name="twitter:title" content="Machinist | A job runner for coding agents">
+    <meta name="twitter:description" content="Assign the work. Get merged pull requests. Self-hosted and open source.">
     <meta name="twitter:image" content="https://machinist.sh/og.png">
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="#top" aria-label="Machinist home">
-        <img src="machinist-mark.svg" alt="" width="44">
-        <span>machinist</span>
-      </a>
-      <nav aria-label="Primary navigation">
-        <a href="https://github.com/owainlewis/machinist/tree/main/docs">Docs</a>
-        <a href="https://github.com/owainlewis/machinist">GitHub <span aria-hidden="true">↗</span></a>
-      </nav>
+      <div class="header-inner">
+        <a class="brand" href="#top" aria-label="Machinist home">
+          <span class="brand-mark" aria-hidden="true">M</span>
+          <span>Machinist</span>
+        </a>
+        <nav aria-label="Primary navigation">
+          <a href="#how">How it works</a>
+          <a href="#presets">Presets</a>
+          <a href="https://github.com/owainlewis/machinist/tree/main/docs">Docs</a>
+          <a class="nav-github" href="https://github.com/owainlewis/machinist">GitHub</a>
+          <a class="button button-light button-small" href="#start">Get started</a>
+        </nav>
+      </div>
     </header>
 
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
-        <div class="hero-copy">
-          <h1 id="hero-title">A better way to put coding agents to work.</h1>
-          <p class="lede">Assign the work. Get a pull request.</p>
-          <div class="hero-actions">
-            <a class="button button-primary" href="https://github.com/owainlewis/machinist/tree/main/docs">Read the documentation</a>
-            <a class="button button-secondary" href="https://github.com/owainlewis/machinist">View on GitHub <span aria-hidden="true">↗</span></a>
-          </div>
-          <p class="hero-note">Mention the bot on an issue, type the work into a box, or send it from a coding session. Review the pull request on GitHub.</p>
+        <a class="eyebrow-pill" href="https://github.com/owainlewis/machinist"><span>Open source</span>Self-hosted job runner for coding agents <span aria-hidden="true">→</span></a>
+        <h1 id="hero-title">Assign the work.<br>Get merged pull requests.</h1>
+        <p class="lede">Your team assigns work in one place. Every job runs the same steps on machines you control: an agent implements it, a second model reviews it, and Machinist ships it.</p>
+        <div class="hero-actions">
+          <a class="button button-light" href="#start">Get started</a>
+          <a class="button button-ghost" href="https://github.com/owainlewis/machinist">View on GitHub</a>
         </div>
-        <figure class="technical-drawing drawing-machine" id="workflow">
-          <img src="technical-drawings.webp" width="1693" height="929" fetchpriority="high" alt="Hand-drawn sectional elevation of a compact CNC milling machine with dimensions and numbered parts">
-          <figcaption><span>SECTION A–A</span><span>SCALE 1:5</span></figcaption>
+        <p class="hero-note">MIT licensed · One Go binary · Runs on a laptop, a VM or Kubernetes</p>
+
+        <figure class="video-frame">
+          <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>How Machinist works · 0:50</span></div>
+          <video id="explainer" src="machinist.mp4" poster="poster.jpg" autoplay muted loop playsinline preload="metadata" aria-label="A 50-second explainer of how a job moves through Machinist"></video>
+          <button class="sound-toggle" type="button" data-sound aria-pressed="false">Sound on</button>
         </figure>
       </section>
 
-      <section class="proof-strip" aria-label="Machinist product principles">
-        <div><span>⊕</span><strong>Local first</strong><small>Runners on your own machines</small></div>
-        <div><span>□</span><strong>Supervised by design</strong><small>Agents stop and ask</small></div>
-        <div><span>＋</span><strong>Open and plain</strong><small>Your factory is files</small></div>
-        <div><span>○</span><strong>Precision tools</strong><small>Reliable, repeatable work</small></div>
+      <section class="works-with" aria-label="Works with">
+        <span>Works with</span>
+        <ul>
+          <li>Claude Code</li><li>Codex</li><li>Pi</li><li>GitHub</li><li>Linear</li><li>Kubernetes</li>
+        </ul>
       </section>
 
-      <section class="section problem-section" id="why">
-        <div class="section-kicker">WHY MACHINIST</div>
-        <div class="section-heading">
-          <h2>Agentic coding needs a process.</h2>
-          <p>A single agent can write code. A reliable system also needs to define the work, review the result, handle failures, run checks, and keep a record of what happened.</p>
+      <section class="section" id="how" aria-labelledby="how-title">
+        <div class="section-head">
+          <span class="kicker">How it works</span>
+          <h2 id="how-title">One job. Five steps. No babysitting.</h2>
+          <p>A job runs headless from start to finish and never stops to ask a question. When the agent has to guess, it says so in the pull request.</p>
         </div>
-        <div class="tension-grid">
-          <article>
-            <span class="card-number">01 / PROOF</span>
-            <h3>Require proof</h3>
-            <p>A fresh reviewer reads every first pull request. When a person asks for changes or CI fails, the same ticket continues on the same pull request.</p>
-          </article>
-          <article>
-            <span class="card-number">02 / FREEDOM</span>
-            <h3>Use the harness you already trust</h3>
-            <p>Claude Code and Codex run with their own subagents, in their own formats. Machinist does not route or translate them.</p>
-          </article>
-          <article>
-            <span class="card-number">03 / LEARNING</span>
-            <h3>Improve the process</h3>
-            <p>Every ticket records questions asked, feedback rounds, human commits, tokens and cost, so you can see how much help the work needed.</p>
-          </article>
-        </div>
-      </section>
-
-      <section class="section factory-section" aria-labelledby="factory-title">
-        <div class="section-kicker">HOW IT WORKS</div>
-        <div class="section-heading">
-          <h2 id="factory-title">One ticket. One branch. One pull request.</h2>
-          <p>The agent decides how to do the work. Machinist keeps the record, starts the next run when something changes, and stops to ask when a person is needed.</p>
-        </div>
-        <figure class="technical-drawing drawing-system">
-          <img src="technical-drawings.webp" width="1693" height="929" loading="lazy" decoding="async" alt="Architectural plan of a supervised coding-agent system with orchestration, execution, governance, and review layers">
-          <figcaption><span>SUPERVISED AGENT SYSTEM</span><span>CONTROL / REQUEST / REVIEW</span></figcaption>
-        </figure>
-        <div class="factory-values">
-          <article><span>DEFINED</span><h3>A factory in files</h3><p>Agents, reviewers and automations are plain files. Change the process by changing a playbook.</p></article>
-          <article><span>REVIEWABLE</span><h3>Ask when it matters</h3><p>An agent that needs a decision asks where the work started. Your reply continues the same ticket.</p></article>
-          <article><span>PERSISTENT</span><h3>Survives failure</h3><p>Every run starts from a fresh clone of the ticket’s branch. A lost runner’s ticket continues on any other.</p></article>
-        </div>
-      </section>
-
-      <section class="section" aria-labelledby="task-workflow-title">
-        <div class="section-kicker">WHAT A TICKET DOES</div>
-        <div class="section-heading"><h2 id="task-workflow-title">From request to reviewed PR.</h2><p>One agent run does the work, using subagents if you give it some. A fresh reviewer then comments on the pull request.</p></div>
-        <ol class="workflow-example" aria-label="Example workflow">
-          <li><span>01</span><h3>Assign</h3><p>From an issue, the Assign box or MCP</p></li>
-          <li><span>02</span><h3>Build</h3><p>An agent pushes a branch and opens one pull request</p></li>
-          <li><span>03</span><h3>Follow up</h3><p>Reviews and CI failures continue the same ticket</p></li>
+        <ol class="steps">
+          <li><span class="step-index">01</span><h3>Assign</h3><p>Start a job from the New job form, the run API, or by assigning a Linear issue to Machinist.</p></li>
+          <li><span class="step-index">02</span><h3>Checkout</h3><p>A runner on your own machine takes the job and clones the repository onto its own branch.</p></li>
+          <li><span class="step-index">03</span><h3>Implement</h3><p>An agent makes the change, with tests that prove it, and runs the repository's own checks.</p></li>
+          <li><span class="step-index">04</span><h3>Review</h3><p>A second model family reads the diff cold. A revise step fixes any clear finding.</p></li>
+          <li><span class="step-index">05</span><h3>Ship</h3><p>A ready pull request with a clear description. Once checks pass and the review is clean, it merges.</p></li>
         </ol>
-        <div class="code-window"><div class="console-bar"><span>On a GitHub issue</span></div><pre><code>@machinist-bot please fix this</code></pre></div>
-        <p class="workflow-note">Add an automation file to run an agent on a schedule. The default agent never merges. A merge automation is opt-in, and GitHub refuses any merge that branch protection does not allow.</p>
-        <a class="text-link" href="https://github.com/owainlewis/machinist#quick-start">Assign your first ticket <span aria-hidden="true">→</span></a>
       </section>
 
-      <section class="section evaluation-section" id="evaluation">
-        <div class="evaluation-copy">
-          <div class="section-kicker">THE LEDGER</div>
-          <h2>See how much help the work needed.</h2>
-          <p>Every merged pull request has a record. Change a playbook, then see whether the numbers move.</p>
+      <section class="section split" id="presets" aria-labelledby="presets-title">
+        <div class="split-copy">
+          <span class="kicker">Presets and agents</span>
+          <h2 id="presets-title">Your process is a few short files.</h2>
+          <p>A preset is a list of steps. A step runs shell or one of your agents. An agent is a prompt file that names its harness and model, so you can put Claude Code on the work and Codex on the review.</p>
           <ul class="check-list">
-            <li><span>✓</span> Questions the agent asked</li>
-            <li><span>✓</span> Rounds of human feedback</li>
-            <li><span>✓</span> Commits people had to add</li>
-            <li><span>✓</span> Tokens, and cost where the harness reports it</li>
+            <li>Change how work ships by editing a file, not code</li>
+            <li>Keep the factory in git, reviewed like everything else</li>
+            <li>A test step is a gate an agent cannot skip</li>
           </ul>
           <a class="text-link" href="https://github.com/owainlewis/machinist/blob/main/docs/factory.md">Read about factory files <span aria-hidden="true">→</span></a>
         </div>
-        <figure class="technical-drawing drawing-assembly">
-          <img src="technical-drawings.webp" width="1693" height="929" loading="lazy" decoding="async" alt="Exploded hand-drawn isometric of a precision linear rail and carriage assembly">
-          <figcaption><span>EXPLODED DETAIL</span><span>RAIL + CARRIAGE ASSEMBLY</span></figcaption>
-        </figure>
-      </section>
-
-      <section class="section freedom-section">
-        <div class="section-kicker">MODELS AND HARNESSES</div>
-        <div class="section-heading">
-          <h2>Claude Code or Codex, anywhere.</h2>
-          <p>One control plane and any number of runners. A runner is a Mac, a VM, or a Kubernetes cluster that starts one gVisor Job per run. Runners dial out, so none needs an inbound route.</p>
-        </div>
-        <div class="harness-grid">
-          <article class="harness-card"><span class="harness-mark">C</span><div><strong>Codex</strong><small>API key or your login</small></div><span>READY</span></article>
-          <article class="harness-card"><span class="harness-mark">CL</span><div><strong>Claude Code</strong><small>API key, cloud or your login</small></div><span>READY</span></article>
-          <article class="harness-card harness-custom"><span class="harness-mark">K</span><div><strong>Kubernetes</strong><small>A gVisor Job per run</small></div><span>READY</span></article>
-        </div>
-        <div class="code-window">
-          <div class="console-bar"><span>runner.yaml</span><span>HOST OWNED</span></div>
-          <pre><code><span class="code-comment"># A credential is the variables the harness already reads</span>
-control_plane = <span class="code-string">"http://10.0.0.5:7331"</span>
-slots = 2
-
-[credentials.claude]
-env = [<span class="code-string">"ANTHROPIC_API_KEY"</span>]</code></pre>
-        </div>
-      </section>
-
-      <section class="section setup-section" id="setup">
-        <div class="setup-intro">
-          <div class="section-kicker">SETUP</div>
-          <h2>Build Machinist. Start with one issue.</h2>
-          <p>One Go binary contains the CLI, control plane, runner, SQLite history and browser interface. No Machinist cloud account is required.</p>
-        </div>
-        <ol class="setup-steps">
-          <li>
-            <span class="step-number">01</span>
-            <div><h3>Build</h3><p>Compile one local binary from the open-source repository.</p></div>
-            <button class="copy-command" type="button" data-copy="mkdir -p ./bin &amp;&amp; go build -o ./bin/machinist ./cmd/machinist" aria-label="Copy build command"><code>mkdir -p ./bin &amp;&amp; go build -o ./bin/machinist ./cmd/machinist</code><span aria-live="polite">COPY</span></button>
-          </li>
-          <li>
-            <span class="step-number">02</span>
-            <div><h3>Initialize</h3><p>Create the configuration, a starter factory and a runner token.</p></div>
-            <button class="copy-command" type="button" data-copy="./bin/machinist init" aria-label="Copy initialize command"><code>./bin/machinist init</code><span aria-live="polite">COPY</span></button>
-          </li>
-          <li>
-            <span class="step-number">03</span>
-            <div><h3>Start</h3><p>Set the bot and your repositories in config.yaml, then start the control plane and a runner.</p></div>
-            <button class="copy-command" type="button" data-copy="./bin/machinist start" aria-label="Copy run command"><code>./bin/machinist start</code><span aria-live="polite">COPY</span></button>
-          </li>
-        </ol>
-      </section>
-
-      <section class="final-cta">
-        <img src="machinist-mark.svg" alt="" width="152" height="114">
-        <div>
-          <span class="section-kicker">OPEN SOURCE · MIT LICENSE</span>
-          <h2>Run Machinist on a real issue.</h2>
-          <p>Start with a small issue that has a clear result. Mention the bot and wait for the pull request.</p>
-          <div class="hero-actions">
-            <a class="button button-primary" href="https://github.com/owainlewis/machinist#quick-start">Read the setup guide <span aria-hidden="true">→</span></a>
-            <a class="button button-secondary" href="https://github.com/owainlewis/machinist/tree/main/docs">Read the docs <span aria-hidden="true">↗</span></a>
+        <div class="code-stack">
+          <div class="code-window">
+            <div class="code-bar"><span>factory/presets/default.yaml</span></div>
+<pre><code><span class="c-key">description</span>: Make the change, review it and ship it.
+<span class="c-key">steps</span>:
+  - <span class="c-key">name</span>: checkout
+    <span class="c-key">run</span>: checkout.sh
+  - <span class="c-key">name</span>: implement
+    <span class="c-key">agent</span>: implement
+  - <span class="c-key">name</span>: review
+    <span class="c-key">agent</span>: review
+  - <span class="c-key">name</span>: revise
+    <span class="c-key">agent</span>: revise
+  - <span class="c-key">name</span>: publish
+    <span class="c-key">agent</span>: publish</code></pre>
+          </div>
+          <div class="code-window code-window-offset">
+            <div class="code-bar"><span>factory/agents/review.md</span></div>
+<pre><code><span class="c-dim">---</span>
+<span class="c-key">harness</span>: codex
+<span class="c-dim">---</span>
+Review the change on this branch,
+as a careful senior engineer would.</code></pre>
           </div>
         </div>
       </section>
+
+      <section class="section" aria-labelledby="features-title">
+        <div class="section-head">
+          <span class="kicker">Built for teams</span>
+          <h2 id="features-title">Build the system. Stop being the bottleneck.</h2>
+        </div>
+        <div class="feature-grid">
+          <article><h3>Runs where you choose</h3><p>A runner is a small daemon that dials out for work. Start one on a Mac, a VM or a Kubernetes cluster. None needs an inbound route.</p></article>
+          <article><h3>Any harness, any model</h3><p>Claude Code, Codex or Pi, each with the model you pick. Each step can use a different one.</p></article>
+          <article><h3>A second opinion on every change</h3><p>The review step runs before anything ships, and the revise step fixes what it finds.</p></article>
+          <article><h3>Ships on its own, or waits for you</h3><p>Auto-merge is on by default. Set <code>github.auto_merge: false</code> and every pull request waits for a person.</p></article>
+          <article><h3>Linear in, Linear out</h3><p>Assign an issue to Machinist and it starts a job. When the pull request merges, the issue moves to Done.</p></article>
+          <article><h3>One place to see it all</h3><p>A dashboard of jobs, runs, success rate and tokens, a board of what is queued and running, and every step's output.</p></article>
+        </div>
+      </section>
+
+      <section class="section api" aria-labelledby="api-title">
+        <div class="section-head">
+          <span class="kicker">Run API</span>
+          <h2 id="api-title">Start a job from anything.</h2>
+          <p>A tracker, a schedule, a webhook or <code>curl</code>. One request starts a job, and a retried request starts it once.</p>
+        </div>
+        <div class="code-window code-window-wide">
+          <div class="code-bar"><span>Terminal</span></div>
+<pre><code><span class="c-dim">$</span> curl -X POST https://machinist.example.com/machinist/run \
+    -H "Authorization: Bearer $TOKEN" \
+    -d '{"key":"fix-1","vars":{"repo":"acme/web"},"prompt":"Fix the toast position"}'</code></pre>
+        </div>
+      </section>
+
+      <section class="section" id="start" aria-labelledby="start-title">
+        <div class="section-head">
+          <span class="kicker">Get started</span>
+          <h2 id="start-title">Run your first job in minutes.</h2>
+          <p>You need Go, Git, the GitHub CLI signed in, and Claude Code signed in. No Machinist cloud account.</p>
+        </div>
+        <ol class="setup-steps">
+          <li>
+            <div><span class="step-index">01</span><h3>Build</h3><p>One binary holds the CLI, the control plane, the runner and the web app. Put it on your PATH.</p></div>
+            <button class="copy-command" type="button" data-copy="go build -o ./bin/machinist ./cmd/machinist &amp;&amp; export PATH=&quot;$PWD/bin:$PATH&quot;" aria-label="Copy build command"><code>go build -o ./bin/machinist ./cmd/machinist &amp;&amp; export PATH=&quot;$PWD/bin:$PATH&quot;</code><span aria-live="polite">Copy</span></button>
+          </li>
+          <li>
+            <div><span class="step-index">02</span><h3>Initialize</h3><p>In a new directory you keep in git, write the configuration, a local runner and a starter factory.</p></div>
+            <button class="copy-command" type="button" data-copy="machinist init" aria-label="Copy initialize command"><code>machinist init</code><span aria-live="polite">Copy</span></button>
+          </li>
+          <li>
+            <div><span class="step-index">03</span><h3>Configure</h3><p>In <code>config.yaml</code>, set <code>github.handle</code> to your GitHub login and list the repositories jobs may work on. In <code>runner.yaml</code>, set <code>env: []</code> and turn on <code>login: true</code>.</p></div>
+            <button class="copy-command" type="button" data-copy="gh api user --jq .login" aria-label="Copy command that prints your GitHub login"><code>gh api user --jq .login</code><span aria-live="polite">Copy</span></button>
+          </li>
+          <li>
+            <div><span class="step-index">04</span><h3>Start</h3><p>Start the control plane, and <code>GH_TOKEN=$(gh auth token) machinist runner start</code> in a second terminal. Create a token with <code>machinist token create "$USER"</code>, sign in to the web app and select New job.</p></div>
+            <button class="copy-command" type="button" data-copy="GH_TOKEN=$(gh auth token) machinist start" aria-label="Copy start command"><code>GH_TOKEN=$(gh auth token) machinist start</code><span aria-live="polite">Copy</span></button>
+          </li>
+        </ol>
+        <a class="text-link" href="https://github.com/owainlewis/machinist#quick-start">Read the full quick start <span aria-hidden="true">→</span></a>
+      </section>
+
+      <section class="final-cta">
+        <span class="brand-mark brand-mark-large" aria-hidden="true">M</span>
+        <h2>Put your coding agents on a production line.</h2>
+        <p>Open source under the MIT License. Runs on machines you control.</p>
+        <div class="hero-actions">
+          <a class="button button-light" href="https://github.com/owainlewis/machinist#quick-start">Get started</a>
+          <a class="button button-ghost" href="https://github.com/owainlewis/machinist/tree/main/docs">Read the docs</a>
+        </div>
+      </section>
     </main>
+
     <footer>
-      <a class="brand" href="#top" aria-label="Machinist home"><img src="machinist-mark.svg" alt="" width="38"><span>machinist</span></a>
-      <p>Assign work to coding agents and get pull requests back.</p>
-      <div><a href="https://github.com/owainlewis/machinist">GitHub</a><a href="https://github.com/owainlewis/machinist/tree/main/docs">Docs</a><span>MIT License · 2026</span></div>
+      <div class="footer-inner">
+        <a class="brand" href="#top" aria-label="Machinist home"><span class="brand-mark" aria-hidden="true">M</span><span>Machinist</span></a>
+        <div class="footer-links">
+          <a href="https://github.com/owainlewis/machinist">GitHub</a>
+          <a href="https://github.com/owainlewis/machinist/tree/main/docs">Docs</a>
+          <a href="https://github.com/owainlewis/machinist/blob/main/LICENSE">MIT License</a>
+        </div>
+      </div>
     </footer>
     <script type="module" src="site.js"></script>
   </body>

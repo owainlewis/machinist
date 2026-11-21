@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="12" fill="#f3f4f1"/>
-  <path d="M10 49V25c0-7 4-11 10-11s10 4 10 11v10h4" fill="none" stroke="#1a1d1e" stroke-width="6" stroke-linecap="square" stroke-linejoin="round"/>
-  <path d="M34 35h3V25c0-7 4-11 10-11s9 4 9 11v24" fill="none" stroke="#1d6683" stroke-width="6" stroke-linecap="square" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Machinist">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6283ff"/><stop offset="1" stop-color="#4c6ef5"/></linearGradient></defs>
+  <rect width="64" height="64" rx="16" fill="url(#g)"/>
+  <path d="M18 45V20h5.2L32 33.4 40.8 20H46v25h-5.6V29.6L32 42.2l-8.4-12.6V45z" fill="#fff"/>
 </svg>

@@ -1,4 +1,4 @@
-# Machinist
+# <img src=".github/assets/machinist-mark.svg" alt="" width="34" align="top"> Machinist
 
 A job runner for coding agents. Your team assigns work in one place, and every job runs the
 same predefined steps on machines you control: a laptop, a VM or Kubernetes. Everyone can
