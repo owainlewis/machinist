@@ -122,6 +122,30 @@ test('the page says what Machinist is and who it is for, in plain words', async 
   assert.doesNotMatch(source, /production line|babysitting|bottleneck|Get merged pull requests|—/);
 });
 
+test('the site and README show only the harnesses Machinist supports, with their logos', async () => {
+  const source = await read('./index.html');
+  const readme = await read('../../README.md');
+  const { readdir } = await import('node:fs/promises');
+  const harnessDir = new URL('../../internal/harness/', import.meta.url);
+  const names = [];
+  for (const file of await readdir(harnessDir)) {
+    if (!file.endsWith('.go') || file.endsWith('_test.go')) continue;
+    const match = (await read(`../../internal/harness/${file}`)).match(/Name\(\) string \{ return "(\w+)" \}/);
+    if (match) names.push(match[1]);
+  }
+  const shown = { claude: 'Claude Code', codex: 'Codex', pi: 'Pi' };
+  assert.deepEqual(names.sort(), Object.keys(shown).sort(), 'every harness in the code has a card, and no card claims a missing one');
+  const section = source.slice(source.indexOf('class="harnesses"'), source.indexOf('</section>', source.indexOf('class="harnesses"')));
+  assert.deepEqual([...section.matchAll(/<strong>([^<]+)<\/strong>/g)].map(([, name]) => name), Object.values(shown));
+  assert.match(section, /Machinist is not made by or tied to these companies/);
+  for (const logo of ['claude', 'openai']) {
+    for (const mode of ['dark', 'light']) {
+      assert.ok(readme.includes(`.github/assets/harness-${logo}-${mode}.svg`), `README uses the ${mode} ${logo} logo`);
+      await read(`../assets/harness-${logo}-${mode}.svg`);
+    }
+  }
+});
+
 test('public identity matches the web app: Inter, indigo and the M tile, dark only', async () => {
   const source = await read('./index.html');
   const styles = await read('./styles.css');
