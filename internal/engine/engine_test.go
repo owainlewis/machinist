@@ -91,7 +91,7 @@ func TestAssignBuildsTheRunRequest(t *testing.T) {
 	e := newEngine(t)
 	ticket := newTicket(t, e, "api")
 	request := assignRun(t, e)
-	if request.TicketID != ticket.ID || request.Preset != "default" || request.Repository != "owner/repo" || request.Branch != "machinist/"+ticket.ID || request.Vars["repo"] != "owner/repo" {
+	if request.TicketID != ticket.ID || request.Preset != "default" || request.Repository != "owner/repo" || request.Branch != "machinist/"+ticket.ID || request.Vars["repo"] != "owner/repo" || request.Vars["auto_merge"] != "false" {
 		t.Fatalf("request = %+v", request)
 	}
 	if request.TimeoutMillis != time.Hour.Milliseconds() || request.GitName != "machinist-bot" || request.GitEmail != "machinist-bot@users.noreply.github.com" {
@@ -121,6 +121,36 @@ func TestAssignGivesTheRunATokenForItsRepository(t *testing.T) {
 	newTicket(t, e, "api")
 	if request := assignRun(t, e); request.GitHubToken != "ghs_scoped" || asked != "owner/repo" {
 		t.Fatalf("token = %q for %q", request.GitHubToken, asked)
+	}
+}
+
+// With a GitHub App, a run commits as the app's bot account, not as the
+// configured handle, so its commits never show a person as their author.
+func TestAssignCommitsAsTheAppsBotAccount(t *testing.T) {
+	e := newEngine(t)
+	e.Identity = func(context.Context) (string, string, error) {
+		return "machinistagent[bot]", "1+machinistagent[bot]@users.noreply.github.com", nil
+	}
+	newTicket(t, e, "api")
+	if request := assignRun(t, e); request.GitName != "machinistagent[bot]" || request.GitEmail != "1+machinistagent[bot]@users.noreply.github.com" {
+		t.Fatalf("git author = %q <%s>", request.GitName, request.GitEmail)
+	}
+}
+
+func TestAssignFailsTheJobWhenTheAppsAccountIsUnknown(t *testing.T) {
+	e := newEngine(t)
+	e.Identity = func(context.Context) (string, string, error) {
+		return "", "", errors.New("GitHub replied 401")
+	}
+	ticket := newTicket(t, e, "api")
+	if err := e.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}); err != nil || request != nil {
+		t.Fatalf("request = %+v, err = %v", request, err)
+	}
+	if message := lastMessage(t, e, ticket.ID); state(t, e, ticket.ID) != tickets.StateFailed || !strings.Contains(message, "bot account") {
+		t.Fatalf("message = %q", message)
 	}
 }
 
@@ -193,6 +223,9 @@ func TestReportRows(t *testing.T) {
 		{"pr ready without PR", succeed("pr_ready", "Opened"), nil, tickets.StateFailed, "Reported a PR but none is open for this branch."},
 		{"pr ready with only a closed PR", succeed("pr_ready", "Opened"), &PR{Number: 42, Closed: true}, tickets.StateFailed, "Reported a PR but none is open for this branch."},
 		{"no change", succeed("no_change", "Nothing to do"), nil, tickets.StateDone, "Nothing to do"},
+		{"no change with an open PR", succeed("no_change", "Left open: needs a decision"), found, tickets.StatePRReady, "Left open: needs a decision"},
+		{"no change with a merged PR", succeed("no_change", "Merged"), &PR{Number: 42, Merged: true}, tickets.StateDone, "Merged"},
+		{"no change with a closed PR", succeed("no_change", "Closed"), &PR{Number: 42, Closed: true}, tickets.StateDone, "Closed"},
 		{"failed report", succeed("failed", "Tests cannot run"), nil, tickets.StateFailed, "Tests cannot run"},
 		{"no report", protocol.Completion{State: tickets.RunSucceeded}, nil, tickets.StateFailed, "The run ended without a report: succeeded"},
 		{"malformed report", succeed("complete", "old"), nil, tickets.StateFailed, "The run ended without a report: report outcome"},
@@ -216,6 +249,12 @@ func TestReportRows(t *testing.T) {
 			}
 			if test.pr != nil && got.PRNumber != 42 {
 				t.Fatalf("PR = %d", got.PRNumber)
+			}
+			// A job that merged its own pull request counts as merged.
+			merged := test.pr != nil && test.pr.Merged
+			figures, err := e.Store.TicketFigures(t.Context(), ticket.ID)
+			if err != nil || figures.Merged != merged || (got.PRState == tickets.PRMerged) != merged {
+				t.Fatalf("merged = %v, pr state = %q, err = %v, want merged %v", figures.Merged, got.PRState, err, merged)
 			}
 		})
 	}

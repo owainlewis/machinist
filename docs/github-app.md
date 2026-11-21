@@ -13,7 +13,7 @@ rest of that run.
 | Permission | Access | Used for |
 | --- | --- | --- |
 | Contents | Read and write | Clone and push the job's branch |
-| Pull requests | Read and write | Open and update the draft pull request |
+| Pull requests | Read and write | Open, update and merge the pull request |
 | Issues | Read and write | Read issues and post comments |
 | Checks | Read | Read CI results on the pull request |
 | Commit statuses | Read | Read CI results that use statuses |
@@ -62,6 +62,13 @@ ten minutes before it expires.
 
 9.  Restart the control plane. It reads the key at startup and stops with an error if it
     cannot use it.
+10. Open the Setup page in the web app. It shows the app's bot account and flags any project
+    the app is not installed on. Add more projects there, with no restart. Each one needs the
+    app installed on it first.
+
+Runs also commit as the app's bot account, such as `machinistagent[bot]`, so GitHub shows
+the app as the author of every commit, pull request, comment and merge. Machinist looks the
+account up from the app the first time a run starts.
 
 Runners no longer need `GH_TOKEN`. A runner that still has one uses it only for a run that
 arrives without a token, and for `machinist runner check`, which runs without the control

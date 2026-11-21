@@ -79,7 +79,7 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   // Jobs open as a board, and the List button shows the same jobs as rows.
   await eventually(() => assert.ok(document.querySelector(".board-card")));
   assert.equal(document.querySelector("h1").textContent, "Jobs");
-  assert.deepEqual([...document.querySelectorAll("nav a")].map(link => link.textContent), ["Dashboard", "Jobs", "Runners"]);
+  assert.deepEqual([...document.querySelectorAll("nav a")].map(link => link.textContent), ["Dashboard", "Jobs", "Runners", "Setup"]);
   assert.deepEqual([...document.querySelectorAll(".board-column-head")].map(head => head.textContent), ["Queued0", "Running0", "Done2"]);
   await act(async () => [...document.querySelectorAll(".range button")].find(button => button.textContent === "List").click());
   await eventually(() => assert.ok(document.querySelector("table.jobs tbody tr")));

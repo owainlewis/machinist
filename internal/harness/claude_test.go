@@ -1,4 +1,4 @@
-package agentlog
+package harness
 
 import (
 	"bytes"
@@ -48,13 +48,28 @@ func TestFormatTurnsStreamJSONIntoLines(t *testing.T) {
 	}
 }
 
+func TestFormatReadsAResultWhoseTypeIsNotTheFirstKey(t *testing.T) {
+	var out bytes.Buffer
+	line := `{"duration_api_ms":185000,"type":"result","subtype":"success","is_error":false,"num_turns":3,"duration_ms":4000,"total_cost_usd":0.25,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":2,"cache_read_input_tokens":100}}`
+	usage, err := Format(strings.NewReader(line+"\n"), &out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage == nil || usage.Tokens != 117 || usage.Cost != 0.25 {
+		t.Fatalf("usage = %+v", usage)
+	}
+	if out.String() != "Finished after 3 turns in 4s, $0.25\n" {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
 func TestFormatPassesOtherOutputThrough(t *testing.T) {
 	var out bytes.Buffer
-	usage, err := Format(strings.NewReader("hello\n{\"not\":\"an event\"}\n{\"type\":broken\n{\"type\":\"progress\",\"text\":\"working\"}\n"), &out, "")
+	usage, err := Format(strings.NewReader("hello\n{\"not\":\"an event\"}\n{\"type\":broken\n{\"type\":\"progress\",\"text\":\"working\"}\n{\"text\":\"x\",\"type\":\"progress\"}\nnull\n[1]\n"), &out, "")
 	if err != nil || usage != nil {
 		t.Fatalf("usage = %v, err = %v", usage, err)
 	}
-	if out.String() != "hello\n{\"not\":\"an event\"}\n{\"type\":broken\n{\"type\":\"progress\",\"text\":\"working\"}\n" {
+	if out.String() != "hello\n{\"not\":\"an event\"}\n{\"type\":broken\n{\"type\":\"progress\",\"text\":\"working\"}\n{\"text\":\"x\",\"type\":\"progress\"}\nnull\n[1]\n" {
 		t.Fatalf("got %q", out.String())
 	}
 }
@@ -73,7 +88,7 @@ func TestRunKeepsTheExitCodeAndWritesUsage(t *testing.T) {
 	usagePath := filepath.Join(t.TempDir(), UsageFile)
 	script := `printf '%s\n' '{"type":"result","subtype":"success","num_turns":1,"duration_ms":1000,"total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":4}}'; echo oops >&2; exit 3`
 	var out, errs bytes.Buffer
-	code, err := Run(t.Context(), []string{"sh", "-c", script}, strings.NewReader(""), &out, &errs, usagePath)
+	code, err := Run(t.Context(), Format, []string{"sh", "-c", script}, strings.NewReader(""), &out, &errs, usagePath)
 	if err != nil || code != 3 {
 		t.Fatalf("code = %d, err = %v", code, err)
 	}
@@ -94,7 +109,7 @@ func TestRunAddsUpEveryAgentInAStep(t *testing.T) {
 	usagePath := filepath.Join(t.TempDir(), UsageFile)
 	for _, tokens := range []string{"10", "20"} {
 		script := `printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.1,"usage":{"input_tokens":` + tokens + `}}'`
-		if code, err := Run(t.Context(), []string{"sh", "-c", script}, strings.NewReader(""), io.Discard, io.Discard, usagePath); err != nil || code != 0 {
+		if code, err := Run(t.Context(), Format, []string{"sh", "-c", script}, strings.NewReader(""), io.Discard, io.Discard, usagePath); err != nil || code != 0 {
 			t.Fatalf("code = %d, err = %v", code, err)
 		}
 	}
@@ -106,7 +121,7 @@ func TestRunAddsUpEveryAgentInAStep(t *testing.T) {
 }
 
 func TestRunNeedsACommand(t *testing.T) {
-	if code, err := Run(t.Context(), nil, nil, nil, nil, ""); err == nil || code != 2 {
+	if code, err := Run(t.Context(), Format, nil, nil, nil, nil, ""); err == nil || code != 2 {
 		t.Fatalf("code = %d, err = %v", code, err)
 	}
 }

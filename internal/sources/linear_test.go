@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -54,6 +55,26 @@ type fakeLinear struct {
 	moves       int
 	queries     []string
 	auth        string
+	// replies are comments people left, as Linear would list them.
+	replies []fakeReply
+	// endlessReplies makes a replies query with no upper time bound page on
+	// for ever, as a huge backlog would.
+	endlessReplies bool
+}
+
+type fakeReply struct {
+	issue, user, body string
+	at                time.Time
+}
+
+var createdInQuery = regexp.MustCompile(`createdAt: \{gt: "([^"]+)"`)
+var untilInQuery = regexp.MustCompile(`lte: "([^"]+)"`)
+
+// reply adds a comment that user left on an issue.
+func (f *fakeLinear) reply(issue, user, body string, at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.replies = append(f.replies, fakeReply{issue: issue, user: user, body: body, at: at})
 }
 
 var sinceInQuery = regexp.MustCompile(`updatedAt: \{gt: "([^"]+)"\}`)
@@ -104,6 +125,31 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		answer(map[string]any{"issues": map[string]any{"nodes": nodes}})
 		return
 	}
+	if strings.Contains(request.Query, "query Replies") {
+		since, _ := time.Parse(time.RFC3339Nano, createdInQuery.FindStringSubmatch(request.Query)[1])
+		until := time.Time{}
+		if match := untilInQuery.FindStringSubmatch(request.Query); match != nil {
+			until, _ = time.Parse(time.RFC3339Nano, match[1])
+		} else if f.endlessReplies {
+			answer(map[string]any{"comments": map[string]any{"nodes": []any{}, "pageInfo": map[string]any{"hasNextPage": true, "endCursor": "more"}}})
+			return
+		}
+		nodes := []map[string]any{}
+		// Linear lists the newest first.
+		for index := len(f.replies) - 1; index >= 0; index-- {
+			reply := f.replies[index]
+			if issue := f.issue(reply.issue); issue == nil || issue.assignee != appUser || !reply.at.After(since) || (!until.IsZero() && reply.at.After(until)) || reply.user == appUser {
+				continue
+			}
+			node := map[string]any{"id": fmt.Sprintf("c%d", index), "body": reply.body, "createdAt": reply.at, "issue": map[string]any{"id": reply.issue}}
+			if reply.user != "" {
+				node["user"] = map[string]any{"id": reply.user}
+			}
+			nodes = append(nodes, node)
+		}
+		answer(map[string]any{"comments": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false}}})
+		return
+	}
 	if strings.Contains(request.Query, "commentCreate") {
 		issue, _ := request.Variables["issue"].(string)
 		body, _ := request.Variables["body"].(string)
@@ -139,6 +185,19 @@ func (f *fakeLinear) set(id string, change func(*fakeIssue)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	change(f.issue(id))
+}
+
+// news is Machinist's comments on an issue after it said it was on it.
+func (f *fakeLinear) news(id string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var kept []string
+	for _, comment := range f.comments[id] {
+		if comment != acknowledgement {
+			kept = append(kept, comment)
+		}
+	}
+	return kept
 }
 
 func (f *fakeLinear) stateOf(id string) string {
@@ -331,7 +390,7 @@ func TestAPullRequestIsCommentedOnItsIssueOnce(t *testing.T) {
 	}
 	p.poll(t)
 	p.poll(t)
-	if got := p.linear.comments["a1"]; len(got) != 1 || got[0] != "Machinist opened a pull request: https://github.com/owner/repo/pull/7" {
+	if got := p.linear.news("a1"); len(got) != 1 || got[0] != "Machinist opened a pull request: https://github.com/owner/repo/pull/7" {
 		t.Fatalf("comments = %v", got)
 	}
 }
@@ -414,6 +473,89 @@ func TestPickingUpAnIssueMovesItToInProgressOnce(t *testing.T) {
 	if p.linear.moves != 1 {
 		t.Fatalf("moves = %d", p.linear.moves)
 	}
+	if got := p.linear.comments["a1"]; len(got) != 1 || got[0] != acknowledgement {
+		t.Fatalf("comments = %v", got)
+	}
+}
+
+func TestAJobWithNoPullRequestHandsItsIssueBackWithTheResult(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Not enough to go on: which page has the broken toast?"}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poll(t)
+	if got := p.linear.stateOf("a1"); got != "s-todo" {
+		t.Fatalf("state = %q", got)
+	}
+	want := "Machinist finished without a pull request: Not enough to go on: which page has the broken toast?\n\nReply here to give it more to go on, and it will run again."
+	if got := p.linear.news("a1"); len(got) != 1 || got[0] != want {
+		t.Fatalf("comments = %q", got)
+	}
+}
+
+func TestAReplyRunsTheJobAgainWithTheComment(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.reply("a1", appUser, "Machinist's own comment", p.now)
+	p.linear.reply("a1", "stranger", "Delete everything", p.now.Add(time.Second))
+	p.linear.reply("a1", "owain", "The checkout page.", p.now.Add(2*time.Second))
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("job state = %q", got)
+	}
+	entries, err := p.store.Entries(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := tickets.RenderLog(entries)
+	if !strings.Contains(log, "The checkout page.") || strings.Contains(log, "Delete everything") || strings.Contains(log, "Machinist's own comment") {
+		t.Fatalf("log:\n%s", log)
+	}
+	if got := p.linear.stateOf("a1"); got != "s-progress" {
+		t.Fatalf("issue state = %q", got)
+	}
+	// Reading the same replies again starts nothing more.
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Fixed."}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateDone {
+		t.Fatalf("job ran again on an old reply: %q", got)
+	}
+}
+
+func TestAReplyWhileTheJobRunsWaitsForTheRunToEnd(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.reply("a1", "owain", "Also fix the footer.", p.now)
+	p.poll(t)
+	entries, err := p.store.Entries(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(tickets.RenderLog(entries), "footer") {
+		t.Fatal("a reply joined a running job")
+	}
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("job state = %q", got)
+	}
+	entries, _ = p.store.Entries(t.Context(), job.ID)
+	if !strings.Contains(tickets.RenderLog(entries), "Also fix the footer.") {
+		t.Fatal("the reply was lost")
+	}
 }
 
 func TestAFailedJobMovesItsIssueBackWithTheReason(t *testing.T) {
@@ -427,7 +569,7 @@ func TestAFailedJobMovesItsIssueBackWithTheReason(t *testing.T) {
 	if got := p.linear.stateOf("a1"); got != "s-todo" {
 		t.Fatalf("state = %q", got)
 	}
-	if got := p.linear.comments["a1"]; len(got) != 1 || got[0] != "Machinist's job failed: The tests would not pass." {
+	if got := p.linear.news("a1"); len(got) != 1 || got[0] != "Machinist's job failed: The tests would not pass.\n\nReply here to tell it what to change, and it will run again." {
 		t.Fatalf("comments = %v", got)
 	}
 }
@@ -501,7 +643,7 @@ func TestAMergedPullRequestMovesItsIssueToDoneOnce(t *testing.T) {
 	if got := p.linear.stateOf("a1"); got != "s-done" || p.linear.moves != moves {
 		t.Fatalf("state = %q, moves = %d then %d", got, moves, p.linear.moves)
 	}
-	if got := p.linear.comments["a1"]; len(got) != 1 {
+	if got := p.linear.news("a1"); len(got) != 1 {
 		t.Fatalf("comments = %v", got)
 	}
 }
@@ -518,7 +660,7 @@ func TestAClosedPullRequestIsCommentedOnItsIssue(t *testing.T) {
 	p.poll(t)
 	p.poll(t)
 	want := []string{"Machinist opened a pull request: https://github.com/owner/repo/pull/7", "Machinist's pull request was closed without merging: https://github.com/owner/repo/pull/7"}
-	if got := p.linear.comments["a1"]; strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := p.linear.news("a1"); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("comments = %v", got)
 	}
 	if got := p.linear.stateOf("a1"); got != "s-progress" {
@@ -559,5 +701,69 @@ func TestRunningAMergedJobAgainMovesItsIssueBackToInProgress(t *testing.T) {
 	}
 	if got := p.state(t, job.ID); got != tickets.StateWorking {
 		t.Fatalf("job state = %q", got)
+	}
+}
+
+func TestRepliesAtTheSameMomentGoIntoOneRun(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	p.linear.reply("a1", "owain", "Comment from before the job.", job.CreatedAt.Add(-30*time.Second))
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.reply("a1", "owain", "The checkout page.", p.now)
+	p.linear.reply("a1", "owain", "And the cart.", p.now)
+	p.poll(t)
+	p.poll(t)
+	entries, err := p.store.Entries(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := tickets.RenderLog(entries)
+	if strings.Count(log, "The checkout page.") != 1 || strings.Count(log, "And the cart.") != 1 || strings.Contains(log, "before the job") {
+		t.Fatalf("log:\n%s", log)
+	}
+}
+
+func TestRepliesWaitPastTheHourlyCap(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poller.MaxJobsPerHour = 1
+	p.now = p.now.Add(time.Minute)
+	p.linear.reply("a1", "owain", "The checkout page.", p.now)
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateDone {
+		t.Fatalf("a reply ran past the cap: %q", got)
+	}
+	p.now = p.now.Add(time.Hour)
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("the reply was lost: %q", got)
+	}
+}
+
+func TestAHugeReplyBacklogIsReadInShorterSpans(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.reply("a1", "owain", "The checkout page.", p.now.Add(-30*time.Second))
+	p.linear.mu.Lock()
+	p.linear.endlessReplies = true
+	p.linear.mu.Unlock()
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("the reply in the backlog was never read: %q", got)
 	}
 }

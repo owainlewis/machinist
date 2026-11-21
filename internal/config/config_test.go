@@ -33,6 +33,9 @@ func TestLoadConfigAppliesDefaults(t *testing.T) {
 	if loaded.Path() != path {
 		t.Fatalf("path = %q", loaded.Path())
 	}
+	if !loaded.GitHub.AutoMerges() {
+		t.Fatal("auto-merge is off by default")
+	}
 }
 
 func TestLoadConfigReadsTheCurrentDirectoryByDefault(t *testing.T) {
@@ -63,6 +66,7 @@ func TestLoadConfigReadsEveryKeyAndResolvesPaths(t *testing.T) {
 github:
   handle: machinist-bot
   repositories: [owner/one, owner/two]
+  auto_merge: false
 `)
 	loaded, err := LoadConfig(path)
 	if err != nil {
@@ -77,7 +81,7 @@ github:
 			t.Fatalf("path = %q, want it under %q", got, directory)
 		}
 	}
-	if loaded.GitHub.Handle != "machinist-bot" || strings.Join(loaded.GitHub.Repositories, ",") != "owner/one,owner/two" {
+	if loaded.GitHub.Handle != "machinist-bot" || strings.Join(loaded.GitHub.Repositories, ",") != "owner/one,owner/two" || loaded.GitHub.AutoMerges() {
 		t.Fatalf("github = %+v", loaded.GitHub)
 	}
 }

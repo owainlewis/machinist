@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { jobHref, routeFromHash } from "./routes.js";
 
-test("the dashboard, jobs, the new job form and runners are addressable", () => {
-  for (const view of ["dashboard", "jobs", "new", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
+test("the dashboard, jobs, the new job form, runners and setup are addressable", () => {
+  for (const view of ["dashboard", "jobs", "new", "runners", "setup"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
 });
 
 test("the app opens on the dashboard, and unknown routes return to it", () => {

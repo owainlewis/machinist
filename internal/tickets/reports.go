@@ -12,6 +12,8 @@ const (
 	ReportFailed  = "failed"
 	ReportMerged  = "merged"
 	ReportClosed  = "closed"
+	// ReportFinished is a job that ended done with no pull request.
+	ReportFinished = "finished"
 )
 
 // TrackerJob is a ticket from a tracker that is still going, or that has
@@ -40,8 +42,9 @@ func (s *Store) TrackerJobs(ctx context.Context, source string) ([]TrackerJob, e
     OR (COALESCE(t.pr_number,0)>0 AND `+unreported+`)
     OR (t.state=? AND `+unreported+`)
     OR (t.pr_state=? AND `+unreported+`)
-    OR (t.pr_state=? AND `+unreported+`))
-  ORDER BY t.created_at`, EntryRequest, source, StateWorking, ReportPR, StateFailed, ReportFailed, PRMerged, ReportMerged, PRClosed, ReportClosed)
+    OR (t.pr_state=? AND `+unreported+`)
+    OR (t.state=? AND COALESCE(t.pr_number,0)=0 AND `+unreported+`))
+  ORDER BY t.created_at`, EntryRequest, source, StateWorking, ReportPR, StateFailed, ReportFailed, PRMerged, ReportMerged, PRClosed, ReportClosed, StateDone, ReportFinished)
 	if err != nil {
 		return nil, err
 	}
