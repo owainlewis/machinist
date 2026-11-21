@@ -280,18 +280,18 @@ func supervise(ctx context.Context, process *os.Process, processOwner string, ti
 			inputErr = err
 			if err != nil {
 				waited := abort()
-				<-streamsDone
+				awaitAbortedStreams(streamsDone)
 				return operationFailure(waited, err)
 			}
 		case err := <-streamErrors:
 			waited := abort()
 			inputErr = awaitInput(inputResult, inputDone, inputErr)
-			<-streamsDone
+			awaitAbortedStreams(streamsDone)
 			return StateFailed, 1, errors.Join(waited.err, err, inputErr)
 		case <-ctx.Done():
 			waited := abort()
 			_ = awaitInput(inputResult, inputDone, inputErr)
-			<-streamsDone
+			awaitAbortedStreams(streamsDone)
 			if waited.err != nil {
 				return StateFailed, 1, fmt.Errorf("cancel cleanup failed: %w", waited.err)
 			}
@@ -299,7 +299,7 @@ func supervise(ctx context.Context, process *os.Process, processOwner string, ti
 		case <-timer.C:
 			waited := abort()
 			_ = awaitInput(inputResult, inputDone, inputErr)
-			<-streamsDone
+			awaitAbortedStreams(streamsDone)
 			if waited.err != nil {
 				return StateFailed, 1, fmt.Errorf("timeout cleanup failed: %w", waited.err)
 			}
@@ -322,6 +322,19 @@ func waitForStreams(done <-chan struct{}, closeStreams func(), grace time.Durati
 	case <-timer.C:
 		closeStreams()
 		<-done
+	}
+}
+
+// awaitAbortedStreams gives the output streams a bounded time to finish after
+// an abort. Closing the source pipes cannot interrupt a destination writer that
+// blocks inside Write and has no write deadline, so the run must not wait for
+// such a writer forever.
+func awaitAbortedStreams(done <-chan struct{}) {
+	timer := time.NewTimer(outputDrainGrace)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
 	}
 }
 
