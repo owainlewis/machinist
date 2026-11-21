@@ -19,6 +19,10 @@ const maxBackoff = 5 * time.Minute
 // ErrRateLimited means the tracker asked Machinist to slow down.
 var ErrRateLimited = errors.New("rate limited")
 
+// ErrTooManyReplies means more replies arrived than one read returns. The
+// poller asks again for a shorter span of time.
+var ErrTooManyReplies = errors.New("too many replies to read at once")
+
 // Assignment is an issue that was handed to Machinist in a tracker.
 type Assignment struct {
 	// Key is stable for the issue, such as linear:<issue id>. One issue starts
@@ -70,9 +74,10 @@ type Tracker interface {
 	// Start moves an issue to In Progress and says Machinist is on it.
 	Start(ctx context.Context, issue string) error
 	// Replies returns every comment left by people, not Machinist, on issues
-	// assigned to Machinist, created after since, oldest first. It fails
+	// assigned to Machinist, created after since and, unless until is zero,
+	// no later than until, oldest first. It fails with ErrTooManyReplies
 	// rather than return part of them.
-	Replies(ctx context.Context, since time.Time) ([]Reply, error)
+	Replies(ctx context.Context, since, until time.Time) ([]Reply, error)
 	// Return moves an issue back out of In Progress with a comment, because
 	// the job ended with no pull request and the next move is a person's.
 	Return(ctx context.Context, issue, comment string) error
@@ -239,10 +244,9 @@ func (p *Poller) Poll(ctx context.Context) error {
 		}
 	}
 	fmt.Fprintf(p.log(), "machinist: %s: %d assignments, %d jobs started\n", name, len(assignments), started)
-	if err := p.replies(ctx); err != nil {
-		return err
-	}
-	return p.sync(ctx)
+	// A tracker that will not answer about replies must not stop the news
+	// about every job.
+	return errors.Join(p.replies(ctx), p.sync(ctx))
 }
 
 // repliesCursor keeps how far the tracker's replies have been read, beside
@@ -262,13 +266,21 @@ func (p *Poller) replies(ctx context.Context) error {
 	if !found {
 		return p.Store.SetCursor(ctx, name, repliesCursor, p.clock())
 	}
-	replies, err := p.Tracker.Replies(ctx, since)
+	// Too many replies at once: ask for a shorter span, so the cursor still
+	// moves forward.
+	var until time.Time
+	replies, err := p.Tracker.Replies(ctx, since, until)
+	for span := p.clock().Sub(since); errors.Is(err, ErrTooManyReplies) && span > time.Second; {
+		span /= 2
+		until = since.Add(span)
+		replies, err = p.Tracker.Replies(ctx, since, until)
+	}
 	if err != nil {
 		return err
 	}
 	// The cursor moves to just before the first reply left waiting, so it is
 	// read again. Replies read twice are skipped by their comment key.
-	cursor := since
+	cursor := maxTime(since, until)
 	var order []string
 	batches := map[string][]tickets.Comment{}
 	first := map[string]time.Time{}

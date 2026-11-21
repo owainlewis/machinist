@@ -57,6 +57,9 @@ type fakeLinear struct {
 	auth        string
 	// replies are comments people left, as Linear would list them.
 	replies []fakeReply
+	// endlessReplies makes a replies query with no upper time bound page on
+	// for ever, as a huge backlog would.
+	endlessReplies bool
 }
 
 type fakeReply struct {
@@ -64,7 +67,8 @@ type fakeReply struct {
 	at                time.Time
 }
 
-var createdInQuery = regexp.MustCompile(`createdAt: \{gt: "([^"]+)"\}`)
+var createdInQuery = regexp.MustCompile(`createdAt: \{gt: "([^"]+)"`)
+var untilInQuery = regexp.MustCompile(`lte: "([^"]+)"`)
 
 // reply adds a comment that user left on an issue.
 func (f *fakeLinear) reply(issue, user, body string, at time.Time) {
@@ -123,11 +127,18 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.Contains(request.Query, "query Replies") {
 		since, _ := time.Parse(time.RFC3339Nano, createdInQuery.FindStringSubmatch(request.Query)[1])
+		until := time.Time{}
+		if match := untilInQuery.FindStringSubmatch(request.Query); match != nil {
+			until, _ = time.Parse(time.RFC3339Nano, match[1])
+		} else if f.endlessReplies {
+			answer(map[string]any{"comments": map[string]any{"nodes": []any{}, "pageInfo": map[string]any{"hasNextPage": true, "endCursor": "more"}}})
+			return
+		}
 		nodes := []map[string]any{}
 		// Linear lists the newest first.
 		for index := len(f.replies) - 1; index >= 0; index-- {
 			reply := f.replies[index]
-			if issue := f.issue(reply.issue); issue == nil || issue.assignee != appUser || !reply.at.After(since) || reply.user == appUser {
+			if issue := f.issue(reply.issue); issue == nil || issue.assignee != appUser || !reply.at.After(since) || (!until.IsZero() && reply.at.After(until)) || reply.user == appUser {
 				continue
 			}
 			node := map[string]any{"id": fmt.Sprintf("c%d", index), "body": reply.body, "createdAt": reply.at, "issue": map[string]any{"id": reply.issue}}
@@ -734,5 +745,25 @@ func TestRepliesWaitPastTheHourlyCap(t *testing.T) {
 	p.poll(t)
 	if got := p.state(t, job.ID); got != tickets.StateWorking {
 		t.Fatalf("the reply was lost: %q", got)
+	}
+}
+
+func TestAHugeReplyBacklogIsReadInShorterSpans(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.reply("a1", "owain", "The checkout page.", p.now.Add(-30*time.Second))
+	p.linear.mu.Lock()
+	p.linear.endlessReplies = true
+	p.linear.mu.Unlock()
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("the reply in the backlog was never read: %q", got)
 	}
 }

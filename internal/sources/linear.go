@@ -199,18 +199,22 @@ func (l *Linear) Return(ctx context.Context, issue, comment string) error {
 
 // Replies returns comments by anyone but the app on issues assigned to the
 // app in connected teams, created after since, oldest first.
-func (l *Linear) Replies(ctx context.Context, since time.Time) ([]Reply, error) {
+func (l *Linear) Replies(ctx context.Context, since, until time.Time) ([]Reply, error) {
+	window := fmt.Sprintf("gt: %s", quote(since.UTC().Format(time.RFC3339Nano)))
+	if !until.IsZero() {
+		window += fmt.Sprintf(", lte: %s", quote(until.UTC().Format(time.RFC3339Nano)))
+	}
 	query := fmt.Sprintf(`query Replies($after: String) {
-  comments(first: %d, after: $after, orderBy: createdAt, filter: {createdAt: {gt: %s}, user: {id: {neq: %s}}, issue: {assignee: {id: {eq: %s}}, team: {key: {in: %s}}}}) {
+  comments(first: %d, after: $after, orderBy: createdAt, filter: {createdAt: {%s}, user: {id: {neq: %s}}, issue: {assignee: {id: {eq: %s}}, team: {key: {in: %s}}}}) {
     nodes { id body createdAt user { id } issue { id } }
     pageInfo { hasNextPage endCursor }
   }
-}`, linearPage, quote(since.UTC().Format(time.RFC3339Nano)), quote(l.AppUserID), quote(l.AppUserID), quote(l.Teams))
+}`, linearPage, window, quote(l.AppUserID), quote(l.AppUserID), quote(l.Teams))
 	var replies []Reply
 	var after *string
 	for page := 0; ; page++ {
 		if page == maxReplyPages {
-			return nil, fmt.Errorf("linear: more than %d replies since %s", maxReplyPages*linearPage, since.Format(time.RFC3339))
+			return nil, fmt.Errorf("linear: more than %d replies since %s: %w", maxReplyPages*linearPage, since.Format(time.RFC3339), ErrTooManyReplies)
 		}
 		var answer struct {
 			Comments struct {
