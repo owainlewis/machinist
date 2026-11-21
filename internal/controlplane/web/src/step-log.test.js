@@ -75,6 +75,8 @@ test("pipeline names each step's agents, from the run once it ran and the preset
   const ran = [{ name: "checkout", state: "succeeded", agents: [] }, { name: "implement", state: "succeeded", agents: [{ ...implement, model: "opus" }] }];
   assert.deepEqual(pipeline(preset, ran, "running").map(step => step.agents), [[], [{ ...implement, model: "opus" }], [review]]);
   assert.deepEqual(steps([], [{ name: "review", state: "succeeded", agents: [review] }], "succeeded")[0].agents, [review]);
+  const going = steps([{ type: "stage.started", message: "name=implement kind=agent" }, { type: "stage.started", message: "name=review kind=agent" }], [], "running");
+  assert.deepEqual(pipeline(preset, going, "running").map(step => step.agents), [[], [implement], [review]]);
   // A step that ran and called no agent, such as one that skipped a branch, shows none.
   assert.deepEqual(pipeline(preset, [{ name: "checkout", state: "succeeded" }, { name: "implement", state: "succeeded", agents: [] }, { name: "review", state: "failed", agents: [] }], "failed").map(step => step.agents), [[], [], []]);
 });

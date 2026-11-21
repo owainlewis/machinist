@@ -41,7 +41,12 @@ export function steps(events = [], stages = [], runStatus = "") {
     const step = started.get(stage.name) || { name: stage.name, output: "" };
     let state = stage.state;
     if (!state) state = going && index === named.length - 1 ? "running" : going ? "succeeded" : "unknown";
-    return { ...step, state, duration_millis: stage.duration_millis, error: stage.error || "", agents: stage.agents || [] };
+    const result = { ...step, state, duration_millis: stage.duration_millis, error: stage.error || "" };
+    // Only a recorded result of a step that ran says which agents ran. A state
+    // inferred while the run goes, or a skip, leaves agents unset, so the
+    // pipeline shows the planned ones.
+    if (stage.state && stage.state !== "skipped") result.agents = stage.agents || [];
+    return result;
   });
 }
 
@@ -67,8 +72,8 @@ export function pollEvents(run) {
 // reached are pending while it goes, and skipped once it has ended. A run of an
 // older preset shows its own steps.
 //
-// Each step names its agents: the ones the run recorded once the step has run,
-// even none, and the ones the preset says it runs for a step still to come.
+// Each step names its agents: the ones the run recorded for it, even none, and
+// otherwise the ones the preset says it runs.
 export function pipeline(presetSteps = [], ran = [], runStatus = "") {
   const going = !runStatus || runStatus === "running" || runStatus === "queued";
   const preset = presetSteps.map(step => typeof step === "string" ? { name: step, agents: [] } : { name: step.name, agents: step.agents || [] });
@@ -77,8 +82,7 @@ export function pipeline(presetSteps = [], ran = [], runStatus = "") {
   const names = ran.length && ran.some(step => !planned.has(step.name)) ? ran.map(step => step.name) : preset.length ? preset.map(step => step.name) : ran.map(step => step.name);
   return names.map(name => {
     const step = seen.get(name) || { name, output: "", error: "", state: going ? "pending" : "skipped" };
-    const ran = !["pending", "running", "skipped"].includes(step.state);
-    return { ...step, agents: ran ? step.agents || [] : step.agents?.length ? step.agents : planned.get(name) || [] };
+    return { ...step, agents: Array.isArray(step.agents) ? step.agents : planned.get(name) || [] };
   });
 }
 
