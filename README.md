@@ -5,9 +5,7 @@ same predefined steps on machines you control: a laptop, a VM or Kubernetes. Eve
 see what is running and what is waiting on a person. It is early-access, open-source
 software.
 
-<a href=".github/assets/machinist-explainer.mp4"><img src=".github/assets/machinist-explainer.gif" alt="A 50-second explainer: a job is assigned from the web app or a Linear issue, a runner checks out the repository, an agent does the work, a second model reviews it, and Machinist opens the pull request, merges it once CI passes and moves the issue to Done." width="100%"></a>
-
-<sub>Select the animation to watch it in full resolution.</sub>
+<a href=".github/assets/machinist-explainer.mp4"><img src=".github/assets/machinist-explainer.png" alt="Watch how Machinist works: a 50-second explainer with sound. A job is assigned from the web app or a Linear issue, a runner checks out the repository, an agent implements it, a second model family reviews it, and Machinist opens the pull request, merges it once checks pass and moves the issue to Done." width="100%"></a>
 
 - **One place for the team.** One control plane holds every job. Anyone signed in can see
   what each job is doing, step by step, and open its pull request.
