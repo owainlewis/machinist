@@ -91,9 +91,15 @@ const read = (path) => import('node:fs/promises').then(({ readFile }) => readFil
 test('setup snippets match the quick start in the README', async () => {
   const source = await read('./index.html');
   const readme = await read('../../README.md');
-  for (const command of ['go build -o ./bin/machinist ./cmd/machinist', 'machinist init', 'GH_TOKEN=$(gh auth token) machinist start']) {
-    assert.ok(source.includes(`data-copy="${command}"`), `site copies ${command}`);
-    assert.ok(readme.includes(command), `README has ${command}`);
+  const copied = [...source.matchAll(/data-copy="([^"]+)"/g)].map(([, value]) => value.replaceAll('&amp;', '&').replaceAll('&quot;', '"'));
+  assert.deepEqual(copied, [
+    'go build -o ./bin/machinist ./cmd/machinist && export PATH="$PWD/bin:$PATH"',
+    'machinist init',
+    'GH_TOKEN=$(gh auth token) machinist start',
+  ]);
+  // Each part of each command is a line of the README's quick start, so the bare machinist command is on PATH.
+  for (const part of copied.flatMap((command) => command.split(' && '))) {
+    assert.ok(readme.includes(part), `README has ${part}`);
   }
 });
 

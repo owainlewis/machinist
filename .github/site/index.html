@@ -152,8 +152,8 @@ as a careful senior engineer would.</code></pre>
         </div>
         <ol class="setup-steps">
           <li>
-            <div><span class="step-index">01</span><h3>Build</h3><p>One binary holds the CLI, the control plane, the runner and the web app.</p></div>
-            <button class="copy-command" type="button" data-copy="go build -o ./bin/machinist ./cmd/machinist" aria-label="Copy build command"><code>go build -o ./bin/machinist ./cmd/machinist</code><span aria-live="polite">Copy</span></button>
+            <div><span class="step-index">01</span><h3>Build</h3><p>One binary holds the CLI, the control plane, the runner and the web app. Put it on your PATH.</p></div>
+            <button class="copy-command" type="button" data-copy="go build -o ./bin/machinist ./cmd/machinist &amp;&amp; export PATH=&quot;$PWD/bin:$PATH&quot;" aria-label="Copy build command"><code>go build -o ./bin/machinist ./cmd/machinist &amp;&amp; export PATH=&quot;$PWD/bin:$PATH&quot;</code><span aria-live="polite">Copy</span></button>
           </li>
           <li>
             <div><span class="step-index">02</span><h3>Initialize</h3><p>Writes the configuration, a local runner and a starter factory, all meant for git.</p></div>
