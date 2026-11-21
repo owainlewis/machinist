@@ -279,6 +279,13 @@ func decide(status string, report *protocol.Report, reason string, pr *PR) ticke
 		if pr != nil && !pr.Closed && !pr.Merged {
 			transition.State = tickets.StatePRReady
 		}
+		if pr != nil && pr.Merged {
+			at := pr.ChangedAt
+			if at.IsZero() {
+				at = time.Now()
+			}
+			transition.MergedAt = &at
+		}
 	default:
 		transition.State, transition.Message = tickets.StateFailed, report.Summary
 	}
