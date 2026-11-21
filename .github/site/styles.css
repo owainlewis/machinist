@@ -32,6 +32,7 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.035em; }
 
 .brand { display: inline-flex; align-items: center; gap: 10px; font-size: 1.0625rem; font-weight: 650; letter-spacing: -0.02em; text-decoration: none; }
 .brand-mark { display: grid; width: 28px; height: 28px; flex: none; place-items: center; border-radius: 8px; background: linear-gradient(145deg, #6283ff, var(--primary) 60%); color: #fff; font-size: 15px; font-weight: 750; }
+.brand-mark svg { width: 100%; height: 100%; }
 .brand-mark-large { width: 72px; height: 72px; border-radius: 20px; font-size: 40px; box-shadow: 0 24px 60px -18px rgba(76, 110, 245, .7); }
 
 /* header */
