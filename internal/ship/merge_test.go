@@ -139,7 +139,7 @@ func TestMergeLeavesThePullRequestOpenUnlessTheReviewAccepted(t *testing.T) {
 			if err := Merge(t.Context(), options); err != nil {
 				t.Fatal(err)
 			}
-			if gh.merged() || gh.looks != 0 {
+			if gh.merged() || gh.looks != 1 {
 				t.Fatalf("merged = %v, looks = %d", gh.merged(), gh.looks)
 			}
 			if got := result(t, control); !strings.HasPrefix(got, test.want) || !strings.HasSuffix(got, "https://github.com/o/r/pull/7") {
@@ -233,5 +233,20 @@ func TestMergeStopsWhenCancelled(t *testing.T) {
 	options.GH = gh.run
 	if err := Merge(ctx, options); !errors.Is(err, context.Canceled) || gh.merged() {
 		t.Fatalf("err = %v, merged = %v", err, gh.merged())
+	}
+}
+
+// A pull request left for a person still fails the job when a check fails.
+func TestMergeFailsOnAFailedCheckEvenWhenLeavingItOpen(t *testing.T) {
+	control, options := setup(t, `{"verdict":"human_decision_needed"}`)
+	options.AutoMerge = false
+	gh := &fakeGH{t: t, checks: []string{`[{"name":"test","bucket":"fail","link":"https://ci/3"}]`}}
+	options.GH = gh.run
+	var failed *CheckFailedError
+	if err := Merge(t.Context(), options); !errors.As(err, &failed) || gh.merged() {
+		t.Fatalf("err = %v, merged = %v", err, gh.merged())
+	}
+	if got := result(t, control); !strings.Contains(got, `check "test" failed`) {
+		t.Fatalf("result = %q", got)
 	}
 }

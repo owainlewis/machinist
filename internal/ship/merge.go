@@ -71,10 +71,10 @@ type check struct {
 	Link   string `json:"link"`
 }
 
-// Merge merges the pull request on the job's branch when auto-merge is on,
-// the review accepted the change and every check passed. Otherwise it leaves
-// the pull request open and says why in result.md, which is not an error. A
-// failed check is an error, and result.md names the check.
+// Merge waits for the checks on the job's pull request, and merges it when
+// auto-merge is on, the review accepted the change and every check passed.
+// Otherwise it leaves the pull request open and says why in result.md, which is
+// not an error. A failed check is an error, and result.md names the check.
 func Merge(ctx context.Context, options MergeOptions) error {
 	options = withDefaults(options)
 	pr, found, err := findPR(ctx, options)
@@ -86,9 +86,9 @@ func Merge(ctx context.Context, options MergeOptions) error {
 		fmt.Fprintln(options.Log, "No pull request to merge")
 		return nil
 	}
-	if reason := blocker(options); reason != "" {
-		return leaveOpen(options, pr, reason)
-	}
+	// A failed check fails the job whether or not the change may merge, so a
+	// pull request left for a person never hides one.
+	reason := blocker(options)
 	for updates := 0; ; updates++ {
 		if err := awaitChecks(ctx, options, pr); err != nil {
 			var failed *CheckFailedError
@@ -96,6 +96,9 @@ func Merge(ctx context.Context, options MergeOptions) error {
 				return errors.Join(writeResult(options.Control, fmt.Sprintf("Left open: %s. %s", failed.Error(), pr.URL)), err)
 			}
 			return err
+		}
+		if reason != "" {
+			return leaveOpen(options, pr, reason)
 		}
 		pr, _, err = findPR(ctx, options)
 		if err != nil {

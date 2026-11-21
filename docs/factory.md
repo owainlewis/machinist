@@ -104,7 +104,7 @@ and the job waits as `pr_ready` for a person:
   review step.
 - Every check on the pull request passed. It waits for them, and for checks to start, up to
   two and a half minutes, before it treats the repository as having none. A failed check
-  fails the job.
+  fails the job, even when the pull request would have stayed open anyway.
 
 The reviser does not judge its own fixes. `scripts/review.sh` removes any `review.json`
 before the review runs, and fails the step if the review writes none. `scripts/revise.sh`
