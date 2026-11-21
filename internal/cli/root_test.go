@@ -177,7 +177,7 @@ func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name, err := store.TokenName(t.Context(), strings.TrimSpace(string(token))); err != nil || name != "local" {
+	if name, role, err := store.TokenName(t.Context(), strings.TrimSpace(string(token))); err != nil || name != "local" || role != tickets.RoleRunner {
 		t.Fatalf("name = %q, err = %v", name, err)
 	}
 	info, err := os.Stat(filepath.Join(directory, ".machinist", "runner.token"))

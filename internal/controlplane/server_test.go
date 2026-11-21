@@ -40,7 +40,7 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := store.CreateToken(t.Context(), "runner-1")
+	token, err := store.CreateToken(t.Context(), "runner-1", tickets.RoleAll)
 	if err != nil {
 		t.Fatal(err)
 	}

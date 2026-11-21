@@ -81,7 +81,8 @@ See [Runners](runners.md) for each type.
 ## Tokens
 
 ```sh
-machinist token create <name>
+machinist token create <name>            # for a person: the web app, the API and the CLI
+machinist token create <name> --runner   # for a runner
 ```
 
 ```sh
@@ -92,8 +93,14 @@ machinist token list
 machinist token revoke <name>
 ```
 
-These open the database directly, so they work before the server has started. There is one
-kind of token, used by people and runners alike. Revoking one ends its sign-ins.
+These open the database directly, so they work before the server has started. Revoking a
+token ends its sign-ins.
+
+A person's token can do everything except take runs. A runner's token can poll for runs and
+report on the runs it was given, and gets 403 anywhere else, so it cannot read other jobs,
+start work or sign in. One runner cannot report on another's run. `init` makes the `local`
+runner a runner's token. A token made before tokens had roles shows as `any` in
+`machinist token list` and can do both. Replace it with one of each.
 
 ## API
 

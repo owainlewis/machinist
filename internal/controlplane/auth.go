@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -27,20 +28,35 @@ func requestToken(r *http.Request) string {
 	return ""
 }
 
+// requireToken lets a person's token through: an operator token, or one from
+// before roles.
 func (s *Server) requireToken(next authenticatedHandler) http.HandlerFunc {
+	return s.requireRole(tickets.RoleOperator, next)
+}
+
+// requireRunner lets a runner's token through.
+func (s *Server) requireRunner(next authenticatedHandler) http.HandlerFunc {
+	return s.requireRole(tickets.RoleRunner, next)
+}
+
+func (s *Server) requireRole(want string, next authenticatedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := requestToken(r)
 		if token == "" {
 			writeError(w, http.StatusUnauthorized, errors.New("a token is required"))
 			return
 		}
-		name, err := s.store.TokenName(r.Context(), token)
+		name, role, err := s.store.TokenName(r.Context(), token)
 		if errors.Is(err, tickets.ErrNotFound) {
 			writeError(w, http.StatusUnauthorized, errors.New("invalid token"))
 			return
 		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !tickets.Allows(role, want) {
+			writeError(w, http.StatusForbidden, fmt.Errorf("token %q is a %s token and cannot do this; it needs a %s token", name, role, want))
 			return
 		}
 		next(w, r, name)
@@ -67,7 +83,11 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, maxRequestBytes, &request) {
 		return
 	}
-	name, err := s.store.TokenName(r.Context(), request.Token)
+	name, role, err := s.store.TokenName(r.Context(), request.Token)
+	if err == nil && !tickets.Allows(role, tickets.RoleOperator) {
+		writeError(w, http.StatusForbidden, errors.New("this is a runner's token; sign in with your own, from machinist token create <your-name>"))
+		return
+	}
 	if errors.Is(err, tickets.ErrNotFound) {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid token"))
 		return

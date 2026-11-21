@@ -150,10 +150,10 @@ func installRunnerToken(ctx context.Context, directory string, output io.Writer)
 		return err
 	}
 	defer store.Close()
-	token, err := store.CreateToken(ctx, localRunnerName)
+	token, err := store.CreateToken(ctx, localRunnerName, tickets.RoleRunner)
 	if errors.Is(err, tickets.ErrTokenExists) {
 		if err = store.RevokeToken(ctx, localRunnerName); err == nil {
-			token, err = store.CreateToken(ctx, localRunnerName)
+			token, err = store.CreateToken(ctx, localRunnerName, tickets.RoleRunner)
 		}
 	}
 	if err != nil {
