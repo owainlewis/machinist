@@ -1,7 +1,9 @@
 # Run Machinist on a VM
 
 A VM can host the control plane and a runner, or only a runner. Use a dedicated unprivileged
-account on a trusted Linux VM.
+account on a trusted Linux VM. Nothing on the VM needs to be reachable from the internet:
+the control plane listens on `127.0.0.1`, you reach the UI over SSH, and Machinist polls
+GitHub and Linear rather than taking webhooks.
 
 ## Set up with the script
 
@@ -16,6 +18,111 @@ It installs Machinist, Git, the GitHub CLI, Claude Code and Codex, runs `machini
 directory. It prints the remaining steps. To keep the config in git, make `/home/machinist`
 a checkout of your repository before running the script; `init` keeps files that exist.
 
+## Or build from source
+
+To run code from `main` that is not in a release yet, build it on the VM instead. As root,
+with Go installed:
+
+```sh
+apt-get install -y ca-certificates curl git gh
+git clone https://github.com/owainlewis/machinist.git /usr/local/src/machinist
+cd /usr/local/src/machinist
+go build -o /usr/local/bin/machinist ./cmd/machinist
+useradd --create-home --shell /bin/bash machinist
+runuser -u machinist -- env HOME=/home/machinist bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+ln -sfn /home/machinist/.local/bin/claude /usr/local/bin/claude
+runuser -u machinist -- env HOME=/home/machinist bash -c 'cd && machinist init'
+install -d -m 0700 /etc/machinist
+install -m 0600 /dev/null /etc/machinist/control-plane.env
+install -m 0600 /dev/null /etc/machinist/runner.env
+install -m 0644 deploy/systemd/machinist-control-plane.service deploy/systemd/machinist-runner.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now machinist-control-plane
+```
+
+To update later, pull, build and restart both services:
+
+```sh
+cd /usr/local/src/machinist && git pull --ff-only && go build -o /usr/local/bin/machinist ./cmd/machinist
+systemctl restart machinist-control-plane machinist-runner
+```
+
+## Configure it
+
+As the `machinist` user (`su - machinist`), in `/home/machinist`:
+
+1.  In `config.yaml`, set `github.handle` and list the repositories jobs may work on in
+    `github.repositories`.
+2.  Set up a [GitHub App](github-app.md), so each run gets a token for its own repository
+    that lasts an hour. Put its key at `/home/machinist/.machinist/github-app.pem` and add
+    `github.app` to `config.yaml`.
+3.  Choose how the agent signs in. To use a Claude login, set `env: []` and `login: true`
+    in `runner.yaml`, then run `claude` once as the `machinist` user and sign in. To use an
+    API key instead, keep `env: [ANTHROPIC_API_KEY]` and put the key in
+    `/etc/machinist/runner.env`. See [Credentials](credentials.md).
+
+Then, as root, start the runner and check both services:
+
+```sh
+systemctl restart machinist-control-plane
+systemctl enable --now machinist-runner
+systemctl status machinist-control-plane machinist-runner
+```
+
+## Credentials
+
+Secrets go in two files that only root can read. systemd passes them to the services.
+Neither needs a GitHub token when a GitHub App is set.
+
+| File | Holds |
+| --- | --- |
+| `/etc/machinist/control-plane.env` | `GH_TOKEN` for the bot, only without a GitHub App. `LINEAR_API_TOKEN`, to [start jobs from Linear](linear.md) |
+| `/etc/machinist/runner.env` | The variables listed in `env` in `runner.yaml`, such as `ANTHROPIC_API_KEY`. `GH_TOKEN` only without a GitHub App |
+
+See [Credentials](credentials.md).
+
+## Reach the UI
+
+Keep the control plane on `127.0.0.1` and forward its port over SSH. On your own computer,
+run this and leave it open:
+
+```sh
+ssh -N -L 7331:127.0.0.1:7331 USER@VM_HOST
+```
+
+`-N` runs no command on the VM, and `-L` sends `127.0.0.1:7331` on your computer to the
+same address on the VM. To make it short, add the VM to `~/.ssh/config`:
+
+```text
+Host machinist
+  HostName VM_HOST
+  User root
+  LocalForward 7331 127.0.0.1:7331
+```
+
+Then `ssh -N machinist` opens the tunnel.
+
+Create a token for yourself on the VM. It prints once, so copy it:
+
+```sh
+su - machinist -c 'machinist token create your-name'
+```
+
+Open `http://127.0.0.1:7331` and sign in with the token.
+
+## Check it works
+
+- The **Runners** page shows the runner, with its free slots.
+- `systemctl status machinist-control-plane machinist-runner` shows both as active.
+- `journalctl -u machinist-runner -f` follows the runner as it works, and
+  `journalctl -u machinist-control-plane -f` follows the control plane.
+
+For a first real job, select **New job**, pick a repository and give it a small task, such
+as adding a section to the README. The job page shows each step as it runs, and the job
+ends with a pull request, which merges once its checks pass when `github.auto_merge` is on. If it fails, the page shows which step failed and why.
+
+## Move an old install
+
 An install from before this layout keeps TOML config in `~/.machinist`. To move it:
 
 1.  Run `machinist init` in `/home/machinist` for the new files.
@@ -25,28 +132,6 @@ An install from before this layout keeps TOML config in `~/.machinist`. To move 
     and `~/.machinist/runner.token` to `.machinist/runner.token`, replacing the new ones,
     so job history and tokens carry over.
 4.  Start both services.
-
-## Credentials
-
-Secrets go in two files that only root can read. systemd passes them to the services.
-
-| File | Holds |
-| --- | --- |
-| `/etc/machinist/control-plane.env` | `GH_TOKEN` for the bot |
-| `/etc/machinist/runner.env` | `GH_TOKEN` for the bot and the variables in `env` |
-
-See [Credentials](credentials.md).
-
-## Reach the UI
-
-Keep the control plane on `127.0.0.1` and forward its port over SSH:
-
-```sh
-ssh -N -L 7331:127.0.0.1:7331 USER@VM_HOST
-```
-
-Create a token with `machinist token create <name>` as the `machinist` user, then open
-`http://127.0.0.1:7331`.
 
 ## A runner on another machine
 
