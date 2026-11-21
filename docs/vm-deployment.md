@@ -70,7 +70,12 @@ systemctl restart machinist-control-plane machinist-runner
 curl -fsS http://127.0.0.1:7331/healthz
 ```
 
-To roll back, copy `machinist.previous` back to `/usr/local/bin/machinist` and restart both.
+To roll back, install the previous binary the same way and restart both:
+
+```sh
+install -o root -g root -m 0755 /usr/local/bin/machinist.previous /usr/local/bin/machinist
+systemctl restart machinist-control-plane machinist-runner
+```
 
 ## Back up
 
