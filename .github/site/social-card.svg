@@ -11,8 +11,8 @@
     <rect width="88" height="88" rx="22" fill="url(#tile)"/>
     <path d="M24.75 61.9V27.5h7.15L44 45.9 56.1 27.5h7.15v34.4h-7.7V40.7L44 58l-11.55-17.3v21.2z" fill="#fff"/>
   </g>
-  <text x="600" y="318" text-anchor="middle" fill="#ececef" font-family="Inter, Helvetica, Arial, sans-serif" font-size="64" font-weight="650" letter-spacing="-2.5">Assign the work.</text>
-  <text x="600" y="396" text-anchor="middle" fill="#ececef" font-family="Inter, Helvetica, Arial, sans-serif" font-size="64" font-weight="650" letter-spacing="-2.5">Get merged pull requests.</text>
-  <text x="600" y="470" text-anchor="middle" fill="#a1a1aa" font-family="Inter, Helvetica, Arial, sans-serif" font-size="28">A self-hosted, open-source job runner for coding agents.</text>
+  <text x="600" y="318" text-anchor="middle" fill="#ececef" font-family="Inter, Helvetica, Arial, sans-serif" font-size="64" font-weight="650" letter-spacing="-2.5">A software factory that</text>
+  <text x="600" y="396" text-anchor="middle" fill="#ececef" font-family="Inter, Helvetica, Arial, sans-serif" font-size="64" font-weight="650" letter-spacing="-2.5">runs on your own servers</text>
+  <text x="600" y="470" text-anchor="middle" fill="#a1a1aa" font-family="Inter, Helvetica, Arial, sans-serif" font-size="28">Open source. For teams and solo developers.</text>
   <text x="600" y="560" text-anchor="middle" fill="#8aa5ff" font-family="Inter, Helvetica, Arial, sans-serif" font-size="24" font-weight="600">machinist.sh</text>
 </svg>
