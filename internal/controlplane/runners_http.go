@@ -71,6 +71,23 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request, tokenName str
 	writeJSON(w, http.StatusOK, protocol.HeartbeatResponse{Cancel: cancel})
 }
 
+// runToken gives a runner a new GitHub token for one of its own active runs.
+func (s *Server) runToken(w http.ResponseWriter, r *http.Request, tokenName string) {
+	if !s.ownsRun(w, r, tokenName) {
+		return
+	}
+	token, err := s.engine.RunToken(r.Context(), r.PathValue("id"))
+	if errors.Is(err, engine.ErrNoGitHubApp) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeRunError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.GitHubToken{Token: token})
+}
+
 func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request, tokenName string) {
 	if !s.ownsRun(w, r, tokenName) {
 		return

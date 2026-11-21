@@ -76,8 +76,10 @@ plane.
 
 ## Limits
 
-- A token lasts one hour, so with an app `run_timeout` and every preset's `timeout` must be
-  one hour or less. Startup stops and names the setting otherwise.
+- A token lasts one hour. A local runner asks the control plane for a new one before each
+  step, for the same repository, so a late step such as `merge` starts with a full hour.
+  Kubernetes runs keep the token they started with. Either way, `run_timeout` and every
+  preset's `timeout` must be one hour or less. Startup stops and names the setting otherwise.
 - If the app is not installed on a job's repository, the job fails with a message that says
   so. Install the app on that repository and run the job again.
 - The key is the one long-lived secret left. Anyone who has it can make tokens for every

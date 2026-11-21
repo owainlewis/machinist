@@ -92,6 +92,13 @@ func (d *Daemon) handle(ctx context.Context, request runner.RunRequest) {
 	}()
 	stopEvents := d.streamRunEvents(leaseContext, request.RunID)
 
+	if request.GitHubToken != "" {
+		request.RefreshToken = func(ctx context.Context) (string, error) {
+			var reply protocol.GitHubToken
+			err := d.client.Post(ctx, "/api/v1/runs/"+request.RunID+"/github-token", struct{}{}, &reply)
+			return reply.Token, err
+		}
+	}
 	result := d.executor.Execute(runContext, request)
 
 	stopEvents()

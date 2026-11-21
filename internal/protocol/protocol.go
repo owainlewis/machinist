@@ -26,6 +26,12 @@ type Completion struct {
 	Stages []StageResult `json:"stages,omitempty"`
 }
 
+// GitHubToken is a new token for a run's repository, for a runner whose run
+// outlasts the one it started with.
+type GitHubToken struct {
+	Token string `json:"token"`
+}
+
 // StageSkipped is the state of a stage that never ran, because an earlier
 // stage ended the run.
 const StageSkipped = "skipped"
