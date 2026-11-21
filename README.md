@@ -120,7 +120,8 @@ Jobs run headless, from start to finish, and never stop to ask a question. When 
 has to guess, it says so under **Assumptions** in the pull request.
 
 Every job uses the `default` preset unless it names another: clone, have an agent make the
-change, open one pull request and merge it once its checks pass. Add a preset to `factory/presets/` only when a kind of job
+change, review it and fix what the review found, then open one pull request and merge it
+once its checks pass. Add a preset to `factory/presets/` only when a kind of job
 needs different steps.
 
 ## Testing Machinist itself
@@ -133,7 +134,9 @@ cd internal/controlplane/web && npm ci && npm test
 The Go tests run whole jobs end to end with fake `claude` and `gh` commands and a local
 Git remote. See [Development](docs/development.md).
 
-The default preset merges its pull request once the repository's checks pass. How a job
+The default preset has a second agent review the change, fixes what the review found,
+and merges the pull request once the repository's checks pass and the review is clean.
+Set `github.auto_merge: false` to leave every pull request open for a person. How a job
 ships is written in `factory/agents/publish.md`, so you change it by editing that file.
 Branch protection still decides what can merge. See [Security](SECURITY.md) for what a step
 can do.

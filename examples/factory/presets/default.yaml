@@ -1,12 +1,13 @@
-# A one-off job: clone the repository, let an agent do what the prompt asks,
-# then open a pull request, wait for its checks and merge it. Every job uses
-# this preset unless it names another.
+# A one-off job: clone the repository, have an agent make the change, have
+# another review it and fix what the review found, then open a pull request,
+# wait for its checks and merge it. Every job uses this preset unless it names
+# another.
 #
 # A step either runs shell (run:) or one of the agents in factory/agents
 # (agent:). Steps run in order in one workspace, and the first that fails
 # ends the job. Scripts in factory/scripts are on PATH.
-description: Clone the repository, have an agent make the change, open a pull request and merge it once its checks pass.
-timeout: 60m
+description: Clone the repository, have an agent make the change, review it and fix what the review found, then open a pull request and merge it once its checks pass.
+timeout: 90m
 
 steps:
   - name: checkout
@@ -16,8 +17,17 @@ steps:
   - name: implement
     agent: implement
 
-  # factory/agents/publish.md says how the change ships. Edit it to change
-  # the pull request or how it merges.
+  # Writes review.json: accepted, revision_needed or human_decision_needed.
+  - name: review
+    timeout: 20m
+    agent: review
+
+  # Fixes the unambiguous findings when the review asks for a revision.
+  - name: revise
+    agent: revise
+
+  # factory/agents/publish.md says how the change ships. It merges only when
+  # github.auto_merge is on, the checks pass and the review is clean.
   - name: publish
     timeout: 30m
     agent: publish
