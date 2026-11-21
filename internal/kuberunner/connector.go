@@ -131,12 +131,20 @@ func (c Connector) runJob(ctx context.Context, name string, request runner.RunRe
 	if err != nil {
 		return result, err
 	}
+	// The init container gets the request without the run's GitHub token. The
+	// token goes to the agent container, which starts only once the init
+	// container has proved the network is locked down.
+	token := request.GitHubToken
+	request.GitHubToken = ""
 	body, err := json.Marshal(request)
 	if err != nil {
 		return result, err
 	}
 	if _, err = c.command(ctx, bytes.NewReader(body), 1<<20, "exec", "-i", pod, "-c", "prepare", "--", "machinist", "sandbox", "receive"); err != nil {
 		return result, err
+	}
+	if err = c.sendToken(ctx, pod, token); err != nil {
+		return result, fmt.Errorf("%w%s", err, c.prepareLog(ctx, pod))
 	}
 	if err = c.awaitResult(ctx, pod); err != nil {
 		return result, fmt.Errorf("%w%s", err, c.prepareLog(ctx, pod))
@@ -277,6 +285,24 @@ func (c Connector) awaitPod(ctx context.Context, name string) (string, error) {
 	}
 }
 
+// sendToken gives the agent container the run's GitHub token, or an empty
+// one when the run has none and the Secret's GH_TOKEN applies. The agent
+// container starts after the init container, so this retries until it can
+// reach it. Writing the token twice is harmless.
+func (c Connector) sendToken(ctx context.Context, pod, token string) error {
+	for {
+		if _, err := c.command(ctx, strings.NewReader(token), 128, "exec", "-i", pod, "-c", "agent", "--", "machinist", "sandbox", "token"); err == nil {
+			return nil
+		}
+		if err := c.podStopped(ctx, pod); err != nil {
+			return err
+		}
+		if err := wait(ctx); err != nil {
+			return err
+		}
+	}
+}
+
 // awaitResult waits for the sandbox to finish. A failed Kubernetes call says
 // nothing about the agent, so only a gone or stopped Pod ends the wait.
 func (c Connector) awaitResult(ctx context.Context, pod string) error {
@@ -284,20 +310,28 @@ func (c Connector) awaitResult(ctx context.Context, pod string) error {
 		if _, err := c.command(ctx, nil, 128, "exec", pod, "-c", "agent", "--", "test", "-f", "/exchange/done"); err == nil {
 			return nil
 		}
-		object, err := c.get(ctx, "pod", pod)
-		if resourceMissing(err) {
-			return fmt.Errorf("sandbox Pod %s no longer exists", pod)
-		}
-		if err == nil {
-			status, _ := object["status"].(map[string]any)
-			if phase, _ := status["phase"].(string); phase == "Failed" || phase == "Succeeded" {
-				return fmt.Errorf("sandbox stopped before it reported a result")
-			}
+		if err := c.podStopped(ctx, pod); err != nil {
+			return err
 		}
 		if err := wait(ctx); err != nil {
 			return err
 		}
 	}
+}
+
+// podStopped says why the sandbox Pod can no longer run, or nil while it can.
+func (c Connector) podStopped(ctx context.Context, pod string) error {
+	object, err := c.get(ctx, "pod", pod)
+	if resourceMissing(err) {
+		return fmt.Errorf("sandbox Pod %s no longer exists", pod)
+	}
+	if err == nil {
+		status, _ := object["status"].(map[string]any)
+		if phase, _ := status["phase"].(string); phase == "Failed" || phase == "Succeeded" {
+			return fmt.Errorf("sandbox stopped before it reported a result")
+		}
+	}
+	return nil
 }
 
 // manifest gives the credential Secret to the agent container only. The init

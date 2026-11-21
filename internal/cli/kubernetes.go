@@ -24,6 +24,7 @@ func newKubernetesCommand(options *commandOptions) *cobra.Command {
 func newSandboxCommand(options *commandOptions) *cobra.Command {
 	root := &cobra.Command{Use: "sandbox", Hidden: true}
 	root.AddCommand(&cobra.Command{Use: "receive", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return kuberunner.Receive(options.stdin, "/exchange") }})
+	root.AddCommand(&cobra.Command{Use: "token", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return kuberunner.ReceiveToken(options.stdin, "/exchange") }})
 	root.AddCommand(&cobra.Command{Use: "prepare", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		return kuberunner.Prepare(cmd.Context(), "/exchange", kuberunner.SourceDirectory)
 	}})
