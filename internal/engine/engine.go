@@ -315,11 +315,15 @@ func decide(status string, report *protocol.Report, reason string, pr *PR) ticke
 	case protocol.OutcomeNoChange:
 		// A step that opened a pull request and left it for a person reports
 		// nothing more: the open pull request is what makes the job pr_ready.
+		// The runner cannot tell what became of the pull request, so the
+		// report is labelled with what the job reached.
 		transition.State, transition.Message = tickets.StateDone, report.Summary
 		if pr != nil && !pr.Closed && !pr.Merged {
 			transition.State = tickets.StatePRReady
+			transition.Report = protocol.OutcomePRReady + ": " + report.Summary
 		}
 		if pr != nil && pr.Merged {
+			transition.Report = "merged: " + report.Summary
 			at := pr.ChangedAt
 			if at.IsZero() {
 				at = time.Now()

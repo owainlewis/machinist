@@ -44,8 +44,9 @@ Otherwise the report is `no_change`,
 with `result.md` as its summary. After a run, the control plane looks up the branch's pull
 request, so a step that opens one needs to report nothing: an open pull request makes the
 job `pr_ready`, and a merged one leaves it `done`. `github.auto_merge` reaches every step as
-`MACHINIST_AUTO_MERGE`, and the shipped publish agent merges only when it is `true` and the
-review in `review.json` is clean. See
+`MACHINIST_AUTO_MERGE`. The shipped preset ends with `machinist merge` (`internal/ship`), which
+merges only when it is `true`, the latest review in `review.json` is `accepted` and every check
+passed. A missing or invalid `review.json` leaves the pull request open. See
 [Factory files](docs/factory.md#presets).
 
 | State | Meaning |

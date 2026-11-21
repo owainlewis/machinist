@@ -210,6 +210,41 @@ func TestTickQueuesOneRunPerTicket(t *testing.T) {
 	}
 }
 
+// The runner reports no_change after a step merged or left a pull request, so
+// the report is labelled with what the job reached.
+func TestReportIsLabelledWithWhatThePullRequestReached(t *testing.T) {
+	for _, test := range []struct {
+		pr   *PR
+		want string
+	}{
+		{nil, "no_change: Done"},
+		{&PR{Number: 42}, "pr_ready: Done"},
+		{&PR{Number: 42, Merged: true}, "merged: Done"},
+		{&PR{Number: 42, Closed: true}, "no_change: Done"},
+	} {
+		e := newEngine(t)
+		e.FindPR = func(context.Context, string, string) (*PR, error) { return test.pr, nil }
+		ticket := newTicket(t, e, "api")
+		request := assignRun(t, e)
+		if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Done")); err != nil {
+			t.Fatal(err)
+		}
+		entries, err := e.Store.Entries(t.Context(), ticket.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report := ""
+		for _, entry := range entries {
+			if entry.Kind == tickets.EntryReport {
+				report = entry.Body
+			}
+		}
+		if report != test.want {
+			t.Fatalf("pr %+v: report = %q, want %q", test.pr, report, test.want)
+		}
+	}
+}
+
 func TestReportRows(t *testing.T) {
 	found := &PR{Number: 42}
 	for _, test := range []struct {

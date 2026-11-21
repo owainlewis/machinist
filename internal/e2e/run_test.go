@@ -106,32 +106,32 @@ func newRemote(t *testing.T) string {
 
 // fakeLaterSteps is what the fake claude does after the implement step: the
 // review writes the verdict in the output directory's verdict file, or
-// accepted, the revise step does nothing, and publish does what
-// agents/publish.md asks, with the fake gh.
+// accepted, the revise step re-reviews when asked to, and publish opens the
+// pull request as agents/publish.md asks, with the fake gh. The merge step is
+// the real machinist merge.
 func fakeLaterSteps(output string) string {
 	return `case "$*" in
 *"Your step is to review the change"*)
   cat > /dev/null
   verdict=accepted; [ -f ` + output + `/verdict ] && verdict=$(cat ` + output + `/verdict)
+  if [ -s ` + output + `/verdicts ]; then verdict=$(head -n 1 ` + output + `/verdicts); sed -i.bak 1d ` + output + `/verdicts; fi
+  echo "$verdict" >> ` + output + `/reviews
   echo "{\"verdict\":\"$verdict\",\"summary\":\"Looks right.\",\"findings\":[]}" > "$MACHINIST_DIR/review.json"
   exit 0;;
 *"Your step is to address the review"*)
   cat > /dev/null
+  echo revised >> ` + output + `/reviews
+  sed 's/"findings":\[\]/"findings":[{"unambiguous":true,"addressed":true,"text":"x"}]/' "$MACHINIST_DIR/review.json" > "$MACHINIST_DIR/review.tmp"
+  mv "$MACHINIST_DIR/review.tmp" "$MACHINIST_DIR/review.json"
   exit 0;;
-*"Your step is to ship the change"*)
+*"Your step is to open the pull request"*)
   cat > /dev/null
   if [ -z "$(git log --oneline origin/HEAD..HEAD)" ]; then echo "The work needed no change." > "$MACHINIST_DIR/result.md"; exit 0; fi
   git push --quiet -u origin HEAD
   { echo "## Summary"; echo; echo "Uses Postgres."; echo; echo "## Assumptions"; echo; cat "$MACHINIST_DIR/assumptions.md"; } > "$MACHINIST_DIR/body.md"
   gh pr create --head "$MACHINIST_BRANCH" --title "Use Postgres" --body-file "$MACHINIST_DIR/body.md" > /dev/null
-  number=$(gh pr view "$MACHINIST_BRANCH" | sed 's/.*\///')
-  gh pr checks "$number" --watch --required
-  if [ "$MACHINIST_AUTO_MERGE" = true ] && grep -q '"verdict":"accepted"' "$MACHINIST_DIR/review.json"; then
-    gh pr merge "$number" --merge --delete-branch
-    gh pr view "$MACHINIST_BRANCH" > "$MACHINIST_DIR/result.md"
-  else
-    echo "Left open: $(gh pr view "$MACHINIST_BRANCH")" > "$MACHINIST_DIR/result.md"
-  fi
+  gh pr view "$MACHINIST_BRANCH" > /dev/null
+  echo "Opened: $(gh pr view "$MACHINIST_BRANCH")" > "$MACHINIST_DIR/result.md"
   exit 0;;
 esac
 `
@@ -410,7 +410,7 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	if run.Status != tickets.RunSucceeded || run.Runner != "runner-1" || run.Harness != protocol.StepsHarness {
 		t.Fatalf("run = %+v", run)
 	}
-	if got := stepStates(run); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded" {
+	if got := stepStates(run); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=succeeded" {
 		t.Fatalf("steps = %s", got)
 	}
 	if work := run.Stages[1]; work.Tokens == nil || *work.Tokens != 120 || work.Cost == nil || *work.Cost != 0.25 {
@@ -461,7 +461,7 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 		}
 	}
 	entries, err := s.store.Entries(t.Context(), created.ID)
-	if err != nil || entries[len(entries)-1].Body != "https://github.com/owner/repo/pull/7" {
+	if err != nil || entries[len(entries)-1].Body != "Merged: https://github.com/owner/repo/pull/7" {
 		t.Fatalf("entries = %+v, err = %v", entries, err)
 	}
 	if status, _ := s.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/input", map[string]string{"text": "Use Postgres"}); status == http.StatusOK {
@@ -505,5 +505,54 @@ func TestPullRequestStaysOpenWithoutAutoMergeOrACleanReview(t *testing.T) {
 				t.Fatalf("runs = %+v, err = %v", runs, err)
 			}
 		})
+	}
+}
+
+// A review that asks for a revision gets a fresh review after the fixes, and
+// only that review's verdict decides the merge. The reviser marking its own
+// fixes addressed is not enough.
+func TestARevisedChangeMergesOnlyAfterAFreshReview(t *testing.T) {
+	for _, test := range []struct {
+		name, verdicts string
+		merged         bool
+	}{
+		{"accepted on the second look", "revision_needed\naccepted\n", true},
+		{"still needs changes", "revision_needed\nrevision_needed\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := startWith(t, options{claude: claudeScript})
+			writeFile(t, filepath.Join(s.output, "verdicts"), test.verdicts, 0o600)
+			ticket := s.createTicket(t)
+			want := tickets.StatePRReady
+			if test.merged {
+				want = tickets.StateDone
+			}
+			s.waitForState(t, ticket.ID, want)
+			if reviews := strings.Fields(s.read(t, "reviews")); len(reviews) != 3 || reviews[1] != "revised" {
+				t.Fatalf("reviews = %v, want review, revise, review", reviews)
+			}
+			if merged := len(s.github.Merged()) == 1; merged != test.merged {
+				t.Fatalf("merged = %v, want %v", s.github.Merged(), test.merged)
+			}
+		})
+	}
+}
+
+// A clean review runs no revise agent, and a failed check fails the job
+// without merging.
+func TestAFailedCheckFailsTheJob(t *testing.T) {
+	s := startWith(t, options{claude: claudeScript})
+	s.github.SetChecks([]map[string]string{{"name": "test", "bucket": "fail", "link": "https://ci.example.test/2"}})
+	ticket := s.createTicket(t)
+	s.waitForState(t, ticket.ID, tickets.StateFailed)
+	if reviews := strings.Fields(s.read(t, "reviews")); len(reviews) != 1 {
+		t.Fatalf("reviews = %v, want one review and no revise", reviews)
+	}
+	if merged := s.github.Merged(); len(merged) != 0 {
+		t.Fatalf("merged = %v", merged)
+	}
+	runs, err := s.store.Runs(t.Context(), ticket.ID)
+	if err != nil || len(runs) != 1 || stepStates(runs[0]) != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=failed" {
+		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
 }
