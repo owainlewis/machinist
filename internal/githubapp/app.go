@@ -66,8 +66,15 @@ type App struct {
 // Identity is the app's bot account, which commits made with its tokens should
 // name so GitHub shows them as the app's.
 type Identity struct {
+	Slug  string
 	Name  string
 	Email string
+}
+
+// InstallURL is the page where a person installs the app on more
+// repositories.
+func (i Identity) InstallURL() string {
+	return "https://github.com/apps/" + i.Slug + "/installations/new"
 }
 
 type token struct {
@@ -227,6 +234,16 @@ func (a *App) installation(ctx context.Context, repository string) (int64, error
 	return reply.ID, nil
 }
 
+// Installed reports, as an error, why the app cannot reach a repository. It is
+// nil when the app is installed there.
+func (a *App) Installed(ctx context.Context, repository string) error {
+	if !repositoryPattern.MatchString(repository) {
+		return fmt.Errorf("%q is not a repository name like owner/name", repository)
+	}
+	_, err := a.installation(ctx, repository)
+	return err
+}
+
 func (a *App) forget(repository string) {
 	a.mu.Lock()
 	delete(a.installations, repository)
@@ -262,7 +279,7 @@ func (a *App) Identity(ctx context.Context) (Identity, error) {
 	if user.ID == 0 {
 		return Identity{}, fmt.Errorf("look up the GitHub App's bot user %s: GitHub gave no ID", name)
 	}
-	identity := Identity{Name: name, Email: fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, name)}
+	identity := Identity{Slug: app.Slug, Name: name, Email: fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, name)}
 	a.mu.Lock()
 	a.identity = &identity
 	a.mu.Unlock()

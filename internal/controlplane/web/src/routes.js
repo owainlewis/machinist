@@ -1,7 +1,7 @@
-const pages = new Set(["dashboard", "jobs", "new", "runners"]);
+const pages = new Set(["dashboard", "jobs", "new", "runners", "setup"]);
 
 // #/dashboard shows the numbers and is where the app opens, #/jobs lists jobs, #/jobs/<id> opens one, #/new starts
-// one and #/runners lists runners.
+// one, #/runners lists runners and #/setup shows what is set up and the projects.
 export function routeFromHash(hash) {
   const value = hash.replace(/^#\//, "");
   if (value.startsWith("jobs/") && value.slice(5)) {
