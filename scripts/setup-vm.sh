@@ -86,6 +86,12 @@ install -m 0644 "$service_tmp_dir/machinist-control-plane.service" \
   /etc/systemd/system/machinist-control-plane.service
 install -m 0644 "$service_tmp_dir/machinist-runner.service" \
   /etc/systemd/system/machinist-runner.service
+# The runner's unit needs runner.env to exist, even when it holds nothing, as
+# with a GitHub App and a Claude login.
+install -d -m 0700 /etc/machinist
+for env_file in /etc/machinist/control-plane.env /etc/machinist/runner.env; do
+  [[ -e $env_file ]] || install -m 0600 /dev/null "$env_file"
+done
 systemctl daemon-reload
 systemctl enable machinist-control-plane.service
 systemctl restart machinist-control-plane.service
@@ -98,16 +104,21 @@ VM bootstrap complete.
 
 Next steps:
   1. Run `su - machinist`, then edit ~/config.yaml and set github.handle
-     and github.repositories.
-  2. Edit ~/runner.yaml and choose the credential for each harness.
-  3. Exit back to root. Put GH_TOKEN, for the bot account, and those credentials in
-     /etc/machinist/runner.env. Put GH_TOKEN in /etc/machinist/control-plane.env.
-     Make both files readable only by root.
+     and github.repositories. Set up a GitHub App and add github.app, as in
+     docs/github-app.md.
+  2. Edit ~/runner.yaml and choose the credential for each harness. For a Claude
+     login, set env: [] and login: true, then run `claude` once and sign in.
+  3. Exit back to root. Put the variables listed in runner.yaml's env in
+     /etc/machinist/runner.env. Without a GitHub App, also put GH_TOKEN, for the
+     bot account, in both /etc/machinist/runner.env and
+     /etc/machinist/control-plane.env. Make both files readable only by root.
   4. Run `systemctl restart machinist-control-plane`.
-  5. Run `su - machinist -c 'set -a; . /etc/machinist/runner.env; machinist runner check --repo owner/name'` as root.
+  5. Without a GitHub App, run `su - machinist -c 'set -a; . /etc/machinist/runner.env; machinist runner check --repo owner/name'` as root.
   6. Run `systemctl enable --now machinist-runner`.
   7. Check `systemctl status machinist-control-plane machinist-runner`.
+  8. Run `su - machinist -c 'machinist token create your-name'` and copy the token.
 
 Keep the control plane on 127.0.0.1. Reach it from your computer with:
   ssh -N -L 7331:127.0.0.1:7331 machinist
+then open http://127.0.0.1:7331, sign in with the token and start a job.
 EOF
