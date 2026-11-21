@@ -452,6 +452,9 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	if merged := s.github.Merged(); len(merged) != 1 || merged[0] != "7" {
 		t.Fatalf("merged = %v", merged)
 	}
+	if figures, err := s.store.TicketFigures(t.Context(), created.ID); err != nil || !figures.Merged {
+		t.Fatalf("a job that merged its own PR was not counted as merged: %+v, %v", figures, err)
+	}
 	for _, call := range s.github.Calls() {
 		if strings.Contains(call, "--draft") {
 			t.Fatalf("the pull request was a draft: %s", call)

@@ -186,6 +186,9 @@ type Transition struct {
 	Report   string
 	PRNumber int
 	FirstPR  *FirstPR
+	// MergedAt is set when the run merged its own pull request, so the job
+	// counts as merged without waiting for the pull request watcher.
+	MergedAt *time.Time
 }
 
 // RunCompletion is what a runner reported when a run ended.
@@ -717,6 +720,11 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 	// closes.
 	if transition.State == StatePRReady {
 		if _, err := q.ExecContext(ctx, `UPDATE tickets SET pr_state=?,pr_state_at=? WHERE id=?`, PROpen, stamp(now), ticket.ID); err != nil {
+			return err
+		}
+	}
+	if transition.MergedAt != nil {
+		if _, err := q.ExecContext(ctx, `UPDATE tickets SET pr_state=?,pr_state_at=?,merged_at=COALESCE(merged_at,?) WHERE id=?`, PRMerged, stamp(now), stamp(*transition.MergedAt), ticket.ID); err != nil {
 			return err
 		}
 	}
