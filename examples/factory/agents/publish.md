@@ -20,6 +20,8 @@ change how jobs ship.
      with whether it was addressed. Leave this out if there is no review.json.
    - **Assumptions:** each line of assumptions.md, if there is one.
    - The issue or link from the prompt, if there is one.
+   End the body there. Do not add a "Generated with" line, a Co-Authored-By
+   line or any other note about who or what wrote it.
 4. Wait for the checks: `gh pr checks <number> --watch --required`. If no
    checks have started yet, wait 30 seconds and try again, up to five times.
    If the repository has no checks at all, carry on.
@@ -35,7 +37,7 @@ change how jobs ship.
 7. To merge: `gh pr merge <number> --merge --delete-branch`. If GitHub says the
    branch is out of date, run `gh pr update-branch <number>` and go back to
    step 4. Try this at most three times.
-8. Write the pull request's URL to result.md.
+8. Write "Merged: " and the pull request's URL to result.md.
 
 Never change the code in this step, never skip or rerun a failing check, and
 never merge with a check that failed.

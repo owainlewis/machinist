@@ -220,6 +220,12 @@ func TestReportRows(t *testing.T) {
 			if test.pr != nil && got.PRNumber != 42 {
 				t.Fatalf("PR = %d", got.PRNumber)
 			}
+			// A job that merged its own pull request counts as merged.
+			merged := test.pr != nil && test.pr.Merged
+			figures, err := e.Store.TicketFigures(t.Context(), ticket.ID)
+			if err != nil || figures.Merged != merged || (got.PRState == tickets.PRMerged) != merged {
+				t.Fatalf("merged = %v, pr state = %q, err = %v, want merged %v", figures.Merged, got.PRState, err, merged)
+			}
 		})
 	}
 }
