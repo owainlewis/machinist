@@ -1,4 +1,5 @@
 import React from "react";
+import { AgentBadges } from "./agent-badge.jsx";
 import { relativeTime } from "./display.jsx";
 import { formatDuration } from "./jobs.js";
 import { jobHref } from "./routes.js";
@@ -60,6 +61,8 @@ function Runner({ runner }) {
     </div>
     {jobs.length > 0 && <ul className="runner-jobs">{jobs.map(job => <li key={job.run_id}>
       <a href={jobHref(job.ticket_id)}>{job.title || job.ticket_id}</a>
+      {job.step && <span className="ticket-meta runner-job-step">{job.step}</span>}
+      <AgentBadges agents={job.agents} />
       <time className="ticket-meta" dateTime={job.started_at}>{elapsed(job.started_at)}</time>
     </li>)}</ul>}
   </li>;

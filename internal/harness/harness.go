@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 // ActionPrefix starts every line that names an action the agent took. The web
@@ -31,6 +33,8 @@ const maxLine = 16 << 20
 type Usage struct {
 	Tokens int64   `json:"tokens"`
 	Cost   float64 `json:"cost"`
+	// Agents are the agents the step ran, in order.
+	Agents []protocol.Agent `json:"agents,omitempty"`
 }
 
 // Request is one agent turn: the instructions, the task and the model.
@@ -116,11 +120,30 @@ const UsageFile = "usage.json"
 // addUsage adds usage to what earlier agents in the same step left at path,
 // so a step that runs two agents reports both.
 func addUsage(path string, usage Usage) {
-	var earlier Usage
-	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &earlier) == nil {
-		usage.Tokens += earlier.Tokens
-		usage.Cost += earlier.Cost
+	earlier := readUsage(path)
+	earlier.Tokens += usage.Tokens
+	earlier.Cost += usage.Cost
+	writeUsage(path, earlier)
+}
+
+// RecordAgent adds the agent about to run to the step's usage file, before it
+// starts, so a step shows what ran it even when the agent fails or reports no
+// usage. A step that runs two agents lists both.
+func RecordAgent(path string, agent protocol.Agent) {
+	usage := readUsage(path)
+	usage.Agents = append(usage.Agents, agent)
+	writeUsage(path, usage)
+}
+
+func readUsage(path string) Usage {
+	var usage Usage
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &usage)
 	}
+	return usage
+}
+
+func writeUsage(path string, usage Usage) {
 	if data, err := json.Marshal(usage); err == nil {
 		_ = os.WriteFile(path, data, 0o600)
 	}

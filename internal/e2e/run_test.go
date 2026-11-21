@@ -413,6 +413,13 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	if got := stepStates(run); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=succeeded" {
 		t.Fatalf("steps = %s", got)
 	}
+	// Each agent step records the agent, harness and model that ran it.
+	if agents := run.Stages[1].Agents; len(agents) != 1 || agents[0] != (protocol.Agent{Name: "implement", Harness: "claude"}) {
+		t.Fatalf("implement step agents = %+v", agents)
+	}
+	if agents := run.Stages[0].Agents; len(agents) != 0 {
+		t.Fatalf("checkout step agents = %+v", agents)
+	}
 	if work := run.Stages[1]; work.Tokens == nil || *work.Tokens != 120 || work.Cost == nil || *work.Cost != 0.25 {
 		t.Fatalf("work step usage = %+v", work)
 	}

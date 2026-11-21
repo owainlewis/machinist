@@ -37,6 +37,12 @@ func (s *Server) listRunners(w http.ResponseWriter, r *http.Request, _ string) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	for index := range runners {
+		for jobIndex := range runners[index].Jobs {
+			job := &runners[index].Jobs[jobIndex]
+			job.Agents = s.currentAgents(job.Preset, job.Step)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"runners": runners, "queue": queue})
 }
 
@@ -109,6 +115,20 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, tokenName stri
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// currentAgents names the agents a running job's current step runs.
+func (s *Server) currentAgents(presetName, step string) []protocol.Agent {
+	preset, ok := s.factory.Preset(presetName)
+	if !ok {
+		return nil
+	}
+	for _, candidate := range preset.Steps {
+		if candidate.Name == step {
+			return s.factory.StepAgents(candidate.Run)
+		}
+	}
+	return nil
 }
 
 func writeRunError(w http.ResponseWriter, err error) {
