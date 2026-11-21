@@ -124,6 +124,36 @@ func TestAssignGivesTheRunATokenForItsRepository(t *testing.T) {
 	}
 }
 
+// With a GitHub App, a run commits as the app's bot account, not as the
+// configured handle, so its commits never show a person as their author.
+func TestAssignCommitsAsTheAppsBotAccount(t *testing.T) {
+	e := newEngine(t)
+	e.Identity = func(context.Context) (string, string, error) {
+		return "machinistagent[bot]", "1+machinistagent[bot]@users.noreply.github.com", nil
+	}
+	newTicket(t, e, "api")
+	if request := assignRun(t, e); request.GitName != "machinistagent[bot]" || request.GitEmail != "1+machinistagent[bot]@users.noreply.github.com" {
+		t.Fatalf("git author = %q <%s>", request.GitName, request.GitEmail)
+	}
+}
+
+func TestAssignFailsTheJobWhenTheAppsAccountIsUnknown(t *testing.T) {
+	e := newEngine(t)
+	e.Identity = func(context.Context) (string, string, error) {
+		return "", "", errors.New("GitHub replied 401")
+	}
+	ticket := newTicket(t, e, "api")
+	if err := e.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}); err != nil || request != nil {
+		t.Fatalf("request = %+v, err = %v", request, err)
+	}
+	if message := lastMessage(t, e, ticket.ID); state(t, e, ticket.ID) != tickets.StateFailed || !strings.Contains(message, "bot account") {
+		t.Fatalf("message = %q", message)
+	}
+}
+
 func TestAssignFailsTheJobWhenNoTokenCanBeMade(t *testing.T) {
 	e := newEngine(t)
 	e.GitHubToken = func(context.Context, string) (string, error) {
