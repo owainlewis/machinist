@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/owainlewis/machinist/internal/agentlog"
 	"github.com/owainlewis/machinist/internal/githubauth"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
@@ -25,7 +25,7 @@ const (
 var (
 	varName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	// FilePath is the form of a factory file a run carries.
-	FilePath = regexp.MustCompile(`^(prompts|scripts)/[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	FilePath = regexp.MustCompile(`^(agents|prompts|scripts)/[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 )
 
 const defaultPath = "/usr/local/bin:/usr/bin:/bin"
@@ -43,7 +43,7 @@ type WorkspaceOptions struct {
 
 // Workspace is an empty directory, the control directory beside it and the
 // complete environment of the steps. The control directory holds prompt.md and
-// the factory's prompts/ and scripts/, and a step can leave result.md there. scripts/ is first on PATH, so a step runs a script by name. It is outside the
+// the factory's agents/, prompts/ and scripts/, and a step can leave result.md there. scripts/ is first on PATH, so a step runs a script by name. It is outside the
 // workspace, so a clone into the workspace never commits it.
 type Workspace struct {
 	Directory   string
@@ -85,7 +85,7 @@ func PrepareWorkspace(options WorkspaceOptions) (Workspace, error) {
 	return workspace, nil
 }
 
-// writeFiles writes the factory's prompts and scripts. Scripts are executable.
+// writeFiles writes the factory's agents, prompts and scripts. Scripts are executable.
 func writeFiles(control string, files map[string]string) error {
 	for path, body := range files {
 		if !FilePath.MatchString(path) || strings.Contains(path, "..") {
@@ -218,12 +218,12 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 // machinist agent-log leaves in the control directory, and removes the file so
 // the next step starts without it. A missing or unreadable file reports none.
 func stepUsage(control string) (*int64, *float64) {
-	body, err := readControlFile(control, agentlog.UsageFile)
-	_ = os.Remove(filepath.Join(control, agentlog.UsageFile))
+	body, err := readControlFile(control, harness.UsageFile)
+	_ = os.Remove(filepath.Join(control, harness.UsageFile))
 	if err != nil || body == "" {
 		return nil, nil
 	}
-	var usage agentlog.Usage
+	var usage harness.Usage
 	if json.Unmarshal([]byte(body), &usage) != nil || usage.Tokens < 0 || usage.Cost < 0 {
 		return nil, nil
 	}

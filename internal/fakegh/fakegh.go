@@ -56,6 +56,9 @@ case "$1 $2" in
   number=$3
   if [ -f "$dir/merge-refused-$number" ]; then cat "$dir/merge-refused-$number" >&2; exit 1; fi
   echo "$number" >> "$dir/merged"
+  for list in "$dir"/prlist-*; do
+    [ -f "$list" ] && sed -i.bak "s/\"number\":$number,\"state\":\"OPEN\"/\"number\":$number,\"state\":\"MERGED\",\"mergedAt\":\"2026-01-02T03:04:05Z\"/" "$list" && rm -f "$list.bak"
+  done
   exit 0;;
 "pr comment")
   number=$3

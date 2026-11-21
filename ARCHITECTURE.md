@@ -38,7 +38,10 @@ No run waits for a person: an agent that has to guess writes its guess to
 The runner turns the steps' outcome into one report. A step that fails fails the run.
 Otherwise the report is `no_change`,
 with `result.md` as its summary. After a run, the control plane looks up the branch's pull
-request, so a step that opens one needs to report nothing. See
+request, so a step that opens one needs to report nothing: an open pull request makes the
+job `pr_ready`, and a merged one leaves it `done`. `github.auto_merge` reaches every step as
+`MACHINIST_AUTO_MERGE`, and the shipped publish agent merges only when it is `true` and the
+review in `review.json` is clean. See
 [Factory files](docs/factory.md#presets).
 
 | State | Meaning |
@@ -85,8 +88,8 @@ The control plane stores that with the time of last contact, and heartbeats keep
 current while every slot is busy. The Runners page reads it with the running runs and the
 queue, so it is the same after a control plane restart.
 
-Step output reaches the control plane as events about once a second. `machinist agent-log`
-runs inside a step and turns Claude Code's stream-json into readable lines, one per message
+Step output reaches the control plane as events about once a second. `machinist agent`
+runs inside a step and turns the harness's event stream into readable lines, one per message
 or action, and leaves the tokens and cost the agent reported in `usage.json`. The runner
 adds them to the step's result and the run's totals. As events arrive, the control plane
 keeps each running run's current step, when it started and the last action line, so the
@@ -115,8 +118,10 @@ and `factory/` (presets, prompts and scripts) are committed there. `.machinist/`
 holds the database, tokens and workspaces, and git ignores it. Commands read the config in
 the current directory unless `--config` names one, and relative paths resolve from the
 config file's directory. Secrets come from the environment, never from these files. Every
-run carries the factory's `prompts/` and `scripts/` in its request, so a step can use them
-on any runner.
+run carries the factory's `agents/`, `prompts/` and `scripts/` in its request, so a step can
+use them on any runner. A step with `agent: <name>` runs `machinist agent <name>`, which
+reads the agent file, builds the harness's command (Claude Code, Codex or Pi) and turns
+its event stream into live lines and usage.
 
 ## Packages
 
@@ -131,5 +136,5 @@ internal/controlplane  HTTP routes, sign-in and the embedded UI
 internal/agentrunner   the runner daemon, and the local and Kubernetes executors
 internal/kuberunner    gVisor Jobs, egress proxy and the code that runs in the Job
 internal/runner        workspaces, steps, process supervision and the event log
-internal/agentlog      readable live lines, tokens and cost from an agent's stream-json
+internal/harness       agent files, and the Claude Code, Codex and Pi commands and event streams
 ```

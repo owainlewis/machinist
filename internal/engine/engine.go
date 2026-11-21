@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
@@ -47,8 +48,11 @@ type Options struct {
 	Factory    *factory.Factory
 	RunTimeout time.Duration
 	Handle     string
-	FindPR     PRFinder
-	Post       Poster
+	// AutoMerge reaches every step as MACHINIST_AUTO_MERGE, true or false.
+	// The publish agent merges only when it is true.
+	AutoMerge bool
+	FindPR    PRFinder
+	Post      Poster
 	// GitHubToken, when set, gives each run its own token for its repository.
 	// Without it, a runner uses its own GH_TOKEN.
 	GitHubToken TokenMinter
@@ -169,7 +173,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		Preset:        preset.Name,
 		Repository:    claim.Ticket.Repo,
 		Branch:        claim.Ticket.Branch(),
-		Vars:          map[string]string{"repo": claim.Ticket.Repo},
+		Vars:          map[string]string{"repo": claim.Ticket.Repo, "auto_merge": strconv.FormatBool(e.AutoMerge)},
 		Prompt:        tickets.RenderLog(claim.Entries),
 		Files:         e.Factory.Files,
 		Steps:         preset.Steps,
@@ -269,7 +273,12 @@ func decide(status string, report *protocol.Report, reason string, pr *PR) ticke
 			transition.Message = "Reported a PR but none is open for this branch."
 		}
 	case protocol.OutcomeNoChange:
+		// A step that opened a pull request and left it for a person reports
+		// nothing more: the open pull request is what makes the job pr_ready.
 		transition.State, transition.Message = tickets.StateDone, report.Summary
+		if pr != nil && !pr.Closed && !pr.Merged {
+			transition.State = tickets.StatePRReady
+		}
 	default:
 		transition.State, transition.Message = tickets.StateFailed, report.Summary
 	}

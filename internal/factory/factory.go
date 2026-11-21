@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/triggers"
 )
@@ -44,8 +45,10 @@ type Automation struct {
 type Factory struct {
 	Presets     map[string]Preset
 	Automations []Automation
-	// Files are prompts/*.md and scripts/*, by path. Every run carries them
-	// into its control directory, where steps read them.
+	// Agents are agents/*.md by name. A step with agent: <name> runs one.
+	Agents map[string]harness.Agent
+	// Files are agents/*.md, prompts/*.md and scripts/*, by path. Every run
+	// carries them into its control directory, where steps read them.
 	Files map[string]string
 }
 
@@ -54,12 +57,22 @@ const maxFactoryFiles = 4 << 20
 
 // Load reads and validates a factory directory.
 func Load(directory string) (*Factory, error) {
-	factory := &Factory{Presets: map[string]Preset{}}
+	factory := &Factory{Presets: map[string]Preset{}, Agents: map[string]harness.Agent{}}
+	if err := eachFile(filepath.Join(directory, "agents"), "*.md", func(name, body string) error {
+		agent, err := harness.ParseAgent(name, body)
+		if err != nil {
+			return err
+		}
+		factory.Agents[name] = agent
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("agent: %w", err)
+	}
 	if old, _ := filepath.Glob(filepath.Join(directory, "presets", "*.toml")); len(old) > 0 {
 		return nil, fmt.Errorf("preset: %s is TOML, and Machinist now reads YAML. Rewrite it as %s", old[0], strings.TrimSuffix(old[0], ".toml")+".yaml")
 	}
 	if err := eachFile(filepath.Join(directory, "presets"), "*.yaml", func(name, body string) error {
-		preset, err := parsePreset(name, body)
+		preset, err := parsePreset(name, body, factory.Agents)
 		if err != nil {
 			return err
 		}
@@ -89,11 +102,11 @@ func Load(directory string) (*Factory, error) {
 	return factory, nil
 }
 
-// loadFiles reads the prompts and scripts that steps use.
+// loadFiles reads the agents, prompts and scripts that steps use.
 func loadFiles(directory string) (map[string]string, error) {
 	files := map[string]string{}
 	total := 0
-	for _, kind := range []struct{ directory, pattern string }{{"prompts", "*.md"}, {"scripts", "*"}} {
+	for _, kind := range []struct{ directory, pattern string }{{"agents", "*.md"}, {"prompts", "*.md"}, {"scripts", "*"}} {
 		paths, err := filepath.Glob(filepath.Join(directory, kind.directory, kind.pattern))
 		if err != nil {
 			return nil, err
@@ -109,7 +122,7 @@ func loadFiles(directory string) (map[string]string, error) {
 			}
 			total += len(body)
 			if total > maxFactoryFiles {
-				return nil, fmt.Errorf("prompts and scripts must add up to less than %d MiB", maxFactoryFiles>>20)
+				return nil, fmt.Errorf("agents, prompts and scripts must add up to less than %d MiB", maxFactoryFiles>>20)
 			}
 			files[relative] = body
 		}
@@ -134,13 +147,14 @@ func parseDuration(field, value string) (time.Duration, error) {
 	return duration, nil
 }
 
-func parsePreset(name, body string) (Preset, error) {
+func parsePreset(name, body string, agents map[string]harness.Agent) (Preset, error) {
 	var settings struct {
 		Description string `yaml:"description"`
 		Timeout     string `yaml:"timeout"`
 		Steps       []struct {
 			Name    string `yaml:"name"`
 			Run     string `yaml:"run"`
+			Agent   string `yaml:"agent"`
 			Timeout string `yaml:"timeout"`
 		} `yaml:"steps"`
 	}
@@ -164,14 +178,23 @@ func parsePreset(name, body string) (Preset, error) {
 			return Preset{}, fmt.Errorf("step %s is listed twice", step.Name)
 		}
 		names[step.Name] = true
-		if strings.TrimSpace(step.Run) == "" {
-			return Preset{}, fmt.Errorf("step %s: run is empty", step.Name)
+		run := step.Run
+		switch {
+		case step.Agent != "" && strings.TrimSpace(step.Run) != "":
+			return Preset{}, fmt.Errorf("step %s: give it agent or run, not both", step.Name)
+		case step.Agent != "":
+			if _, ok := agents[step.Agent]; !ok {
+				return Preset{}, fmt.Errorf("step %s: agent %q is not in agents/", step.Name, step.Agent)
+			}
+			run = "machinist agent " + step.Agent
+		case strings.TrimSpace(step.Run) == "":
+			return Preset{}, fmt.Errorf("step %s: give it agent or run", step.Name)
 		}
 		stepTimeout, err := parseDuration("step "+step.Name+": timeout", step.Timeout)
 		if err != nil {
 			return Preset{}, err
 		}
-		preset.Steps = append(preset.Steps, runner.Step{Name: step.Name, Run: step.Run, TimeoutMillis: stepTimeout.Milliseconds()})
+		preset.Steps = append(preset.Steps, runner.Step{Name: step.Name, Run: run, TimeoutMillis: stepTimeout.Milliseconds()})
 	}
 	if preset.Description == "" {
 		return Preset{}, errors.New("add a description: one sentence on what a job on this preset does")

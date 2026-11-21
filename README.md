@@ -13,8 +13,9 @@ software.
   what each job is doing, step by step, and open its pull request.
 - **Runs anywhere.** A runner is a small daemon that asks the control plane for work. Start
   one on a Mac, a VM or a Kubernetes cluster. The control plane treats them all the same.
-- **A workflow you define.** A preset is a list of shell steps: clone, plan, build, test,
-  review, open a pull request. A step can run Claude Code, Codex or any command. A test
+- **A workflow you define.** A preset is a list of steps: clone, plan, build, test,
+  review, open a pull request. A step runs an agent (Claude Code, Codex or Pi, each with
+  its own model and prompt) or any shell command. A test
   step is a gate an agent cannot skip.
 - **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.
 
@@ -46,8 +47,9 @@ git and start Machinist there. `init` writes these, all meant to be committed:
 ```text
 config.yaml          the control plane
 runner.yaml          a local runner
-factory/presets/     four presets, each a short list of steps
-factory/prompts/     the prompts those steps give Claude Code
+factory/presets/     the default preset, a short list of steps
+factory/agents/      the agents those steps run: harness, model and prompt
+factory/prompts/     rules every agent follows
 factory/scripts/     the shell those steps run
 ```
 
@@ -121,8 +123,9 @@ To stop a job, `POST /machinist/jobs/{id}/cancel`. To run an ended job again,
 Jobs run headless, from start to finish, and never stop to ask a question. When the agent
 has to guess, it says so under **Assumptions** in the pull request.
 
-Every job uses the `default` preset unless it names another: clone, run Claude Code on the
-prompt, open one pull request. Add a preset to `factory/presets/` only when a kind of job
+Every job uses the `default` preset unless it names another: clone, have an agent make the
+change, review it and fix what the review found, then open one pull request and merge it
+once its checks pass. Add a preset to `factory/presets/` only when a kind of job
 needs different steps.
 
 ## Testing Machinist itself
@@ -135,8 +138,10 @@ cd internal/controlplane/web && npm ci && npm test
 The Go tests run whole jobs end to end with fake `claude` and `gh` commands and a local
 Git remote. See [Development](docs/development.md).
 
-The default preset merges its pull request once the repository's checks pass. How a job
-ships is written in `factory/prompts/publish.md`, so you change it by editing that file.
+The default preset has a second agent review the change, fixes what the review found,
+and merges the pull request once the repository's checks pass and the review is clean.
+Set `github.auto_merge: false` to leave every pull request open for a person. How a job
+ships is written in `factory/agents/publish.md`, so you change it by editing that file.
 Branch protection still decides what can merge. See [Security](SECURITY.md) for what a step
 can do.
 
