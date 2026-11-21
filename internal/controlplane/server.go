@@ -216,6 +216,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.requireRunner(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/runs/{id}/events", s.requireRunner(s.ingestEvents))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.requireRunner(s.complete))
+	mux.HandleFunc("POST /api/v1/runs/{id}/github-token", s.requireRunner(s.runToken))
 	mux.HandleFunc("GET /api/v1/repositories", s.requireToken(s.listRepositories))
 	mux.HandleFunc("GET /api/v1/setup", s.requireToken(s.getSetup))
 	mux.HandleFunc("POST /api/v1/projects", s.requireToken(s.addProject))

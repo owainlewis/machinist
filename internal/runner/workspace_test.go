@@ -1,6 +1,9 @@
 package runner
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -233,5 +236,36 @@ func TestStepsCanCallTheRunningMachinist(t *testing.T) {
 	result, _ := run(t, stepsRequest(Step{Name: "path", Run: `case ":$PATH:" in *":` + filepath.Dir(executable) + `:"*) exit 0;; esac; exit 1`}))
 	if result.State != StateSucceeded {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+// A run whose token came from the control plane starts each step with a new
+// one, so a late step cannot outlive the hour the first token lasts. When the
+// control plane cannot make one, the step keeps the token it had.
+func TestEachStepStartsWithAFreshGitHubToken(t *testing.T) {
+	request := stepsRequest(
+		Step{Name: "one", Run: `printf '%s %s\n' "$GH_TOKEN" "$GITHUB_TOKEN" >> "$MACHINIST_DIR/../tokens"`},
+		Step{Name: "two", Run: `printf '%s %s\n' "$GH_TOKEN" "$GITHUB_TOKEN" >> "$MACHINIST_DIR/../tokens"`},
+		Step{Name: "three", Run: `printf '%s %s\n' "$GH_TOKEN" "$GITHUB_TOKEN" >> "$MACHINIST_DIR/../tokens"`},
+	)
+	request.GitHubToken = "first"
+	calls := 0
+	request.RefreshToken = func(context.Context) (string, error) {
+		calls++
+		if calls == 3 {
+			return "", errors.New("control plane unreachable")
+		}
+		return fmt.Sprintf("fresh-%d", calls), nil
+	}
+	result, workspace := run(t, request)
+	if result.State != StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+	body, err := os.ReadFile(filepath.Join(filepath.Dir(workspace.Control), "tokens"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(body); got != "fresh-1 fresh-1\nfresh-2 fresh-2\nfresh-2 fresh-2\n" {
+		t.Fatalf("tokens seen by steps:\n%s", got)
 	}
 }

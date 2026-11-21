@@ -184,6 +184,7 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 	}
 	deadline := time.Now().Add(time.Duration(request.TimeoutMillis) * time.Millisecond)
 	for index, step := range request.Steps {
+		workspace.Environment = freshToken(ctx, request, workspace.Environment)
 		result, err := runStep(ctx, request, step, workspace, dataDirectory, log, time.Until(deadline))
 		if result.State == "" {
 			result.State = StateFailed
@@ -272,6 +273,30 @@ func readControlFile(directory, name string) (string, error) {
 
 // runStep starts one step with sh -c and waits for it. The step gets the
 // prompt on stdin too, so a command such as claude -p can read it there.
+// freshToken swaps a new GitHub token into the step environment, when the
+// run's token came from the control plane and it can make another. If it
+// cannot, the step keeps the token it had, which may still be valid.
+func freshToken(ctx context.Context, request RunRequest, environment []string) []string {
+	if request.GitHubToken == "" || request.RefreshToken == nil {
+		return environment
+	}
+	token, err := request.RefreshToken(ctx)
+	if err != nil || token == "" || strings.ContainsAny(token, "\r\n\x00") {
+		return environment
+	}
+	fresh := make([]string, len(environment))
+	for index, entry := range environment {
+		switch {
+		case strings.HasPrefix(entry, "GH_TOKEN="):
+			entry = "GH_TOKEN=" + token
+		case strings.HasPrefix(entry, "GITHUB_TOKEN="):
+			entry = "GITHUB_TOKEN=" + token
+		}
+		fresh[index] = entry
+	}
+	return fresh
+}
+
 func runStep(ctx context.Context, request RunRequest, step Step, workspace Workspace, dataDirectory string, log *eventLog, remaining time.Duration) (Result, error) {
 	if remaining <= 0 {
 		return Result{State: StateTimedOut}, errors.New("the run timed out before this step started")

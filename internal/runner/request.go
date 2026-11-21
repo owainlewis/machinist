@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -36,6 +37,10 @@ type RunRequest struct {
 	// GitHubToken is a short-lived token for Repository alone, when the
 	// control plane has a GitHub App. Without it, the runner uses GH_TOKEN.
 	GitHubToken string `json:"github_token,omitempty"`
+	// RefreshToken, when set, asks the control plane for a new GitHubToken.
+	// A local runner sets it, and each step starts with a fresh token, so no
+	// step outlives the hour a token lasts. It is never sent.
+	RefreshToken func(ctx context.Context) (string, error) `json:"-"`
 }
 
 // RunResult is what one run produced, on either runner type.

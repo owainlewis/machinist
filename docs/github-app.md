@@ -147,8 +147,10 @@ permissions, and Machinist's request fails with the `422` above.
 
 ## Limits
 
-- A token lasts one hour, so with an app `run_timeout` and every preset's `timeout` must be
-  one hour or less. Startup stops and names the setting otherwise.
+- A token lasts one hour. A local runner asks the control plane for a new one before each
+  step, for the same repository, so a late step such as `merge` starts with a full hour.
+  Kubernetes runs keep the token they started with. Either way, `run_timeout` and every
+  preset's `timeout` must be one hour or less. Startup stops and names the setting otherwise.
 - The key is the one long-lived secret left. Anyone who has it can make tokens for every
   repository the app is installed on. Keep it readable only by the control plane's user.
   If it leaks, generate a new one in the app's settings and delete the old one.
