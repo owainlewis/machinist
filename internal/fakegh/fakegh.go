@@ -33,7 +33,12 @@ case "$1 $2" in
   file="$dir/prlist-$(printf %%s "$3" | tr / _)"
   number=$(sed -n 's/.*"number":\([0-9]*\).*/\1/p' "$file" 2>/dev/null)
   if [ -z "$number" ]; then echo "no pull requests found for branch \"$3\"" >&2; exit 1; fi
-  echo "https://github.com/owner/repo/pull/$number"
+  case "$*" in
+  *--json*)
+    state=$(sed -n 's/.*"number":'"$number"',"state":"\([A-Z]*\)".*/\1/p' "$file")
+    printf '{"number":%%s,"url":"https://github.com/owner/repo/pull/%%s","state":"%%s","mergeStateStatus":"CLEAN"}\n' "$number" "$number" "$state";;
+  *) echo "https://github.com/owner/repo/pull/$number";;
+  esac
   exit 0;;
 "pr list")
   head=
@@ -50,7 +55,9 @@ case "$1 $2" in
   echo "https://github.com/owner/repo/pull/$number"
   exit 0;;
 "pr checks")
-  echo "All checks were successful"
+  show "$dir/checks" '[{"name":"test","bucket":"pass","link":"https://ci.example.test/1"}]'
+  exit 0;;
+"pr update-branch")
   exit 0;;
 "pr merge")
   number=$3
@@ -356,6 +363,12 @@ func (g *GitHub) Posted() []Post {
 func (g *GitHub) RefuseMerge(number int, message string) {
 	g.t.Helper()
 	g.writeText("merge-refused-"+strconv.Itoa(number), message+"\n")
+}
+
+// SetChecks sets what gh pr checks --json prints, such as a failed check.
+func (g *GitHub) SetChecks(checks []map[string]string) {
+	g.t.Helper()
+	g.write("checks", checks)
 }
 
 // Merged returns the PRs that agents merged.

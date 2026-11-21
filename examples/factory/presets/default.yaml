@@ -1,7 +1,7 @@
 # A one-off job: clone the repository, have an agent make the change, have
-# another review it and fix what the review found, then open a pull request,
-# wait for its checks and merge it. Every job uses this preset unless it names
-# another.
+# another review it and fix what the review found, then open a pull request
+# and merge it once its checks pass. Every job uses this preset unless it
+# names another.
 #
 # A step either runs shell (run:) or one of the agents in factory/agents
 # (agent:). Steps run in order in one workspace, and the first that fails
@@ -17,17 +17,24 @@ steps:
   - name: implement
     agent: implement
 
-  # Writes review.json: accepted, revision_needed or human_decision_needed.
+  # Runs agents/review.md, which writes review.json: accepted,
+  # revision_needed or human_decision_needed.
   - name: review
     timeout: 15m
-    agent: review
+    run: review.sh
 
-  # Fixes the unambiguous findings when the review asks for a revision.
+  # When the review asks for a revision, runs agents/revise.md and then
+  # reviews the change again. Otherwise it does nothing.
   - name: revise
-    agent: revise
+    run: revise.sh
 
-  # factory/agents/publish.md says how the change ships. It merges only when
-  # github.auto_merge is on, the checks pass and the review is clean.
+  # Pushes and opens the pull request, as factory/agents/publish.md says.
   - name: publish
-    timeout: 20m
+    timeout: 10m
     agent: publish
+
+  # Merges only when github.auto_merge is on, the review accepted the change
+  # and every check passed. This is code, not an agent.
+  - name: merge
+    timeout: 30m
+    run: machinist merge
