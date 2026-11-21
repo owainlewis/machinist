@@ -26,7 +26,11 @@ var ErrInvalidCompletion = errors.New("invalid run completion")
 // PR is a pull request found for a ticket's branch.
 type PR struct {
 	Number int
+	// Closed means closed without merging.
 	Closed bool
+	Merged bool
+	// ChangedAt is when it merged or closed, if GitHub said.
+	ChangedAt time.Time
 }
 
 // BotEmail is the commit author email of every agent run.
@@ -48,12 +52,15 @@ type Options struct {
 	// GitHubToken, when set, gives each run its own token for its repository.
 	// Without it, a runner uses its own GH_TOKEN.
 	GitHubToken TokenMinter
-	Log         io.Writer
+	// PRInterval is the time between checks of open pull requests.
+	PRInterval time.Duration
+	Log        io.Writer
 }
 
 type Engine struct {
 	Options
 	now         func() time.Time
+	sleep       func(context.Context, time.Duration) bool
 	deliverNext time.Time
 }
 
@@ -70,6 +77,9 @@ func (e *Engine) Run(ctx context.Context) {
 	delivered := make(chan struct{})
 	go func() { e.runDeliveries(ctx); close(delivered) }()
 	defer func() { <-delivered }()
+	checked := make(chan struct{})
+	go func() { e.runPRChecks(ctx); close(checked) }()
+	defer func() { <-checked }()
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 	for {

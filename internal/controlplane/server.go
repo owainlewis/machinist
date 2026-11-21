@@ -163,7 +163,13 @@ func findPR(client *ghclient.Client) engine.PRFinder {
 		if err != nil || found == nil {
 			return nil, err
 		}
-		return &engine.PR{Number: found.Number, Closed: found.State == ghclient.StateClosed}, nil
+		pr := &engine.PR{Number: found.Number, Closed: found.State == ghclient.StateClosed, Merged: found.State == ghclient.StateMerged}
+		if pr.Merged {
+			pr.ChangedAt = found.MergedAt
+		} else if pr.Closed {
+			pr.ChangedAt = found.ClosedAt
+		}
+		return pr, nil
 	}
 }
 

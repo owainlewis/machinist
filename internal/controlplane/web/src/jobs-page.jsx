@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Columns3, List, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { State, relativeTime, useNow } from "./display.jsx";
-import { boardColumns, boardOf, formatDuration, jobState, newestFirst, runningJobs } from "./jobs.js";
+import { boardColumns, boardOf, formatDuration, jobState, newestFirst, prSummary, runningJobs } from "./jobs.js";
 import { jobHref } from "./routes.js";
 
 const viewKey = "machinist-jobs-view";
@@ -16,7 +16,7 @@ function JobRow({ ticket, running }) {
     <td className="job-title"><a href={jobHref(ticket.id)}>{ticket.title || ticket.id}</a></td>
     <td className="job-detail">{ticket.repo}</td>
     <td className="job-detail job-preset">{ticket.agent}</td>
-    <td className="job-detail job-pr">{ticket.pr_number ? `#${ticket.pr_number}` : ""}</td>
+    <td className="job-detail job-pr">{prSummary(ticket)}</td>
     <td><State value={jobState(ticket, running)} /></td>
     <td className="job-updated"><time dateTime={ticket.updated_at}>{relativeTime(ticket.updated_at)}</time></td>
   </tr>;
@@ -45,7 +45,7 @@ function JobCard({ ticket, state, showState, progress, now }) {
     {state === "running" && progress && (progress.step || progress.action) && <NowDoing job={progress} now={now} />}
     <div className="board-card-meta">
       <span>{ticket.repo}</span>
-      {ticket.pr_number ? <span>#{ticket.pr_number}</span> : null}
+      {ticket.pr_number ? <span>{prSummary(ticket)}</span> : null}
       <time dateTime={ticket.updated_at}>{relativeTime(ticket.updated_at)}</time>
     </div>
     {showState && <State value={state} />}

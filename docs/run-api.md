@@ -37,9 +37,13 @@ The reply is the job, with `201` when it was created and `200` when the key alre
 | --- | --- |
 | `queued` | Waiting for a runner |
 | `running` | A runner holds it |
-| `done` | It finished. `pr_number` is set when it opened a pull request |
+| `done` | It finished. `pr_number` is set when it opened a pull request, and `pr_state` says whether that pull request is `open`, `merged` or `closed` |
 | `failed` | It could not finish |
 | `cancelled` | Someone cancelled it |
+
+Machinist checks each open pull request on the job's branch every minute, so `pr_state`
+changes within about a minute of a merge or close. It stops checking once the pull request
+has merged or closed.
 
 Jobs never stop to ask a question. Cancelling a job that has ended returns `409`, and so does
 running a job again while it is still queued or running. A missing

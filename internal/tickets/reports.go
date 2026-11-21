@@ -10,30 +10,38 @@ const (
 	ReportStarted = "started"
 	ReportPR      = "pr"
 	ReportFailed  = "failed"
+	ReportMerged  = "merged"
+	ReportClosed  = "closed"
 )
 
 // TrackerJob is a ticket from a tracker that is still going, or that has
 // news the tracker has not been told.
 type TrackerJob struct {
-	TicketID  string
-	Repo      string
-	State     string
-	PRNumber  int
+	TicketID string
+	Repo     string
+	State    string
+	PRNumber int
+	// PRState is open, merged or closed, or empty with no pull request.
+	PRState   string
 	SourceKey string
 	// Reported holds what the tracker has been told already.
 	Reported map[string]bool
 }
 
 // TrackerJobs lists a source's tickets that are working, or whose pull
-// request or failure has not been reported to the source yet.
+// request, its merge or close, or a failure has not been reported to the
+// source yet.
 func (s *Store) TrackerJobs(ctx context.Context, source string) ([]TrackerJob, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT t.id,t.repo,t.state,COALESCE(t.pr_number,0),e.source_key,
+	unreported := `NOT EXISTS (SELECT 1 FROM tracker_reports r WHERE r.ticket_id=t.id AND r.kind=?)`
+	rows, err := s.db.QueryContext(ctx, `SELECT t.id,t.repo,t.state,COALESCE(t.pr_number,0),COALESCE(t.pr_state,''),e.source_key,
   COALESCE((SELECT group_concat(r.kind) FROM tracker_reports r WHERE r.ticket_id=t.id),'')
   FROM tickets t JOIN ticket_entries e ON e.ticket_id=t.id AND e.kind=? AND e.source_key IS NOT NULL
   WHERE t.source=? AND (t.state=?
-    OR (COALESCE(t.pr_number,0)>0 AND NOT EXISTS (SELECT 1 FROM tracker_reports r WHERE r.ticket_id=t.id AND r.kind=?))
-    OR (t.state=? AND NOT EXISTS (SELECT 1 FROM tracker_reports r WHERE r.ticket_id=t.id AND r.kind=?)))
-  ORDER BY t.created_at`, EntryRequest, source, StateWorking, ReportPR, StateFailed, ReportFailed)
+    OR (COALESCE(t.pr_number,0)>0 AND `+unreported+`)
+    OR (t.state=? AND `+unreported+`)
+    OR (t.pr_state=? AND `+unreported+`)
+    OR (t.pr_state=? AND `+unreported+`))
+  ORDER BY t.created_at`, EntryRequest, source, StateWorking, ReportPR, StateFailed, ReportFailed, PRMerged, ReportMerged, PRClosed, ReportClosed)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +50,7 @@ func (s *Store) TrackerJobs(ctx context.Context, source string) ([]TrackerJob, e
 	for rows.Next() {
 		var job TrackerJob
 		var reported string
-		if err := rows.Scan(&job.TicketID, &job.Repo, &job.State, &job.PRNumber, &job.SourceKey, &reported); err != nil {
+		if err := rows.Scan(&job.TicketID, &job.Repo, &job.State, &job.PRNumber, &job.PRState, &job.SourceKey, &reported); err != nil {
 			return nil, err
 		}
 		job.Reported = map[string]bool{}

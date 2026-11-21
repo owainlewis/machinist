@@ -19,19 +19,21 @@ const (
 
 // job is what the run API returns. It hides the ticket model behind it.
 type job struct {
-	ID        string            `json:"id"`
-	Preset    string            `json:"preset"`
-	Vars      map[string]string `json:"vars"`
-	Title     string            `json:"title"`
-	State     string            `json:"state"`
-	PRNumber  int               `json:"pr_number,omitempty"`
-	CreatedBy string            `json:"created_by"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID       string            `json:"id"`
+	Preset   string            `json:"preset"`
+	Vars     map[string]string `json:"vars"`
+	Title    string            `json:"title"`
+	State    string            `json:"state"`
+	PRNumber int               `json:"pr_number,omitempty"`
+	// PRState is open, merged or closed, once the job has a pull request.
+	PRState   string    `json:"pr_state,omitempty"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // jobState maps a ticket to a job state. A ticket with an open pull request and
-// nothing running is done: Machinist no longer follows the pull request.
+// nothing running is done. Its pull request's own state is pr_state.
 func jobState(ticket tickets.Ticket, runs []tickets.Run) string {
 	switch ticket.State {
 	case tickets.StateWorking:
@@ -62,6 +64,7 @@ func (s *Server) job(r *http.Request, ticket tickets.Ticket) (job, error) {
 		Title:     ticket.Title,
 		State:     jobState(ticket, runs),
 		PRNumber:  ticket.PRNumber,
+		PRState:   ticket.PRState,
 		CreatedBy: ticket.CreatedBy,
 		CreatedAt: ticket.CreatedAt,
 		UpdatedAt: ticket.UpdatedAt,

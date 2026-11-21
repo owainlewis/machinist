@@ -61,6 +61,8 @@ type Tracker interface {
 	Comment(ctx context.Context, issue, body string) error
 	// Fail moves an issue back out of In Progress and says why.
 	Fail(ctx context.Context, issue, reason string) error
+	// Finish moves an issue to Done, because its pull request merged.
+	Finish(ctx context.Context, issue string) error
 	// States reads issues by ID. An issue missing from the answer is gone.
 	States(ctx context.Context, issues []string) (map[string]IssueState, error)
 }
@@ -282,7 +284,8 @@ func (p *Poller) allow(now time.Time) bool {
 const maxReason = 500
 
 // sync tells the tracker what happened to each job, once: In Progress when it
-// starts, the pull request when there is one, and the reason when it fails.
+// starts, the pull request when there is one, Done when it merges, a comment
+// when it closes, and the reason when the job fails.
 // A job whose issue has left In Progress or Machinist is cancelled.
 func (p *Poller) sync(ctx context.Context) error {
 	name := p.Tracker.Name()
@@ -332,6 +335,19 @@ func (p *Poller) syncJob(ctx context.Context, issue string, job tickets.TrackerJ
 		link := fmt.Sprintf("https://github.com/%s/pull/%d", job.Repo, job.PRNumber)
 		if err := report(tickets.ReportPR, func() error { return p.Tracker.Comment(ctx, issue, "Machinist opened a pull request: "+link) }); err != nil {
 			return fmt.Errorf("comment the pull request: %w", err)
+		}
+	}
+	switch job.PRState {
+	case tickets.PRMerged:
+		if err := report(tickets.ReportMerged, func() error { return p.Tracker.Finish(ctx, issue) }); err != nil {
+			return fmt.Errorf("move to Done: %w", err)
+		}
+	case tickets.PRClosed:
+		link := fmt.Sprintf("https://github.com/%s/pull/%d", job.Repo, job.PRNumber)
+		if err := report(tickets.ReportClosed, func() error {
+			return p.Tracker.Comment(ctx, issue, "Machinist's pull request was closed without merging: "+link)
+		}); err != nil {
+			return fmt.Errorf("comment the closed pull request: %w", err)
 		}
 	}
 	if job.State == tickets.StateFailed {

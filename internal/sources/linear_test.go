@@ -484,3 +484,80 @@ func TestAJobIsNotCancelledBeforeItsIssueReachedInProgress(t *testing.T) {
 		t.Fatalf("issue state = %q", got)
 	}
 }
+
+func TestAMergedPullRequestMovesItsIssueToDoneOnce(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	if err := p.setPR(t, job.ID, tickets.PRMerged); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	moves := p.linear.moves
+	p.poll(t)
+	if got := p.linear.stateOf("a1"); got != "s-done" || p.linear.moves != moves {
+		t.Fatalf("state = %q, moves = %d then %d", got, moves, p.linear.moves)
+	}
+	if got := p.linear.comments["a1"]; len(got) != 1 {
+		t.Fatalf("comments = %v", got)
+	}
+}
+
+func TestAClosedPullRequestIsCommentedOnItsIssue(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.setPR(t, job.ID, tickets.PRClosed); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poll(t)
+	want := []string{"Machinist opened a pull request: https://github.com/owner/repo/pull/7", "Machinist's pull request was closed without merging: https://github.com/owner/repo/pull/7"}
+	if got := p.linear.comments["a1"]; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("comments = %v", got)
+	}
+	if got := p.linear.stateOf("a1"); got != "s-progress" {
+		t.Fatalf("state = %q", got)
+	}
+}
+
+// setPR records what GitHub says about the job's pull request #7.
+func (p *polling) setPR(t *testing.T, id, state string) error {
+	t.Helper()
+	listed, err := p.store.Ticket(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p.store.SetPRState(t.Context(), listed, 7, state, p.now)
+}
+
+func TestRunningAMergedJobAgainMovesItsIssueBackToInProgress(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.setPR(t, job.ID, tickets.PRMerged); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	if got := p.linear.stateOf("a1"); got != "s-done" {
+		t.Fatalf("state = %q", got)
+	}
+	if _, err := p.store.Rerun(t.Context(), job.ID, "owain"); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poll(t)
+	if got := p.linear.stateOf("a1"); got != "s-progress" {
+		t.Fatalf("issue state = %q", got)
+	}
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("job state = %q", got)
+	}
+}

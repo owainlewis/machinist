@@ -1,0 +1,66 @@
+package tickets
+
+import (
+	"context"
+	"database/sql"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestADatabaseFromBeforePRStatesOpensAndKeepsItsJobs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tickets.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`CREATE TABLE tickets (
+  id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
+  state TEXT NOT NULL, agent TEXT NOT NULL, pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
+  merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+INSERT INTO tickets VALUES ('t_old','api','owner/repo',NULL,'Old','pr_ready','default',7,'alice',NULL,NULL,'2026-11-01T00:00:00Z','2026-11-01T00:00:00Z');`); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	for range 2 {
+		store, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		open, err := store.TicketsWithOpenPRs(t.Context())
+		store.Close()
+		if err != nil || len(open) != 1 || open[0].ID != "t_old" || open[0].PRNumber != 7 || open[0].PRState != "" {
+			t.Fatalf("open = %+v, err = %v", open, err)
+		}
+	}
+}
+
+func TestAPRResultFromBeforeARerunIsIgnored(t *testing.T) {
+	store := openStore(t)
+	now := time.Date(2026, 11, 21, 8, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
+	ticket := createTicket(t, store, "k1")
+	ctx := context.Background()
+	if err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.TicketsWithOpenPRs(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("listed = %+v, err = %v", listed, err)
+	}
+	// While GitHub is asked about #7, the job runs again and opens #8.
+	now = now.Add(time.Minute)
+	if _, err := store.Rerun(ctx, ticket.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 8}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPRState(ctx, listed[0], 7, PRMerged, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Ticket(ctx, ticket.ID)
+	if err != nil || got.State != StatePRReady || got.PRNumber != 8 || got.PRState != PROpen {
+		t.Fatalf("ticket = %+v, err = %v", got, err)
+	}
+}

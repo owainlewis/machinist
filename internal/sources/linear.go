@@ -171,6 +171,20 @@ func (l *Linear) Fail(ctx context.Context, issue, reason string) error {
 	return l.Comment(ctx, issue, "Machinist's job failed: "+reason)
 }
 
+// Finish moves an issue to its team's Done state, or the first completed state
+// if the team has none by that name.
+func (l *Linear) Finish(ctx context.Context, issue string) error {
+	states, err := l.teamStates(ctx, issue)
+	if err != nil {
+		return err
+	}
+	state, ok := pickState(states, "completed", "Done")
+	if !ok {
+		return errors.New("linear: the team has no completed state")
+	}
+	return l.move(ctx, issue, state)
+}
+
 // States reads whether each issue is still assigned to the app and started.
 func (l *Linear) States(ctx context.Context, issues []string) (map[string]IssueState, error) {
 	states := map[string]IssueState{}

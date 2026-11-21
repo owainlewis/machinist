@@ -217,6 +217,9 @@ func (c *Client) PostComment(ctx context.Context, repository string, number int,
 type PRRef struct {
 	Number int
 	State  string
+	// MergedAt and ClosedAt are zero until the PR merges or closes.
+	MergedAt time.Time
+	ClosedAt time.Time
 }
 
 // FindPR returns the open PR for a branch, or otherwise the newest. PRs from
@@ -225,14 +228,16 @@ func (c *Client) FindPR(ctx context.Context, repository, branch string) (*PRRef,
 	if err := validRepository(repository); err != nil {
 		return nil, err
 	}
-	output, err := c.run(ctx, repository, "find PR", nil, "pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--limit", "100", "--json", "number,state,isCrossRepository")
+	output, err := c.run(ctx, repository, "find PR", nil, "pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--limit", "100", "--json", "number,state,isCrossRepository,mergedAt,closedAt")
 	if err != nil {
 		return nil, err
 	}
 	var candidates []struct {
-		Number            int    `json:"number"`
-		State             string `json:"state"`
-		IsCrossRepository bool   `json:"isCrossRepository"`
+		Number            int        `json:"number"`
+		State             string     `json:"state"`
+		IsCrossRepository bool       `json:"isCrossRepository"`
+		MergedAt          *time.Time `json:"mergedAt"`
+		ClosedAt          *time.Time `json:"closedAt"`
 	}
 	if err := decode("find PR", output, &candidates); err != nil {
 		return nil, err
@@ -243,6 +248,12 @@ func (c *Client) FindPR(ctx context.Context, repository, branch string) (*PRRef,
 			continue
 		}
 		reference := &PRRef{Number: candidate.Number, State: candidate.State}
+		if candidate.MergedAt != nil {
+			reference.MergedAt = *candidate.MergedAt
+		}
+		if candidate.ClosedAt != nil {
+			reference.ClosedAt = *candidate.ClosedAt
+		}
 		if reference.State == StateOpen {
 			return reference, nil
 		}
