@@ -12,10 +12,12 @@ software.
 - **Runs anywhere.** A runner is a small daemon that asks the control plane for work. Start
   one on a Mac, a VM or a Kubernetes cluster. The control plane treats them all the same.
 - **A workflow you define.** A preset is a list of steps: clone, plan, build, test,
-  review, open a pull request. A step runs an agent (Claude Code, Codex or Pi, each with
+  review, open a pull request. A step runs an agent (Claude Code, Codex, Pi or agy, each with
   its own model and prompt) or any shell command. A test
   step is a gate an agent cannot skip.
 - **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.
+
+**Supported harnesses:** <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/harness-claude-dark.svg"><img src=".github/assets/harness-claude-light.svg" alt="Claude logo" height="20" align="top"></picture> Claude Code by Anthropic, <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/harness-openai-dark.svg"><img src=".github/assets/harness-openai-light.svg" alt="OpenAI logo" height="20" align="top"></picture> Codex by OpenAI, <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/harness-google-dark.svg"><img src=".github/assets/harness-google-light.svg" alt="Google logo" height="20" align="top"></picture> Antigravity by Google, and Pi. Logos belong to their owners. Machinist is not made by or tied to these companies.
 
 Send the work to the [run API](docs/run-api.md), or let an automation start it. The job works on its own branch, and the default preset opens one pull request.
 A job runs headless from start to finish and never stops to ask a question.

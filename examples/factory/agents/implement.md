@@ -1,5 +1,5 @@
 ---
-# The harness runs the agent: claude, codex or pi. model is optional and
+# The harness runs the agent: agy, claude, codex or pi. model is optional and
 # picks the harness's model, such as opus for claude.
 harness: claude
 ---
