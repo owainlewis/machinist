@@ -49,7 +49,13 @@ type GitHub struct {
 	// App, when set, gives each run a short-lived token for its repository
 	// alone, in place of a token on the runner.
 	App *GitHubApp `yaml:"app"`
+	// AutoMerge lets the publish step merge a pull request once its checks
+	// pass and its review is clean. It is on unless set to false.
+	AutoMerge *bool `yaml:"auto_merge"`
 }
+
+// AutoMerges reports whether jobs may merge their own pull requests.
+func (g GitHub) AutoMerges() bool { return g.AutoMerge == nil || *g.AutoMerge }
 
 // GitHubApp names a GitHub App and the file that holds its private key. The key
 // itself never goes in the configuration.

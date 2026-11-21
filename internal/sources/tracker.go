@@ -19,6 +19,10 @@ const maxBackoff = 5 * time.Minute
 // ErrRateLimited means the tracker asked Machinist to slow down.
 var ErrRateLimited = errors.New("rate limited")
 
+// ErrTooManyReplies means more replies arrived than one read returns. The
+// poller asks again for a shorter span of time.
+var ErrTooManyReplies = errors.New("too many replies to read at once")
+
 // Assignment is an issue that was handed to Machinist in a tracker.
 type Assignment struct {
 	// Key is stable for the issue, such as linear:<issue id>. One issue starts
@@ -35,6 +39,18 @@ type Assignment struct {
 	// found, and the assignment is ignored.
 	Actor     string
 	UpdatedAt time.Time
+}
+
+// Reply is a comment a person left on an issue that Machinist has a job for.
+type Reply struct {
+	// Key is the issue's assignment key, such as linear:<issue id>.
+	Key string
+	// ID is the tracker's ID for the comment. One comment is added once.
+	ID        string
+	Issue     string
+	Author    string
+	Body      string
+	CreatedAt time.Time
 }
 
 // IssueState is what Machinist needs to know about an issue with a job going.
@@ -55,8 +71,16 @@ type Tracker interface {
 	// Assignments returns issues assigned to Machinist and updated after
 	// since, oldest first.
 	Assignments(ctx context.Context, since time.Time) ([]Assignment, error)
-	// Start moves an issue to In Progress.
+	// Start moves an issue to In Progress and says Machinist is on it.
 	Start(ctx context.Context, issue string) error
+	// Replies returns every comment left by people, not Machinist, on issues
+	// assigned to Machinist, created after since and, unless until is zero,
+	// no later than until, oldest first. It fails with ErrTooManyReplies
+	// rather than return part of them.
+	Replies(ctx context.Context, since, until time.Time) ([]Reply, error)
+	// Return moves an issue back out of In Progress with a comment, because
+	// the job ended with no pull request and the next move is a person's.
+	Return(ctx context.Context, issue, comment string) error
 	// Comment posts body on an issue.
 	Comment(ctx context.Context, issue, body string) error
 	// Fail moves an issue back out of In Progress and says why.
@@ -220,7 +244,122 @@ func (p *Poller) Poll(ctx context.Context) error {
 		}
 	}
 	fmt.Fprintf(p.log(), "machinist: %s: %d assignments, %d jobs started\n", name, len(assignments), started)
-	return p.sync(ctx)
+	// A tracker that will not answer about replies must not stop the news
+	// about every job.
+	return errors.Join(p.replies(ctx), p.sync(ctx))
+}
+
+// repliesCursor keeps how far the tracker's replies have been read, beside
+// the assignments cursor.
+const repliesCursor = "#replies"
+
+// replies runs a job again for each comment an allowed person left on its
+// issue after the job started, with the comment added to the job's log. All
+// of one job's new replies go into one run. A reply to a job that is still
+// running waits, with every reply after it, until the run ends.
+func (p *Poller) replies(ctx context.Context) error {
+	name := p.Tracker.Name()
+	since, found, err := p.Store.Cursor(ctx, name, repliesCursor)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return p.Store.SetCursor(ctx, name, repliesCursor, p.clock())
+	}
+	// Too many replies at once: ask for a shorter span, so the cursor still
+	// moves forward.
+	var until time.Time
+	replies, err := p.Tracker.Replies(ctx, since, until)
+	for span := p.clock().Sub(since); errors.Is(err, ErrTooManyReplies) && span > time.Second; {
+		span /= 2
+		until = since.Add(span)
+		replies, err = p.Tracker.Replies(ctx, since, until)
+	}
+	if err != nil {
+		return err
+	}
+	// The cursor moves to just before the first reply left waiting, so it is
+	// read again. Replies read twice are skipped by their comment key.
+	cursor := maxTime(since, until)
+	var order []string
+	batches := map[string][]tickets.Comment{}
+	first := map[string]time.Time{}
+	for _, reply := range replies {
+		ticket, err := p.Store.TicketBySourceKey(ctx, reply.Key)
+		if errors.Is(err, tickets.ErrNotFound) {
+			cursor = maxTime(cursor, reply.CreatedAt)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		key := name + "-comment:" + reply.ID
+		if _, err := p.Store.TicketBySourceKey(ctx, key); err == nil {
+			cursor = maxTime(cursor, reply.CreatedAt)
+			continue
+		} else if !errors.Is(err, tickets.ErrNotFound) {
+			return err
+		}
+		switch {
+		case !reply.CreatedAt.After(ticket.CreatedAt):
+			// Discussion from before Machinist had the issue.
+		case !slices.Contains(p.Rules.AllowedUsers, reply.Author):
+			fmt.Fprintf(p.log(), "machinist: %s reply on job %s ignored: user %q may not start jobs\n", name, ticket.ID, reply.Author)
+		case ticket.State == tickets.StateWorking:
+			cursor = minTime(cursor, reply.CreatedAt.Add(-time.Nanosecond))
+			return p.runReplies(ctx, order, batches, first, cursor)
+		default:
+			if _, seen := batches[ticket.ID]; !seen {
+				order = append(order, ticket.ID)
+				first[ticket.ID] = reply.CreatedAt
+			}
+			batches[ticket.ID] = append(batches[ticket.ID], tickets.Comment{Body: strings.TrimSpace(reply.Body), Key: key})
+		}
+		cursor = maxTime(cursor, reply.CreatedAt)
+	}
+	return p.runReplies(ctx, order, batches, first, cursor)
+}
+
+// runReplies runs each job with its replies. A job that cannot run now,
+// because the hourly cap is reached or it was started another way meanwhile,
+// keeps its replies for a later poll: the cursor moves back before them.
+func (p *Poller) runReplies(ctx context.Context, order []string, batches map[string][]tickets.Comment, first map[string]time.Time, cursor time.Time) error {
+	name := p.Tracker.Name()
+	for _, ticketID := range order {
+		wait := func(reason string) {
+			cursor = minTime(cursor, first[ticketID].Add(-time.Nanosecond))
+			fmt.Fprintf(p.log(), "machinist: %s replies on job %s wait: %s\n", name, ticketID, reason)
+		}
+		if !p.allow(p.clock()) {
+			wait(fmt.Sprintf("%d jobs started in the last hour", p.MaxJobsPerHour))
+			continue
+		}
+		_, err := p.Store.Reply(ctx, ticketID, name, batches[ticketID])
+		switch {
+		case errors.Is(err, tickets.ErrStillWorking):
+			p.unallow()
+			wait("the job is running")
+		case err != nil:
+			return err
+		default:
+			fmt.Fprintf(p.log(), "machinist: %s replies ran job %s again\n", name, ticketID)
+		}
+	}
+	return p.Store.SetCursor(ctx, name, repliesCursor, cursor)
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
 }
 
 type handled int
@@ -278,6 +417,15 @@ func (p *Poller) allow(now time.Time) bool {
 	}
 	p.started = append(p.started, now)
 	return true
+}
+
+// unallow takes back the newest job counted against the hourly cap.
+func (p *Poller) unallow() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.started) > 0 {
+		p.started = p.started[:len(p.started)-1]
+	}
 }
 
 // maxReason bounds the failure reason Machinist writes on an issue.
@@ -350,22 +498,39 @@ func (p *Poller) syncJob(ctx context.Context, issue string, job tickets.TrackerJ
 			return fmt.Errorf("comment the closed pull request: %w", err)
 		}
 	}
+	if job.State == tickets.StateDone && job.PRNumber == 0 {
+		result, err := p.Store.LatestMessage(ctx, job.TicketID)
+		if err != nil {
+			return err
+		}
+		comment := "Machinist finished without a pull request: " + clip(result, "Every step passed.") + "\n\nReply here to give it more to go on, and it will run again."
+		if err := report(tickets.ReportFinished, func() error { return p.Tracker.Return(ctx, issue, comment) }); err != nil {
+			return fmt.Errorf("report the result: %w", err)
+		}
+	}
 	if job.State == tickets.StateFailed {
 		reason, err := p.Store.LatestMessage(ctx, job.TicketID)
 		if err != nil {
 			return err
 		}
-		if runes := []rune(reason); len(runes) > maxReason {
-			reason = string(runes[:maxReason-1]) + "…"
-		}
-		if reason == "" {
-			reason = "The job failed."
-		}
+		reason = clip(reason, "The job failed.")
 		if err := report(tickets.ReportFailed, func() error { return p.Tracker.Fail(ctx, issue, reason) }); err != nil {
 			return fmt.Errorf("report the failure: %w", err)
 		}
 	}
 	return nil
+}
+
+// clip bounds text Machinist writes on an issue, or gives fallback if empty.
+func clip(text, fallback string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fallback
+	}
+	if runes := []rune(text); len(runes) > maxReason {
+		return string(runes[:maxReason-1]) + "…"
+	}
+	return text
 }
 
 // cancelMoved cancels each job whose issue was unassigned from Machinist or

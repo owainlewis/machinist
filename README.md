@@ -1,18 +1,23 @@
-# Machinist
+# <img src=".github/assets/machinist-mark.svg" alt="" width="34" align="top"> Machinist
 
 A job runner for coding agents. Your team assigns work in one place, and every job runs the
 same predefined steps on machines you control: a laptop, a VM or Kubernetes. Everyone can
 see what is running and what is waiting on a person. It is early-access, open-source
 software.
 
+<a href=".github/assets/machinist-explainer.mp4"><img src=".github/assets/machinist-explainer.png" alt="Watch how Machinist works: a 50-second explainer with sound. A job is assigned from the web app or a Linear issue, a runner checks out the repository, an agent implements it, a second model family reviews it, and Machinist opens the pull request, merges it once checks pass and moves the issue to Done." width="100%"></a>
+
 - **One place for the team.** One control plane holds every job. Anyone signed in can see
   what each job is doing, step by step, and open its pull request.
 - **Runs anywhere.** A runner is a small daemon that asks the control plane for work. Start
   one on a Mac, a VM or a Kubernetes cluster. The control plane treats them all the same.
-- **A workflow you define.** A preset is a list of shell steps: clone, plan, build, test,
-  review, open a pull request. A step can run Claude Code, Codex or any command. A test
+- **A workflow you define.** A preset is a list of steps: clone, plan, build, test,
+  review, open a pull request. A step runs an agent (Claude Code, Codex, Pi or agy, each with
+  its own model and prompt) or any shell command. A test
   step is a gate an agent cannot skip.
 - **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.
+
+**Supported harnesses:** <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/harness-claude-dark.svg"><img src=".github/assets/harness-claude-light.svg" alt="Claude logo" height="20" align="top"></picture> Claude Code by Anthropic, <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/harness-openai-dark.svg"><img src=".github/assets/harness-openai-light.svg" alt="OpenAI logo" height="20" align="top"></picture> Codex by OpenAI, <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/harness-google-dark.svg"><img src=".github/assets/harness-google-light.svg" alt="Google logo" height="20" align="top"></picture> Antigravity by Google, and Pi. Logos belong to their owners. Machinist is not made by or tied to these companies.
 
 Send the work to the [run API](docs/run-api.md), or let an automation start it. The job works on its own branch, and the default preset opens one pull request.
 A job runs headless from start to finish and never stops to ask a question.
@@ -42,8 +47,9 @@ git and start Machinist there. `init` writes these, all meant to be committed:
 ```text
 config.yaml          the control plane
 runner.yaml          a local runner
-factory/presets/     four presets, each a short list of steps
-factory/prompts/     the prompts those steps give Claude Code
+factory/presets/     the default preset, a short list of steps
+factory/agents/      the agents those steps run: harness, model and prompt
+factory/prompts/     rules every agent follows
 factory/scripts/     the shell those steps run
 ```
 
@@ -83,7 +89,7 @@ and adds it to `.gitignore`. Run every command below from this directory, or pas
 
 5.  Open `http://127.0.0.1:7331`, sign in with the token and select **New job**. Pick the
     repository, type what you want done, and select **Start job**. Claude Code does the
-    work and opens a draft pull request. The same from `curl`:
+    work, opens a pull request, and merges it once its checks pass. The same from `curl`:
 
     ```sh
     curl -sS -X POST http://127.0.0.1:7331/machinist/run \
@@ -117,8 +123,9 @@ To stop a job, `POST /machinist/jobs/{id}/cancel`. To run an ended job again,
 Jobs run headless, from start to finish, and never stop to ask a question. When the agent
 has to guess, it says so under **Assumptions** in the pull request.
 
-Every job uses the `default` preset unless it names another: clone, run Claude Code on the
-prompt, open one pull request. Add a preset to `factory/presets/` only when a kind of job
+Every job uses the `default` preset unless it names another: clone, have an agent make the
+change, review it and fix what the review found, then open one pull request and merge it
+once its checks pass. Add a preset to `factory/presets/` only when a kind of job
 needs different steps.
 
 ## Testing Machinist itself
@@ -131,8 +138,12 @@ cd internal/controlplane/web && npm ci && npm test
 The Go tests run whole jobs end to end with fake `claude` and `gh` commands and a local
 Git remote. See [Development](docs/development.md).
 
-Machinist never merges a pull request unless you add an automation that uses a preset allowed
-to. See [Security](SECURITY.md) for what a step can do.
+The default preset has a second agent review the change, fixes what the review found,
+and merges the pull request once the repository's checks pass and the review is clean.
+Set `github.auto_merge: false` to leave every pull request open for a person. How a job
+ships is written in `factory/agents/publish.md`, so you change it by editing that file.
+Branch protection still decides what can merge. See [Security](SECURITY.md) for what a step
+can do.
 
 ## How it fits together
 

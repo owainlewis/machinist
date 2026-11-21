@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
@@ -42,16 +43,26 @@ type PRFinder func(ctx context.Context, repository, branch string) (*PR, error)
 // TokenMinter returns a short-lived GitHub token for one repository.
 type TokenMinter func(ctx context.Context, repository string) (string, error)
 
+// IdentityFinder returns the name and email that runs commit as.
+type IdentityFinder func(ctx context.Context) (name, email string, err error)
+
 type Options struct {
 	Store      *tickets.Store
 	Factory    *factory.Factory
 	RunTimeout time.Duration
 	Handle     string
-	FindPR     PRFinder
-	Post       Poster
+	// AutoMerge reaches every step as MACHINIST_AUTO_MERGE, true or false.
+	// The publish agent merges only when it is true.
+	AutoMerge bool
+	FindPR    PRFinder
+	Post      Poster
 	// GitHubToken, when set, gives each run its own token for its repository.
 	// Without it, a runner uses its own GH_TOKEN.
 	GitHubToken TokenMinter
+	// Identity, when set, is the git author of every run, in place of Handle.
+	// With a GitHub App it is the app's bot account, so commits show as the
+	// app's and not a person's.
+	Identity IdentityFinder
 	// PRInterval is the time between checks of open pull requests.
 	PRInterval time.Duration
 	Log        io.Writer
@@ -163,19 +174,29 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 			})
 		}
 	}
+	gitName, gitEmail := e.Handle, BotEmail(e.Handle)
+	if e.Identity != nil {
+		gitName, gitEmail, err = e.Identity(ctx)
+		if err != nil {
+			message := fmt.Sprintf("Machinist could not look up the GitHub App's bot account: %v.", err)
+			return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
+				return tickets.Transition{State: tickets.StateFailed, Message: message}
+			})
+		}
+	}
 	return &runner.RunRequest{
 		RunID:         claim.Run.ID,
 		TicketID:      claim.Ticket.ID,
 		Preset:        preset.Name,
 		Repository:    claim.Ticket.Repo,
 		Branch:        claim.Ticket.Branch(),
-		Vars:          map[string]string{"repo": claim.Ticket.Repo},
+		Vars:          map[string]string{"repo": claim.Ticket.Repo, "auto_merge": strconv.FormatBool(e.AutoMerge)},
 		Prompt:        tickets.RenderLog(claim.Entries),
 		Files:         e.Factory.Files,
 		Steps:         preset.Steps,
 		TimeoutMillis: timeout.Milliseconds(),
-		GitName:       e.Handle,
-		GitEmail:      BotEmail(e.Handle),
+		GitName:       gitName,
+		GitEmail:      gitEmail,
 		GitHubToken:   token,
 	}, nil
 }
@@ -269,7 +290,19 @@ func decide(status string, report *protocol.Report, reason string, pr *PR) ticke
 			transition.Message = "Reported a PR but none is open for this branch."
 		}
 	case protocol.OutcomeNoChange:
+		// A step that opened a pull request and left it for a person reports
+		// nothing more: the open pull request is what makes the job pr_ready.
 		transition.State, transition.Message = tickets.StateDone, report.Summary
+		if pr != nil && !pr.Closed && !pr.Merged {
+			transition.State = tickets.StatePRReady
+		}
+		if pr != nil && pr.Merged {
+			at := pr.ChangedAt
+			if at.IsZero() {
+				at = time.Now()
+			}
+			transition.MergedAt = &at
+		}
 	default:
 		transition.State, transition.Message = tickets.StateFailed, report.Summary
 	}

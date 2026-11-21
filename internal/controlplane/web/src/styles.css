@@ -1,6 +1,5 @@
 @import "tailwindcss" source("./");
 
-@custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
@@ -30,35 +29,8 @@
   --shadow-xs: 0 1px 2px rgb(15 23 42 / .05);
 }
 
-/* Each status color has a soft partner for the fill behind it. */
+/* Machinist is dark only. Each status color has a soft partner for the fill behind it. */
 :root {
-  color-scheme: light;
-  --background: #f6f6f8;
-  --surface: #ffffff;
-  --sidebar: #efeff3;
-  --muted: #f0f0f4;
-  --border: #e2e2e8;
-  --foreground: #18181c;
-  --muted-foreground: #5f5f6b;
-  --faint: #74747f;
-  --primary: #3b5bdb;
-  --primary-foreground: #ffffff;
-  --success: #1f8a4c;
-  --success-soft: #e3f5ea;
-  --warning: #a86b00;
-  --warning-soft: #fdf1d8;
-  --info: #2f55d4;
-  --info-soft: #e6ebfd;
-  --review: #6b3fc4;
-  --review-soft: #efe9fc;
-  --danger: #b3261e;
-  --danger-soft: #fde8e6;
-  --ring: #3b5bdb;
-  --chart-1: #3b5bdb;
-  --chart-2: #d9480f;
-}
-
-.dark {
   color-scheme: dark;
   --background: #161618;
   --surface: #1d1d20;
@@ -69,6 +41,7 @@
   --muted-foreground: #a1a1aa;
   --faint: #85858f;
   --primary: #4c6ef5;
+  --primary-foreground: #ffffff;
   --success: #5bc489;
   --success-soft: #173225;
   --warning: #e3b341;
@@ -121,10 +94,12 @@ code { font-size: .92em; }
   .sidebar-foot { flex-direction: row; margin: 0 0 0 auto; }
   .sidebar-foot .nav-item { width: 36px; height: 36px; justify-content: center; padding: 0; }
   .sidebar-foot .nav-item span { display: none; }
-  .app-sidebar nav { position: fixed; z-index: 40; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin: 0; overflow: visible; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--sidebar) 94%, transparent); padding: .4rem .3rem max(.4rem, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
+  .app-sidebar nav { position: fixed; z-index: 40; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin: 0; overflow: visible; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--sidebar) 94%, transparent); padding: .4rem .3rem max(.4rem, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
   .app-sidebar nav .nav-item { height: 3.1rem; flex-direction: column; justify-content: center; gap: .2rem; padding: 0 .1rem; color: var(--muted-foreground); font-size: .6875rem; line-height: 1rem; }
   .app-sidebar nav .nav-item-active { background: none; box-shadow: none; color: var(--foreground); }
   .app-sidebar nav .nav-item-active svg { color: var(--primary); }
+  .app-sidebar nav .nav-item { position: relative; }
+  .app-sidebar nav .nav-dot { position: absolute; top: .45rem; left: calc(50% + 8px); margin: 0; }
 }
 
 /* Every page is a left-aligned column of blocks with one gap between them. */
@@ -362,3 +337,23 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
   .group-table th:nth-child(3), .group-table td:nth-child(3), .group-table th:nth-child(4), .group-table td:nth-child(4) { display: none; }
   .rate-track { display: none; }
 }
+
+/* Setup: the checklist, then the projects. */
+.setup-page { display: grid; gap: 20px; max-width: 760px; }
+.setup-check { display: grid; grid-template-columns: 96px 1fr; align-items: start; gap: 12px; padding: 14px 16px; }
+.setup-check .pill { justify-content: center; }
+.setup-check strong, .project-row strong { font-weight: 600; }
+.setup-check p { margin-top: 2px; }
+.setup-fix { margin-top: 6px; color: var(--foreground); font-size: 14px; }
+.setup-check a, .section-head a { display: inline-flex; align-items: center; gap: 4px; color: var(--primary); }
+.setup-projects { display: grid; gap: 12px; }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.project-add-row { display: flex; gap: 8px; }
+.project-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; }
+.project-row .form-error { margin-top: 4px; font-size: 13px; }
+@media (max-width: 560px) {
+  .setup-check { grid-template-columns: 1fr; gap: 8px; }
+  .setup-check .pill { justify-self: start; }
+  .project-row { flex-direction: column; align-items: flex-start; }
+}
+.nav-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 999px; background: var(--warning); }

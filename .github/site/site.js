@@ -22,7 +22,31 @@ export function selectCommand(button, doc = document, selection = window.getSele
   selection.addRange(range);
 }
 
+// Turning sound on restarts the explainer, so the viewer hears it from the start.
+export function toggleSound(video, button) {
+  const soundOn = video.muted;
+  video.muted = !soundOn;
+  if (soundOn) {
+    video.currentTime = 0;
+    video.play();
+  }
+  button.textContent = soundOn ? 'Sound off' : 'Sound on';
+  button.setAttribute('aria-pressed', String(soundOn));
+  return soundOn;
+}
+
 if (typeof document !== 'undefined') {
+  const video = document.getElementById('explainer');
+  const soundButton = document.querySelector('[data-sound]');
+  if (video && soundButton) {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      video.removeAttribute('autoplay');
+      video.pause();
+      video.controls = true;
+    }
+    soundButton.addEventListener('click', () => toggleSound(video, soundButton));
+  }
+
   const copyButtons = document.querySelectorAll('[data-copy]');
 
   for (const button of copyButtons) {
@@ -30,12 +54,12 @@ if (typeof document !== 'undefined') {
       const label = button.querySelector('span');
       const showResult = (result) => {
         label.textContent = result;
-        window.setTimeout(() => { label.textContent = 'COPY'; }, 1600);
+        window.setTimeout(() => { label.textContent = 'Copy'; }, 1600);
       };
 
       try {
         await navigator.clipboard.writeText(button.dataset.copy);
-        showResult('COPIED');
+        showResult('Copied');
       } catch {
         let copied = false;
         try {
@@ -44,12 +68,12 @@ if (typeof document !== 'undefined') {
           copied = false;
         }
         if (copied) {
-          showResult('COPIED');
+          showResult('Copied');
           return;
         }
 
         selectCommand(button);
-        showResult('SELECTED');
+        showResult('Selected');
       }
     });
   }

@@ -110,13 +110,21 @@ cannot use it. On a VM:
 systemctl restart machinist-control-plane machinist-runner
 ```
 
+Runs commit as the app's bot account, such as `machinist-yourname[bot]`, so GitHub shows
+the app as the author of every commit, pull request, comment and merge. Machinist looks the
+account up from the app the first time a run starts.
+
 Runners no longer need `GH_TOKEN`. A runner that still has one uses it only for a run that
 arrives without a token, and for `machinist runner check`, which runs without the control
 plane.
 
 ### 5. Check it works
 
-Start a job on one of the repositories, from the web app's **New job** form or the
+Open the **Setup** page in the web app. It shows the app's bot account and flags any
+project the app is not installed on. Add more projects there, with no restart. Each one
+needs the app installed on it first.
+
+Then start a job on one of the repositories, from the web app's **New job** form or the
 [run API](run-api.md). If the checkout step succeeds, the app works. If the job fails before
 any step runs, its page says why:
 

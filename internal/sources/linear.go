@@ -24,6 +24,9 @@ const (
 	// maxLinearPages bounds one poll. Anything left is read on the next one.
 	maxLinearPages  = 8
 	maxLinearAnswer = 4 << 20
+	// maxReplyPages bounds one read of replies. Replies are read whole or not
+	// at all, so the cursor never moves past one that was not read.
+	maxReplyPages = 40
 )
 
 // Linear reads issues assigned to the Machinist app from Linear's API, moves
@@ -141,7 +144,7 @@ func (l *Linear) Comment(ctx context.Context, issue, body string) error {
 }
 
 // Start moves an issue to its team's In Progress state, or the first started
-// state if the team has none by that name.
+// state if the team has none by that name, and says Machinist is on it.
 func (l *Linear) Start(ctx context.Context, issue string) error {
 	states, err := l.teamStates(ctx, issue)
 	if err != nil {
@@ -151,8 +154,14 @@ func (l *Linear) Start(ctx context.Context, issue string) error {
 	if !ok {
 		return errors.New("linear: the team has no started state")
 	}
-	return l.move(ctx, issue, state)
+	if err := l.move(ctx, issue, state); err != nil {
+		return err
+	}
+	return l.Comment(ctx, issue, acknowledgement)
 }
+
+// acknowledgement is Machinist's comment when it starts a job on an issue.
+const acknowledgement = "Machinist is working on this. It will comment here with the pull request, or with what it found if no change is needed."
 
 // Fail moves an issue back to its team's first unstarted state, such as Todo,
 // and comments why.
@@ -168,7 +177,82 @@ func (l *Linear) Fail(ctx context.Context, issue, reason string) error {
 	if err := l.move(ctx, issue, state); err != nil {
 		return err
 	}
-	return l.Comment(ctx, issue, "Machinist's job failed: "+reason)
+	return l.Comment(ctx, issue, "Machinist's job failed: "+reason+"\n\nReply here to tell it what to change, and it will run again.")
+}
+
+// Return moves an issue back to its team's first unstarted state, such as
+// Todo, and comments.
+func (l *Linear) Return(ctx context.Context, issue, comment string) error {
+	states, err := l.teamStates(ctx, issue)
+	if err != nil {
+		return err
+	}
+	state, ok := pickState(states, "unstarted", "Todo")
+	if !ok {
+		return errors.New("linear: the team has no unstarted state")
+	}
+	if err := l.move(ctx, issue, state); err != nil {
+		return err
+	}
+	return l.Comment(ctx, issue, comment)
+}
+
+// Replies returns comments by anyone but the app on issues assigned to the
+// app in connected teams, created after since, oldest first.
+func (l *Linear) Replies(ctx context.Context, since, until time.Time) ([]Reply, error) {
+	window := fmt.Sprintf("gt: %s", quote(since.UTC().Format(time.RFC3339Nano)))
+	if !until.IsZero() {
+		window += fmt.Sprintf(", lte: %s", quote(until.UTC().Format(time.RFC3339Nano)))
+	}
+	query := fmt.Sprintf(`query Replies($after: String) {
+  comments(first: %d, after: $after, orderBy: createdAt, filter: {createdAt: {%s}, user: {id: {neq: %s}}, issue: {assignee: {id: {eq: %s}}, team: {key: {in: %s}}}}) {
+    nodes { id body createdAt user { id } issue { id } }
+    pageInfo { hasNextPage endCursor }
+  }
+}`, linearPage, window, quote(l.AppUserID), quote(l.AppUserID), quote(l.Teams))
+	var replies []Reply
+	var after *string
+	for page := 0; ; page++ {
+		if page == maxReplyPages {
+			return nil, fmt.Errorf("linear: more than %d replies since %s: %w", maxReplyPages*linearPage, since.Format(time.RFC3339), ErrTooManyReplies)
+		}
+		var answer struct {
+			Comments struct {
+				Nodes []struct {
+					ID        string    `json:"id"`
+					Body      string    `json:"body"`
+					CreatedAt time.Time `json:"createdAt"`
+					User      *struct {
+						ID string `json:"id"`
+					} `json:"user"`
+					Issue struct {
+						ID string `json:"id"`
+					} `json:"issue"`
+				} `json:"nodes"`
+				PageInfo struct {
+					HasNextPage bool   `json:"hasNextPage"`
+					EndCursor   string `json:"endCursor"`
+				} `json:"pageInfo"`
+			} `json:"comments"`
+		}
+		if err := l.do(ctx, query, map[string]any{"after": after}, &answer); err != nil {
+			return nil, err
+		}
+		for _, comment := range answer.Comments.Nodes {
+			// A comment with no user came from an integration, not a person.
+			if comment.User == nil || comment.User.ID == l.AppUserID || strings.TrimSpace(comment.Body) == "" {
+				continue
+			}
+			replies = append(replies, Reply{Key: "linear:" + comment.Issue.ID, ID: comment.ID, Issue: comment.Issue.ID, Author: comment.User.ID, Body: comment.Body, CreatedAt: comment.CreatedAt})
+		}
+		if !answer.Comments.PageInfo.HasNextPage {
+			break
+		}
+		cursor := answer.Comments.PageInfo.EndCursor
+		after = &cursor
+	}
+	sort.SliceStable(replies, func(a, b int) bool { return replies[a].CreatedAt.Before(replies[b].CreatedAt) })
+	return replies, nil
 }
 
 // Finish moves an issue to its team's Done state, or the first completed state
