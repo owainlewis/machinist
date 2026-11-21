@@ -23,24 +23,33 @@ func openTokenStore(options *commandOptions) (*tickets.Store, error) {
 
 func newTokenCommand(options *commandOptions) *cobra.Command {
 	root := &cobra.Command{Use: "token", Short: "Manage tokens for developers and runners"}
-	root.AddCommand(&cobra.Command{
+	var runner bool
+	create := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a token and print it once",
-		Args:  cobra.ExactArgs(1),
+		Long: "Create a token and print it once. A token is for a person, to sign in and use the API, unless --runner " +
+			"makes it a runner's, which can only take runs and report on them.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			store, err := openTokenStore(options)
 			if err != nil {
 				return err
 			}
 			defer store.Close()
-			token, err := store.CreateToken(command.Context(), args[0])
+			role := tickets.RoleOperator
+			if runner {
+				role = tickets.RoleRunner
+			}
+			token, err := store.CreateToken(command.Context(), args[0], role)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintln(options.stdout, token)
 			return nil
 		},
-	})
+	}
+	create.Flags().BoolVar(&runner, "runner", false, "make a runner's token, which can only take runs and report on them")
+	root.AddCommand(create)
 	root.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List tokens",
@@ -56,9 +65,9 @@ func newTokenCommand(options *commandOptions) *cobra.Command {
 				return err
 			}
 			table := tabwriter.NewWriter(options.stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(table, "NAME\tCREATED\tLAST USED\tREVOKED")
+			fmt.Fprintln(table, "NAME\tROLE\tCREATED\tLAST USED\tREVOKED")
 			for _, token := range tokens {
-				fmt.Fprintf(table, "%s\t%s\t%s\t%s\n", token.Name, token.CreatedAt.Format(time.RFC3339), displayTime(token.LastUsedAt), displayTime(token.RevokedAt))
+				fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\n", token.Name, displayRole(token.Role), token.CreatedAt.Format(time.RFC3339), displayTime(token.LastUsedAt), displayTime(token.RevokedAt))
 			}
 			return table.Flush()
 		},
@@ -85,6 +94,14 @@ func newTokenCommand(options *commandOptions) *cobra.Command {
 		},
 	})
 	return root
+}
+
+// displayRole names a token's role. A token from before roles can do both.
+func displayRole(role string) string {
+	if role == tickets.RoleAll {
+		return "any"
+	}
+	return role
 }
 
 func displayTime(value *time.Time) string {

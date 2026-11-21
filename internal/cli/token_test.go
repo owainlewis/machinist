@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ func TestTokenLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer store.Close()
-		_, err = store.TokenName(context.Background(), token)
+		_, _, err = store.TokenName(context.Background(), token)
 		return err
 	}
 	if err := valid(); err != nil {
@@ -62,6 +63,20 @@ func TestTokenLifecycle(t *testing.T) {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 	if code, stdout, _ := runToken(t, path, "create", "alice"); code != 0 || strings.TrimSpace(stdout) == token {
+		t.Fatalf("code = %d, stdout = %q", code, stdout)
+	}
+}
+
+func TestTokenCreateGivesARole(t *testing.T) {
+	path := writeConfigFile(t, t.TempDir(), "config.yaml", "server:\n  database: tickets.db\n\ngithub:\n  handle: bot\n")
+	if code, _, stderr := runToken(t, path, "create", "alice"); code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if code, _, stderr := runToken(t, path, "create", "mac-mini", "--runner"); code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	code, stdout, _ := runToken(t, path, "list")
+	if code != 0 || !regexp.MustCompile(`alice\s+operator`).MatchString(stdout) || !regexp.MustCompile(`mac-mini\s+runner`).MatchString(stdout) {
 		t.Fatalf("code = %d, stdout = %q", code, stdout)
 	}
 }

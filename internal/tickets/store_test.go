@@ -441,21 +441,21 @@ func TestIngestRunEventsIsOrderedAndIdempotent(t *testing.T) {
 
 func TestTokensAuthenticateByHashOnly(t *testing.T) {
 	store := openStore(t)
-	token, err := store.CreateToken(t.Context(), "runner-1")
+	token, err := store.CreateToken(t.Context(), "runner-1", RoleAll)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name, err := store.TokenName(t.Context(), token); err != nil || name != "runner-1" {
+	if name, role, err := store.TokenName(t.Context(), token); err != nil || name != "runner-1" || role != RoleAll {
 		t.Fatalf("name = %q, err = %v", name, err)
 	}
-	if _, err := store.TokenName(t.Context(), "wrong"); !errors.Is(err, ErrNotFound) {
+	if _, _, err := store.TokenName(t.Context(), "wrong"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("wrong token: %v", err)
 	}
 	var stored string
 	if err := store.db.QueryRow(`SELECT token_hash FROM tokens`).Scan(&stored); err != nil || stored == token {
 		t.Fatalf("stored = %q, err = %v", stored, err)
 	}
-	if _, err := store.CreateToken(t.Context(), " "); err == nil {
+	if _, err := store.CreateToken(t.Context(), " ", RoleAll); err == nil {
 		t.Fatal("empty name accepted")
 	}
 }
@@ -534,23 +534,23 @@ func TestListTicketsPutsANewerFinishedTicketFirst(t *testing.T) {
 
 func TestTokenNamesAreUniqueWhileActive(t *testing.T) {
 	store := openStore(t)
-	token, err := store.CreateToken(t.Context(), "alice")
+	token, err := store.CreateToken(t.Context(), "alice", RoleOperator)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateToken(t.Context(), "alice"); !errors.Is(err, ErrTokenExists) {
+	if _, err := store.CreateToken(t.Context(), "alice", RoleOperator); !errors.Is(err, ErrTokenExists) {
 		t.Fatalf("error = %v", err)
 	}
 	if err := store.RevokeToken(t.Context(), "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.TokenName(t.Context(), token); !errors.Is(err, ErrNotFound) {
+	if _, _, err := store.TokenName(t.Context(), token); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("error = %v", err)
 	}
 	if err := store.RevokeToken(t.Context(), "alice"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("error = %v", err)
 	}
-	if _, err := store.CreateToken(t.Context(), "alice"); err != nil {
+	if _, err := store.CreateToken(t.Context(), "alice", RoleOperator); err != nil {
 		t.Fatal(err)
 	}
 	tokens, err := store.ListTokens(t.Context())

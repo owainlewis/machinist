@@ -84,7 +84,9 @@ between posting and recording can post a message twice.
 ## Runners
 
 A runner holds a token and polls only when it has a free slot. Four routes connect it to
-the control plane: poll, heartbeat, events and complete. A run has a 10-minute lease stored
+the control plane: poll, heartbeat, events and complete. They need a runner's token, and the
+last three check that the run was given to that token's runner. A person's token cannot use
+them. A run has a 10-minute lease stored
 in the database and renewed by heartbeats. So runs outlive a control plane restart, and a
 lost runner's ticket continues on any other runner once its lease expires.
 

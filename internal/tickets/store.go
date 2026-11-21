@@ -78,7 +78,8 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_agent_run ON runs(ticket_id) WHERE kind='agent' AND status IN ('queued','running');
 CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
 CREATE TABLE IF NOT EXISTS tokens (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT,
+  role TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_token_per_name ON tokens(name) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS runners (
   name TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT '', harnesses TEXT NOT NULL DEFAULT '', slots INTEGER NOT NULL DEFAULT 1, last_contact TEXT NOT NULL);
@@ -230,6 +231,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err = addColumns(db, "run_stages", "agents TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = addColumns(db, "tokens", "role TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -1120,10 +1125,28 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// CreateToken stores a new token and returns its only plaintext copy.
-func (s *Store) CreateToken(ctx context.Context, name string) (string, error) {
+// The roles a token can have. A runner token polls for runs and reports on
+// its own. An operator token is for people: the web app, the API and the CLI.
+// A token from before roles has RoleAll and can do both.
+const (
+	RoleAll      = ""
+	RoleOperator = "operator"
+	RoleRunner   = "runner"
+)
+
+// Allows reports whether a token with this role may act as want.
+func Allows(role, want string) bool { return role == RoleAll || role == want }
+
+// CreateToken stores a new token with a role and returns its only plaintext
+// copy.
+func (s *Store) CreateToken(ctx context.Context, name, role string) (string, error) {
 	if strings.TrimSpace(name) == "" {
 		return "", errors.New("token name is required")
+	}
+	switch role {
+	case RoleAll, RoleOperator, RoleRunner:
+	default:
+		return "", fmt.Errorf("unknown token role %q", role)
 	}
 	id, err := randomHex(8)
 	if err != nil {
@@ -1142,7 +1165,7 @@ func (s *Store) CreateToken(ctx context.Context, name string) (string, error) {
 		if taken > 0 {
 			return ErrTokenExists
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at) VALUES(?,?,?,?)`, id, name, hashToken(token), stamp(s.now()))
+		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at,role) VALUES(?,?,?,?,?)`, id, name, hashToken(token), stamp(s.now()), role)
 		return err
 	})
 	if err != nil {
@@ -1154,6 +1177,7 @@ func (s *Store) CreateToken(ctx context.Context, name string) (string, error) {
 // TokenInfo describes a token without revealing it.
 type TokenInfo struct {
 	Name       string
+	Role       string
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
 	RevokedAt  *time.Time
@@ -1161,7 +1185,7 @@ type TokenInfo struct {
 
 // ListTokens returns every token, oldest first.
 func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,created_at,last_used_at,revoked_at FROM tokens ORDER BY created_at,id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name,role,created_at,last_used_at,revoked_at FROM tokens ORDER BY created_at,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1171,7 +1195,7 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
 		var info TokenInfo
 		var created string
 		var used, revoked sql.NullString
-		if err := rows.Scan(&info.Name, &created, &used, &revoked); err != nil {
+		if err := rows.Scan(&info.Name, &info.Role, &created, &used, &revoked); err != nil {
 			return nil, err
 		}
 		info.CreatedAt = *parseTime(sql.NullString{String: created, Valid: true})
@@ -1199,14 +1223,13 @@ func (s *Store) RevokeToken(ctx context.Context, name string) error {
 	return err
 }
 
-// TokenName returns the name of a valid token and records its use.
-func (s *Store) TokenName(ctx context.Context, token string) (string, error) {
-	var name string
-	err := s.db.QueryRowContext(ctx, `UPDATE tokens SET last_used_at=? WHERE token_hash=? AND revoked_at IS NULL RETURNING name`, stamp(s.now()), hashToken(token)).Scan(&name)
+// TokenName returns the name and role of a valid token and records its use.
+func (s *Store) TokenName(ctx context.Context, token string) (name, role string, err error) {
+	err = s.db.QueryRowContext(ctx, `UPDATE tokens SET last_used_at=? WHERE token_hash=? AND revoked_at IS NULL RETURNING name,role`, stamp(s.now()), hashToken(token)).Scan(&name, &role)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNotFound
+		return "", "", ErrNotFound
 	}
-	return name, err
+	return name, role, err
 }
 
 // addColumns adds columns that a database from an older Machinist lacks.

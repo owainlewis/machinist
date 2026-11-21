@@ -36,10 +36,11 @@ other repository the token covers. Run one deployment per trust domain. A
 alone, cannot change workflows or settings, and expires after an hour. The app's private key
 stays on the control plane.
 
-**Machinist tokens are powerful.** Any token holder can read run history, claim runs, and
-assign work that tells an agent to reveal its runner's credentials. Treat a token as equal to the
-GitHub login and the model credential. Give each person and runner their own, so it can be
-revoked with `machinist token revoke`. Tokens are stored as hashes.
+**Machinist tokens are powerful.** A person's token can read run history and assign work that
+tells an agent to reveal its runner's credentials. Treat it as equal to the GitHub login and the
+model credential. A runner's token (`--runner`) can only take runs, which carry their GitHub
+token, and report on its own runs. Give each person and runner their own, so it can be revoked
+with `machinist token revoke`. Tokens are stored as hashes.
 
 **Keep the control plane private.** Every route needs a token, except `/healthz`, sign-in,
 and static assets. Tokens are sent in the clear unless the network or TLS protects them, and

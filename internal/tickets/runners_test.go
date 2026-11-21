@@ -110,7 +110,7 @@ func TestFleetShowsRunningJobsAndTheQueue(t *testing.T) {
 
 func TestRevokingATokenRemovesItsRunner(t *testing.T) {
 	store := openStore(t)
-	if _, err := store.CreateToken(t.Context(), "runner-1"); err != nil {
+	if _, err := store.CreateToken(t.Context(), "runner-1", RoleAll); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1); err != nil {

@@ -5,10 +5,11 @@ control plane makes no decision based on where a run happens. Each runner needs 
 token and network access to the control plane. It needs no inbound route.
 
 ```sh
-machinist token create mac-mini
+machinist token create mac-mini --runner
 ```
 
-Save the printed token in the file `token_file` names, readable only by the runner's user.
+A runner's token can take runs and report on its own runs, and nothing else. It cannot sign
+in to the web app or use the API. Save the printed token in the file `token_file` names, readable only by the runner's user.
 
 Upgrade the control plane and runners together.
 
@@ -103,7 +104,7 @@ the control plane image. Before first use, apply the overlay and create these Se
 | Secret | Namespace | Holds |
 | --- | --- | --- |
 | `machinist-github` | `machinist-system` | `GH_TOKEN` for the control plane |
-| `machinist-runner-token` | `machinist-system` | `token`, from `machinist token create` |
+| `machinist-runner-token` | `machinist-system` | `token`, from `machinist token create <name> --runner` |
 | `machinist-agent` | `machinist-runners` | `GH_TOKEN` and the variables steps need |
 
 ## Watching the fleet

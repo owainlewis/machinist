@@ -46,7 +46,25 @@ func (s *Server) listRunners(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, map[string]any{"runners": runners, "queue": queue})
 }
 
+// ownsRun checks that the run was given to this runner, so one runner cannot
+// report on, or stop, another's work.
+func (s *Server) ownsRun(w http.ResponseWriter, r *http.Request, tokenName string) bool {
+	run, err := s.store.Run(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeRunError(w, err)
+		return false
+	}
+	if run.Runner != tokenName {
+		writeError(w, http.StatusForbidden, fmt.Errorf("run %s belongs to another runner", run.ID))
+		return false
+	}
+	return true
+}
+
 func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request, tokenName string) {
+	if !s.ownsRun(w, r, tokenName) {
+		return
+	}
 	if err := s.store.TouchRunner(r.Context(), tokenName); err != nil {
 		writeRunError(w, err)
 		return
@@ -59,7 +77,10 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request, tokenName str
 	writeJSON(w, http.StatusOK, protocol.HeartbeatResponse{Cancel: cancel})
 }
 
-func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request, _ string) {
+func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request, tokenName string) {
+	if !s.ownsRun(w, r, tokenName) {
+		return
+	}
 	var batch protocol.RunEventBatch
 	if !decodeJSON(w, r, protocol.MaxRunEventBatchBytes, &batch) {
 		return
@@ -76,7 +97,10 @@ func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request, _ string) 
 	writeJSON(w, http.StatusOK, protocol.RunEventPage{Cursor: cursor})
 }
 
-func (s *Server) complete(w http.ResponseWriter, r *http.Request, _ string) {
+func (s *Server) complete(w http.ResponseWriter, r *http.Request, tokenName string) {
+	if !s.ownsRun(w, r, tokenName) {
+		return
+	}
 	var completion protocol.Completion
 	if !decodeJSON(w, r, maxRequestBytes, &completion) {
 		return
