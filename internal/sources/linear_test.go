@@ -492,7 +492,7 @@ func TestAMergedPullRequestMovesItsIssueToDoneOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.poll(t)
-	if err := p.store.SetPRState(t.Context(), job.ID, 7, tickets.PRMerged, p.now); err != nil {
+	if err := p.setPR(t, job.ID, tickets.PRMerged); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -512,7 +512,7 @@ func TestAClosedPullRequestIsCommentedOnItsIssue(t *testing.T) {
 	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.store.SetPRState(t.Context(), job.ID, 7, tickets.PRClosed, p.now); err != nil {
+	if err := p.setPR(t, job.ID, tickets.PRClosed); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -523,5 +523,41 @@ func TestAClosedPullRequestIsCommentedOnItsIssue(t *testing.T) {
 	}
 	if got := p.linear.stateOf("a1"); got != "s-progress" {
 		t.Fatalf("state = %q", got)
+	}
+}
+
+// setPR records what GitHub says about the job's pull request #7.
+func (p *polling) setPR(t *testing.T, id, state string) error {
+	t.Helper()
+	listed, err := p.store.Ticket(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p.store.SetPRState(t.Context(), listed, 7, state, p.now)
+}
+
+func TestRunningAMergedJobAgainMovesItsIssueBackToInProgress(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.setPR(t, job.ID, tickets.PRMerged); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	if got := p.linear.stateOf("a1"); got != "s-done" {
+		t.Fatalf("state = %q", got)
+	}
+	if _, err := p.store.Rerun(t.Context(), job.ID, "owain"); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poll(t)
+	if got := p.linear.stateOf("a1"); got != "s-progress" {
+		t.Fatalf("issue state = %q", got)
+	}
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("job state = %q", got)
 	}
 }

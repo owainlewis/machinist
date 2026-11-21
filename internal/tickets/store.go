@@ -661,7 +661,12 @@ func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) 
 		if err = insertEntry(ctx, tx, ticketID, EntryComment, by, "Run the job again.", nil, now); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+		// The new run's pull request is followed afresh, and its tracker is told
+		// again that it started and how it ends.
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed); err != nil {
 			return err
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)

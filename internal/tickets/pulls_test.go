@@ -1,9 +1,11 @@
 package tickets
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestADatabaseFromBeforePRStatesOpensAndKeepsItsJobs(t *testing.T) {
@@ -30,5 +32,35 @@ INSERT INTO tickets VALUES ('t_old','api','owner/repo',NULL,'Old','pr_ready','de
 		if err != nil || len(open) != 1 || open[0].ID != "t_old" || open[0].PRNumber != 7 || open[0].PRState != "" {
 			t.Fatalf("open = %+v, err = %v", open, err)
 		}
+	}
+}
+
+func TestAPRResultFromBeforeARerunIsIgnored(t *testing.T) {
+	store := openStore(t)
+	now := time.Date(2026, 11, 21, 8, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
+	ticket := createTicket(t, store, "k1")
+	ctx := context.Background()
+	if err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.TicketsWithOpenPRs(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("listed = %+v, err = %v", listed, err)
+	}
+	// While GitHub is asked about #7, the job runs again and opens #8.
+	now = now.Add(time.Minute)
+	if _, err := store.Rerun(ctx, ticket.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 8}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPRState(ctx, listed[0], 7, PRMerged, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Ticket(ctx, ticket.ID)
+	if err != nil || got.State != StatePRReady || got.PRNumber != 8 || got.PRState != PROpen {
+		t.Fatalf("ticket = %+v, err = %v", got, err)
 	}
 }

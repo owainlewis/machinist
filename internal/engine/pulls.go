@@ -83,7 +83,7 @@ func (e *Engine) CheckPRs(ctx context.Context) error {
 		if at.IsZero() {
 			at = e.now()
 		}
-		if err := e.Store.SetPRState(ctx, ticket.ID, pr.Number, state, at); err != nil {
+		if err := e.Store.SetPRState(ctx, ticket, pr.Number, state, at); err != nil {
 			return fmt.Errorf("job %s: %w", ticket.ID, err)
 		}
 		if state != tickets.PROpen {
