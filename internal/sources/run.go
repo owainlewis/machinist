@@ -54,7 +54,10 @@ func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, er
 	if i.Presets == nil || !i.Presets(job.preset) {
 		return tickets.Ticket{}, false, invalid("preset %q does not exist", job.preset)
 	}
-	repository, connected := i.repository(job.repo)
+	repository, connected, err := i.repository(ctx, job.repo)
+	if err != nil {
+		return tickets.Ticket{}, false, err
+	}
 	if !connected {
 		return tickets.Ticket{}, false, invalid("vars.repo %q is not connected", job.repo)
 	}

@@ -247,11 +247,36 @@ func TestIdentityIsTheAppsBotAccount(t *testing.T) {
 	app, fake := newApp(t)
 	for range 2 {
 		identity, err := app.Identity(t.Context())
-		if err != nil || identity != (Identity{Name: "machinistagent[bot]", Email: "359318932+machinistagent[bot]@users.noreply.github.com"}) {
+		if err != nil || identity != (Identity{Slug: "machinistagent", Name: "machinistagent[bot]", Email: "359318932+machinistagent[bot]@users.noreply.github.com"}) {
 			t.Fatalf("identity = %+v, err = %v", identity, err)
 		}
 	}
 	if lookups := fake.lookups.Load(); lookups != 2 {
 		t.Fatalf("looked up %d times, want 2 (the app and its bot user, once)", lookups)
+	}
+}
+
+func TestInstalledSaysWhyTheAppCannotReachARepository(t *testing.T) {
+	app, fake := newApp(t)
+	if err := app.Installed(t.Context(), "owner/repo"); err != nil {
+		t.Fatal(err)
+	}
+	// Removing the app from a repository shows up at once, even after a
+	// token for it was cached.
+	if _, err := app.Token(t.Context(), "owner/repo"); err != nil {
+		t.Fatal(err)
+	}
+	delete(fake.installed, "owner/repo")
+	if err := app.Installed(t.Context(), "owner/repo"); err == nil {
+		t.Fatal("a removed installation still counted as installed")
+	}
+	if err := app.Installed(t.Context(), "owner/missing"); err == nil || !strings.Contains(err.Error(), "not installed on owner/missing") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := app.Installed(t.Context(), "not a repo"); err == nil || !strings.Contains(err.Error(), "owner/name") {
+		t.Fatalf("err = %v", err)
+	}
+	if url := (Identity{Slug: "machinistagent"}).InstallURL(); url != "https://github.com/apps/machinistagent/installations/new" {
+		t.Fatalf("url = %s", url)
 	}
 }
