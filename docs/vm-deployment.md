@@ -118,7 +118,7 @@ Open `http://127.0.0.1:7331` and sign in with the token.
 
 For a first real job, select **New job**, pick a repository and give it a small task, such
 as adding a section to the README. The job page shows each step as it runs, and the job
-ends with a draft pull request. If it fails, the page shows which step failed and why.
+ends with a pull request, which merges once its checks pass when `github.auto_merge` is on. If it fails, the page shows which step failed and why.
 
 ## Move an old install
 
