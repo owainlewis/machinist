@@ -95,6 +95,7 @@ test('setup snippets match the quick start in the README', async () => {
   assert.deepEqual(copied, [
     'go build -o ./bin/machinist ./cmd/machinist && export PATH="$PWD/bin:$PATH"',
     'machinist init',
+    'gh api user --jq .login',
     'GH_TOKEN=$(gh auth token) machinist start',
   ]);
   // Each part of each command is a line of the README's quick start, so the bare machinist command is on PATH.
