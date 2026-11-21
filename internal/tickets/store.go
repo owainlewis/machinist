@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS run_activity_events (run TEXT NOT NULL, sequence INTE
 CREATE TABLE IF NOT EXISTS run_progress (run TEXT PRIMARY KEY, step TEXT NOT NULL DEFAULT '', step_started_at TEXT, action TEXT NOT NULL DEFAULT '', partial TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS run_stages (
   run TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '',
-  tokens INTEGER, cost REAL, duration_millis INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', PRIMARY KEY(run, position));`
+  tokens INTEGER, cost REAL, duration_millis INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', PRIMARY KEY(run, position));
+CREATE TABLE IF NOT EXISTS projects (repo TEXT PRIMARY KEY COLLATE NOCASE, added_by TEXT NOT NULL, added_at TEXT NOT NULL);`
 
 type Store struct {
 	db  *sql.DB
@@ -186,6 +187,9 @@ type Transition struct {
 	Report   string
 	PRNumber int
 	FirstPR  *FirstPR
+	// MergedAt is set when the run merged its own pull request, so the job
+	// counts as merged without waiting for the pull request watcher.
+	MergedAt *time.Time
 }
 
 // RunCompletion is what a runner reported when a run ended.
@@ -648,6 +652,19 @@ var ErrStillWorking = errors.New("the job is still running")
 // its pull request open. The request is logged as a comment from by, so the
 // next run sees it and the lost-runner count starts again.
 func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) {
+	return s.Reply(ctx, ticketID, by, []Comment{{Body: "Run the job again."}})
+}
+
+// Comment is one comment to add to a ticket's log. Key, when set, is unique:
+// a comment whose key is already stored is never added twice.
+type Comment struct {
+	Body string
+	Key  string
+}
+
+// Reply adds comments to an ended ticket and runs it again on the same
+// branch. The new run's prompt is the whole log, so it sees them.
+func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comment) (Ticket, error) {
 	var ticket Ticket
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -658,15 +675,21 @@ func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) 
 			return ErrStillWorking
 		}
 		now := s.now()
-		if err = insertEntry(ctx, tx, ticketID, EntryComment, by, "Run the job again.", nil, now); err != nil {
-			return err
+		for _, comment := range comments {
+			var key any
+			if comment.Key != "" {
+				key = comment.Key
+			}
+			if err = insertEntry(ctx, tx, ticketID, EntryComment, by, comment.Body, key, now); err != nil {
+				return err
+			}
 		}
 		// The new run's pull request is followed afresh, and its tracker is told
 		// again that it started and how it ends.
 		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed); err != nil {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed, ReportFinished); err != nil {
 			return err
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)
@@ -698,6 +721,11 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 	// closes.
 	if transition.State == StatePRReady {
 		if _, err := q.ExecContext(ctx, `UPDATE tickets SET pr_state=?,pr_state_at=? WHERE id=?`, PROpen, stamp(now), ticket.ID); err != nil {
+			return err
+		}
+	}
+	if transition.MergedAt != nil {
+		if _, err := q.ExecContext(ctx, `UPDATE tickets SET pr_state=?,pr_state_at=?,merged_at=COALESCE(merged_at,?) WHERE id=?`, PRMerged, stamp(now), stamp(*transition.MergedAt), ticket.ID); err != nil {
 			return err
 		}
 	}

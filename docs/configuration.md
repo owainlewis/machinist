@@ -21,6 +21,7 @@ my-machinist/          a git repository
   config.yaml          the control plane
   runner.yaml          a runner
   factory/presets/     presets
+  factory/agents/      agents
   factory/prompts/     prompts
   factory/scripts/     scripts
   .machinist/          state, ignored by git
@@ -45,6 +46,7 @@ server:
 github:
   handle: machinist-bot
   repositories: [owner/name]
+  auto_merge: true
 ```
 
 | Key | Meaning |
@@ -55,8 +57,9 @@ github:
 | `default_preset` | The preset a job uses when it names none |
 | `run_timeout` | The deadline for one run, when its preset sets none |
 | `tls_cert`, `tls_key` | Serve HTTPS, and mark the sign-in cookie Secure |
-| `github.handle` | The bot's login. Use a dedicated account |
-| `github.repositories` | The repositories Machinist serves |
+| `github.handle` | The bot's login. Use a dedicated account. With a GitHub App, runs commit as the app's bot account instead |
+| `github.repositories` | Repositories Machinist works on. You can also add them on the Setup page, with no restart. Automations and `linear.teams` can only name repositories listed here |
+| `github.auto_merge` | Whether jobs merge their own pull requests once the checks pass and the review is clean. On unless set to `false`; when off, every pull request stays open for a person. Steps see it as `MACHINIST_AUTO_MERGE` |
 | `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
 | `github.app.private_key_file` | The app's private key file. Keep it out of git |
 | `linear.*` | Start jobs from Linear issues. Off unless `linear.teams` is set. See [Linear](linear.md) |

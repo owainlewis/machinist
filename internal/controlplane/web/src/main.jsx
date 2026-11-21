@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/inter";
-import { ChartColumn, LogOut, Moon, Rows3, Server, Sun } from "lucide-react";
+import { ChartColumn, LogOut, Rows3, Server, Settings2 } from "lucide-react";
 import { Brand } from "@/components/ui/brand";
 import { cn } from "@/lib/utils";
 import { routeFromHash } from "@/routes";
@@ -12,25 +12,18 @@ import { JobPage } from "./job-page.jsx";
 import { JobsPage } from "./jobs-page.jsx";
 import { NewJobPage } from "./new-job-page.jsx";
 import { RunnersPage } from "./runners.jsx";
+import { missingSteps, shouldOpenSetup } from "./setup.js";
+import { SetupPage } from "./setup-page.jsx";
 import { SignIn } from "./sign-in.jsx";
 import "./styles.css";
 
 const pollMillis = 2000;
 const emptyStatus = { tickets: [], runners: [], queue: null };
-const navigation = [["dashboard", ChartColumn, "Dashboard"], ["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"]];
+const navigation = [["dashboard", ChartColumn, "Dashboard"], ["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"], ["setup", Settings2, "Setup"]];
 
 async function loadStatus() {
   const [tickets, runners] = await Promise.all([api("/api/v1/tickets"), api("/api/v1/runners")]);
   return { tickets: tickets.tickets, runners: runners.runners, queue: runners.queue };
-}
-
-// A theme someone chose wins. Until they choose, the app follows the system.
-function readTheme() {
-  try {
-    const stored = localStorage.getItem("machinist-theme");
-    if (stored) return stored === "dark";
-  } catch { /* Storage is off, so the system decides. */ }
-  return Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
 }
 
 function App() {
@@ -38,8 +31,8 @@ function App() {
   const [status, setStatus] = useState(emptyStatus);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
-  const [dark, setDark] = useState(readTheme);
   const [route, setRoute] = useState(() => routeFromHash(window.location.hash));
+  const [setup, setSetup] = useState(null);
   const signedOut = useCallback(() => {
     setSession({ checked: true, signedIn: false });
     setStatus(emptyStatus);
@@ -69,12 +62,6 @@ function App() {
   }, [signedOut]);
   useEffect(() => { checkSession(); }, [checkSession]);
 
-  useEffect(() => { document.documentElement.classList.toggle("dark", dark); }, [dark]);
-  function switchTheme() {
-    try { localStorage.setItem("machinist-theme", dark ? "light" : "dark"); } catch { /* The theme lasts for this visit. */ }
-    setDark(!dark);
-  }
-
   useEffect(() => {
     const update = () => {
       setRoute(routeFromHash(window.location.hash));
@@ -96,6 +83,15 @@ function App() {
     return () => { stopped = true; loader.current.cancel(); window.clearTimeout(timer); };
   }, [session.signedIn]);
 
+  // A new install opens on the setup checklist until every required step is done.
+  useEffect(() => {
+    if (!session.signedIn) return;
+    api("/api/v1/setup").then(found => {
+      setSetup(found);
+      if (shouldOpenSetup(found, window.location.hash)) window.location.hash = "#/setup";
+    }).catch(() => {});
+  }, [session.signedIn]);
+
   async function signOut() {
     await api("/api/v1/session", { method: "DELETE" }).catch(() => {});
     signedOut();
@@ -104,16 +100,13 @@ function App() {
   if (!session.checked) return null;
   if (!session.signedIn) return <SignIn onSignedIn={checkSession} />;
   const active = route.view === "job" || route.view === "new" ? "jobs" : route.view;
-  const ThemeIcon = dark ? Sun : Moon;
-  const themeLabel = dark ? "Light mode" : "Dark mode";
   return <div className="app-shell">
     <aside className="app-sidebar">
       <Brand />
       <nav className="primary-nav" aria-label="Primary">
-        {navigation.map(([page, Icon, label]) => <a key={page} href={`#/${page}`} aria-current={active === page ? "page" : undefined} className={cn("nav-item", active === page && "nav-item-active")}><Icon aria-hidden="true" /><span>{label}</span></a>)}
+        {navigation.map(([page, Icon, label]) => <a key={page} href={`#/${page}`} aria-current={active === page ? "page" : undefined} className={cn("nav-item", active === page && "nav-item-active")}><Icon aria-hidden="true" /><span>{label}</span>{page === "setup" && missingSteps(setup).length > 0 && <span className="nav-dot" aria-label="Setup needs attention" />}</a>)}
       </nav>
       <div className="sidebar-foot">
-        <button type="button" className="nav-item" onClick={switchTheme} aria-label={themeLabel}><ThemeIcon aria-hidden="true" /><span>{themeLabel}</span></button>
         <button type="button" className="nav-item" onClick={signOut} aria-label="Sign out"><LogOut aria-hidden="true" /><span>Sign out</span></button>
       </div>
     </aside>
@@ -122,6 +115,7 @@ function App() {
       {route.view === "new" && <NewJobPage onSignedOut={signedOut} />}
       {route.view === "job" && <JobPage key={route.jobID} jobID={route.jobID} onSignedOut={signedOut} />}
       {route.view === "dashboard" && <DashboardPage onSignedOut={signedOut} />}
+      {route.view === "setup" && <SetupPage onSignedOut={signedOut} onChange={setSetup} />}
       {route.view === "runners" && <RunnersPage runners={status.runners} queue={status.queue} loaded={loaded} error={error} />}
     </main>
   </div>;

@@ -60,6 +60,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newKubernetesCommand(options))
 	root.AddCommand(newSandboxCommand(options))
 	root.AddCommand(newAgentLogCommand(options))
+	root.AddCommand(newAgentCommand(options))
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the Machinist version",

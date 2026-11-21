@@ -11,6 +11,7 @@ import (
 	machinistexamples "github.com/owainlewis/machinist/examples"
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/githubapp"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -35,7 +36,7 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 	installed := regularFiles(t, directory)
 	for _, name := range []string{
 		"config.yaml", "runner.yaml", ".machinist/runner.token", ".gitignore",
-		"factory/presets/default.yaml", "factory/prompts/rules.md", "factory/prompts/work.md", "factory/scripts/agent.sh",
+		"factory/presets/default.yaml", "factory/prompts/rules.md", "factory/agents/implement.md", "factory/agents/publish.md", "factory/scripts/checkout.sh",
 	} {
 		if !slices.Contains(installed, name) {
 			t.Fatalf("%s is missing from %q", name, installed)
@@ -155,8 +156,13 @@ func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
 	if err := loaded.Validate("default", nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Presets["default"].Steps) != 3 || len(loaded.Presets) != 1 || len(loaded.Automations) != 0 {
+	if len(loaded.Presets["default"].Steps) != 5 || len(loaded.Presets) != 1 || len(loaded.Automations) != 0 {
 		t.Fatalf("factory = %+v", loaded)
+	}
+	// A GitHub App token lasts an hour, and the control plane refuses a preset
+	// that could outlive it.
+	if timeout := loaded.Presets["default"].Timeout; timeout == 0 || timeout > githubapp.TokenLifetime {
+		t.Fatalf("default preset timeout = %s, want at most %s", timeout, githubapp.TokenLifetime)
 	}
 	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.yaml"))
 	if err != nil {

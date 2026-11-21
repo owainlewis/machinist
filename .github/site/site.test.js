@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { fallbackCopy, selectCommand } from './site.js';
+import { fallbackCopy, selectCommand, toggleSound } from './site.js';
 
 test('fallbackCopy copies the full command passed to it', () => {
   const expected = "./bin/machinist run --command=task-to-pr --repo=/path/to/repo --prompt='Complete issue #123'";
@@ -64,44 +64,128 @@ test('selectCommand exposes and selects the full data-copy value', () => {
   assert.deepEqual(ranges, [range]);
 });
 
-test('setup snippets include required directories and Codex permissions', async () => {
-  const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./index.html', import.meta.url), 'utf8'));
-  assert.match(source, /mkdir -p \.\/bin &amp;&amp; go build/);
-  assert.match(source, /"--sandbox"[\s\S]+"danger-full-access"/);
-  assert.doesNotMatch(source, /--agent/);
+test('toggleSound unmutes and restarts the explainer, then mutes it again', () => {
+  let played = 0;
+  const video = { muted: true, currentTime: 12, play() { played += 1; } };
+  const attributes = {};
+  const button = { textContent: 'Sound on', setAttribute(name, value) { attributes[name] = value; } };
+
+  assert.equal(toggleSound(video, button), true);
+  assert.equal(video.muted, false);
+  assert.equal(video.currentTime, 0);
+  assert.equal(played, 1);
+  assert.equal(button.textContent, 'Sound off');
+  assert.equal(attributes['aria-pressed'], 'true');
+
+  video.currentTime = 7;
+  assert.equal(toggleSound(video, button), false);
+  assert.equal(video.muted, true);
+  assert.equal(video.currentTime, 7);
+  assert.equal(played, 1);
+  assert.equal(button.textContent, 'Sound on');
+  assert.equal(attributes['aria-pressed'], 'false');
 });
 
-test('public identity uses the two-piece interlocking mark and current positioning', async () => {
-  const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./index.html', import.meta.url), 'utf8'));
-  const styles = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./styles.css', import.meta.url), 'utf8'));
-  const mark = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./machinist-mark.svg', import.meta.url), 'utf8'));
-  const socialCard = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./social-card.svg', import.meta.url), 'utf8'));
+const read = (path) => import('node:fs/promises').then(({ readFile }) => readFile(new URL(path, import.meta.url), 'utf8'));
 
-  assert.match(source, /machinist-mark\.svg/);
-  assert.match(source, /technical-drawings\.webp/);
-  assert.match(source, /width="1693" height="929"/);
-  assert.match(source, /A better way to put coding agents to work\./);
-  assert.doesNotMatch(source, /machinist-mark\.png|fonts\.googleapis\.com/);
-  assert.match(styles, /--mark: #1d6683/);
-  assert.match(styles, /\.drawing-machine/);
-  assert.match(styles, /\.drawing-system/);
-  assert.match(styles, /\.drawing-assembly/);
-  assert.doesNotMatch(styles, /#f08b24|#f2ede3|DM Mono|Inter Tight/);
-  assert.equal((mark.match(/<path/g) || []).length, 2);
-  assert.doesNotMatch(mark, /<circle|<linearGradient/);
+test('setup snippets match the quick start in the README', async () => {
+  const source = await read('./index.html');
+  const readme = await read('../../README.md');
+  const copied = [...source.matchAll(/data-copy="([^"]+)"/g)].map(([, value]) => value.replaceAll('&amp;', '&').replaceAll('&quot;', '"'));
+  assert.deepEqual(copied, [
+    'go build -o ./bin/machinist ./cmd/machinist && export PATH="$PWD/bin:$PATH"',
+    'machinist init',
+    'gh api user --jq .login',
+    'GH_TOKEN=$(gh auth token) machinist start',
+  ]);
+  // Each part of each command is a line of the README's quick start, so the bare machinist command is on PATH.
+  for (const part of copied.flatMap((command) => command.split(' && '))) {
+    assert.ok(readme.includes(part), `README has ${part}`);
+  }
+  // Commands and settings named in the setup prose are the README's too, so a runner set up from the site starts.
+  const setup = source.slice(source.indexOf('class="setup-steps"'), source.indexOf('</ol>', source.indexOf('class="setup-steps"')));
+  for (const [, inline] of [...setup.matchAll(/<p>[^]*?<\/p>/g)].flatMap(([p]) => [...p.matchAll(/<code>([^<]+)<\/code>/g)])) {
+    assert.ok(readme.includes(inline.replace('github.handle', 'handle')), `README has ${inline}`);
+  }
+});
+
+test('the page says what Machinist is and who it is for, in plain words', async () => {
+  const source = await read('./index.html');
+  const socialCard = await read('./social-card.svg');
+  assert.match(source, /<h1 id="hero-title">A software factory that runs on your own servers<\/h1>/);
+  assert.match(source, /<h2 id="who-title">Teams and solo developers<\/h2>/);
+  for (const text of [source, socialCard]) {
+    assert.match(text, /software factory/);
+    assert.match(text, /solo developers/);
+  }
+  // Slogans from the old copy that said nothing about the product.
+  assert.doesNotMatch(source, /production line|babysitting|bottleneck|Get merged pull requests|—/);
+});
+
+test('the site and README show only the harnesses Machinist supports, with their logos', async () => {
+  const source = await read('./index.html');
+  const readme = await read('../../README.md');
+  const { readdir } = await import('node:fs/promises');
+  const harnessDir = new URL('../../internal/harness/', import.meta.url);
+  const names = [];
+  for (const file of await readdir(harnessDir)) {
+    if (!file.endsWith('.go') || file.endsWith('_test.go')) continue;
+    const match = (await read(`../../internal/harness/${file}`)).match(/Name\(\) string \{ return "(\w+)" \}/);
+    if (match) names.push(match[1]);
+  }
+  const shown = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', pi: 'Pi' };
+  assert.deepEqual(names.sort(), Object.keys(shown).sort(), 'every harness in the code has a card, and no card claims a missing one');
+  const section = source.slice(source.indexOf('class="harnesses"'), source.indexOf('</section>', source.indexOf('class="harnesses"')));
+  assert.deepEqual([...section.matchAll(/<strong>([^<]+)<\/strong>/g)].map(([, name]) => name), Object.values(shown));
+  assert.match(section, /Machinist is not made by or tied to these companies/);
+  for (const logo of ['claude', 'openai', 'google']) {
+    for (const mode of ['dark', 'light']) {
+      assert.ok(readme.includes(`.github/assets/harness-${logo}-${mode}.svg`), `README uses the ${mode} ${logo} logo`);
+      await read(`../assets/harness-${logo}-${mode}.svg`);
+    }
+  }
+});
+
+test('public identity matches the web app: Inter, indigo and the M tile, dark only', async () => {
+  const source = await read('./index.html');
+  const styles = await read('./styles.css');
+  const app = await read('../../internal/controlplane/web/src/styles.css');
+  const mark = await read('./favicon.svg');
+  const socialCard = await read('./social-card.svg');
+
+  for (const token of ['--background: #161618', '--surface: #1d1d20', '--border: #2f2f35', '--primary: #4c6ef5']) {
+    assert.ok(app.includes(token), `web app still uses ${token}`);
+    assert.ok(styles.includes(token), `site uses ${token}`);
+  }
+  assert.match(styles, /Inter Variable/);
+  assert.match(source, /class="brand-mark"/);
+  assert.match(source, /<meta name="color-scheme" content="dark">/);
+  assert.doesNotMatch(source, /technical-drawings|fonts\.googleapis\.com|machinist-bot/);
+  assert.doesNotMatch(styles, /Manrope|Newsreader|#1d6683/);
+  assert.match(mark, /#4c6ef5/);
   assert.match(socialCard, /width="1200" height="630"/);
-  assert.match(socialCard, /#1d6683/);
-  assert.match(socialCard, /M32 28h4V18/);
-  assert.doesNotMatch(socialCard, /M32 28v12/);
+  assert.match(socialCard, /#4c6ef5/);
 });
 
-test('repository quick start links to existing guides and stays directly runnable', async () => {
-  const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('../../README.md', import.meta.url), 'utf8'));
+test('the explainer video and its poster ship with the site', async () => {
+  const { access } = await import('node:fs/promises');
+  const source = await read('./index.html');
+  assert.match(source, /src="machinist\.mp4"/);
+  assert.match(source, /poster="poster\.jpg"/);
+  await access(new URL('./public/machinist.mp4', import.meta.url));
+  await access(new URL('./public/poster.jpg', import.meta.url));
+});
+
+test('repository quick start links to guides that exist', async () => {
+  const { access } = await import('node:fs/promises');
+  const source = await read('../../README.md');
 
   assert.match(source, /go build -o \.\/bin\/machinist \.\/cmd\/machinist/);
-  assert.match(source, /\.\/bin\/machinist start/);
-  for (const guide of ['docs/README.md', 'docs/configuration.md', 'docs/development.md', 'docs/vm-deployment.md']) {
-    assert.match(source, new RegExp(guide.replace('.', '\\.')));
+  assert.match(source, /machinist start/);
+  const guides = [...new Set(source.match(/docs\/[\w./-]+\.md/g))];
+  assert.ok(guides.includes('docs/README.md'));
+  for (const guide of guides) {
+    await access(new URL(`../../${guide}`, import.meta.url));
   }
   assert.doesNotMatch(source, /machinist submit|docs\/getting-started|docs\/how-it-works|docs\/control-plane|docs\/secure-self-hosting/);
 });

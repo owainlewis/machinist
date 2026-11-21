@@ -2,7 +2,11 @@
 
 Machinist has one Go control plane with an embedded React UI, and any number of runners.
 The UI opens on a dashboard of counts and rates from `GET /api/v1/stats`. It shows the jobs
-as a board or a list, a page for each job, and the runners. A job's page draws its preset's
+as a board or a list, a page for each job, the runners, and a Setup page. Setup lists what
+is done and what is missing (GitHub, a runner, projects, and Linear, which is optional),
+and a new install opens on it until every required step is done. A project is a repository
+Machinist works on: one in `github.repositories`, or one added on the Setup page, which is
+kept in the `projects` table and takes jobs at once, with no restart. A job's page draws its preset's
 steps as a pipeline with each step's state, shows every step's output, and has a **Run again**
 button for an ended job. Running a job again adds a comment to its ticket and sets it back to
 working, so the engine queues a new attempt on the same branch. The New job form sends the
@@ -33,12 +37,15 @@ A ticket is one piece of work with one preset and one fixed branch,
 `machinist/<ticket id>`. Every run runs the preset's steps from the first, in an empty
 workspace. The only state carried between runs is what a step pushed and the ticket log.
 No run waits for a person: an agent that has to guess writes its guess to
-`assumptions.md`, and `publish.sh` puts it in the pull request. The run API calls a ticket a job.
+`assumptions.md`, and the publish step puts it in the pull request. The run API calls a ticket a job.
 
 The runner turns the steps' outcome into one report. A step that fails fails the run.
 Otherwise the report is `no_change`,
 with `result.md` as its summary. After a run, the control plane looks up the branch's pull
-request, so a step that opens one needs to report nothing. See
+request, so a step that opens one needs to report nothing: an open pull request makes the
+job `pr_ready`, and a merged one leaves it `done`. `github.auto_merge` reaches every step as
+`MACHINIST_AUTO_MERGE`, and the shipped publish agent merges only when it is `true` and the
+review in `review.json` is clean. See
 [Factory files](docs/factory.md#presets).
 
 | State | Meaning |
@@ -60,8 +67,10 @@ The full state table is in the
 Work comes from the Assign box, the [run API](docs/run-api.md) at `POST /machinist/run`,
 automation schedules and [Linear](docs/linear.md). A tracker such as Linear is a
 `sources.Tracker`: a `sources.Poller` asks it for new assignments every minute, starts their
-jobs through the same intake, and writes each job's news back once (In Progress, the pull
-request link, Done on merge, a comment on close, or the failure). It cancels a job whose issue leaves Machinist or every started
+jobs through the same intake, and writes each job's news back once (In Progress with an
+acknowledgement, the pull request link, Done on merge, a comment on close, the result when
+there is no pull request, or the failure). An allowed person's reply on the issue after a
+job ends runs that job again with the reply in its log, so a conversation stays on one job. It cancels a job whose issue leaves Machinist or every started
 state. What it has written is in `tracker_reports`, and how far it has read is its cursor. The run API shows tickets as jobs. Each
 request has a unique source key, so sending one twice has no effect. Machinist does not read
 GitHub comments. A ticket stays `pr_ready` while its pull request is open. Every minute the
@@ -85,8 +94,8 @@ The control plane stores that with the time of last contact, and heartbeats keep
 current while every slot is busy. The Runners page reads it with the running runs and the
 queue, so it is the same after a control plane restart.
 
-Step output reaches the control plane as events about once a second. `machinist agent-log`
-runs inside a step and turns Claude Code's stream-json into readable lines, one per message
+Step output reaches the control plane as events about once a second. `machinist agent`
+runs inside a step and turns the harness's event stream into readable lines, one per message
 or action, and leaves the tokens and cost the agent reported in `usage.json`. The runner
 adds them to the step's result and the run's totals. As events arrive, the control plane
 keeps each running run's current step, when it started and the last action line, so the
@@ -115,8 +124,10 @@ and `factory/` (presets, prompts and scripts) are committed there. `.machinist/`
 holds the database, tokens and workspaces, and git ignores it. Commands read the config in
 the current directory unless `--config` names one, and relative paths resolve from the
 config file's directory. Secrets come from the environment, never from these files. Every
-run carries the factory's `prompts/` and `scripts/` in its request, so a step can use them
-on any runner.
+run carries the factory's `agents/`, `prompts/` and `scripts/` in its request, so a step can
+use them on any runner. A step with `agent: <name>` runs `machinist agent <name>`, which
+reads the agent file, builds the harness's command (Claude Code, Codex, Pi or agy) and turns
+its event stream into live lines and usage.
 
 ## Packages
 
@@ -131,5 +142,5 @@ internal/controlplane  HTTP routes, sign-in and the embedded UI
 internal/agentrunner   the runner daemon, and the local and Kubernetes executors
 internal/kuberunner    gVisor Jobs, egress proxy and the code that runs in the Job
 internal/runner        workspaces, steps, process supervision and the event log
-internal/agentlog      readable live lines, tokens and cost from an agent's stream-json
+internal/harness       agent files, and the Claude Code, Codex and Pi commands and event streams
 ```

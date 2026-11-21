@@ -1,0 +1,120 @@
+package controlplane
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/owainlewis/machinist/internal/githubapp"
+)
+
+type fakeApp struct {
+	broken    bool
+	installed map[string]bool
+}
+
+func (a fakeApp) Identity(context.Context) (githubapp.Identity, error) {
+	if a.broken {
+		return githubapp.Identity{}, errors.New("GitHub replied 401: bad JWT")
+	}
+	return githubapp.Identity{Slug: "machinistagent", Name: "machinistagent[bot]"}, nil
+}
+
+func (a fakeApp) Installed(_ context.Context, repository string) error {
+	if a.installed[strings.ToLower(repository)] {
+		return nil
+	}
+	return errors.New("the GitHub App is not installed on " + repository)
+}
+
+func (f *fixture) setup(t *testing.T, method, path string, body any) (int, Setup) {
+	t.Helper()
+	response, raw := f.call(t, method, path, f.token, body)
+	var setup Setup
+	if response.StatusCode == http.StatusOK {
+		if err := json.Unmarshal(raw, &setup); err != nil {
+			t.Fatalf("%v: %s", err, raw)
+		}
+	} else if !strings.Contains(string(raw), "error") {
+		t.Fatalf("status = %d with no error: %s", response.StatusCode, raw)
+	}
+	return response.StatusCode, setup
+}
+
+func check(setup Setup, name string) SetupCheck {
+	for _, check := range setup.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	return SetupCheck{}
+}
+
+func TestSetupListsWhatIsMissingUntilEveryRequiredCheckPasses(t *testing.T) {
+	f := newFixture(t)
+	f.server.app = fakeApp{installed: map[string]bool{"owner/repo": true}}
+	_, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil)
+	if setup.Ready || !check(setup, "GitHub").OK || check(setup, "Runner").OK || check(setup, "Projects").OK || check(setup, "Linear").Required {
+		t.Fatalf("setup = %+v", setup)
+	}
+	if setup.InstallURL != "https://github.com/apps/machinistagent/installations/new" || !strings.Contains(check(setup, "GitHub").Detail, "machinistagent[bot]") {
+		t.Fatalf("setup = %+v", setup)
+	}
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if status, setup := f.setup(t, http.MethodPost, "/api/v1/projects", map[string]string{"repo": "https://github.com/owner/repo/"}); status != http.StatusOK || !setup.Ready || len(setup.Projects) != 1 || setup.Projects[0] != (ProjectView{Repo: "owner/repo", Source: "app", AddedBy: "runner-1"}) {
+		t.Fatalf("status = %d, setup = %+v", status, setup)
+	}
+	if _, body := f.call(t, http.MethodGet, "/api/v1/repositories", f.token, nil); !strings.Contains(string(body), "owner/repo") {
+		t.Fatalf("repositories = %s", body)
+	}
+	if status, setup := f.setup(t, http.MethodDelete, "/api/v1/projects/owner/repo", nil); status != http.StatusOK || setup.Ready || len(setup.Projects) != 0 {
+		t.Fatalf("status = %d, setup = %+v", status, setup)
+	}
+}
+
+func TestAddingAProjectNeedsARealNameAndTheAppInstalled(t *testing.T) {
+	f := newFixture(t)
+	f.server.app = fakeApp{}
+	for _, repo := range []string{"not a repo", "owner/", "owner/missing"} {
+		if status, _ := f.setup(t, http.MethodPost, "/api/v1/projects", map[string]string{"repo": repo}); status != http.StatusBadRequest {
+			t.Fatalf("%q: status = %d", repo, status)
+		}
+	}
+	if projects, _ := f.store.Projects(t.Context()); len(projects) != 0 {
+		t.Fatalf("projects = %+v", projects)
+	}
+}
+
+func TestSetupFlagsConfigReposTheAppCannotReach(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	f.server.app = fakeApp{}
+	_, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil)
+	projects := check(setup, "Projects")
+	if projects.OK || setup.Projects[0].Source != "config" || !strings.Contains(setup.Projects[0].Problem, "not installed") || projects.Link != setup.InstallURL {
+		t.Fatalf("setup = %+v", setup)
+	}
+	if status, _ := f.setup(t, http.MethodDelete, "/api/v1/projects/owner/repo", nil); status != http.StatusConflict {
+		t.Fatalf("removing a config repo: status = %d", status)
+	}
+	if status, _ := f.setup(t, http.MethodDelete, "/api/v1/projects/owner/other", nil); status != http.StatusNotFound {
+		t.Fatalf("removing an unknown repo: status = %d", status)
+	}
+}
+
+func TestSetupSaysWhenTheAppIsBrokenOrMissing(t *testing.T) {
+	f := newFixture(t)
+	f.server.app = fakeApp{broken: true}
+	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); check(setup, "GitHub").OK || !strings.Contains(check(setup, "GitHub").Detail, "bad JWT") {
+		t.Fatalf("setup = %+v", setup)
+	}
+	f.server.app = nil
+	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); !check(setup, "GitHub").OK || !strings.Contains(check(setup, "GitHub").Detail, "GH_TOKEN") {
+		t.Fatalf("setup = %+v", setup)
+	}
+}
