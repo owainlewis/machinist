@@ -11,6 +11,7 @@ import (
 	machinistexamples "github.com/owainlewis/machinist/examples"
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/githubapp"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -157,6 +158,11 @@ func assertStarterFactoryAndTokenWork(t *testing.T, directory string) {
 	}
 	if len(loaded.Presets["default"].Steps) != 5 || len(loaded.Presets) != 1 || len(loaded.Automations) != 0 {
 		t.Fatalf("factory = %+v", loaded)
+	}
+	// A GitHub App token lasts an hour, and the control plane refuses a preset
+	// that could outlive it.
+	if timeout := loaded.Presets["default"].Timeout; timeout == 0 || timeout > githubapp.TokenLifetime {
+		t.Fatalf("default preset timeout = %s, want at most %s", timeout, githubapp.TokenLifetime)
 	}
 	machinistConfig, err := config.LoadConfig(filepath.Join(directory, "config.yaml"))
 	if err != nil {
