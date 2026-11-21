@@ -64,9 +64,20 @@ The shipped scripts:
 | --- | --- |
 | `checkout.sh` | Clones the repository and switches to the job's branch |
 | `agent.sh <prompt>` | Runs Claude Code with `prompts/rules.md` and `prompts/<prompt>.md` as the system prompt and the job's prompt as the message |
-| `publish.sh` | Pushes the branch and opens one draft pull request, with `assumptions.md` as its body when it exists |
+
 
 To use another agent, change `agent.sh`. To change what a step asks for, edit its prompt.
+
+The shipped prompts:
+
+| Prompt | Step |
+| --- | --- |
+| `rules.md` | Rules for every step: run headless, record guesses in `assumptions.md`, follow the repository's instructions |
+| `work.md` | Make the change, with tests, and commit it. Never push, open a pull request or merge |
+| `publish.md` | Push, open one ready pull request with a summary, testing and assumptions, wait for the checks, and merge when they pass. A failed check fails the job and leaves the pull request open |
+
+`publish.md` is how a job ships. To keep pull requests open for a person to merge, or to
+change the description, edit it.
 
 ### Live output from an agent
 
@@ -118,7 +129,7 @@ so a commit never picks them up. Each file must be a regular file of at most 64 
 
 Jobs run headless and nothing can answer a question mid-job. `prompts/rules.md` tells the
 agent to make the smallest reasonable choice and list each one in `assumptions.md` in the
-control directory. `publish.sh` adds that list to the pull request under **Assumptions**.
+control directory. The publish step adds that list to the pull request under **Assumptions**.
 
 After a job ends, Machinist looks for an open pull request on `MACHINIST_BRANCH` and records
 its number on the job.

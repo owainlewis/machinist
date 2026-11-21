@@ -83,7 +83,7 @@ and adds it to `.gitignore`. Run every command below from this directory, or pas
 
 5.  Open `http://127.0.0.1:7331`, sign in with the token and select **New job**. Pick the
     repository, type what you want done, and select **Start job**. Claude Code does the
-    work and opens a draft pull request. The same from `curl`:
+    work, opens a pull request, and merges it once its checks pass. The same from `curl`:
 
     ```sh
     curl -sS -X POST http://127.0.0.1:7331/machinist/run \
@@ -131,8 +131,10 @@ cd internal/controlplane/web && npm ci && npm test
 The Go tests run whole jobs end to end with fake `claude` and `gh` commands and a local
 Git remote. See [Development](docs/development.md).
 
-Machinist never merges a pull request unless you add an automation that uses a preset allowed
-to. See [Security](SECURITY.md) for what a step can do.
+The default preset merges its pull request once the repository's checks pass. How a job
+ships is written in `factory/prompts/publish.md`, so you change it by editing that file.
+Branch protection still decides what can merge. See [Security](SECURITY.md) for what a step
+can do.
 
 ## How it fits together
 

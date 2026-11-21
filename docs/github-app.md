@@ -13,7 +13,7 @@ rest of that run.
 | Permission | Access | Used for |
 | --- | --- | --- |
 | Contents | Read and write | Clone and push the job's branch |
-| Pull requests | Read and write | Open and update the draft pull request |
+| Pull requests | Read and write | Open, update and merge the pull request |
 | Issues | Read and write | Read issues and post comments |
 | Checks | Read | Read CI results on the pull request |
 | Commit statuses | Read | Read CI results that use statuses |

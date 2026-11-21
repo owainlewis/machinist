@@ -33,7 +33,7 @@ A ticket is one piece of work with one preset and one fixed branch,
 `machinist/<ticket id>`. Every run runs the preset's steps from the first, in an empty
 workspace. The only state carried between runs is what a step pushed and the ticket log.
 No run waits for a person: an agent that has to guess writes its guess to
-`assumptions.md`, and `publish.sh` puts it in the pull request. The run API calls a ticket a job.
+`assumptions.md`, and the publish step puts it in the pull request. The run API calls a ticket a job.
 
 The runner turns the steps' outcome into one report. A step that fails fails the run.
 Otherwise the report is `no_change`,

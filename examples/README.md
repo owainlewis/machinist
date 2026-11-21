@@ -8,5 +8,6 @@
   run carries both. Scripts are on `PATH`, and prompts are in `$MACHINIST_DIR/prompts`.
   `agent.sh <prompt>` runs Claude Code with `rules.md` and that prompt.
 - `factory/presets/default.yaml` is the one preset: clone the repository, run Claude Code
-  on the prompt, and open a draft pull request. It never merges. A preset is a list of
+  on the prompt, then open a pull request and merge it once its checks pass, as
+  `prompts/publish.md` says. A preset is a list of
   shell steps; add another only when a kind of job needs different steps.
