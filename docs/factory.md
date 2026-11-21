@@ -59,7 +59,7 @@ An agent file says which harness runs it, which model to ask for, and what to te
 
 ```markdown
 ---
-harness: codex        # claude, codex or pi
+harness: codex        # agy, claude, codex or pi
 model: gpt-5-codex    # optional; the harness's default otherwise
 command: /opt/codex   # optional; the program to run, if it is not on PATH
 ---
@@ -77,6 +77,7 @@ tokens and cost the harness reports. The step fails when the agent exits non-zer
 | `claude` | `claude --print --output-format stream-json` with the system prompt appended to Claude Code's own |
 | `codex` | `codex exec --json`, with the system prompt first in the message, since Codex takes no separate one |
 | `pi` | `pi --print --mode json --no-session` with the system prompt appended to Pi's own |
+| `agy` | Google's Antigravity CLI: `agy --print <prompt> --output-format stream-json --dangerously-skip-permissions`, with the system prompt first in the prompt, since agy takes no separate one. Gemini models such as `gemini-4-neon-high` |
 
 Each harness must be installed and signed in on the runner. To use a different agent for a
 step, change `harness` in its file. To change what a step asks for, edit its prompt.
@@ -91,7 +92,7 @@ The shipped agents:
 | `publish` | Push, open one ready pull request with a summary, testing, the review and assumptions, wait for the checks, and merge when they pass and the review is clean. A failed check fails the job |
 
 The review is worth most from a different model family than the one that wrote the
-change. If Codex is on your runners, set `harness: codex` in `agents/review.md`.
+change. If Codex or agy is on your runners, set `harness: codex` or `harness: agy` in `agents/review.md`.
 
 `publish` merges only when `github.auto_merge` is on and the review is `accepted`, or
 asked for a revision that addressed every finding. Otherwise it leaves the pull request

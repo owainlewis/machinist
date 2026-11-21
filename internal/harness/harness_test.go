@@ -25,7 +25,7 @@ func TestParseAgentRejectsBadFiles(t *testing.T) {
 	for _, test := range []struct{ name, body, want string }{
 		{"no front matter", "Review.\n", "must start with ---"},
 		{"unclosed", "---\nharness: claude\nReview.\n", "not closed"},
-		{"no harness", "---\nmodel: x\n---\nReview.\n", "harness must be one of claude, codex, pi"},
+		{"no harness", "---\nmodel: x\n---\nReview.\n", "harness must be one of agy, claude, codex, pi"},
 		{"unknown harness", "---\nharness: gemini\n---\nReview.\n", `not "gemini"`},
 		{"unknown key", "---\nharness: claude\nsteps: 3\n---\nReview.\n", "steps"},
 		{"empty prompt", "---\nharness: claude\n---\n\n", "prompt after the front matter is empty"},
@@ -48,6 +48,7 @@ func TestEachHarnessBuildsItsCommand(t *testing.T) {
 		{Claude{}, []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions", "--append-system-prompt", "Rules.", "--model", "m"}, "Fix it."},
 		{Codex{}, []string{"codex", "exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--model", "m", "-"}, "Rules.\n\n# The task\n\nFix it."},
 		{Pi{}, []string{"pi", "--print", "--mode", "json", "--no-session", "--append-system-prompt", "Rules.", "--model", "m", "Fix it."}, ""},
+		{Agy{}, []string{"agy", "--print", "Rules.\n\n# The task\n\nFix it.", "--output-format", "stream-json", "--dangerously-skip-permissions", "--model", "m"}, ""},
 	} {
 		args, stdin := test.harness.Command(request)
 		if !slices.Equal(args, test.args) || stdin != test.stdin {
@@ -127,6 +128,67 @@ func TestPiFormatTurnsEventsIntoLines(t *testing.T) {
 		t.Fatalf("output =\n%s\nwant\n%s", out.String(), want)
 	}
 	if usage == nil || usage.Tokens != 130 || usage.Cost != 0.25 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+// agyStream follows the stream-json shape of Gemini-family CLIs. The exact
+// events are checked against a real agy run before release.
+const agyStream = `{"type":"init","session_id":"s1","model":"gemini-4-neon-high"}
+{"type":"message","role":"user","content":"ignored"}
+{"type":"message","role":"assistant","content":"Looking at ","delta":true}
+{"type":"message","role":"assistant","content":"the retry.","delta":true}
+{"type":"tool_use","tool_name":"run_shell_command","tool_id":"t1","parameters":{"command":"go test ./...\necho done"}}
+{"type":"tool_result","tool_id":"t1","status":"error","output":"FAIL"}
+{"type":"tool_use","tool_name":"read_file","tool_id":"t2","parameters":{"file_path":"/work/upload.go"}}
+{"type":"tool_result","tool_id":"t2","status":"success"}
+{"type":"tool_use","tool_name":"replace","tool_id":"t3","parameters":{"file_path":"/work/upload.go"}}
+{"type":"tool_use","tool_name":"google_web_search","tool_id":"t4","parameters":{"query":"go retry backoff"}}
+not json at all
+{"type":"message","role":"assistant","content":"Fixed it.","delta":true}
+{"type":"result","status":"success","stats":{"total_tokens":150,"input_tokens":120,"output_tokens":30,"duration_ms":900}}
+`
+
+func TestAgyFormatTurnsEventsIntoLines(t *testing.T) {
+	var out bytes.Buffer
+	usage, err := Agy{}.Format(strings.NewReader(agyStream), &out, "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"Antigravity started with gemini-4-neon-high",
+		"Looking at the retry.",
+		ActionPrefix + "Run go test ./...",
+		"  failed: run_shell_command",
+		ActionPrefix + "Read upload.go",
+		ActionPrefix + "Edit upload.go",
+		ActionPrefix + "Search for go retry backoff",
+		"not json at all",
+		"Fixed it.",
+		"Finished",
+	}, "\n") + "\n"
+	if out.String() != want {
+		t.Fatalf("output =\n%s\nwant\n%s", out.String(), want)
+	}
+	if usage == nil || usage.Tokens != 150 || usage.Cost != 0 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestAgyFormatReportsAFailedRunAndTrailingText(t *testing.T) {
+	var out bytes.Buffer
+	stream := `{"type":"error","error":{"message":"authentication required"}}
+{"type":"result","status":"error","error":{"message":"authentication required"},"stats":{"input_tokens":10,"output_tokens":0}}
+{"type":"message","role":"assistant","content":"left over"}
+`
+	usage, err := Agy{}.Format(strings.NewReader(stream), &out, "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Error: authentication required\nStopped: authentication required\nleft over\n"; out.String() != want {
+		t.Fatalf("output =\n%s\nwant\n%s", out.String(), want)
+	}
+	if usage == nil || usage.Tokens != 10 {
 		t.Fatalf("usage = %+v", usage)
 	}
 }

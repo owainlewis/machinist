@@ -122,7 +122,7 @@ the current directory unless `--config` names one, and relative paths resolve fr
 config file's directory. Secrets come from the environment, never from these files. Every
 run carries the factory's `agents/`, `prompts/` and `scripts/` in its request, so a step can
 use them on any runner. A step with `agent: <name>` runs `machinist agent <name>`, which
-reads the agent file, builds the harness's command (Claude Code, Codex or Pi) and turns
+reads the agent file, builds the harness's command (Claude Code, Codex, Pi or agy) and turns
 its event stream into live lines and usage.
 
 ## Packages

@@ -144,7 +144,7 @@ func TestLoadRejectsInvalidFactories(t *testing.T) {
 		{"missing agent", `agent "work" is not in agents/`, func(files map[string]string) {
 			files["presets/default.yaml"] = steps("  - name: b\n    agent: work\n")
 		}},
-		{"unknown harness", "harness must be one of claude, codex, pi", func(files map[string]string) {
+		{"unknown harness", "harness must be one of agy, claude, codex, pi", func(files map[string]string) {
 			files["agents/work.md"] = "---\nharness: gemini\n---\nWork.\n"
 		}},
 		{"no description", "add a description", func(files map[string]string) {
