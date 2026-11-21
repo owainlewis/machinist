@@ -61,7 +61,7 @@ func Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	var usage *Usage
 	err := eachLine(r, w, func(line string) ([]string, bool) {
 		var parsed event
-		if !strings.HasPrefix(line, `{"type":`) || json.Unmarshal([]byte(line), &parsed) != nil || !claudeEvents[parsed.Type] {
+		if json.Unmarshal([]byte(line), &parsed) != nil || !claudeEvents[parsed.Type] {
 			return nil, false
 		}
 		if parsed.Type == "result" {
