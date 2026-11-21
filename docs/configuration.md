@@ -51,7 +51,7 @@ github:
 
 | Key | Meaning |
 | --- | --- |
-| `listen` | Address for the UI, API and runners. Keep it private |
+| `listen` | Address for the UI, API and runners. Keep it private. On a loopback address, requests whose Host is not `localhost`, `127.0.0.1` or `[::1]` get 421, which blocks DNS rebinding |
 | `database` | The SQLite file. Back this up |
 | `factory` | The factory directory |
 | `default_preset` | The preset a job uses when it names none |
