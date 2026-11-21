@@ -1,6 +1,8 @@
 package controlplane
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -73,5 +75,33 @@ func TestARunnerCanOnlyReportOnItsOwnRuns(t *testing.T) {
 	}
 	if response, data := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/heartbeat", f.token, struct{}{}); response.StatusCode != http.StatusOK {
 		t.Fatalf("heartbeat by its runner = %d: %s", response.StatusCode, data)
+	}
+}
+
+// A runner can get a new GitHub token for its own active run, for that run's
+// repository only. No other runner can, and without a GitHub App there is
+// none to give.
+func TestARunnerGetsAFreshGitHubTokenForItsOwnRun(t *testing.T) {
+	f := newFixture(t)
+	run := f.queueRun(t)
+	path := "/api/v1/runs/" + run.RunID + "/github-token"
+	if response, body := f.call(t, http.MethodPost, path, f.token, struct{}{}); response.StatusCode != http.StatusNotFound {
+		t.Fatalf("without an app = %d: %s", response.StatusCode, body)
+	}
+	f.server.engine.GitHubToken = func(_ context.Context, repository string) (string, error) { return "fresh-for-" + repository, nil }
+	response, body := f.call(t, http.MethodPost, path, f.token, struct{}{})
+	var reply protocol.GitHubToken
+	if err := json.Unmarshal(body, &reply); err != nil || response.StatusCode != http.StatusOK || reply.Token != "fresh-for-owner/repo" {
+		t.Fatalf("status = %d, body = %s, err = %v", response.StatusCode, body, err)
+	}
+	other := f.newToken(t, "runner-2", tickets.RoleRunner)
+	if response, body := f.call(t, http.MethodPost, path, other, struct{}{}); response.StatusCode != http.StatusForbidden {
+		t.Fatalf("another runner = %d: %s", response.StatusCode, body)
+	}
+	if response, body := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/complete", f.token, protocol.Completion{State: tickets.RunFailed, Error: "done"}); response.StatusCode != http.StatusNoContent {
+		t.Fatalf("complete = %d: %s", response.StatusCode, body)
+	}
+	if response, body := f.call(t, http.MethodPost, path, f.token, struct{}{}); response.StatusCode != http.StatusConflict {
+		t.Fatalf("after the run ended = %d: %s", response.StatusCode, body)
 	}
 }

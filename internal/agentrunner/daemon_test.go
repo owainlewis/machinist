@@ -30,6 +30,8 @@ type fakeControlPlane struct {
 	completeErr atomic.Int64
 	completions map[string]protocol.Completion
 	done        chan string
+	// githubToken, when set, goes with each run, as from a GitHub App.
+	githubToken string
 }
 
 func newFakeControlPlane(queue ...string) *fakeControlPlane {
@@ -54,7 +56,9 @@ func (f *fakeControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		id := f.queue[0]
 		f.queue = f.queue[1:]
-		_ = json.NewEncoder(w).Encode(runner.RunRequest{RunID: id, Preset: "default"})
+		_ = json.NewEncoder(w).Encode(runner.RunRequest{RunID: id, Preset: "default", GitHubToken: f.githubToken})
+	case strings.HasSuffix(r.URL.Path, "/github-token"):
+		_ = json.NewEncoder(w).Encode(protocol.GitHubToken{Token: "fresh-for-" + strings.Split(r.URL.Path, "/")[4]})
 	case strings.HasSuffix(r.URL.Path, "/heartbeat"):
 		status, body := f.heartbeat()
 		w.WriteHeader(status)
@@ -273,5 +277,25 @@ func TestStoppingDaemonStillReportsTheRun(t *testing.T) {
 	waitDone(t, plane)
 	if got := plane.completion(fixtureRun).State; got != "cancelled" {
 		t.Fatalf("state = %s", got)
+	}
+}
+
+// A run that came with a GitHub token can ask the control plane for a new one.
+func TestDaemonLetsARunRefreshItsGitHubToken(t *testing.T) {
+	plane := newFakeControlPlane(fixtureRun)
+	plane.githubToken = "first"
+	startDaemon(t, plane, 1, executorFunc(func(ctx context.Context, request runner.RunRequest) runner.RunResult {
+		if request.RefreshToken == nil {
+			return runner.RunResult{State: runner.StateFailed, Error: "no refresh"}
+		}
+		token, err := request.RefreshToken(ctx)
+		if err != nil {
+			return runner.RunResult{State: runner.StateFailed, Error: err.Error()}
+		}
+		return runner.RunResult{State: runner.StateSucceeded, Report: &protocol.Report{Outcome: "no_change", Summary: token}}
+	}))
+	waitDone(t, plane)
+	if got := plane.completion(fixtureRun); got.Report == nil || got.Report.Summary != "fresh-for-"+fixtureRun {
+		t.Fatalf("completion = %+v", got)
 	}
 }

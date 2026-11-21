@@ -201,6 +201,29 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 	}, nil
 }
 
+// ErrNoGitHubApp means the control plane has no GitHub App to make tokens with.
+var ErrNoGitHubApp = errors.New("the control plane has no GitHub App, so runs use the runner's GH_TOKEN")
+
+// RunToken makes a new token for an active run's repository, and nothing
+// else, so a run can last longer than one token.
+func (e *Engine) RunToken(ctx context.Context, runID string) (string, error) {
+	if e.GitHubToken == nil {
+		return "", ErrNoGitHubApp
+	}
+	run, err := e.Store.Run(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	if run.Status != tickets.RunRunning {
+		return "", tickets.ErrRunNotActive
+	}
+	ticket, err := e.Store.Ticket(ctx, run.TicketID)
+	if err != nil {
+		return "", err
+	}
+	return e.GitHubToken(ctx, ticket.Repo)
+}
+
 // Heartbeat renews a run's lease and reports whether the runner should stop it.
 func (e *Engine) Heartbeat(ctx context.Context, runID string) (bool, error) {
 	return e.Store.RenewLease(ctx, runID, e.now().Add(LeaseDuration))
