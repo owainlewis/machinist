@@ -86,6 +86,12 @@ install -m 0644 "$service_tmp_dir/machinist-control-plane.service" \
   /etc/systemd/system/machinist-control-plane.service
 install -m 0644 "$service_tmp_dir/machinist-runner.service" \
   /etc/systemd/system/machinist-runner.service
+# The runner's unit needs runner.env to exist, even when it holds nothing, as
+# with a GitHub App and a Claude login.
+install -d -m 0700 /etc/machinist
+for env_file in /etc/machinist/control-plane.env /etc/machinist/runner.env; do
+  [[ -e $env_file ]] || install -m 0600 /dev/null "$env_file"
+done
 systemctl daemon-reload
 systemctl enable machinist-control-plane.service
 systemctl restart machinist-control-plane.service

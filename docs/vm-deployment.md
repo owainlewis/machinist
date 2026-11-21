@@ -24,6 +24,7 @@ To run code from `main` that is not in a release yet, build it on the VM instead
 with Go installed:
 
 ```sh
+apt-get install -y ca-certificates curl git gh
 git clone https://github.com/owainlewis/machinist.git /usr/local/src/machinist
 cd /usr/local/src/machinist
 go build -o /usr/local/bin/machinist ./cmd/machinist
