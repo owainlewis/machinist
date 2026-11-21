@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Columns3, List, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AgentBadges } from "./agent-badge.jsx";
 import { State, relativeTime, useNow } from "./display.jsx";
 import { boardColumns, boardOf, formatDuration, jobState, newestFirst, prSummary, runningJobs } from "./jobs.js";
 import { jobHref } from "./routes.js";
@@ -35,6 +36,7 @@ function NowDoing({ job, now }) {
   const since = Date.parse(job.step_started_at || job.started_at);
   return <div className="board-card-now">
     {job.step && <span className="board-card-step">{job.step}{Number.isFinite(since) && <> · {formatDuration(now - since)}</>}</span>}
+    <AgentBadges agents={job.agents} />
     {job.action && <span className="board-card-action" title={job.action}>{job.action}</span>}
   </div>;
 }

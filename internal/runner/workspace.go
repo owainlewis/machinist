@@ -192,7 +192,7 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 		entry := &results[index]
 		entry.State = string(result.State)
 		entry.DurationMillis = result.DurationMillis
-		entry.Tokens, entry.Cost = stepUsage(workspace.Control)
+		stepUsage(workspace.Control, entry)
 		if result.State != StateSucceeded {
 			output.State = result.State
 			if err != nil {
@@ -215,20 +215,25 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 	return output
 }
 
-// stepUsage reads the tokens and cost an agent reported during a step, which
-// machinist agent-log leaves in the control directory, and removes the file so
-// the next step starts without it. A missing or unreadable file reports none.
-func stepUsage(control string) (*int64, *float64) {
+// stepUsage reads what the step's agent reported, which machinist agent
+// leaves in the control directory: its tokens and cost, and the agent,
+// harness and model that ran. It removes the file so the next step starts
+// without it. A missing or unreadable file reports none.
+func stepUsage(control string, entry *protocol.StageResult) {
 	body, err := readControlFile(control, harness.UsageFile)
 	_ = os.Remove(filepath.Join(control, harness.UsageFile))
 	if err != nil || body == "" {
-		return nil, nil
+		return
 	}
 	var usage harness.Usage
-	if json.Unmarshal([]byte(body), &usage) != nil || usage.Tokens < 0 || usage.Cost < 0 {
-		return nil, nil
+	if json.Unmarshal([]byte(body), &usage) != nil {
+		return
 	}
-	return &usage.Tokens, &usage.Cost
+	entry.Agents = usage.Agents
+	if usage.Tokens < 0 || usage.Cost < 0 || (usage.Tokens == 0 && usage.Cost == 0) {
+		return
+	}
+	entry.Tokens, entry.Cost = &usage.Tokens, &usage.Cost
 }
 
 // finalReport is the run's result: result.md, or a plain summary.

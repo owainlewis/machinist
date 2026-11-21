@@ -16,6 +16,7 @@ import (
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/fakegh"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -193,5 +194,31 @@ func TestServeStopsOnCancellation(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("server did not stop")
+	}
+}
+
+// The runners list names the agents a running job's current step runs, with
+// their harness and model, so the board and Runners page can show them.
+func TestRunnersListNamesTheCurrentStepsAgents(t *testing.T) {
+	f := newFixture(t)
+	f.server.factory = &factory.Factory{
+		Presets: map[string]factory.Preset{"default": {Name: "default", Steps: []runner.Step{{Name: "work", Run: "machinist agent review"}}}},
+		Agents:  map[string]harness.Agent{"review": {Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}},
+	}
+	run := f.queueRun(t)
+	event := json.RawMessage(`{"sequence":1,"time":"2026-01-02T03:04:05Z","type":"step.started","message":"name=work"}`)
+	if response, body := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/events", f.token, protocol.RunEventBatch{Events: []json.RawMessage{event}}); response.StatusCode != http.StatusOK {
+		t.Fatalf("events = %d: %s", response.StatusCode, body)
+	}
+	response, body := f.call(t, http.MethodGet, "/api/v1/runners", f.token, nil)
+	var fleet struct {
+		Runners []tickets.Runner `json:"runners"`
+	}
+	if err := json.Unmarshal(body, &fleet); err != nil || response.StatusCode != http.StatusOK || len(fleet.Runners) != 1 || len(fleet.Runners[0].Jobs) != 1 {
+		t.Fatalf("status = %d, body = %s, err = %v", response.StatusCode, body, err)
+	}
+	job := fleet.Runners[0].Jobs[0]
+	if job.Step != "work" || job.Preset != "default" || len(job.Agents) != 1 || job.Agents[0] != (protocol.Agent{Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}) {
+		t.Fatalf("job = %+v", job)
 	}
 }

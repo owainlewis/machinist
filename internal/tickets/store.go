@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS run_activity_events (run TEXT NOT NULL, sequence INTE
 CREATE TABLE IF NOT EXISTS run_progress (run TEXT PRIMARY KEY, step TEXT NOT NULL DEFAULT '', step_started_at TEXT, action TEXT NOT NULL DEFAULT '', partial TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS run_stages (
   run TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '',
-  tokens INTEGER, cost REAL, duration_millis INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', PRIMARY KEY(run, position));
+  tokens INTEGER, cost REAL, duration_millis INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', agents TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(run, position));
 CREATE TABLE IF NOT EXISTS projects (repo TEXT PRIMARY KEY COLLATE NOCASE, added_by TEXT NOT NULL, added_at TEXT NOT NULL);`
 
 type Store struct {
@@ -226,6 +227,10 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec(schema); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = addColumns(db, "run_stages", "agents TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -396,7 +401,7 @@ func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	stages, err := s.db.QueryContext(ctx, `SELECT run,name,kind,state,outcome,tokens,cost,duration_millis,error FROM run_stages
+	stages, err := s.db.QueryContext(ctx, `SELECT run,name,kind,state,outcome,tokens,cost,duration_millis,error,agents FROM run_stages
 	  WHERE run IN (SELECT id FROM runs WHERE ticket_id=?) ORDER BY run,position`, ticketID)
 	if err != nil {
 		return nil, err
@@ -408,8 +413,13 @@ func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
 		var stage protocol.StageResult
 		var tokens sql.NullInt64
 		var cost sql.NullFloat64
-		if err := stages.Scan(&run, &stage.Name, &stage.Kind, &stage.State, &stage.Outcome, &tokens, &cost, &stage.DurationMillis, &stage.Error); err != nil {
+		var agents string
+		if err := stages.Scan(&run, &stage.Name, &stage.Kind, &stage.State, &stage.Outcome, &tokens, &cost, &stage.DurationMillis, &stage.Error, &agents); err != nil {
 			return nil, err
+		}
+		if agents != "" {
+			// A stage's agents are a display aid, so an unreadable list shows none.
+			_ = json.Unmarshal([]byte(agents), &stage.Agents)
 		}
 		if tokens.Valid {
 			stage.Tokens = &tokens.Int64
@@ -948,8 +958,16 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 			return err
 		}
 		for position, stage := range completion.Stages {
-			if _, err = tx.ExecContext(ctx, `INSERT INTO run_stages(run,position,name,kind,state,outcome,tokens,cost,duration_millis,error) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-				run.ID, position, stage.Name, stage.Kind, stage.State, stage.Outcome, stage.Tokens, stage.Cost, stage.DurationMillis, stage.Error); err != nil {
+			agents := ""
+			if len(stage.Agents) > 0 {
+				body, err := json.Marshal(stage.Agents)
+				if err != nil {
+					return err
+				}
+				agents = string(body)
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO run_stages(run,position,name,kind,state,outcome,tokens,cost,duration_millis,error,agents) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+				run.ID, position, stage.Name, stage.Kind, stage.State, stage.Outcome, stage.Tokens, stage.Cost, stage.DurationMillis, stage.Error, agents); err != nil {
 				return err
 			}
 		}

@@ -4,6 +4,9 @@ import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
 import { canStart, initialPreset, keyFor, runRequest, titleOf } from "./new-job.js";
 import { jobHref } from "./routes.js";
+import { AgentBadges } from "./agent-badge.jsx";
+import { HarnessMark } from "./harness-mark.jsx";
+import { presetAgents } from "./agents.js";
 
 // NewJobPage starts a job through the run API, like curl or a tracker would.
 export function NewJobPage({ onSignedOut }) {
@@ -75,7 +78,8 @@ export function NewJobPage({ onSignedOut }) {
         </select>
         {chosen && <div id="new-job-preset-about" className="preset-about">
           {chosen.description && <p>{chosen.description}</p>}
-          <ol className="preset-steps" aria-label="Steps">{chosen.steps.map(step => <li key={step}><span>{step}</span></li>)}</ol>
+          <ol className="preset-steps" aria-label="Steps">{chosen.steps.map(step => <li key={step.name}><span>{step.name}{step.agents.map((agent, index) => <HarnessMark key={index} harness={agent.harness} className="preset-step-mark" />)}</span></li>)}</ol>
+          {presetAgents(chosen).length > 0 && <p className="preset-agents"><span className="preset-agents-label">Agents</span><AgentBadges agents={presetAgents(chosen)} /></p>}
         </div>}
       </div>
       <div>

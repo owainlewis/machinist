@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+
+	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 // Runner is one machine or cluster that asks for work, as it last described
@@ -30,6 +32,10 @@ type RunnerJob struct {
 	Step          string     `json:"step,omitempty"`
 	StepStartedAt *time.Time `json:"step_started_at,omitempty"`
 	Action        string     `json:"action,omitempty"`
+	// Preset is the job's preset. The control plane fills in Agents, the
+	// agents its current step runs, from the factory.
+	Preset string           `json:"preset"`
+	Agents []protocol.Agent `json:"agents,omitempty"`
 }
 
 // Queue is the runs no runner has taken yet.
@@ -66,7 +72,7 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 	for index := range runners {
 		byName[runners[index].Name] = &runners[index]
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.runner,r.id,r.ticket_id,t.title,r.kind,r.reviewer,r.started_at,
+	rows, err := s.db.QueryContext(ctx, `SELECT r.runner,r.id,r.ticket_id,t.title,t.agent,r.kind,r.reviewer,r.started_at,
   COALESCE(p.step,''),p.step_started_at,COALESCE(p.action,'')
   FROM runs r JOIN tickets t ON t.id=r.ticket_id LEFT JOIN run_progress p ON p.run=r.id WHERE r.status=? ORDER BY r.started_at`, RunRunning)
 	if err != nil {
@@ -77,7 +83,7 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 		var runner string
 		var job RunnerJob
 		var started, stepStarted sql.NullString
-		if err := rows.Scan(&runner, &job.RunID, &job.TicketID, &job.Title, &job.Kind, &job.Reviewer, &started, &job.Step, &stepStarted, &job.Action); err != nil {
+		if err := rows.Scan(&runner, &job.RunID, &job.TicketID, &job.Title, &job.Preset, &job.Kind, &job.Reviewer, &started, &job.Step, &stepStarted, &job.Action); err != nil {
 			return nil, Queue{}, err
 		}
 		job.StepStartedAt = parseTime(stepStarted)

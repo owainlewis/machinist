@@ -47,6 +47,16 @@ type StageResult struct {
 	Cost           *float64 `json:"cost,omitempty"`
 	DurationMillis int64    `json:"duration_millis,omitempty"`
 	Error          string   `json:"error,omitempty"`
+	// Agents are the factory agents the step ran, in order.
+	Agents []Agent `json:"agents,omitempty"`
+}
+
+// Agent names one of the factory's agents and what runs it. Model is empty
+// when the agent uses its harness's default.
+type Agent struct {
+	Name    string `json:"name"`
+	Harness string `json:"harness"`
+	Model   string `json:"model,omitempty"`
 }
 
 // Totals adds up the tokens and cost the stages reported. It returns nil for
