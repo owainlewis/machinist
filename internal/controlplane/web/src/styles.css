@@ -1,6 +1,5 @@
 @import "tailwindcss" source("./");
 
-@custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
@@ -30,35 +29,8 @@
   --shadow-xs: 0 1px 2px rgb(15 23 42 / .05);
 }
 
-/* Each status color has a soft partner for the fill behind it. */
+/* Machinist is dark only. Each status color has a soft partner for the fill behind it. */
 :root {
-  color-scheme: light;
-  --background: #f6f6f8;
-  --surface: #ffffff;
-  --sidebar: #efeff3;
-  --muted: #f0f0f4;
-  --border: #e2e2e8;
-  --foreground: #18181c;
-  --muted-foreground: #5f5f6b;
-  --faint: #74747f;
-  --primary: #3b5bdb;
-  --primary-foreground: #ffffff;
-  --success: #1f8a4c;
-  --success-soft: #e3f5ea;
-  --warning: #a86b00;
-  --warning-soft: #fdf1d8;
-  --info: #2f55d4;
-  --info-soft: #e6ebfd;
-  --review: #6b3fc4;
-  --review-soft: #efe9fc;
-  --danger: #b3261e;
-  --danger-soft: #fde8e6;
-  --ring: #3b5bdb;
-  --chart-1: #3b5bdb;
-  --chart-2: #d9480f;
-}
-
-.dark {
   color-scheme: dark;
   --background: #161618;
   --surface: #1d1d20;
@@ -69,6 +41,7 @@
   --muted-foreground: #a1a1aa;
   --faint: #85858f;
   --primary: #4c6ef5;
+  --primary-foreground: #ffffff;
   --success: #5bc489;
   --success-soft: #173225;
   --warning: #e3b341;
