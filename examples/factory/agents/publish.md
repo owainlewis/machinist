@@ -1,5 +1,8 @@
+---
+harness: claude
+---
 Your step is to ship the change: open a pull request, wait for its checks, and
-merge it. Edit this file to change how jobs ship.
+merge it. Edit this file, factory/agents/publish.md, to change how jobs ship.
 
 1. If the branch has no commits beyond the default branch, write "The work
    needed no change." to result.md and stop.

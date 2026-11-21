@@ -103,7 +103,7 @@ func newRemote(t *testing.T) string {
 }
 
 // fakePublish is what the fake claude does in the publish step: what
-// prompts/publish.md asks, with the fake gh.
+// agents/publish.md asks, with the fake gh.
 const fakePublish = `case "$*" in *"Your step is to ship the change"*)
   cat > /dev/null
   if [ -z "$(git log --oneline origin/HEAD..HEAD)" ]; then echo "The work needed no change." > "$MACHINIST_DIR/result.md"; exit 0; fi
@@ -140,7 +140,7 @@ func shippedFactory(t *testing.T, directory string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, shipped := range []string{"presets", "prompts", "scripts"} {
+	for _, shipped := range []string{"agents", "presets", "prompts", "scripts"} {
 		err = fs.WalkDir(files, shipped, func(name string, entry fs.DirEntry, err error) error {
 			if err != nil || entry.IsDir() {
 				return err
@@ -391,7 +391,7 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	if run.Status != tickets.RunSucceeded || run.Runner != "runner-1" || run.Harness != protocol.StepsHarness {
 		t.Fatalf("run = %+v", run)
 	}
-	if got := stepStates(run); got != "checkout=succeeded work=succeeded publish=succeeded" {
+	if got := stepStates(run); got != "checkout=succeeded implement=succeeded publish=succeeded" {
 		t.Fatalf("steps = %s", got)
 	}
 	if work := run.Stages[1]; work.Tokens == nil || *work.Tokens != 120 || work.Cost == nil || *work.Cost != 0.25 {
@@ -403,7 +403,7 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	if prompt := s.read(t, "prompt"); !strings.Contains(prompt, "THE REQUEST") || !strings.Contains(prompt, "untrusted") {
 		t.Fatalf("prompt:\n%s", prompt)
 	}
-	if args := s.read(t, "args"); !strings.Contains(args, "running headless") || !strings.Contains(args, "Do the work in the prompt") || !strings.Contains(args, "Never push") {
+	if args := s.read(t, "args"); !strings.Contains(args, "running headless") || !strings.Contains(args, "Do the work in the prompt") || !strings.Contains(args, "Never push") || !strings.Contains(args, "write a test that fails") || !strings.Contains(args, "--output-format stream-json") {
 		t.Fatalf("system prompt:\n%s", args)
 	}
 	if status := s.read(t, "status"); status != "" {

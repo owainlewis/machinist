@@ -1,35 +1,27 @@
-// Package agentlog turns an agent's machine output into lines a person can
-// follow while a run is going. Claude Code's stream-json output becomes one
-// line per message or action. Any other line passes through unchanged.
-package agentlog
+package harness
 
 import (
-	"bufio"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
 
-// ActionPrefix starts every line that names an action the agent took. The web
-// app shows the latest one as what a running job is doing now.
-const ActionPrefix = "▸ "
+// Claude runs Claude Code headless and reads its stream-json output.
+type Claude struct{}
 
-// maxLine bounds a line of agent output. A tool result can hold a whole file.
-const maxLine = 16 << 20
+func (Claude) Name() string { return "claude" }
 
-// Usage is what a run reported spending. Tokens counts input, output and
-// cache tokens together.
-type Usage struct {
-	Tokens int64   `json:"tokens"`
-	Cost   float64 `json:"cost"`
+func (Claude) Command(request Request) ([]string, string) {
+	args := []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions", "--append-system-prompt", request.System}
+	if request.Model != "" {
+		args = append(args, "--model", request.Model)
+	}
+	return args, request.Prompt
 }
+
+func (Claude) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) { return Format(r, w, cwd) }
 
 // claudeEvents are the event types Claude Code's stream-json writes. A JSON
 // line of any other type is not Claude Code's, so it passes through.
@@ -63,32 +55,22 @@ type block struct {
 	IsError bool            `json:"is_error"`
 }
 
-// Format copies r to w, line by line, as it arrives. cwd shortens file paths
-// in actions. It returns the usage the agent reported, if it reported any.
+// Format copies Claude Code's stream-json output from r to w as readable
+// lines. cwd shortens file paths in actions.
 func Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64<<10), maxLine)
 	var usage *Usage
-	for scanner.Scan() {
-		line := scanner.Text()
+	err := eachLine(r, w, func(line string) ([]string, bool) {
 		var parsed event
 		if !strings.HasPrefix(line, `{"type":`) || json.Unmarshal([]byte(line), &parsed) != nil || !claudeEvents[parsed.Type] {
-			if _, err := fmt.Fprintln(w, line); err != nil {
-				return usage, err
-			}
-			continue
+			return nil, false
 		}
 		if parsed.Type == "result" {
 			u := parsed.Usage
 			usage = &Usage{Tokens: u.Input + u.Output + u.CacheCreation + u.CacheRead, Cost: parsed.TotalCost}
 		}
-		for _, out := range describe(parsed, cwd) {
-			if _, err := fmt.Fprintln(w, out); err != nil {
-				return usage, err
-			}
-		}
-	}
-	return usage, scanner.Err()
+		return describe(parsed, cwd), true
+	})
+	return usage, err
 }
 
 func describe(e event, cwd string) []string {
@@ -143,10 +125,7 @@ func action(b block, cwd string) string {
 		if file == "" {
 			file = text("notebook_path")
 		}
-		if relative, err := filepath.Rel(cwd, file); err == nil && cwd != "" && !strings.HasPrefix(relative, "..") {
-			return relative
-		}
-		return file
+		return relative(cwd, file)
 	}
 	switch b.Name {
 	case "Bash":
@@ -190,69 +169,4 @@ func resultText(raw json.RawMessage) string {
 		return strings.Join(parts, "\n")
 	}
 	return ""
-}
-
-func firstLine(text string, limit int) string {
-	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
-	runes := []rune(line)
-	if len(runes) > limit {
-		return string(runes[:limit-1]) + "…"
-	}
-	return line
-}
-
-// UsageFile is where Run leaves the usage, in the run's control directory.
-// The runner reads it after the step and adds it to the step's result.
-const UsageFile = "usage.json"
-
-// addUsage adds usage to what earlier agents in the same step left at path,
-// so a step that runs two agents reports both.
-func addUsage(path string, usage Usage) {
-	var earlier Usage
-	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &earlier) == nil {
-		usage.Tokens += earlier.Tokens
-		usage.Cost += earlier.Cost
-	}
-	if data, err := json.Marshal(usage); err == nil {
-		_ = os.WriteFile(path, data, 0o600)
-	}
-}
-
-// Run starts command with stdin, formats its stdout onto stdout, and passes
-// its stderr through. It adds the reported usage to usagePath, when the agent
-// reported any and usagePath is set, and returns the command's exit code.
-func Run(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer, usagePath string) (int, error) {
-	if len(command) == 0 {
-		return 2, errors.New("name the agent command after --")
-	}
-	process := exec.CommandContext(ctx, command[0], command[1:]...)
-	process.Stdin = stdin
-	process.Stderr = stderr
-	output, err := process.StdoutPipe()
-	if err != nil {
-		return 1, err
-	}
-	if err := process.Start(); err != nil {
-		return 127, err
-	}
-	cwd, _ := os.Getwd()
-	usage, formatErr := Format(output, stdout, cwd)
-	if formatErr != nil {
-		_, _ = io.Copy(io.Discard, output)
-	}
-	waitErr := process.Wait()
-	if usage != nil && usagePath != "" {
-		addUsage(usagePath, *usage)
-	}
-	var exit *exec.ExitError
-	if errors.As(waitErr, &exit) {
-		return exit.ExitCode(), nil
-	}
-	if waitErr != nil {
-		return 1, waitErr
-	}
-	if formatErr != nil {
-		return 1, formatErr
-	}
-	return 0, nil
 }

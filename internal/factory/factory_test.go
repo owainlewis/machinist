@@ -78,6 +78,25 @@ func TestLoadReadsPresetsAndAutomations(t *testing.T) {
 	}
 }
 
+func TestAgentStepRunsTheAgent(t *testing.T) {
+	files := validFactory()
+	files["agents/review.md"] = "---\nharness: codex\nmodel: gpt-5\n---\nReview the branch.\n"
+	files["presets/default.yaml"] = "description: Review.\nsteps:\n  - name: review\n    agent: review\n"
+	factory, err := Load(writeFiles(t, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step := factory.Presets["default"].Steps[0]; step.Run != "machinist agent review" {
+		t.Fatalf("step = %+v", step)
+	}
+	if agent := factory.Agents["review"]; agent.Harness != "codex" || agent.Model != "gpt-5" || agent.Prompt != "Review the branch." {
+		t.Fatalf("agent = %+v", agent)
+	}
+	if factory.Files["agents/review.md"] != files["agents/review.md"] {
+		t.Fatalf("files = %v", factory.Files)
+	}
+}
+
 func TestPresetTimeoutIsOptional(t *testing.T) {
 	factory, err := Load(writeFiles(t, map[string]string{"presets/quick.yaml": "description: Quick.\nsteps:\n  - name: only\n    run: \"true\"\n"}))
 	if err != nil {
@@ -112,11 +131,21 @@ func TestLoadRejectsInvalidFactories(t *testing.T) {
 		{"step twice", "listed twice", func(files map[string]string) {
 			files["presets/default.yaml"] = steps("  - name: build\n    run: \"true\"\n  - name: build\n    run: \"true\"\n")
 		}},
-		{"empty run", "run is empty", func(files map[string]string) {
+		{"empty run", "give it agent or run", func(files map[string]string) {
 			files["presets/default.yaml"] = steps("  - name: build\n    run: \" \"\n")
 		}},
 		{"bad timeout", "positive duration", func(files map[string]string) {
 			files["presets/default.yaml"] = "timeout: soon\n" + steps("  - name: b\n    run: \"true\"\n")
+		}},
+		{"agent and run", "agent or run, not both", func(files map[string]string) {
+			files["agents/work.md"] = "---\nharness: claude\n---\nWork.\n"
+			files["presets/default.yaml"] = steps("  - name: b\n    agent: work\n    run: \"true\"\n")
+		}},
+		{"missing agent", `agent "work" is not in agents/`, func(files map[string]string) {
+			files["presets/default.yaml"] = steps("  - name: b\n    agent: work\n")
+		}},
+		{"unknown harness", "harness must be one of claude, codex, pi", func(files map[string]string) {
+			files["agents/work.md"] = "---\nharness: gemini\n---\nWork.\n"
 		}},
 		{"no description", "add a description", func(files map[string]string) {
 			files["presets/default.yaml"] = "steps:\n  - name: b\n    run: \"true\"\n"

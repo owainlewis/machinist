@@ -21,6 +21,7 @@ my-machinist/          a git repository
   config.yaml          the control plane
   runner.yaml          a runner
   factory/presets/     presets
+  factory/agents/      agents
   factory/prompts/     prompts
   factory/scripts/     scripts
   .machinist/          state, ignored by git
