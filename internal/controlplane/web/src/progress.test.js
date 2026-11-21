@@ -18,6 +18,9 @@ test("a running job shows its step, how long it has run and what it is doing", {
   assert.match(board, /<span class="board-card-step">work · 7m \ds<\/span>/);
   assert.ok(board.includes('<span class="board-card-action" title="Run go test ./...">Run go test ./...</span>'), board);
 
+  assert.match(board, /<li class="board-card" data-state="running">/, "the running card is marked so it can show it is live");
+  assert.match(board, /<span class="board-dot" data-column="running" aria-hidden="true"><\/span>Running/);
+
   const quiet = renderToStaticMarkup(React.createElement(JobsPage, { tickets: [ticket], runners: [{ name: "runner-1", jobs: [{ ...job, step: "", action: "" }] }], loaded: true }));
   assert.doesNotMatch(quiet, /board-card-now/, "a job with no progress yet shows none");
 });
