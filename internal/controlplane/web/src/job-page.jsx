@@ -81,7 +81,7 @@ function Pipeline({ nodes, onChoose, now = Date.now() }) {
           <Icon className={`size-4 shrink-0 ${tone}`} aria-hidden="true" />
           <span className="pipeline-name">{step.name}</span>
           <span className="pipeline-meta">{step.state !== "skipped" && stepTime(step, now) || stateWords[step.state]}</span>
-          <AgentBadges agents={step.agents} step={step.name} className="pipeline-agents" />
+          <AgentBadges agents={step.agents} step={step.name} compact className="pipeline-agents" />
         </button>
       </li>;
     })}</ol>

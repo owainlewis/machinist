@@ -361,11 +361,12 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 
 /* Agent badges: which agent runs a step, on which harness and model. */
 .agent-badges { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.agent-badge { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--muted); padding: 1px 6px 1px 5px; font-size: 11px; line-height: 16px; color: var(--muted-foreground); white-space: nowrap; }
+.agent-badge { position: relative; display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--muted); padding: 1px 6px 1px 5px; font-size: 11px; line-height: 16px; color: var(--muted-foreground); white-space: nowrap; }
 .agent-badge-mark { width: 12px; height: 12px; flex: none; color: var(--foreground); }
 .agent-badge-name { color: var(--foreground); font-weight: 500; }
 .agent-badge-model { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
-.pipeline-agents { grid-column: 2; margin-top: 6px; }
+.pipeline-agents { grid-column: 2; flex-direction: column; align-items: flex-start; margin-top: 6px; }
+.pipeline-agents .agent-badge-model { max-width: 150px; }
 .pipeline li[data-state="skipped"] .agent-badge, .pipeline li[data-state="pending"] .agent-badge { opacity: .7; }
 .preset-step-mark { display: inline-block; width: 11px; height: 11px; margin-left: 5px; vertical-align: -1px; color: var(--foreground); }
 .preset-agents { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; }

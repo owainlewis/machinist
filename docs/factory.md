@@ -79,6 +79,12 @@ tokens and cost the harness reports. The step fails when the agent exits non-zer
 | `pi` | `pi --print --mode json --no-session` with the system prompt appended to Pi's own |
 | `agy` | Google's Antigravity CLI: `agy --print <prompt> --output-format stream-json --dangerously-skip-permissions`, with the system prompt first in the prompt, since agy takes no separate one. Gemini models such as `gemini-4-neon-high`. agy reports tokens but no cost |
 
+The web app shows which agent runs each step, on which harness and model: on the New job
+form, in the job page's pipeline, and on running jobs on the board and the Runners page.
+Machinist reads this from the step's `agent:` or from `machinist agent <name>` in its command
+or in a script from `scripts/` that it runs. Once a step has run, it shows what actually ran,
+which `machinist agent` records.
+
 Each harness must be installed and signed in on the runner. To use a different agent for a
 step, change `harness` in its file. To change what a step asks for, edit its prompt.
 
