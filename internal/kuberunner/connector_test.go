@@ -264,3 +264,60 @@ func TestMissingSecretSaysWhatToCreate(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestTheRunsGitHubTokenReachesOnlyTheAgentContainer(t *testing.T) {
+	deleted := false
+	c := Connector{Config: configuration()}
+	fakeCluster(&c, &deleted, true, func(context.Context) error { return nil })
+	base := c.run
+	var prepared, sent string
+	tries := 0
+	c.run = func(ctx context.Context, input io.Reader, limit int, args ...string) ([]byte, error) {
+		line := strings.Join(args, " ")
+		switch {
+		case strings.HasSuffix(line, "-c prepare -- machinist sandbox receive"):
+			body, _ := io.ReadAll(input)
+			prepared = string(body)
+			return nil, nil
+		case strings.HasSuffix(line, "-c agent -- machinist sandbox token"):
+			if tries++; tries < 2 {
+				return nil, errors.New("container agent is waiting to start")
+			}
+			body, _ := io.ReadAll(input)
+			sent = string(body)
+			return nil, nil
+		}
+		return base(ctx, input, limit, args...)
+	}
+	request := fixtureRequest()
+	request.GitHubToken = "ghs_run_token"
+	if result := c.Execute(t.Context(), request, t.TempDir()); result.State != runner.StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+	if prepared == "" || strings.Contains(prepared, "ghs_run_token") {
+		t.Fatalf("the init container got %s", prepared)
+	}
+	if sent != "ghs_run_token" {
+		t.Fatalf("the agent container got %q", sent)
+	}
+}
+
+func TestTheSandboxReadsTheTokenAndRemovesIt(t *testing.T) {
+	exchange := t.TempDir()
+	if err := ReceiveToken(strings.NewReader("first"), exchange); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReceiveToken(strings.NewReader("ghs_run_token\n"), exchange); err != nil {
+		t.Fatal(err)
+	}
+	token, err := readToken(t.Context(), exchange)
+	if err != nil || token != "ghs_run_token" {
+		t.Fatalf("token = %q, err = %v", token, err)
+	}
+	if entries, _ := os.ReadDir(exchange); len(entries) != 0 {
+		t.Fatalf("left in the exchange volume: %v", entries)
+	}
+	if ReceiveToken(strings.NewReader(strings.Repeat("x", 5000)), exchange) == nil {
+		t.Fatal("an oversized token was accepted")
+	}
+}

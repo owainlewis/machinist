@@ -24,7 +24,8 @@ const (
 // root-owned, so the non-root init container creates this child.
 const SourceDirectory = "/source/repository"
 
-// Receive stores the run request sent on stdin. It carries no secrets.
+// Receive stores the run request sent on stdin. The connector sends it to the
+// init container without the run's GitHub token.
 func Receive(input io.Reader, directory string) error {
 	body, err := io.ReadAll(io.LimitReader(input, maxRequest+1))
 	if err != nil {
@@ -44,6 +45,46 @@ func Receive(input io.Reader, directory string) error {
 	return os.WriteFile(filepath.Join(directory, "ready"), []byte("ready"), 0o600)
 }
 
+// tokenFile holds the run's GitHub token, which the connector sends to the
+// agent container once it starts. Empty means the Secret's GH_TOKEN applies.
+const tokenFile = "token"
+
+// ReceiveToken stores the run's GitHub token sent on stdin. It writes a new
+// file and renames it, so a retried send replaces the first.
+func ReceiveToken(input io.Reader, directory string) error {
+	body, err := io.ReadAll(io.LimitReader(input, 4097))
+	if err != nil {
+		return err
+	}
+	if len(body) > 4096 {
+		return errors.New("invalid sandbox token")
+	}
+	temporary, err := os.CreateTemp(directory, ".token-*")
+	if err != nil {
+		return err
+	}
+	_, writeErr := temporary.Write(body)
+	if err := errors.Join(writeErr, temporary.Close()); err != nil {
+		_ = os.Remove(temporary.Name())
+		return err
+	}
+	return os.Rename(temporary.Name(), filepath.Join(directory, tokenFile))
+}
+
+// readToken waits for the run's GitHub token and removes it from the exchange
+// volume, which outlives the steps.
+func readToken(ctx context.Context, exchange string) (string, error) {
+	path := filepath.Join(exchange, tokenFile)
+	if err := waitFile(ctx, path); err != nil {
+		return "", err
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(body)), os.Remove(path)
+}
+
 func waitFile(ctx context.Context, path string) error {
 	for {
 		if _, err := os.Stat(path); err == nil {
@@ -60,7 +101,8 @@ func waitFile(ctx context.Context, path string) error {
 }
 
 // Prepare runs in the init container, which holds no credentials. It proves the
-// network is locked down before the agent container receives the Secret.
+// network is locked down before the agent container receives the Secret and
+// the run's GitHub token.
 func Prepare(ctx context.Context, exchange, source string) error {
 	if err := waitFile(ctx, filepath.Join(exchange, "ready")); err != nil {
 		return err
@@ -107,6 +149,9 @@ next:
 func Sandbox(ctx context.Context, exchange, root, home string) error {
 	request, err := readRequest(exchange)
 	if err != nil {
+		return err
+	}
+	if request.GitHubToken, err = readToken(ctx, exchange); err != nil {
 		return err
 	}
 	body, err := json.Marshal(runRequest(ctx, request, exchange, root, home))

@@ -58,8 +58,9 @@ environments, and the agent has open network access. Use a dedicated OS account.
 shares an OS user with the control plane, an agent can read and change its database.
 
 **Kubernetes runners.** Each run is a gVisor Job with no service account token. An init
-container with no credentials proves the network is locked down before the Secret enters
-the Pod. The egress proxy blocks all but listed hosts. It does not stop data leaving through
+container with no credentials proves the network is locked down before the Secret or the
+run's GitHub token enters the Pod. The token goes only to the agent container, once it starts,
+and is removed from the shared volume as soon as the run reads it. The egress proxy blocks all but listed hosts. It does not stop data leaving through
 an allowed service, such as a push to another repository on `github.com`.
 
 ## Local data
