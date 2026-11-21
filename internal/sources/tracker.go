@@ -37,6 +37,16 @@ type Assignment struct {
 	UpdatedAt time.Time
 }
 
+// Reply is a comment a person left on an issue that Machinist has a job for.
+type Reply struct {
+	// Key is the issue's assignment key, such as linear:<issue id>.
+	Key       string
+	Issue     string
+	Author    string
+	Body      string
+	CreatedAt time.Time
+}
+
 // IssueState is what Machinist needs to know about an issue with a job going.
 type IssueState struct {
 	// Assigned is whether the issue is still assigned to Machinist.
@@ -55,8 +65,14 @@ type Tracker interface {
 	// Assignments returns issues assigned to Machinist and updated after
 	// since, oldest first.
 	Assignments(ctx context.Context, since time.Time) ([]Assignment, error)
-	// Start moves an issue to In Progress.
+	// Start moves an issue to In Progress and says Machinist is on it.
 	Start(ctx context.Context, issue string) error
+	// Replies returns comments left by people, not Machinist, on issues
+	// assigned to Machinist, created after since, oldest first.
+	Replies(ctx context.Context, since time.Time) ([]Reply, error)
+	// Return moves an issue back out of In Progress with a comment, because
+	// the job ended with no pull request and the next move is a person's.
+	Return(ctx context.Context, issue, comment string) error
 	// Comment posts body on an issue.
 	Comment(ctx context.Context, issue, body string) error
 	// Fail moves an issue back out of In Progress and says why.
@@ -220,7 +236,60 @@ func (p *Poller) Poll(ctx context.Context) error {
 		}
 	}
 	fmt.Fprintf(p.log(), "machinist: %s: %d assignments, %d jobs started\n", name, len(assignments), started)
+	if err := p.replies(ctx); err != nil {
+		return err
+	}
 	return p.sync(ctx)
+}
+
+// repliesCursor keeps how far the tracker's replies have been read, beside
+// the assignments cursor.
+const repliesCursor = "#replies"
+
+// replies runs a job again for each comment an allowed person left on its
+// issue after the job ended, with the comment added to the job's log. A reply
+// to a job that is still running waits, with the replies after it, until the
+// run ends.
+func (p *Poller) replies(ctx context.Context) error {
+	name := p.Tracker.Name()
+	since, found, err := p.Store.Cursor(ctx, name, repliesCursor)
+	if err != nil {
+		return err
+	}
+	if !found {
+		since = p.clock()
+		return p.Store.SetCursor(ctx, name, repliesCursor, since)
+	}
+	replies, err := p.Tracker.Replies(ctx, since)
+	if err != nil {
+		return err
+	}
+	for _, reply := range replies {
+		ticket, err := p.Store.TicketBySourceKey(ctx, reply.Key)
+		switch {
+		case errors.Is(err, tickets.ErrNotFound):
+		case err != nil:
+			return err
+		case !slices.Contains(p.Rules.AllowedUsers, reply.Author):
+			fmt.Fprintf(p.log(), "machinist: %s reply on job %s ignored: user %q may not start jobs\n", name, ticket.ID, reply.Author)
+		case ticket.State == tickets.StateWorking:
+			return nil
+		default:
+			if _, err := p.Store.Reply(ctx, ticket.ID, name, strings.TrimSpace(reply.Body)); errors.Is(err, tickets.ErrStillWorking) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			fmt.Fprintf(p.log(), "machinist: %s reply ran job %s again\n", name, ticket.ID)
+		}
+		if reply.CreatedAt.After(since) {
+			since = reply.CreatedAt
+			if err := p.Store.SetCursor(ctx, name, repliesCursor, since); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type handled int
@@ -350,22 +419,39 @@ func (p *Poller) syncJob(ctx context.Context, issue string, job tickets.TrackerJ
 			return fmt.Errorf("comment the closed pull request: %w", err)
 		}
 	}
+	if job.State == tickets.StateDone && job.PRNumber == 0 {
+		result, err := p.Store.LatestMessage(ctx, job.TicketID)
+		if err != nil {
+			return err
+		}
+		comment := "Machinist finished without a pull request: " + clip(result, "Every step passed.") + "\n\nReply here to give it more to go on, and it will run again."
+		if err := report(tickets.ReportFinished, func() error { return p.Tracker.Return(ctx, issue, comment) }); err != nil {
+			return fmt.Errorf("report the result: %w", err)
+		}
+	}
 	if job.State == tickets.StateFailed {
 		reason, err := p.Store.LatestMessage(ctx, job.TicketID)
 		if err != nil {
 			return err
 		}
-		if runes := []rune(reason); len(runes) > maxReason {
-			reason = string(runes[:maxReason-1]) + "…"
-		}
-		if reason == "" {
-			reason = "The job failed."
-		}
+		reason = clip(reason, "The job failed.")
 		if err := report(tickets.ReportFailed, func() error { return p.Tracker.Fail(ctx, issue, reason) }); err != nil {
 			return fmt.Errorf("report the failure: %w", err)
 		}
 	}
 	return nil
+}
+
+// clip bounds text Machinist writes on an issue, or gives fallback if empty.
+func clip(text, fallback string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fallback
+	}
+	if runes := []rune(text); len(runes) > maxReason {
+		return string(runes[:maxReason-1]) + "…"
+	}
+	return text
 }
 
 // cancelMoved cancels each job whose issue was unassigned from Machinist or

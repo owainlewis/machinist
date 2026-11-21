@@ -648,6 +648,12 @@ var ErrStillWorking = errors.New("the job is still running")
 // its pull request open. The request is logged as a comment from by, so the
 // next run sees it and the lost-runner count starts again.
 func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) {
+	return s.Reply(ctx, ticketID, by, "Run the job again.")
+}
+
+// Reply adds a comment to an ended ticket and runs it again on the same
+// branch. The new run's prompt is the whole log, so it sees the comment.
+func (s *Store) Reply(ctx context.Context, ticketID, by, body string) (Ticket, error) {
 	var ticket Ticket
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -658,7 +664,7 @@ func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) 
 			return ErrStillWorking
 		}
 		now := s.now()
-		if err = insertEntry(ctx, tx, ticketID, EntryComment, by, "Run the job again.", nil, now); err != nil {
+		if err = insertEntry(ctx, tx, ticketID, EntryComment, by, body, nil, now); err != nil {
 			return err
 		}
 		// The new run's pull request is followed afresh, and its tracker is told
@@ -666,7 +672,7 @@ func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) 
 		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed); err != nil {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed, ReportFinished); err != nil {
 			return err
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)

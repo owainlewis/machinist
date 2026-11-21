@@ -63,8 +63,10 @@ The full state table is in the
 Work comes from the Assign box, the [run API](docs/run-api.md) at `POST /machinist/run`,
 automation schedules and [Linear](docs/linear.md). A tracker such as Linear is a
 `sources.Tracker`: a `sources.Poller` asks it for new assignments every minute, starts their
-jobs through the same intake, and writes each job's news back once (In Progress, the pull
-request link, Done on merge, a comment on close, or the failure). It cancels a job whose issue leaves Machinist or every started
+jobs through the same intake, and writes each job's news back once (In Progress with an
+acknowledgement, the pull request link, Done on merge, a comment on close, the result when
+there is no pull request, or the failure). An allowed person's reply on the issue after a
+job ends runs that job again with the reply in its log, so a conversation stays on one job. It cancels a job whose issue leaves Machinist or every started
 state. What it has written is in `tracker_reports`, and how far it has read is its cursor. The run API shows tickets as jobs. Each
 request has a unique source key, so sending one twice has no effect. Machinist does not read
 GitHub comments. A ticket stays `pr_ready` while its pull request is open. Every minute the
