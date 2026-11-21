@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { fallbackCopy, selectCommand } from './site.js';
+import { fallbackCopy, selectCommand, toggleSound } from './site.js';
 
 test('fallbackCopy copies the full command passed to it', () => {
   const expected = "./bin/machinist run --command=task-to-pr --repo=/path/to/repo --prompt='Complete issue #123'";
@@ -64,44 +64,80 @@ test('selectCommand exposes and selects the full data-copy value', () => {
   assert.deepEqual(ranges, [range]);
 });
 
-test('setup snippets include required directories and Codex permissions', async () => {
-  const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./index.html', import.meta.url), 'utf8'));
-  assert.match(source, /mkdir -p \.\/bin &amp;&amp; go build/);
-  assert.match(source, /"--sandbox"[\s\S]+"danger-full-access"/);
-  assert.doesNotMatch(source, /--agent/);
+test('toggleSound unmutes and restarts the explainer, then mutes it again', () => {
+  let played = 0;
+  const video = { muted: true, currentTime: 12, play() { played += 1; } };
+  const attributes = {};
+  const button = { textContent: 'Sound on', setAttribute(name, value) { attributes[name] = value; } };
+
+  assert.equal(toggleSound(video, button), true);
+  assert.equal(video.muted, false);
+  assert.equal(video.currentTime, 0);
+  assert.equal(played, 1);
+  assert.equal(button.textContent, 'Sound off');
+  assert.equal(attributes['aria-pressed'], 'true');
+
+  video.currentTime = 7;
+  assert.equal(toggleSound(video, button), false);
+  assert.equal(video.muted, true);
+  assert.equal(video.currentTime, 7);
+  assert.equal(played, 1);
+  assert.equal(button.textContent, 'Sound on');
+  assert.equal(attributes['aria-pressed'], 'false');
 });
 
-test('public identity uses the two-piece interlocking mark and current positioning', async () => {
-  const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./index.html', import.meta.url), 'utf8'));
-  const styles = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./styles.css', import.meta.url), 'utf8'));
-  const mark = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./machinist-mark.svg', import.meta.url), 'utf8'));
-  const socialCard = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./social-card.svg', import.meta.url), 'utf8'));
+const read = (path) => import('node:fs/promises').then(({ readFile }) => readFile(new URL(path, import.meta.url), 'utf8'));
 
-  assert.match(source, /machinist-mark\.svg/);
-  assert.match(source, /technical-drawings\.webp/);
-  assert.match(source, /width="1693" height="929"/);
-  assert.match(source, /A better way to put coding agents to work\./);
-  assert.doesNotMatch(source, /machinist-mark\.png|fonts\.googleapis\.com/);
-  assert.match(styles, /--mark: #1d6683/);
-  assert.match(styles, /\.drawing-machine/);
-  assert.match(styles, /\.drawing-system/);
-  assert.match(styles, /\.drawing-assembly/);
-  assert.doesNotMatch(styles, /#f08b24|#f2ede3|DM Mono|Inter Tight/);
-  assert.equal((mark.match(/<path/g) || []).length, 2);
-  assert.doesNotMatch(mark, /<circle|<linearGradient/);
+test('setup snippets match the quick start in the README', async () => {
+  const source = await read('./index.html');
+  const readme = await read('../../README.md');
+  for (const command of ['go build -o ./bin/machinist ./cmd/machinist', 'machinist init', 'GH_TOKEN=$(gh auth token) machinist start']) {
+    assert.ok(source.includes(`data-copy="${command}"`), `site copies ${command}`);
+    assert.ok(readme.includes(command), `README has ${command}`);
+  }
+});
+
+test('public identity matches the web app: Inter, indigo and the M tile, dark only', async () => {
+  const source = await read('./index.html');
+  const styles = await read('./styles.css');
+  const app = await read('../../internal/controlplane/web/src/styles.css');
+  const mark = await read('./machinist-mark.svg');
+  const socialCard = await read('./social-card.svg');
+
+  for (const token of ['--background: #161618', '--surface: #1d1d20', '--border: #2f2f35', '--primary: #4c6ef5']) {
+    assert.ok(app.includes(token), `web app still uses ${token}`);
+    assert.ok(styles.includes(token), `site uses ${token}`);
+  }
+  assert.match(styles, /Inter Variable/);
+  assert.match(source, /class="brand-mark"/);
+  assert.match(source, /Assign the work\.<br>Get merged pull requests\./);
+  assert.match(source, /<meta name="color-scheme" content="dark">/);
+  assert.doesNotMatch(source, /technical-drawings|fonts\.googleapis\.com|machinist-bot/);
+  assert.doesNotMatch(styles, /Manrope|Newsreader|#1d6683/);
+  assert.match(mark, /#4c6ef5/);
   assert.match(socialCard, /width="1200" height="630"/);
-  assert.match(socialCard, /#1d6683/);
-  assert.match(socialCard, /M32 28h4V18/);
-  assert.doesNotMatch(socialCard, /M32 28v12/);
+  assert.match(socialCard, /#4c6ef5/);
 });
 
-test('repository quick start links to existing guides and stays directly runnable', async () => {
-  const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('../../README.md', import.meta.url), 'utf8'));
+test('the explainer video and its poster ship with the site', async () => {
+  const { access } = await import('node:fs/promises');
+  const source = await read('./index.html');
+  assert.match(source, /src="machinist\.mp4"/);
+  assert.match(source, /poster="poster\.jpg"/);
+  await access(new URL('./public/machinist.mp4', import.meta.url));
+  await access(new URL('./public/poster.jpg', import.meta.url));
+});
+
+test('repository quick start links to guides that exist', async () => {
+  const { access } = await import('node:fs/promises');
+  const source = await read('../../README.md');
 
   assert.match(source, /go build -o \.\/bin\/machinist \.\/cmd\/machinist/);
-  assert.match(source, /\.\/bin\/machinist start/);
-  for (const guide of ['docs/README.md', 'docs/configuration.md', 'docs/development.md', 'docs/vm-deployment.md']) {
-    assert.match(source, new RegExp(guide.replace('.', '\\.')));
+  assert.match(source, /machinist start/);
+  const guides = [...new Set(source.match(/docs\/[\w./-]+\.md/g))];
+  assert.ok(guides.includes('docs/README.md'));
+  for (const guide of guides) {
+    await access(new URL(`../../${guide}`, import.meta.url));
   }
   assert.doesNotMatch(source, /machinist submit|docs\/getting-started|docs\/how-it-works|docs\/control-plane|docs\/secure-self-hosting/);
 });

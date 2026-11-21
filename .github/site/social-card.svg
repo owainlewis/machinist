@@ -1,14 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
-  <title id="title">machinist</title>
-  <desc id="description">Supervised coding agents. On your machine.</desc>
-  <rect width="1200" height="630" fill="#f3f4f1"/>
-  <path d="M0 1h1200M0 629h1200" stroke="#c5cecd"/>
-  <g transform="translate(88 78) scale(4.5)" fill="none">
-    <path d="M8 40V18C8 11 12 7 18 7s10 4 10 11v10h4" stroke="#1a1d1e" stroke-width="5" stroke-linecap="square" stroke-linejoin="round"/>
-    <path d="M32 28h4V18c0-7 4-11 10-11s10 4 10 11v22" stroke="#1d6683" stroke-width="5" stroke-linecap="square" stroke-linejoin="round"/>
+  <title id="title">Machinist</title>
+  <desc id="description">Assign the work. Get merged pull requests.</desc>
+  <defs>
+    <radialGradient id="glow" cx="0.5" cy="0.1" r="0.75"><stop offset="0" stop-color="#4c6ef5" stop-opacity=".35"/><stop offset="1" stop-color="#4c6ef5" stop-opacity="0"/></radialGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6283ff"/><stop offset="1" stop-color="#4c6ef5"/></linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#161618"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <g transform="translate(556 110)">
+    <rect width="88" height="88" rx="22" fill="url(#tile)"/>
+    <path d="M24.75 61.9V27.5h7.15L44 45.9 56.1 27.5h7.15v34.4h-7.7V40.7L44 58l-11.55-17.3v21.2z" fill="#fff"/>
   </g>
-  <text x="88" y="420" fill="#1a1d1e" font-family="Georgia, 'Times New Roman', serif" font-size="112" letter-spacing="-5">machinist</text>
-  <text x="94" y="493" fill="#4f595b" font-family="Arial, Helvetica, sans-serif" font-size="33" letter-spacing="-0.5">Supervised coding agents. On your machine.</text>
-  <path d="M94 547h1012" stroke="#c5cecd"/>
-  <path d="M94 547h168" stroke="#1d6683" stroke-width="3"/>
+  <text x="600" y="318" text-anchor="middle" fill="#ececef" font-family="Inter, Helvetica, Arial, sans-serif" font-size="64" font-weight="650" letter-spacing="-2.5">Assign the work.</text>
+  <text x="600" y="396" text-anchor="middle" fill="#ececef" font-family="Inter, Helvetica, Arial, sans-serif" font-size="64" font-weight="650" letter-spacing="-2.5">Get merged pull requests.</text>
+  <text x="600" y="470" text-anchor="middle" fill="#a1a1aa" font-family="Inter, Helvetica, Arial, sans-serif" font-size="28">A self-hosted, open-source job runner for coding agents.</text>
+  <text x="600" y="560" text-anchor="middle" fill="#8aa5ff" font-family="Inter, Helvetica, Arial, sans-serif" font-size="24" font-weight="600">machinist.sh</text>
 </svg>
