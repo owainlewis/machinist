@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
 
@@ -22,158 +23,149 @@ func (Agy) Command(request Request) ([]string, string) {
 	return args, ""
 }
 
+// agyEvent is one line of agy's stream-json output: an init, a step update or
+// the result. Each names its kind in "event", not "type".
 type agyEvent struct {
-	Type string `json:"type"`
-	// init
-	Model string `json:"model"`
-	// message
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Delta   bool   `json:"delta"`
-	// tool_use and tool_result
-	ToolName   string         `json:"tool_name"`
-	ToolID     string         `json:"tool_id"`
-	Parameters map[string]any `json:"parameters"`
-	Status     string         `json:"status"`
-	// error, and a failed result
-	Message string `json:"message"`
-	Error   any    `json:"error"`
-	// result
-	Stats *agyStats `json:"stats"`
-	Usage *agyStats `json:"usage"`
+	Event string `json:"event"`
+	Init  struct {
+		Model string `json:"model"`
+	} `json:"init"`
+	Step struct {
+		Index     int       `json:"step_index"`
+		State     string    `json:"state"`
+		Type      string    `json:"step_type"`
+		TextDelta string    `json:"text_delta"`
+		ToolName  string    `json:"tool_name"`
+		Error     string    `json:"error"`
+		Usage     *agyUsage `json:"usage"`
+		ToolInfo  struct {
+			Parameters map[string]any `json:"parameters"`
+			Output     string         `json:"output"`
+		} `json:"tool_info"`
+	} `json:"step_update"`
+	Result struct {
+		Status   string    `json:"status"`
+		Error    any       `json:"error"`
+		NumTurns int       `json:"num_turns"`
+		Usage    *agyUsage `json:"usage"`
+	} `json:"result"`
 }
 
-type agyStats struct {
-	TotalTokens  int64   `json:"total_tokens"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CachedTokens int64   `json:"cached_tokens"`
-	Cost         float64 `json:"cost"`
+// agyUsage is what agy reports spending. total_tokens is input plus output;
+// cache reads are counted apart, so they are added here, as for the other
+// harnesses. agy reports no cost.
+type agyUsage struct {
+	TotalTokens     int64 `json:"total_tokens"`
+	CacheReadTokens int64 `json:"cache_read_tokens"`
 }
 
-func (s *agyStats) tokens() int64 {
-	if s.TotalTokens > 0 {
-		return s.TotalTokens
-	}
-	return s.InputTokens + s.OutputTokens + s.CachedTokens
-}
+var agyEvents = map[string]bool{"init": true, "step_update": true, "result": true}
 
-var agyEvents = map[string]bool{"init": true, "message": true, "tool_use": true, "tool_result": true, "error": true, "result": true}
+// agyExit finds the exit code in a run_command result, which agy writes as
+// "Command exited with code N."
+var agyExit = regexp.MustCompile(`exited with code (-?\d+)`)
 
 // Format copies agy's stream-json events from r to w as readable lines. The
-// assistant's text arrives in pieces, so it is joined and written when the
-// next event or the end arrives.
+// agent's text arrives in pieces across a step's updates, so it is written
+// when the step is done.
 func (Agy) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	var usage *Usage
 	var text strings.Builder
-	tools := map[string]string{}
-	flush := func(lines []string) []string {
-		if said := strings.TrimSpace(text.String()); said != "" {
-			lines = append([]string{said}, lines...)
-		}
-		text.Reset()
-		return lines
-	}
 	err := eachLine(r, w, func(line string) ([]string, bool) {
 		var e agyEvent
-		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || !agyEvents[e.Type] {
-			return flush(nil), false
+		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || !agyEvents[e.Event] {
+			return nil, false
 		}
-		switch e.Type {
+		switch e.Event {
 		case "init":
-			if e.Model != "" {
-				return flush([]string{"Antigravity started with " + e.Model}), true
+			if e.Init.Model != "" {
+				return []string{"Antigravity started with " + e.Init.Model}, true
 			}
-			return flush([]string{"Antigravity started"}), true
-		case "message":
-			if e.Role != "assistant" {
-				return nil, true
+			return []string{"Antigravity started"}, true
+		case "step_update":
+			step := e.Step
+			switch step.Type {
+			case "agent_response":
+				text.WriteString(step.TextDelta)
+				if step.State != "DONE" {
+					return nil, true
+				}
+				said := strings.TrimSpace(text.String())
+				text.Reset()
+				if said == "" {
+					return nil, true
+				}
+				return []string{said}, true
+			case "tool":
+				if step.State == "ACTIVE" {
+					return []string{ActionPrefix + agyAction(step.ToolName, step.ToolInfo.Parameters, cwd)}, true
+				}
+				if match := agyExit.FindStringSubmatch(step.ToolInfo.Output); match != nil && match[1] != "0" {
+					return []string{"  failed with status " + match[1]}, true
+				}
+				if step.State != "DONE" && step.State != "" {
+					return []string{"  " + strings.ToLower(step.State) + ": " + step.ToolName}, true
+				}
 			}
-			if !e.Delta && text.Len() > 0 {
-				text.WriteString("\n")
+			if step.Error != "" {
+				return []string{"Error: " + firstLine(step.Error, 200)}, true
 			}
-			text.WriteString(e.Content)
 			return nil, true
-		case "tool_use":
-			tools[e.ToolID] = e.ToolName
-			return flush([]string{ActionPrefix + agyAction(e, cwd)}), true
-		case "tool_result":
-			if e.Status == "error" || e.Status == "failed" {
-				name := tools[e.ToolID]
-				if name == "" {
-					name = e.ToolName
-				}
-				return flush([]string{"  failed: " + name}), true
-			}
-			return flush(nil), true
-		case "error":
-			return flush([]string{"Error: " + firstLine(agyMessage(e), 200)}), true
 		case "result":
-			lines := []string{}
-			if stats := e.Stats; stats != nil || e.Usage != nil {
-				if stats == nil {
-					stats = e.Usage
-				}
-				usage = &Usage{Tokens: stats.tokens(), Cost: stats.Cost}
+			if e.Result.Usage != nil {
+				usage = &Usage{Tokens: e.Result.Usage.TotalTokens + e.Result.Usage.CacheReadTokens}
 			}
-			if e.Status != "" && e.Status != "success" {
-				lines = append(lines, "Stopped: "+firstLine(agyMessage(e), 200))
-			} else {
-				lines = append(lines, "Finished")
+			if e.Result.Status != "SUCCESS" {
+				return []string{"Stopped: " + firstLine(agyError(e), 200)}, true
 			}
-			return flush(lines), true
+			return []string{fmt.Sprintf("Finished after %d turns", e.Result.NumTurns)}, true
 		}
 		return nil, true
 	})
-	if err == nil {
-		if said := strings.TrimSpace(text.String()); said != "" {
-			_, err = fmt.Fprintln(w, said)
-		}
-	}
 	return usage, err
 }
 
-// agyMessage finds the words of an error, which agy gives as a string or as an
+// agyError finds the words of a failed result, which may be a string or an
 // object with a message.
-func agyMessage(e agyEvent) string {
-	switch value := e.Error.(type) {
+func agyError(e agyEvent) string {
+	switch value := e.Result.Error.(type) {
 	case string:
-		return value
+		if value != "" {
+			return value
+		}
 	case map[string]any:
 		if message, ok := value["message"].(string); ok {
 			return message
 		}
 	}
-	if e.Message != "" {
-		return e.Message
-	}
-	return e.Status
+	return strings.ToLower(e.Result.Status)
 }
 
-func agyAction(e agyEvent, cwd string) string {
+func agyAction(tool string, parameters map[string]any, cwd string) string {
 	text := func(keys ...string) string {
 		for _, key := range keys {
-			if value, ok := e.Parameters[key].(string); ok && value != "" {
+			if value, ok := parameters[key].(string); ok && value != "" {
 				return value
 			}
 		}
 		return ""
 	}
-	file := text("file_path", "absolute_path", "path", "TargetFile", "AbsolutePath")
-	name := strings.ToLower(e.ToolName)
-	switch {
-	case text("command", "CommandLine") != "":
-		return "Run " + firstLine(text("command", "CommandLine"), 160)
-	case strings.Contains(name, "read") || strings.Contains(name, "view"):
+	file := text("AbsolutePath", "TargetFile", "File", "file_path", "path")
+	switch tool {
+	case "run_command":
+		return "Run " + firstLine(text("CommandLine", "command"), 160)
+	case "view_file":
 		return "Read " + relative(cwd, file)
-	case strings.Contains(name, "write") || strings.Contains(name, "create"):
+	case "write_to_file":
 		return "Write " + relative(cwd, file)
-	case strings.Contains(name, "edit") || strings.Contains(name, "replace"):
+	case "replace_file_content", "multi_replace_file_content", "sed_file":
 		return "Edit " + relative(cwd, file)
-	case text("pattern", "query", "Query") != "":
-		return "Search for " + firstLine(text("pattern", "query", "Query"), 120)
-	case file != "":
-		return "Use " + e.ToolName + " on " + relative(cwd, file)
+	case "grep_search", "find_by_name", "search_web":
+		return "Search for " + firstLine(text("Query", "Pattern", "SearchPath", "query"), 120)
+	case "list_dir":
+		return "List " + relative(cwd, text("DirectoryPath", "path"))
+	case "read_url_content", "open_browser_url":
+		return "Open " + firstLine(text("Url", "url"), 120)
 	}
-	return "Use " + e.ToolName
+	return "Use " + tool
 }

@@ -132,21 +132,19 @@ func TestPiFormatTurnsEventsIntoLines(t *testing.T) {
 	}
 }
 
-// agyStream follows the stream-json shape of Gemini-family CLIs. The exact
-// events are checked against a real agy run before release.
-const agyStream = `{"type":"init","session_id":"s1","model":"gemini-4-neon-high"}
-{"type":"message","role":"user","content":"ignored"}
-{"type":"message","role":"assistant","content":"Looking at ","delta":true}
-{"type":"message","role":"assistant","content":"the retry.","delta":true}
-{"type":"tool_use","tool_name":"run_shell_command","tool_id":"t1","parameters":{"command":"go test ./...\necho done"}}
-{"type":"tool_result","tool_id":"t1","status":"error","output":"FAIL"}
-{"type":"tool_use","tool_name":"read_file","tool_id":"t2","parameters":{"file_path":"/work/upload.go"}}
-{"type":"tool_result","tool_id":"t2","status":"success"}
-{"type":"tool_use","tool_name":"replace","tool_id":"t3","parameters":{"file_path":"/work/upload.go"}}
-{"type":"tool_use","tool_name":"google_web_search","tool_id":"t4","parameters":{"query":"go retry backoff"}}
+// agyStream is a real agy 1.5.14 run with gemini-4-neon-high, with the init
+// tool list cut short, a failing command and an edit added.
+const agyStream = `{"event":"init","conversation_id":"c1","init":{"model":"gemini-4-neon-high","cwd":"/work","tools":["run_command","view_file"],"permission_mode":"always-proceed"}}
+{"event":"step_update","step_update":{"conversation_id":"c1","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"c1","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"Looking at the retry.","usage":{"input_tokens":8636,"output_tokens":73,"total_tokens":8709}}}
+{"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"go test ./...\necho done"}}}}
+{"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"go test ./..."},"output":"Created At: 2026-11-21T22:47:16Z\nCommand exited with code 1.\n\nCommand output:\nFAIL\r\n"}}}
+{"event":"step_update","step_update":{"conversation_id":"c1","step_index":3,"state":"ACTIVE","step_type":"tool","tool_name":"replace_file_content","tool_info":{"name":"replace_file_content","parameters":{"TargetFile":"/work/upload.go"}}}}
+{"event":"step_update","step_update":{"conversation_id":"c1","step_index":3,"state":"DONE","step_type":"tool","tool_name":"replace_file_content","tool_info":{"name":"replace_file_content","output":"ok"}}}
 not json at all
-{"type":"message","role":"assistant","content":"Fixed it.","delta":true}
-{"type":"result","status":"success","stats":{"total_tokens":150,"input_tokens":120,"output_tokens":30,"duration_ms":900}}
+{"event":"step_update","step_update":{"conversation_id":"c1","step_index":4,"state":"ACTIVE","step_type":"agent_response","text_delta":"done"}}
+{"event":"step_update","step_update":{"conversation_id":"c1","step_index":4,"state":"DONE","step_type":"agent_response","text_delta":"\n","usage":{"input_tokens":2214,"output_tokens":10,"cache_read_tokens":6579,"total_tokens":2224}}}
+{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"done\n","num_turns":1,"usage":{"input_tokens":10850,"output_tokens":83,"thinking_tokens":42,"cache_read_tokens":6579,"total_tokens":10933}}}
 `
 
 func TestAgyFormatTurnsEventsIntoLines(t *testing.T) {
@@ -159,34 +157,30 @@ func TestAgyFormatTurnsEventsIntoLines(t *testing.T) {
 		"Antigravity started with gemini-4-neon-high",
 		"Looking at the retry.",
 		ActionPrefix + "Run go test ./...",
-		"  failed: run_shell_command",
-		ActionPrefix + "Read upload.go",
+		"  failed with status 1",
 		ActionPrefix + "Edit upload.go",
-		ActionPrefix + "Search for go retry backoff",
 		"not json at all",
-		"Fixed it.",
-		"Finished",
+		"done",
+		"Finished after 1 turns",
 	}, "\n") + "\n"
 	if out.String() != want {
 		t.Fatalf("output =\n%s\nwant\n%s", out.String(), want)
 	}
-	if usage == nil || usage.Tokens != 150 || usage.Cost != 0 {
+	if usage == nil || usage.Tokens != 10933+6579 || usage.Cost != 0 {
 		t.Fatalf("usage = %+v", usage)
 	}
 }
 
-func TestAgyFormatReportsAFailedRunAndTrailingText(t *testing.T) {
+func TestAgyFormatReportsAFailedRun(t *testing.T) {
 	var out bytes.Buffer
-	stream := `{"type":"error","error":{"message":"authentication required"}}
-{"type":"result","status":"error","error":{"message":"authentication required"},"stats":{"input_tokens":10,"output_tokens":0}}
-{"type":"message","role":"assistant","content":"left over"}
+	stream := `{"event":"result","result":{"status":"ERROR","error":{"message":"authentication required"},"usage":{"total_tokens":10}}}
 `
 	usage, err := Agy{}.Format(strings.NewReader(stream), &out, "/work")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "Error: authentication required\nStopped: authentication required\nleft over\n"; out.String() != want {
-		t.Fatalf("output =\n%s\nwant\n%s", out.String(), want)
+	if want := "Stopped: authentication required\n"; out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
 	}
 	if usage == nil || usage.Tokens != 10 {
 		t.Fatalf("usage = %+v", usage)
