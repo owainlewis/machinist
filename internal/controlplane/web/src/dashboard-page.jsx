@@ -1,17 +1,30 @@
 import React, { useEffect, useState } from "react";
 import { api, SignedOutError } from "./api.js";
-import { dayLabel, doneRate, formatCount, formatMillis, formatPercent, formatTokens, niceMax, outcomes, ranges } from "./dashboard.js";
+import { dayLabel, doneRate, formatCount, formatMillis, formatPercent, formatTokens, niceMax, outcomes, ranges, runsOn, sparkPoints } from "./dashboard.js";
 
 const refreshMillis = 15_000;
 
 // Run outcomes use the status colors, and the legend names them too.
 const outcomeColors = { succeeded: "var(--success)", failed: "var(--danger)", cancelled: "var(--faint)" };
 
-function StatTile({ label, value, detail }) {
+// Sparkline is the shape of a daily series, drawn behind a tile's number. The
+// numbers are in the charts and the daily table, so it is hidden from readers.
+function Sparkline({ values }) {
+  const points = sparkPoints(values, 100, 32);
+  if (!points.length) return null;
+  const line = points.map(([x, y]) => `${x},${y}`).join(" ");
+  return <svg className="sparkline" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">
+    <polygon points={`0,32 ${line} 100,32`} />
+    <polyline points={line} vectorEffect="non-scaling-stroke" />
+  </svg>;
+}
+
+function StatTile({ label, value, detail, trend }) {
   return <div className="stat-tile">
     <p className="label">{label}</p>
     <p className="stat-value">{value}</p>
     {detail && <p className="stat-detail">{detail}</p>}
+    {trend && <Sparkline values={trend} />}
   </div>;
 }
 
@@ -129,8 +142,8 @@ export function DashboardPage({ onSignedOut }) {
     {!current && !error && <p className="page-note" role="status">Loading the dashboard</p>}
     {current && <>
       <div className="stat-tiles">
-        <StatTile label="Jobs" value={formatCount(current.jobs.total)} detail={`${formatCount(current.jobs.done)} done, ${formatCount(current.jobs.failed)} failed`} />
-        <StatTile label="Runs" value={formatCount(runs.total)} detail={`${formatCount(current.jobs.active)} jobs active`} />
+        <StatTile label="Jobs" value={formatCount(current.jobs.total)} detail={`${formatCount(current.jobs.done)} done, ${formatCount(current.jobs.failed)} failed`} trend={current.daily.map(day => day.jobs)} />
+        <StatTile label="Runs" value={formatCount(runs.total)} detail={`${formatCount(current.jobs.active)} jobs active`} trend={current.daily.map(runsOn)} />
         <StatTile label="Run success" value={formatPercent(current.success_rate)} detail={finished ? `${formatCount(runs.succeeded)} of ${formatCount(finished)} runs` : "No finished runs"} />
         <StatTile label="Median run" value={formatMillis(current.run_millis.median)} detail={current.run_millis.p90 != null ? `90% under ${formatMillis(current.run_millis.p90)}` : "No finished runs"} />
         <StatTile label="Median wait" value={formatMillis(current.wait_millis.median)} detail={current.wait_millis.p90 != null ? `90% under ${formatMillis(current.wait_millis.p90)}` : "No runs started"} />

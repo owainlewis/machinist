@@ -48,6 +48,16 @@ function fleetSummary(runners, now = Date.now()) {
   return `${online} of ${runners.length} online, ${busy} of ${slots} ${slotWord(slots)} busy`;
 }
 
+// SlotMeter draws one segment per slot, lit while a job holds it. A large
+// runner gets a single bar instead, so the row keeps its width.
+const maxSegments = 12;
+
+export function SlotMeter({ busy, slots }) {
+  const label = `${busy} of ${slots} ${slotWord(slots)} busy`;
+  if (slots > maxSegments) return <span className="slot-meter slot-meter-bar" role="img" aria-label={label}><span style={{ width: `${Math.min(1, busy / slots) * 100}%` }} /></span>;
+  return <span className="slot-meter" role="img" aria-label={label}>{Array.from({ length: slots }, (_, index) => <span key={index} data-busy={index < busy || undefined} />)}</span>;
+}
+
 function Runner({ runner }) {
   const online = runnerOnline(runner);
   const jobs = runner.jobs || [];
@@ -55,9 +65,9 @@ function Runner({ runner }) {
   return <li>
     <div className="runner-row">
       <span className="runner-name"><strong>{runner.name}</strong>{kinds[runner.kind] && <span className="ticket-meta">{kinds[runner.kind]}</span>}</span>
-      <span className="ticket-meta">{jobs.length} of {slots} {slotWord(slots)} busy</span>
+      <span className="runner-slots"><SlotMeter busy={jobs.length} slots={slots} /><span className="ticket-meta">{jobs.length} of {slots} {slotWord(slots)} busy</span></span>
       <time className="ticket-meta" dateTime={runner.last_contact}>Last contact {relativeTime(runner.last_contact)}</time>
-      <span className={online ? "pill pill-success" : "pill pill-warning"}>{online ? "Online" : "Not responding"}</span>
+      <span className={online ? "pill pill-success" : "pill pill-warning"}><span className="live-dot" data-live={online || undefined} aria-hidden="true" />{online ? "Online" : "Not responding"}</span>
     </div>
     {jobs.length > 0 && <ul className="runner-jobs">{jobs.map(job => <li key={job.run_id}>
       <a href={jobHref(job.ticket_id)}>{job.title || job.ticket_id}</a>

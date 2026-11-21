@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dayLabel, doneRate, formatMillis, formatPercent, formatTokens, niceMax, runsOn } from "./dashboard.js";
+import { dayLabel, doneRate, formatMillis, formatPercent, formatTokens, niceMax, runsOn, sparkPoints } from "./dashboard.js";
 
 test("chart tops are round numbers above the data", () => {
   assert.equal(niceMax(0), 1);
@@ -29,4 +29,10 @@ test("a day's runs add up its outcomes", () => {
 test("done rate leaves out jobs still running", () => {
   assert.equal(doneRate({ jobs: { total: 5, active: 2, done: 2, failed: 1 } }), 2 / 3);
   assert.ok(Number.isNaN(doneRate({ jobs: { total: 1, active: 1 } })));
+});
+
+test("a sparkline spans its box, with the largest day at the top", () => {
+  assert.deepEqual(sparkPoints([0, 5, 10], 100, 32), [[0, 32], [50, 16], [100, 0]]);
+  assert.deepEqual(sparkPoints([0, 0], 100, 32), [[0, 32], [100, 32]], "an empty range lies flat on the floor");
+  assert.deepEqual(sparkPoints([4], 100, 32), [], "one day has no shape to draw");
 });

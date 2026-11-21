@@ -48,3 +48,14 @@ test("the queue line says how many runs wait and for how long", async context =>
   assert.equal(stalled([{ last_contact: "2026-11-10T09:00:30Z" }], { waiting: 1 }, now), false);
   assert.equal(stalled([], { waiting: 0 }, now), false);
 });
+
+test("the slot meter lights one segment per busy slot", async context => {
+  const { SlotMeter } = await load(context);
+  const meter = renderToStaticMarkup(React.createElement(SlotMeter, { busy: 2, slots: 4 }));
+  assert.match(meter, /aria-label="2 of 4 slots busy"/);
+  assert.equal(meter.match(/<span data-busy="true">/g).length, 2);
+  assert.equal(meter.match(/<span/g).length, 5);
+  const large = renderToStaticMarkup(React.createElement(SlotMeter, { busy: 8, slots: 32 }));
+  assert.match(large, /slot-meter-bar/, "a large runner gets one bar, not 32 segments");
+  assert.match(large, /width:25%/);
+});

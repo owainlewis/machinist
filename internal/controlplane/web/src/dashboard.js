@@ -54,3 +54,14 @@ export function doneRate(group) {
   const finished = (jobs.done || 0) + (jobs.failed || 0);
   return finished ? jobs.done / finished : NaN;
 }
+
+// sparkPoints places a series in a width by height box for a sparkline: the
+// first value at the left edge, the last at the right, the top at the largest.
+export function sparkPoints(values, width, height) {
+  if (values.length < 2) return [];
+  const top = Math.max(...values) || 1;
+  return values.map((value, index) => [
+    Math.round((index / (values.length - 1)) * width * 100) / 100,
+    Math.round((height - (value / top) * height) * 100) / 100,
+  ]);
+}
