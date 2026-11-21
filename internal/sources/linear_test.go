@@ -715,3 +715,24 @@ func TestRepliesAtTheSameMomentGoIntoOneRun(t *testing.T) {
 		t.Fatalf("log:\n%s", log)
 	}
 }
+
+func TestRepliesWaitPastTheHourlyCap(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poller.MaxJobsPerHour = 1
+	p.now = p.now.Add(time.Minute)
+	p.linear.reply("a1", "owain", "The checkout page.", p.now)
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateDone {
+		t.Fatalf("a reply ran past the cap: %q", got)
+	}
+	p.now = p.now.Add(time.Hour)
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("the reply was lost: %q", got)
+	}
+}

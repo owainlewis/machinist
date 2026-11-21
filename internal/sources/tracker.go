@@ -271,6 +271,7 @@ func (p *Poller) replies(ctx context.Context) error {
 	cursor := since
 	var order []string
 	batches := map[string][]tickets.Comment{}
+	first := map[string]time.Time{}
 	for _, reply := range replies {
 		ticket, err := p.Store.TicketBySourceKey(ctx, reply.Key)
 		if errors.Is(err, tickets.ErrNotFound) {
@@ -294,25 +295,43 @@ func (p *Poller) replies(ctx context.Context) error {
 			fmt.Fprintf(p.log(), "machinist: %s reply on job %s ignored: user %q may not start jobs\n", name, ticket.ID, reply.Author)
 		case ticket.State == tickets.StateWorking:
 			cursor = minTime(cursor, reply.CreatedAt.Add(-time.Nanosecond))
-			return p.runReplies(ctx, order, batches, cursor)
+			return p.runReplies(ctx, order, batches, first, cursor)
 		default:
 			if _, seen := batches[ticket.ID]; !seen {
 				order = append(order, ticket.ID)
+				first[ticket.ID] = reply.CreatedAt
 			}
 			batches[ticket.ID] = append(batches[ticket.ID], tickets.Comment{Body: strings.TrimSpace(reply.Body), Key: key})
 		}
 		cursor = maxTime(cursor, reply.CreatedAt)
 	}
-	return p.runReplies(ctx, order, batches, cursor)
+	return p.runReplies(ctx, order, batches, first, cursor)
 }
 
-func (p *Poller) runReplies(ctx context.Context, order []string, batches map[string][]tickets.Comment, cursor time.Time) error {
+// runReplies runs each job with its replies. A job that cannot run now,
+// because the hourly cap is reached or it was started another way meanwhile,
+// keeps its replies for a later poll: the cursor moves back before them.
+func (p *Poller) runReplies(ctx context.Context, order []string, batches map[string][]tickets.Comment, first map[string]time.Time, cursor time.Time) error {
 	name := p.Tracker.Name()
 	for _, ticketID := range order {
-		if _, err := p.Store.Reply(ctx, ticketID, name, batches[ticketID]); err != nil && !errors.Is(err, tickets.ErrStillWorking) {
-			return err
+		wait := func(reason string) {
+			cursor = minTime(cursor, first[ticketID].Add(-time.Nanosecond))
+			fmt.Fprintf(p.log(), "machinist: %s replies on job %s wait: %s\n", name, ticketID, reason)
 		}
-		fmt.Fprintf(p.log(), "machinist: %s replies ran job %s again\n", name, ticketID)
+		if !p.allow(p.clock()) {
+			wait(fmt.Sprintf("%d jobs started in the last hour", p.MaxJobsPerHour))
+			continue
+		}
+		_, err := p.Store.Reply(ctx, ticketID, name, batches[ticketID])
+		switch {
+		case errors.Is(err, tickets.ErrStillWorking):
+			p.unallow()
+			wait("the job is running")
+		case err != nil:
+			return err
+		default:
+			fmt.Fprintf(p.log(), "machinist: %s replies ran job %s again\n", name, ticketID)
+		}
 	}
 	return p.Store.SetCursor(ctx, name, repliesCursor, cursor)
 }
@@ -386,6 +405,15 @@ func (p *Poller) allow(now time.Time) bool {
 	}
 	p.started = append(p.started, now)
 	return true
+}
+
+// unallow takes back the newest job counted against the hourly cap.
+func (p *Poller) unallow() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.started) > 0 {
+		p.started = p.started[:len(p.started)-1]
+	}
 }
 
 // maxReason bounds the failure reason Machinist writes on an issue.
