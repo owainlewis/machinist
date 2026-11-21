@@ -38,8 +38,9 @@ file in your repository. It runs Codex on your VM every weekday at 9, and anyone
   Each team writes the jobs it uses.
 - **A preset is a straight list of shell steps.** Steps run in order in one workspace, and
   the first that fails ends the run. There are no loops, branches or gates inside a preset.
-- **Jobs ship themselves.** The default preset opens a pull request, waits for its checks
-  and merges it. How it ships is a prompt in the factory that a team edits. Branch
+- **Jobs ship themselves.** The default preset has a second agent review the change, opens
+  a pull request, waits for its checks and merges it when the review is clean. A team that
+  wants a person to merge sets `auto_merge: false`. How it ships is a prompt in the factory that a team edits. Branch
   protection and the GitHub token's permissions are the real limits on a step.
 - **Simple over clever.** Fewer settings, fewer presets, short docs.
 

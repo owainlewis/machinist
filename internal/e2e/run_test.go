@@ -66,6 +66,8 @@ type options struct {
 	claude func(output string) string
 	// factory, when set, adds files to the factory before it is loaded.
 	factory func(t *testing.T, directory string)
+	// github is added to the github section of config.yaml.
+	github string
 }
 
 func git(t *testing.T, directory string, args ...string) string {
@@ -102,9 +104,21 @@ func newRemote(t *testing.T) string {
 	return remote
 }
 
-// fakePublish is what the fake claude does in the publish step: what
+// fakeLaterSteps is what the fake claude does after the implement step: the
+// review writes the verdict in the output directory's verdict file, or
+// accepted, the revise step does nothing, and publish does what
 // agents/publish.md asks, with the fake gh.
-const fakePublish = `case "$*" in *"Your step is to ship the change"*)
+func fakeLaterSteps(output string) string {
+	return `case "$*" in
+*"Your step is to review the change"*)
+  cat > /dev/null
+  verdict=accepted; [ -f ` + output + `/verdict ] && verdict=$(cat ` + output + `/verdict)
+  echo "{\"verdict\":\"$verdict\",\"summary\":\"Looks right.\",\"findings\":[]}" > "$MACHINIST_DIR/review.json"
+  exit 0;;
+*"Your step is to address the review"*)
+  cat > /dev/null
+  exit 0;;
+*"Your step is to ship the change"*)
   cat > /dev/null
   if [ -z "$(git log --oneline origin/HEAD..HEAD)" ]; then echo "The work needed no change." > "$MACHINIST_DIR/result.md"; exit 0; fi
   git push --quiet -u origin HEAD
@@ -112,17 +126,22 @@ const fakePublish = `case "$*" in *"Your step is to ship the change"*)
   gh pr create --head "$MACHINIST_BRANCH" --title "Use Postgres" --body-file "$MACHINIST_DIR/body.md" > /dev/null
   number=$(gh pr view "$MACHINIST_BRANCH" | sed 's/.*\///')
   gh pr checks "$number" --watch --required
-  gh pr merge "$number" --merge --delete-branch
-  gh pr view "$MACHINIST_BRANCH" > "$MACHINIST_DIR/result.md"
+  if [ "$MACHINIST_AUTO_MERGE" = true ] && grep -q '"verdict":"accepted"' "$MACHINIST_DIR/review.json"; then
+    gh pr merge "$number" --merge --delete-branch
+    gh pr view "$MACHINIST_BRANCH" > "$MACHINIST_DIR/result.md"
+  else
+    echo "Left open: $(gh pr view "$MACHINIST_BRANCH")" > "$MACHINIST_DIR/result.md"
+  fi
   exit 0;;
 esac
 `
+}
 
 // claudeScript cannot ask which database to use, so it picks one, says so in
 // assumptions.md and commits.
 func claudeScript(output string) string {
 	return `#!/bin/sh
-` + fakePublish + `env > ` + output + `/env
+` + fakeLaterSteps(output) + `env > ` + output + `/env
 printf '%s' "$*" > ` + output + `/args
 cat > ` + output + `/prompt
 git status --porcelain > ` + output + `/status
@@ -188,7 +207,7 @@ func startWith(t *testing.T, chosen options) *system {
 		chosen.factory(t, factoryDirectory)
 	}
 	configPath := filepath.Join(root, "config.yaml")
-	writeFile(t, configPath, "server:\n  listen: 127.0.0.1:0\n  database: tickets.db\n  factory: factory\n\ngithub:\n  handle: machinist-bot\n  repositories: [owner/repo]\n", 0o600)
+	writeFile(t, configPath, "server:\n  listen: 127.0.0.1:0\n  database: tickets.db\n  factory: factory\n\ngithub:\n  handle: machinist-bot\n  repositories: [owner/repo]\n"+chosen.github, 0o600)
 	machinistConfig, err := config.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -391,7 +410,7 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	if run.Status != tickets.RunSucceeded || run.Runner != "runner-1" || run.Harness != protocol.StepsHarness {
 		t.Fatalf("run = %+v", run)
 	}
-	if got := stepStates(run); got != "checkout=succeeded implement=succeeded publish=succeeded" {
+	if got := stepStates(run); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded" {
 		t.Fatalf("steps = %s", got)
 	}
 	if work := run.Stages[1]; work.Tokens == nil || *work.Tokens != 120 || work.Cost == nil || *work.Cost != 0.25 {
@@ -453,4 +472,35 @@ func stepStates(run tickets.Run) string {
 		states = append(states, stage.Name+"="+stage.State)
 	}
 	return strings.Join(states, " ")
+}
+
+// A job merges its own pull request only when auto-merge is on and the review
+// is clean. Otherwise the pull request stays open for a person.
+func TestPullRequestStaysOpenWithoutAutoMergeOrACleanReview(t *testing.T) {
+	for _, test := range []struct {
+		name, github, verdict string
+	}{
+		{"auto-merge off", "  auto_merge: false\n", ""},
+		{"review needs a person", "", "human_decision_needed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := startWith(t, options{claude: claudeScript, github: test.github})
+			if test.verdict != "" {
+				writeFile(t, filepath.Join(s.output, "verdict"), test.verdict, 0o600)
+			}
+			ticket := s.createTicket(t)
+			s.waitForState(t, ticket.ID, tickets.StatePRReady)
+			if merged := s.github.Merged(); len(merged) != 0 {
+				t.Fatalf("merged = %v", merged)
+			}
+			want := "MACHINIST_AUTO_MERGE=" + map[bool]string{true: "false", false: "true"}[test.github != ""]
+			if environment := s.read(t, "env"); !strings.Contains(environment, want) {
+				t.Fatalf("missing %s in:\n%s", want, environment)
+			}
+			runs, err := s.store.Runs(t.Context(), ticket.ID)
+			if err != nil || len(runs) != 1 || !strings.HasPrefix(runs[0].Report.Summary, "Left open:") {
+				t.Fatalf("runs = %+v, err = %v", runs, err)
+			}
+		})
+	}
 }

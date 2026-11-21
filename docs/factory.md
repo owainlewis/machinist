@@ -86,10 +86,18 @@ The shipped agents:
 | Agent | Step |
 | --- | --- |
 | `implement` | Make the change with tests: a failing test first for a bug, the repository's own checks, and no claim that a check passed unless it ran. Commit it. Never push, open a pull request or merge |
-| `publish` | Push, open one ready pull request with a summary, testing and assumptions, wait for the checks, and merge when they pass. A failed check fails the job and leaves the pull request open |
+| `review` | Review the branch without changing it, run the checks, and write `review.json`: a verdict of `accepted`, `revision_needed` or `human_decision_needed`, and findings marked unambiguous or not |
+| `revise` | When the verdict is `revision_needed`, fix the unambiguous findings and mark them addressed. Otherwise do nothing |
+| `publish` | Push, open one ready pull request with a summary, testing, the review and assumptions, wait for the checks, and merge when they pass and the review is clean. A failed check fails the job |
 
-`agents/publish.md` is how a job ships. To keep pull requests open for a person to merge,
-or to change the description, edit it.
+The review is worth most from a different model family than the one that wrote the
+change. If Codex is on your runners, set `harness: codex` in `agents/review.md`.
+
+`publish` merges only when `github.auto_merge` is on and the review is `accepted`, or
+asked for a revision that addressed every finding. Otherwise it leaves the pull request
+open, says why in the result, and the job waits as `pr_ready` for a person.
+`agents/publish.md` is how a job ships. To change the description or the rules for
+merging, edit it.
 
 ### Prompts and scripts
 
@@ -156,8 +164,7 @@ control directory. The publish step adds that list to the pull request under **A
 After a job ends, Machinist looks for an open pull request on `MACHINIST_BRANCH` and records
 its number on the job.
 
-`init` installs one preset, `default`: clone, have the `implement` agent make the change,
-and have the `publish` agent open one pull request and merge it once its checks pass. A job that names no preset uses it. Add a preset only when a kind of job
+`init` installs one preset, `default`: clone, implement, review, revise and publish. A job that names no preset uses it. Add a preset only when a kind of job
 needs different steps, such as a separate test or review step.
 
 ## Automations

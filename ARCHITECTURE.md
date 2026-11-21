@@ -38,7 +38,10 @@ No run waits for a person: an agent that has to guess writes its guess to
 The runner turns the steps' outcome into one report. A step that fails fails the run.
 Otherwise the report is `no_change`,
 with `result.md` as its summary. After a run, the control plane looks up the branch's pull
-request, so a step that opens one needs to report nothing. See
+request, so a step that opens one needs to report nothing: an open pull request makes the
+job `pr_ready`, and a merged one leaves it `done`. `github.auto_merge` reaches every step as
+`MACHINIST_AUTO_MERGE`, and the shipped publish agent merges only when it is `true` and the
+review in `review.json` is clean. See
 [Factory files](docs/factory.md#presets).
 
 | State | Meaning |

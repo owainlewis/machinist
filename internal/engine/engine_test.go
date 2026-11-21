@@ -91,7 +91,7 @@ func TestAssignBuildsTheRunRequest(t *testing.T) {
 	e := newEngine(t)
 	ticket := newTicket(t, e, "api")
 	request := assignRun(t, e)
-	if request.TicketID != ticket.ID || request.Preset != "default" || request.Repository != "owner/repo" || request.Branch != "machinist/"+ticket.ID || request.Vars["repo"] != "owner/repo" {
+	if request.TicketID != ticket.ID || request.Preset != "default" || request.Repository != "owner/repo" || request.Branch != "machinist/"+ticket.ID || request.Vars["repo"] != "owner/repo" || request.Vars["auto_merge"] != "false" {
 		t.Fatalf("request = %+v", request)
 	}
 	if request.TimeoutMillis != time.Hour.Milliseconds() || request.GitName != "machinist-bot" || request.GitEmail != "machinist-bot@users.noreply.github.com" {
@@ -193,6 +193,9 @@ func TestReportRows(t *testing.T) {
 		{"pr ready without PR", succeed("pr_ready", "Opened"), nil, tickets.StateFailed, "Reported a PR but none is open for this branch."},
 		{"pr ready with only a closed PR", succeed("pr_ready", "Opened"), &PR{Number: 42, Closed: true}, tickets.StateFailed, "Reported a PR but none is open for this branch."},
 		{"no change", succeed("no_change", "Nothing to do"), nil, tickets.StateDone, "Nothing to do"},
+		{"no change with an open PR", succeed("no_change", "Left open: needs a decision"), found, tickets.StatePRReady, "Left open: needs a decision"},
+		{"no change with a merged PR", succeed("no_change", "Merged"), &PR{Number: 42, Merged: true}, tickets.StateDone, "Merged"},
+		{"no change with a closed PR", succeed("no_change", "Closed"), &PR{Number: 42, Closed: true}, tickets.StateDone, "Closed"},
 		{"failed report", succeed("failed", "Tests cannot run"), nil, tickets.StateFailed, "Tests cannot run"},
 		{"no report", protocol.Completion{State: tickets.RunSucceeded}, nil, tickets.StateFailed, "The run ended without a report: succeeded"},
 		{"malformed report", succeed("complete", "old"), nil, tickets.StateFailed, "The run ended without a report: report outcome"},

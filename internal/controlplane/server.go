@@ -71,6 +71,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		Factory:     loaded,
 		RunTimeout:  machinistConfig.Server.RunDeadline(),
 		Handle:      machinistConfig.GitHub.Handle,
+		AutoMerge:   machinistConfig.GitHub.AutoMerges(),
 		FindPR:      findPR(client),
 		Post:        client.PostComment,
 		GitHubToken: tokens,
