@@ -10,17 +10,22 @@ rest of that run.
 
 ## What a run's token can do
 
+Machinist asks GitHub for exactly these permissions on every token
+(`internal/githubapp/app.go`). The app must have all of them, or GitHub refuses the token
+and the job fails.
+
 | Permission | Access | Used for |
 | --- | --- | --- |
 | Contents | Read and write | Clone and push the job's branch |
-| Pull requests | Read and write | Open and update the draft pull request |
+| Pull requests | Read and write | Open and update the draft pull request, and track it after the run |
 | Issues | Read and write | Read issues and post comments |
 | Checks | Read | Read CI results on the pull request |
 | Commit statuses | Read | Read CI results that use statuses |
 | Metadata | Read | Always granted by GitHub |
 
 It cannot change workflow files, settings, secrets, branch protection, or any other
-repository. A push that changes `.github/workflows/` is refused.
+repository. A push that changes `.github/workflows/` is refused, because the app has no
+Workflows permission.
 
 The control plane's own GitHub calls, such as finding a job's pull request and posting
 comments, use tokens from the same app with the same permissions. It reuses each one until
@@ -28,51 +33,114 @@ ten minutes before it expires.
 
 ## Set it up
 
-1.  Open [New GitHub App](https://github.com/settings/apps/new). For an organization, use
-    the organization's **Settings > Developer settings > GitHub Apps > New GitHub App**.
-2.  Fill in:
-    - **GitHub App name**: a name such as `machinist-yourname`. Comments and pull requests
-      show it as `machinist-yourname[bot]`.
-    - **Homepage URL**: any URL, such as your Machinist repository.
-    - **Webhook**: clear **Active**. Machinist does not use app webhooks.
-3.  Under **Repository permissions**, set exactly the permissions in the table above.
-    Leave every other permission at **No access**.
-4.  Under **Where can this GitHub App be installed?**, choose **Only on this account**.
-5.  Select **Create GitHub App**. Note the **App ID** at the top of the next page.
-6.  Under **Private keys**, select **Generate a private key**. Your browser downloads a
-    `.pem` file. Move it next to `config.yaml`, inside `.machinist/`, which git ignores:
+This takes about ten minutes. Sign in to GitHub as the account that owns the
+repositories, or as an owner of their organization.
 
-    ```sh
-    mv ~/Downloads/machinist-yourname.*.private-key.pem .machinist/github-app.pem
-    chmod 600 .machinist/github-app.pem
-    ```
+### 1. Create the app
 
-7.  Select **Install App** in the sidebar, then **Install** next to your account. Choose
-    **Only select repositories** and pick the repositories Machinist works on.
-8.  Add the app to `config.yaml`:
+Open this link. It fills in the form with no webhook, the permissions above and private
+installation:
 
-    ```yaml
-    github:
-      handle: machinist-bot
-      repositories: [owner/name]
-      app:
-        id: 123456
-        private_key_file: .machinist/github-app.pem
-    ```
+```text
+https://github.com/settings/apps/new?name=machinist-yourname&url=https://github.com/owainlewis/machinist&webhook_active=false&public=false&contents=write&pull_requests=write&issues=write&checks=read&statuses=read
+```
 
-9.  Restart the control plane. It reads the key at startup and stops with an error if it
-    cannot use it.
+Change `machinist-yourname` to a name of your own. App names are unique across GitHub, and
+pull requests and comments show it as `machinist-yourname[bot]`. For an organization, start
+from **Settings > Developer settings > GitHub Apps > New GitHub App** in the organization
+and fill in the same values by hand.
+
+Before you create it, check the form, because GitHub does not always apply every value
+from the link:
+
+- **Webhook**: **Active** is cleared. Machinist does not use app webhooks, so nothing has
+  to reach your host from the internet.
+- **Repository permissions**: exactly the six in the table above. Every other permission,
+  and every organization and account permission, is **No access**.
+- **Where can this GitHub App be installed?**: **Only on this account**.
+
+Select **Create GitHub App**. Note the **App ID** at the top of the next page.
+
+### 2. Make a private key
+
+On the app's page, under **Private keys**, select **Generate a private key**. Your browser
+downloads a `.pem` file. Put it next to `config.yaml`, inside `.machinist/`, which git
+ignores, and make it readable only by the user that runs the control plane:
+
+```sh
+mv ~/Downloads/machinist-yourname.*.private-key.pem .machinist/github-app.pem
+chmod 600 .machinist/github-app.pem
+```
+
+For a [VM](vm-deployment.md), copy it over, hand it to the `machinist` user, then delete
+the downloaded copy:
+
+```sh
+scp ~/Downloads/machinist-yourname.*.private-key.pem VM_HOST:/home/machinist/.machinist/github-app.pem
+ssh VM_HOST 'chown machinist:machinist /home/machinist/.machinist/github-app.pem && chmod 600 /home/machinist/.machinist/github-app.pem'
+rm ~/Downloads/machinist-yourname.*.private-key.pem
+```
+
+### 3. Install it on your repositories
+
+Select **Install App** in the app's sidebar, then **Install** next to your account. Choose
+**Only select repositories**, pick the repositories Machinist works on, and select
+**Install**. Do not choose **All repositories**: anyone with the key can make tokens for
+every repository the app is installed on.
+
+### 4. Tell Machinist
+
+Add the app to `config.yaml`:
+
+```yaml
+github:
+  handle: machinist-bot
+  repositories: [owner/name]
+  app:
+    id: 123456
+    private_key_file: .machinist/github-app.pem
+```
+
+Every repository in `repositories` must be one the app is installed on.
+
+Restart the control plane. It reads the key at startup and stops with an error if it
+cannot use it. On a VM:
+
+```sh
+systemctl restart machinist-control-plane machinist-runner
+```
 
 Runners no longer need `GH_TOKEN`. A runner that still has one uses it only for a run that
 arrives without a token, and for `machinist runner check`, which runs without the control
 plane.
 
+### 5. Check it works
+
+Start a job on one of the repositories, from the web app's **New job** form or the
+[run API](run-api.md). If the checkout step succeeds, the app works. If the job fails before
+any step runs, its page says why:
+
+| Message | Fix |
+| --- | --- |
+| `the GitHub App is not installed on owner/name` | Install the app on that repository, as in step 3 |
+| `GitHub replied 422: The permissions requested are not granted to this installation` | The app or its installation is missing a permission. See below |
+
+## Change the app's permissions
+
+Changing a permission on the app does not change existing installations. GitHub asks the
+account that installed the app to accept the change first. Until then, tokens keep the old
+permissions, and Machinist's request fails with the `422` above.
+
+1.  Open the app's settings, then **Permissions & events**. Set the permissions in the
+    table above and select **Save changes**.
+2.  Open [Installed GitHub Apps](https://github.com/settings/installations), or the
+    organization's **Settings > GitHub Apps**, and select **Configure** next to the app.
+3.  Accept the new permissions in the banner at the top of the page.
+
 ## Limits
 
 - A token lasts one hour, so with an app `run_timeout` and every preset's `timeout` must be
   one hour or less. Startup stops and names the setting otherwise.
-- If the app is not installed on a job's repository, the job fails with a message that says
-  so. Install the app on that repository and run the job again.
 - The key is the one long-lived secret left. Anyone who has it can make tokens for every
-  repository the app is installed on. Keep it readable only by the control plane's user,
-  and generate a new one in the app's settings if it leaks.
+  repository the app is installed on. Keep it readable only by the control plane's user.
+  If it leaks, generate a new one in the app's settings and delete the old one.
