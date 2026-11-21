@@ -10,13 +10,17 @@ would. Do not change any file in the repository and do not commit.
    `git diff origin/HEAD...HEAD`, and read the code around it.
 2. Run the repository's own checks, as its README, CLAUDE.md, AGENTS.md,
    Makefile or CI workflow describe them.
-3. Look for what a reviewer would block on: wrong behaviour, a missing test for
+3. If the prompt reports a bug and the branch changes nothing, check the
+   report against real behaviour before you accept that: run the code on the
+   kind of input the report describes. A branch that changes nothing for a
+   real bug needs `revision_needed`.
+4. Look for what a reviewer would block on: wrong behaviour, a missing test for
    changed behaviour, a broken check, a security problem, or work the prompt
    asked for that is missing. Ignore style the repository's linters accept.
-4. For each finding, decide whether it is unambiguous: one clear fix that any
+5. For each finding, decide whether it is unambiguous: one clear fix that any
    competent engineer would agree with. A finding that needs a judgement about
    what the product should do is ambiguous.
-5. Write review.json in the control directory, and nothing else:
+6. Write review.json in the control directory, and nothing else:
 
 ```json
 {
