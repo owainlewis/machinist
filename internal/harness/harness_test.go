@@ -173,13 +173,18 @@ func TestAgyFormatTurnsEventsIntoLines(t *testing.T) {
 
 func TestAgyFormatReportsAFailedRun(t *testing.T) {
 	var out bytes.Buffer
-	stream := `{"event":"result","result":{"status":"ERROR","error":{"message":"authentication required"},"usage":{"total_tokens":10}}}
+	stream := `{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"agent_response","text_delta":"Half an"}}
+a warning line
+{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"agent_response","text_delta":" answer"}}
+{"event":"result","result":{"status":"ERROR","error":{"message":"authentication required"},"usage":{"total_tokens":10}}}
 `
 	usage, err := Agy{}.Format(strings.NewReader(stream), &out, "/work")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "Stopped: authentication required\n"; out.String() != want {
+	// Text cut off by a failure is kept, and an unknown line between its
+	// pieces does not lose it.
+	if want := "a warning line\nStopped: authentication required\nHalf an answer\n"; out.String() != want {
 		t.Fatalf("output = %q, want %q", out.String(), want)
 	}
 	if usage == nil || usage.Tokens != 10 {
