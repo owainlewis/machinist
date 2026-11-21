@@ -1,4 +1,4 @@
-// Package harness runs a coding agent, such as Claude Code, Codex or Pi, inside
+// Package harness runs a coding agent, such as Claude Code, Codex, Pi or agy, inside
 // a step. Each harness builds the agent's command and turns its machine
 // output into lines a person can follow while a run is going: one line per
 // message or action, and a summary at the end. Any line a harness does not
@@ -54,7 +54,7 @@ type Harness interface {
 	Format(r io.Reader, w io.Writer, cwd string) (*Usage, error)
 }
 
-var harnesses = map[string]Harness{"claude": Claude{}, "codex": Codex{}, "pi": Pi{}}
+var harnesses = map[string]Harness{"agy": Agy{}, "claude": Claude{}, "codex": Codex{}, "pi": Pi{}}
 
 // Find returns the harness with a name.
 func Find(name string) (Harness, bool) {
