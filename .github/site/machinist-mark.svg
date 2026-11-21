@@ -1,5 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Machinist">
-  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6283ff"/><stop offset="1" stop-color="#4c6ef5"/></linearGradient></defs>
-  <rect width="64" height="64" rx="16" fill="url(#g)"/>
-  <path d="M18 45V20h5.2L32 33.4 40.8 20H46v25h-5.6V29.6L32 42.2l-8.4-12.6V45z" fill="#fff"/>
-</svg>

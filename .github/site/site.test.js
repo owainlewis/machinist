@@ -101,7 +101,7 @@ test('public identity matches the web app: Inter, indigo and the M tile, dark on
   const source = await read('./index.html');
   const styles = await read('./styles.css');
   const app = await read('../../internal/controlplane/web/src/styles.css');
-  const mark = await read('./machinist-mark.svg');
+  const mark = await read('./favicon.svg');
   const socialCard = await read('./social-card.svg');
 
   for (const token of ['--background: #161618', '--surface: #1d1d20', '--border: #2f2f35', '--primary: #4c6ef5']) {
