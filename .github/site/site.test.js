@@ -102,6 +102,11 @@ test('setup snippets match the quick start in the README', async () => {
   for (const part of copied.flatMap((command) => command.split(' && '))) {
     assert.ok(readme.includes(part), `README has ${part}`);
   }
+  // Commands and settings named in the setup prose are the README's too, so a runner set up from the site starts.
+  const setup = source.slice(source.indexOf('class="setup-steps"'), source.indexOf('</ol>', source.indexOf('class="setup-steps"')));
+  for (const [, inline] of [...setup.matchAll(/<p>[^]*?<\/p>/g)].flatMap(([p]) => [...p.matchAll(/<code>([^<]+)<\/code>/g)])) {
+    assert.ok(readme.includes(inline.replace('github.handle', 'handle')), `README has ${inline}`);
+  }
 });
 
 test('public identity matches the web app: Inter, indigo and the M tile, dark only', async () => {

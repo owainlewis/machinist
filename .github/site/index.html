@@ -161,11 +161,11 @@ as a careful senior engineer would.</code></pre>
             <button class="copy-command" type="button" data-copy="machinist init" aria-label="Copy initialize command"><code>machinist init</code><span aria-live="polite">Copy</span></button>
           </li>
           <li>
-            <div><span class="step-index">03</span><h3>Configure</h3><p>In <code>config.yaml</code>, set <code>github.handle</code> to your GitHub login and list the repositories jobs may work on. In <code>runner.yaml</code>, turn on <code>login: true</code>.</p></div>
+            <div><span class="step-index">03</span><h3>Configure</h3><p>In <code>config.yaml</code>, set <code>github.handle</code> to your GitHub login and list the repositories jobs may work on. In <code>runner.yaml</code>, set <code>env: []</code> and turn on <code>login: true</code>.</p></div>
             <button class="copy-command" type="button" data-copy="gh api user --jq .login" aria-label="Copy command that prints your GitHub login"><code>gh api user --jq .login</code><span aria-live="polite">Copy</span></button>
           </li>
           <li>
-            <div><span class="step-index">04</span><h3>Start</h3><p>Start the control plane, and <code>machinist runner start</code> in a second terminal. Create a token with <code>machinist token create</code>, sign in to the web app and select New job.</p></div>
+            <div><span class="step-index">04</span><h3>Start</h3><p>Start the control plane, and <code>GH_TOKEN=$(gh auth token) machinist runner start</code> in a second terminal. Create a token with <code>machinist token create</code>, sign in to the web app and select New job.</p></div>
             <button class="copy-command" type="button" data-copy="GH_TOKEN=$(gh auth token) machinist start" aria-label="Copy start command"><code>GH_TOKEN=$(gh auth token) machinist start</code><span aria-live="polite">Copy</span></button>
           </li>
         </ol>
