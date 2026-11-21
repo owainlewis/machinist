@@ -233,7 +233,7 @@ func startWith(t *testing.T, chosen options) *system {
 	go func() { serverDone <- server.Serve(serverContext, func(address net.Addr) { listening <- address }) }()
 	address := <-listening
 
-	token, err := store.CreateToken(t.Context(), "runner-1")
+	token, err := store.CreateToken(t.Context(), "runner-1", tickets.RoleAll)
 	if err != nil {
 		t.Fatal(err)
 	}
