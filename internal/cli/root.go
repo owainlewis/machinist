@@ -61,6 +61,8 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newSandboxCommand(options))
 	root.AddCommand(newAgentLogCommand(options))
 	root.AddCommand(newAgentCommand(options))
+	root.AddCommand(newMergeCommand(options))
+	root.AddCommand(newVerdictCommand(options))
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the Machinist version",

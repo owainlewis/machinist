@@ -1,0 +1,81 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+
+	"github.com/owainlewis/machinist/internal/ship"
+	"github.com/spf13/cobra"
+)
+
+// newMergeCommand merges the job's pull request when the rules allow it. The
+// rules are code, so no agent decides whether a change merges.
+func newMergeCommand(options *commandOptions) *cobra.Command {
+	var withoutReview bool
+	command := &cobra.Command{
+		Use:   "merge",
+		Short: "Merge the job's pull request once its checks pass, inside a step",
+		Long: "Merge the open pull request on $MACHINIST_BRANCH when MACHINIST_AUTO_MERGE is true, review.json in the control " +
+			"directory says accepted, and every check passed. Otherwise leave it open and write why to result.md. " +
+			"A failed check fails the step.",
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			control, err := controlDirectory("merge")
+			if err != nil {
+				return err
+			}
+			return ship.Merge(command.Context(), ship.MergeOptions{
+				Control:       control,
+				Branch:        os.Getenv("MACHINIST_BRANCH"),
+				AutoMerge:     os.Getenv("MACHINIST_AUTO_MERGE") == "true",
+				WithoutReview: withoutReview,
+				GH:            runGH,
+				Log:           options.stdout,
+			})
+		},
+	}
+	command.Flags().BoolVar(&withoutReview, "without-review", false, "merge when there is no review.json, for presets with no review step")
+	return command
+}
+
+// newVerdictCommand prints the review's verdict, so a script step can act on
+// it. It fails when review.json is missing or not valid.
+func newVerdictCommand(options *commandOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "verdict",
+		Short: "Print the verdict in review.json, inside a step",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			control, err := controlDirectory("verdict")
+			if err != nil {
+				return err
+			}
+			review, err := ship.ReadReview(control)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(options.stdout, review.Verdict)
+			return nil
+		},
+	}
+}
+
+func controlDirectory(command string) (string, error) {
+	control := os.Getenv("MACHINIST_DIR")
+	if control == "" {
+		return "", errors.New("machinist " + command + " runs inside a step, where MACHINIST_DIR is set")
+	}
+	return control, nil
+}
+
+func runGH(ctx context.Context, args ...string) ([]byte, string, error) {
+	var stdout, stderr bytes.Buffer
+	command := exec.CommandContext(ctx, "gh", args...)
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	return stdout.Bytes(), stderr.String(), err
+}

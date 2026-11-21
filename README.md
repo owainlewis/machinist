@@ -138,10 +138,11 @@ cd internal/controlplane/web && npm ci && npm test
 The Go tests run whole jobs end to end with fake `claude` and `gh` commands and a local
 Git remote. See [Development](docs/development.md).
 
-The default preset has a second agent review the change, fixes what the review found,
-and merges the pull request once the repository's checks pass and the review is clean.
-Set `github.auto_merge: false` to leave every pull request open for a person. How a job
-ships is written in `factory/agents/publish.md`, so you change it by editing that file.
+The default preset has a second agent review the change, fixes what the review found and
+reviews it again, then opens a pull request. The `machinist merge` step merges it once the
+repository's checks pass and the review accepted the change. That rule is code, so no agent
+decides what merges. Set `github.auto_merge: false` to leave every pull request open for a
+person. How the pull request is written is in `factory/agents/publish.md`.
 Branch protection still decides what can merge. See [Security](SECURITY.md) for what a step
 can do.
 

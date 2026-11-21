@@ -94,17 +94,31 @@ The shipped agents:
 | --- | --- |
 | `implement` | Make the change with tests: a failing test first for a bug, the repository's own checks, and no claim that a check passed unless it ran. Commit it. Never push, open a pull request or merge |
 | `review` | Review the branch without changing it, run the checks, and write `review.json`: a verdict of `accepted`, `revision_needed` or `human_decision_needed`, and findings marked unambiguous or not |
-| `revise` | When the verdict is `revision_needed`, fix the unambiguous findings and mark them addressed. Otherwise do nothing |
-| `publish` | Push, open one ready pull request with a summary, testing, the review and assumptions, wait for the checks, and merge when they pass and the review is clean. A failed check fails the job |
+| `revise` | Fix the unambiguous findings and mark them addressed. `scripts/revise.sh` runs it only when the verdict is `revision_needed`, then runs `review` again |
+| `publish` | Push and open one ready pull request with a summary, testing, the review and assumptions. It never merges |
 
 The review is worth most from a different model family than the one that wrote the
 change. If Codex or agy is on your runners, set `harness: codex` or `harness: agy` in `agents/review.md`.
 
-`publish` merges only when `github.auto_merge` is on and the review is `accepted`, or
-asked for a revision that addressed every finding. Otherwise it leaves the pull request
-open, says why in the result, and the job waits as `pr_ready` for a person.
-`agents/publish.md` is how a job ships. To change the description or the rules for
-merging, edit it.
+The last step, `machinist merge`, is code, not an agent. It merges the pull request with
+`gh pr merge` when all of these hold, and otherwise leaves it open, says why in the result,
+and the job waits as `pr_ready` for a person:
+
+- `github.auto_merge` is on.
+- `review.json` is valid and its verdict is `accepted`. A missing review leaves the pull
+  request open, unless the step is `machinist merge --without-review` in a preset with no
+  review step.
+- Every check on the pull request passed. It waits for them, and for checks to start, up to
+  two and a half minutes, before it treats the repository as having none. A failed check
+  fails the job, even when the pull request would have stayed open anyway.
+
+The reviser does not judge its own fixes. `scripts/review.sh` removes any `review.json`
+before the review runs, and fails the step if the review writes none. `scripts/revise.sh`
+keeps the first review as `first-review.json` and runs the review again on the fixed branch,
+and only that verdict counts. When the first review accepted the change, no revise agent
+runs.
+
+`machinist verdict` prints the verdict, for scripts like these.
 
 ### Prompts and scripts
 
@@ -171,7 +185,7 @@ control directory. The publish step adds that list to the pull request under **A
 After a job ends, Machinist looks for an open pull request on `MACHINIST_BRANCH` and records
 its number on the job.
 
-`init` installs one preset, `default`: clone, implement, review, revise and publish. A job that names no preset uses it. Add a preset only when a kind of job
+`init` installs one preset, `default`: clone, implement, review, revise, publish and merge. A job that names no preset uses it. Add a preset only when a kind of job
 needs different steps, such as a separate test or review step.
 
 ## Automations
