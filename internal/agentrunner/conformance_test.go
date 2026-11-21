@@ -77,6 +77,10 @@ func fakeKubectl(args []string) int {
 		if err := kuberunner.Receive(os.Stdin, clusterPath(state, "exchange")); err != nil {
 			return fail(err.Error())
 		}
+	case strings.Contains(line, "-c agent -- machinist sandbox token"):
+		if err := kuberunner.ReceiveToken(os.Stdin, clusterPath(state, "exchange")); err != nil {
+			return fail(err.Error())
+		}
 	case strings.Contains(line, "-- test -f "):
 		if _, err := os.Stat(exchangePath(state, args[len(args)-1])); err != nil {
 			return fail("not yet")
