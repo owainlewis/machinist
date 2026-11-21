@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -129,7 +130,7 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if issue := f.issue(reply.issue); issue == nil || issue.assignee != appUser || !reply.at.After(since) || reply.user == appUser {
 				continue
 			}
-			node := map[string]any{"body": reply.body, "createdAt": reply.at, "issue": map[string]any{"id": reply.issue}}
+			node := map[string]any{"id": fmt.Sprintf("c%d", index), "body": reply.body, "createdAt": reply.at, "issue": map[string]any{"id": reply.issue}}
 			if reply.user != "" {
 				node["user"] = map[string]any{"id": reply.user}
 			}
@@ -689,5 +690,28 @@ func TestRunningAMergedJobAgainMovesItsIssueBackToInProgress(t *testing.T) {
 	}
 	if got := p.state(t, job.ID); got != tickets.StateWorking {
 		t.Fatalf("job state = %q", got)
+	}
+}
+
+func TestRepliesAtTheSameMomentGoIntoOneRun(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	p.linear.reply("a1", "owain", "Comment from before the job.", job.CreatedAt.Add(-30*time.Second))
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.reply("a1", "owain", "The checkout page.", p.now)
+	p.linear.reply("a1", "owain", "And the cart.", p.now)
+	p.poll(t)
+	p.poll(t)
+	entries, err := p.store.Entries(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := tickets.RenderLog(entries)
+	if strings.Count(log, "The checkout page.") != 1 || strings.Count(log, "And the cart.") != 1 || strings.Contains(log, "before the job") {
+		t.Fatalf("log:\n%s", log)
 	}
 }

@@ -24,6 +24,9 @@ const (
 	// maxLinearPages bounds one poll. Anything left is read on the next one.
 	maxLinearPages  = 8
 	maxLinearAnswer = 4 << 20
+	// maxReplyPages bounds one read of replies. Replies are read whole or not
+	// at all, so the cursor never moves past one that was not read.
+	maxReplyPages = 40
 )
 
 // Linear reads issues assigned to the Machinist app from Linear's API, moves
@@ -205,10 +208,14 @@ func (l *Linear) Replies(ctx context.Context, since time.Time) ([]Reply, error) 
 }`, linearPage, quote(since.UTC().Format(time.RFC3339Nano)), quote(l.AppUserID), quote(l.AppUserID), quote(l.Teams))
 	var replies []Reply
 	var after *string
-	for page := 0; page < maxLinearPages; page++ {
+	for page := 0; ; page++ {
+		if page == maxReplyPages {
+			return nil, fmt.Errorf("linear: more than %d replies since %s", maxReplyPages*linearPage, since.Format(time.RFC3339))
+		}
 		var answer struct {
 			Comments struct {
 				Nodes []struct {
+					ID        string    `json:"id"`
 					Body      string    `json:"body"`
 					CreatedAt time.Time `json:"createdAt"`
 					User      *struct {
@@ -232,7 +239,7 @@ func (l *Linear) Replies(ctx context.Context, since time.Time) ([]Reply, error) 
 			if comment.User == nil || comment.User.ID == l.AppUserID || strings.TrimSpace(comment.Body) == "" {
 				continue
 			}
-			replies = append(replies, Reply{Key: "linear:" + comment.Issue.ID, Issue: comment.Issue.ID, Author: comment.User.ID, Body: comment.Body, CreatedAt: comment.CreatedAt})
+			replies = append(replies, Reply{Key: "linear:" + comment.Issue.ID, ID: comment.ID, Issue: comment.Issue.ID, Author: comment.User.ID, Body: comment.Body, CreatedAt: comment.CreatedAt})
 		}
 		if !answer.Comments.PageInfo.HasNextPage {
 			break

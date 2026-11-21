@@ -40,7 +40,9 @@ type Assignment struct {
 // Reply is a comment a person left on an issue that Machinist has a job for.
 type Reply struct {
 	// Key is the issue's assignment key, such as linear:<issue id>.
-	Key       string
+	Key string
+	// ID is the tracker's ID for the comment. One comment is added once.
+	ID        string
 	Issue     string
 	Author    string
 	Body      string
@@ -67,8 +69,9 @@ type Tracker interface {
 	Assignments(ctx context.Context, since time.Time) ([]Assignment, error)
 	// Start moves an issue to In Progress and says Machinist is on it.
 	Start(ctx context.Context, issue string) error
-	// Replies returns comments left by people, not Machinist, on issues
-	// assigned to Machinist, created after since, oldest first.
+	// Replies returns every comment left by people, not Machinist, on issues
+	// assigned to Machinist, created after since, oldest first. It fails
+	// rather than return part of them.
 	Replies(ctx context.Context, since time.Time) ([]Reply, error)
 	// Return moves an issue back out of In Progress with a comment, because
 	// the job ended with no pull request and the next move is a person's.
@@ -247,9 +250,9 @@ func (p *Poller) Poll(ctx context.Context) error {
 const repliesCursor = "#replies"
 
 // replies runs a job again for each comment an allowed person left on its
-// issue after the job ended, with the comment added to the job's log. A reply
-// to a job that is still running waits, with the replies after it, until the
-// run ends.
+// issue after the job started, with the comment added to the job's log. All
+// of one job's new replies go into one run. A reply to a job that is still
+// running waits, with every reply after it, until the run ends.
 func (p *Poller) replies(ctx context.Context) error {
 	name := p.Tracker.Name()
 	since, found, err := p.Store.Cursor(ctx, name, repliesCursor)
@@ -257,39 +260,75 @@ func (p *Poller) replies(ctx context.Context) error {
 		return err
 	}
 	if !found {
-		since = p.clock()
-		return p.Store.SetCursor(ctx, name, repliesCursor, since)
+		return p.Store.SetCursor(ctx, name, repliesCursor, p.clock())
 	}
 	replies, err := p.Tracker.Replies(ctx, since)
 	if err != nil {
 		return err
 	}
+	// The cursor moves to just before the first reply left waiting, so it is
+	// read again. Replies read twice are skipped by their comment key.
+	cursor := since
+	var order []string
+	batches := map[string][]tickets.Comment{}
 	for _, reply := range replies {
 		ticket, err := p.Store.TicketBySourceKey(ctx, reply.Key)
-		switch {
-		case errors.Is(err, tickets.ErrNotFound):
-		case err != nil:
+		if errors.Is(err, tickets.ErrNotFound) {
+			cursor = maxTime(cursor, reply.CreatedAt)
+			continue
+		}
+		if err != nil {
 			return err
+		}
+		key := name + "-comment:" + reply.ID
+		if _, err := p.Store.TicketBySourceKey(ctx, key); err == nil {
+			cursor = maxTime(cursor, reply.CreatedAt)
+			continue
+		} else if !errors.Is(err, tickets.ErrNotFound) {
+			return err
+		}
+		switch {
+		case !reply.CreatedAt.After(ticket.CreatedAt):
+			// Discussion from before Machinist had the issue.
 		case !slices.Contains(p.Rules.AllowedUsers, reply.Author):
 			fmt.Fprintf(p.log(), "machinist: %s reply on job %s ignored: user %q may not start jobs\n", name, ticket.ID, reply.Author)
 		case ticket.State == tickets.StateWorking:
-			return nil
+			cursor = minTime(cursor, reply.CreatedAt.Add(-time.Nanosecond))
+			return p.runReplies(ctx, order, batches, cursor)
 		default:
-			if _, err := p.Store.Reply(ctx, ticket.ID, name, strings.TrimSpace(reply.Body)); errors.Is(err, tickets.ErrStillWorking) {
-				return nil
-			} else if err != nil {
-				return err
+			if _, seen := batches[ticket.ID]; !seen {
+				order = append(order, ticket.ID)
 			}
-			fmt.Fprintf(p.log(), "machinist: %s reply ran job %s again\n", name, ticket.ID)
+			batches[ticket.ID] = append(batches[ticket.ID], tickets.Comment{Body: strings.TrimSpace(reply.Body), Key: key})
 		}
-		if reply.CreatedAt.After(since) {
-			since = reply.CreatedAt
-			if err := p.Store.SetCursor(ctx, name, repliesCursor, since); err != nil {
-				return err
-			}
-		}
+		cursor = maxTime(cursor, reply.CreatedAt)
 	}
-	return nil
+	return p.runReplies(ctx, order, batches, cursor)
+}
+
+func (p *Poller) runReplies(ctx context.Context, order []string, batches map[string][]tickets.Comment, cursor time.Time) error {
+	name := p.Tracker.Name()
+	for _, ticketID := range order {
+		if _, err := p.Store.Reply(ctx, ticketID, name, batches[ticketID]); err != nil && !errors.Is(err, tickets.ErrStillWorking) {
+			return err
+		}
+		fmt.Fprintf(p.log(), "machinist: %s replies ran job %s again\n", name, ticketID)
+	}
+	return p.Store.SetCursor(ctx, name, repliesCursor, cursor)
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
 }
 
 type handled int
