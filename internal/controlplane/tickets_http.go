@@ -186,8 +186,12 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
-func (s *Server) listRepositories(w http.ResponseWriter, _ *http.Request, tokenName string) {
-	repositories := s.config.GitHub.Repositories
+func (s *Server) listRepositories(w http.ResponseWriter, r *http.Request, tokenName string) {
+	repositories, err := s.intake.Connected(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if repositories == nil {
 		repositories = []string{}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/owainlewis/machinist/internal/ghclient"
@@ -42,13 +43,35 @@ func issueText(issue ghclient.Issue, author, request string) string {
 	return fmt.Sprintf("%s\n\n%s\n\nRequest from %s:\n%s", issue.Title, issue.Body, author, request)
 }
 
-func (i *Intake) repository(name string) (string, bool) {
-	for _, repository := range i.Repositories {
+// repository finds a connected repository by name, in any case: one listed in
+// config.yaml, or one added in the web app.
+func (i *Intake) repository(ctx context.Context, name string) (string, bool, error) {
+	repositories, err := i.Connected(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	for _, repository := range repositories {
 		if strings.EqualFold(repository, name) {
-			return repository, true
+			return repository, true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
+}
+
+// Connected lists the repositories Machinist works on: the ones in
+// config.yaml, then the ones added in the web app.
+func (i *Intake) Connected(ctx context.Context) ([]string, error) {
+	repositories := slices.Clone(i.Repositories)
+	projects, err := i.Store.Projects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, project := range projects {
+		if !slices.ContainsFunc(repositories, func(listed string) bool { return strings.EqualFold(listed, project.Repo) }) {
+			repositories = append(repositories, project.Repo)
+		}
+	}
+	return repositories, nil
 }
 
 // Assign returns the ticket for a request. A repeated request ID, or an issue
@@ -58,7 +81,10 @@ func (i *Intake) Assign(ctx context.Context, request AssignRequest, by string) (
 	if request.RequestID == "" || len(request.RequestID) > maxRequestIDBytes {
 		return tickets.Ticket{}, false, invalid("request_id is required and at most %d bytes", maxRequestIDBytes)
 	}
-	repository, connected := i.repository(request.Repo)
+	repository, connected, err := i.repository(ctx, request.Repo)
+	if err != nil {
+		return tickets.Ticket{}, false, err
+	}
 	if !connected {
 		return tickets.Ticket{}, false, invalid("repository %q is not connected", request.Repo)
 	}
