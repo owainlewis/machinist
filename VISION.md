@@ -60,6 +60,8 @@ Built and merged:
   **Run again**, and runners.
 - Short-lived, one-repository tokens from a GitHub App.
 - Starting a job when a Linear issue is assigned to the Machinist app.
+- Agent files: each step names an agent in `factory/agents/`, which picks its harness
+  (Claude Code, Codex or Pi), its model and its prompt.
 
 Automations already hold a saved prompt, repository, preset and schedule, and can be run
 through the API. They become saved jobs.
@@ -76,8 +78,8 @@ In this order. Each ships on its own.
 3.  **An MCP server.** A bot such as a team assistant lists, runs, watches and cancels jobs
     through MCP, with a token of its own. Tokens get scopes, such as run-only and read-only,
     and can be revoked one at a time.
-4.  **Pick the agent.** `agent:` on a saved job or a one-off job, adapter scripts for
-    Claude Code, Codex, OpenCode and Pi, and runners that report which agents they have.
+4.  **Pick the agent.** Runners report which harnesses they have, a job runs only where
+    its agents can, and an OpenCode harness.
 5.  **Pick the host.** Runner labels and `runs_on:` on a job. A job with no label runs on
     any runner.
 6.  **Runs that recover.** Spot a run that has stopped making progress, retry a failed run

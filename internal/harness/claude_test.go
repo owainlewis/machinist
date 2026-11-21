@@ -1,4 +1,4 @@
-package agentlog
+package harness
 
 import (
 	"bytes"
@@ -73,7 +73,7 @@ func TestRunKeepsTheExitCodeAndWritesUsage(t *testing.T) {
 	usagePath := filepath.Join(t.TempDir(), UsageFile)
 	script := `printf '%s\n' '{"type":"result","subtype":"success","num_turns":1,"duration_ms":1000,"total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":4}}'; echo oops >&2; exit 3`
 	var out, errs bytes.Buffer
-	code, err := Run(t.Context(), []string{"sh", "-c", script}, strings.NewReader(""), &out, &errs, usagePath)
+	code, err := Run(t.Context(), Format, []string{"sh", "-c", script}, strings.NewReader(""), &out, &errs, usagePath)
 	if err != nil || code != 3 {
 		t.Fatalf("code = %d, err = %v", code, err)
 	}
@@ -94,7 +94,7 @@ func TestRunAddsUpEveryAgentInAStep(t *testing.T) {
 	usagePath := filepath.Join(t.TempDir(), UsageFile)
 	for _, tokens := range []string{"10", "20"} {
 		script := `printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.1,"usage":{"input_tokens":` + tokens + `}}'`
-		if code, err := Run(t.Context(), []string{"sh", "-c", script}, strings.NewReader(""), io.Discard, io.Discard, usagePath); err != nil || code != 0 {
+		if code, err := Run(t.Context(), Format, []string{"sh", "-c", script}, strings.NewReader(""), io.Discard, io.Discard, usagePath); err != nil || code != 0 {
 			t.Fatalf("code = %d, err = %v", code, err)
 		}
 	}
@@ -106,7 +106,7 @@ func TestRunAddsUpEveryAgentInAStep(t *testing.T) {
 }
 
 func TestRunNeedsACommand(t *testing.T) {
-	if code, err := Run(t.Context(), nil, nil, nil, nil, ""); err == nil || code != 2 {
+	if code, err := Run(t.Context(), Format, nil, nil, nil, nil, ""); err == nil || code != 2 {
 		t.Fatalf("code = %d, err = %v", code, err)
 	}
 }

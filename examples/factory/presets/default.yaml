@@ -1,9 +1,11 @@
-# A one-off job: clone the repository, let Claude Code do what the prompt asks,
-# then open a pull request, wait for its checks and merge it. Every job uses this preset unless it names another.
-# Each run is a shell command, run with sh -e in one workspace, in order. The
-# first that fails ends the job. Scripts in factory/scripts are on PATH, and
-# factory/prompts is in $MACHINIST_DIR/prompts.
-description: Clone the repository, run Claude Code on the prompt, open a pull request and merge it once its checks pass.
+# A one-off job: clone the repository, let an agent do what the prompt asks,
+# then open a pull request, wait for its checks and merge it. Every job uses
+# this preset unless it names another.
+#
+# A step either runs shell (run:) or one of the agents in factory/agents
+# (agent:). Steps run in order in one workspace, and the first that fails
+# ends the job. Scripts in factory/scripts are on PATH.
+description: Clone the repository, have an agent make the change, open a pull request and merge it once its checks pass.
 timeout: 60m
 
 steps:
@@ -11,11 +13,11 @@ steps:
     timeout: 5m
     run: checkout.sh
 
-  - name: work
-    run: agent.sh work
+  - name: implement
+    agent: implement
 
-  # The agent ships the change as prompts/publish.md says. Edit that file to
-  # change the pull request or how it merges.
+  # factory/agents/publish.md says how the change ships. Edit it to change
+  # the pull request or how it merges.
   - name: publish
     timeout: 30m
-    run: agent.sh publish
+    agent: publish

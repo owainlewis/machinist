@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/owainlewis/machinist/internal/agentlog"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
@@ -56,7 +56,7 @@ func (p *progress) note(event protocol.RunEvent) {
 func lastAction(text string) string {
 	found := ""
 	for _, line := range strings.Split(text, "\n") {
-		if text, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), agentlog.ActionPrefix); ok && utf8.ValidString(text) {
+		if text, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), harness.ActionPrefix); ok && utf8.ValidString(text) {
 			found = strings.TrimSpace(text)
 		}
 	}

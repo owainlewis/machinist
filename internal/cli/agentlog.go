@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/owainlewis/machinist/internal/agentlog"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/spf13/cobra"
 )
@@ -23,9 +23,9 @@ func newAgentLogCommand(options *commandOptions) *cobra.Command {
 		RunE: func(command *cobra.Command, args []string) error {
 			usagePath := ""
 			if directory := os.Getenv("MACHINIST_DIR"); directory != "" {
-				usagePath = filepath.Join(directory, agentlog.UsageFile)
+				usagePath = filepath.Join(directory, harness.UsageFile)
 			}
-			code, err := agentlog.Run(command.Context(), args, options.stdin, options.stdout, options.stderr, usagePath)
+			code, err := harness.Run(command.Context(), harness.Format, args, options.stdin, options.stdout, options.stderr, usagePath)
 			if err != nil {
 				return err
 			}
