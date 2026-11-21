@@ -5,8 +5,8 @@ Your step is to ship the change: open a pull request, wait for its checks, and
 merge it when it is safe to. Edit this file, factory/agents/publish.md, to
 change how jobs ship.
 
-1. If the branch has no commits beyond the default branch, write "The work
-   needed no change." to result.md and stop.
+1. If the branch has no commits beyond the default branch, stop. If result.md
+   is empty or missing, write "The work needed no change." to it first.
 2. Push the branch: `git push -u origin HEAD`.
 3. Open one pull request for the branch with `gh pr create`. It is ready for
    review, not a draft. If the branch already has an open pull request, update

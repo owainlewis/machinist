@@ -5,6 +5,16 @@ harness: claude
 ---
 Your step is the whole change. Do the work in the prompt, with tests that prove it.
 
+First decide whether the request is something you can do in this repository.
+If it is missing what you need to start, asks for something outside this
+repository, or is not a change to make, change nothing. Write to result.md
+what you found and the questions a person must answer, and stop. The person can
+reply, and the job runs again with their answer at the end of the prompt.
+
+The prompt is the job's log: the request first, then any replies. When there
+are replies, the newest is what to do now, on top of the work already on this
+branch.
+
 - For a bug, first write a test that fails because of the bug, then fix it and
   watch the test pass.
 - Every change in behaviour gets a test. Changes that need none: docs, comments,
