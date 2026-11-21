@@ -165,7 +165,7 @@ as a careful senior engineer would.</code></pre>
             <button class="copy-command" type="button" data-copy="gh api user --jq .login" aria-label="Copy command that prints your GitHub login"><code>gh api user --jq .login</code><span aria-live="polite">Copy</span></button>
           </li>
           <li>
-            <div><span class="step-index">04</span><h3>Start</h3><p>Start the control plane, and <code>GH_TOKEN=$(gh auth token) machinist runner start</code> in a second terminal. Create a token with <code>machinist token create</code>, sign in to the web app and select New job.</p></div>
+            <div><span class="step-index">04</span><h3>Start</h3><p>Start the control plane, and <code>GH_TOKEN=$(gh auth token) machinist runner start</code> in a second terminal. Create a token with <code>machinist token create "$USER"</code>, sign in to the web app and select New job.</p></div>
             <button class="copy-command" type="button" data-copy="GH_TOKEN=$(gh auth token) machinist start" aria-label="Copy start command"><code>GH_TOKEN=$(gh auth token) machinist start</code><span aria-live="polite">Copy</span></button>
           </li>
         </ol>
