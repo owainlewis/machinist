@@ -155,6 +155,23 @@ systemctl restart machinist-control-plane machinist-runner
 curl -fsS http://127.0.0.1:7331/healthz
 ```
 
+Then check the runner's token. A token made before tokens had roles shows the role `any`.
+It still takes runs, but it can also sign in to the web app and use the API. List the tokens:
+
+```sh
+su - machinist -c 'machinist token list'
+```
+
+If the runner's token shows `any`, give the runner a token with the runner role. Write it to
+the runner's token file, restart the runner, then revoke the old token by its name. Here it
+is `local`:
+
+```sh
+su - machinist -c 'umask 077; machinist token create local-runner --runner > .machinist/runner.token'
+systemctl restart machinist-runner
+su - machinist -c 'machinist token revoke local'
+```
+
 To roll back, install the previous binary the same way and restart both:
 
 ```sh
