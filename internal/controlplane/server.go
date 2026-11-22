@@ -96,7 +96,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 			return ok
 		},
 	}
-	linear, err := linearPoller(machinistConfig, loaded, intake, store, log)
+	linear, err := linearPoller(context.Background(), machinistConfig, loaded, intake, store, log)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,9 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 
 // linearPoller checks the Linear section against the factory and the
 // connected repositories, so a mistake stops startup instead of dropping work.
-func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake *sources.Intake, store *tickets.Store, log io.Writer) (*sources.Poller, error) {
+// A connected repository is one in github.repositories or one added in
+// Settings → Projects.
+func linearPoller(ctx context.Context, machinistConfig config.Config, loaded *factory.Factory, intake *sources.Intake, store *tickets.Store, log io.Writer) (*sources.Poller, error) {
 	linear := machinistConfig.Linear
 	if !linear.Enabled() {
 		return nil, nil
@@ -134,6 +136,10 @@ func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake
 	if _, ok := loaded.Preset(preset); !ok {
 		return nil, fmt.Errorf("linear.preset %q is not in the factory", preset)
 	}
+	connected, err := intake.Connected(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list connected repositories: %w", err)
+	}
 	for _, mapping := range []struct {
 		key   string
 		repos map[string]string
@@ -141,8 +147,8 @@ func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake
 		names := slices.Sorted(maps.Keys(mapping.repos))
 		for _, name := range names {
 			repository := mapping.repos[name]
-			if !slices.ContainsFunc(machinistConfig.GitHub.Repositories, func(connected string) bool { return strings.EqualFold(connected, repository) }) {
-				return nil, fmt.Errorf("linear.%s.%s: %s is not in github.repositories", mapping.key, name, repository)
+			if !slices.ContainsFunc(connected, func(listed string) bool { return strings.EqualFold(listed, repository) }) {
+				return nil, fmt.Errorf("linear.%s.%s: %s is not a connected repository; add it to github.repositories or in Settings → Projects", mapping.key, name, repository)
 			}
 		}
 	}
@@ -163,21 +169,41 @@ func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake
 }
 
 // loadApp loads the GitHub App, when one is configured. Its tokens last an
-// hour, so no run may be allowed longer than that.
+// hour. A local runner asks for a new one before each step, so no step may be
+// allowed longer than that; the run as a whole may be. A Kubernetes run keeps
+// the token it started with, and its connector refuses a run longer than one
+// token.
 func loadApp(machinistConfig config.Config, loaded *factory.Factory) (*githubapp.App, error) {
 	settings := machinistConfig.GitHub.App
 	if settings == nil {
 		return nil, nil
 	}
-	if machinistConfig.Server.RunDeadline() > githubapp.TokenLifetime {
-		return nil, fmt.Errorf("run_timeout is %s, but GitHub App tokens last %s; set run_timeout to %s or less", machinistConfig.Server.RunDeadline(), githubapp.TokenLifetime, githubapp.TokenLifetime)
-	}
-	for name, preset := range loaded.Presets {
-		if preset.Timeout > githubapp.TokenLifetime {
-			return nil, fmt.Errorf("preset %q has a timeout of %s, but GitHub App tokens last %s; set it to %s or less", name, preset.Timeout, githubapp.TokenLifetime, githubapp.TokenLifetime)
+	for _, name := range slices.Sorted(maps.Keys(loaded.Presets)) {
+		if err := stepsFitInAToken(name, loaded.Presets[name], machinistConfig.Server.RunDeadline()); err != nil {
+			return nil, err
 		}
 	}
 	return githubapp.Load(settings.ID, settings.PrivateKeyFile)
+}
+
+// stepsFitInAToken reports the first step of a preset that could run longer
+// than a GitHub App token lasts. A step runs for its own timeout or, without
+// one, for the rest of the run: the preset's timeout, else run_timeout.
+func stepsFitInAToken(name string, preset factory.Preset, runDeadline time.Duration) error {
+	run, source, fix := preset.Timeout, "the preset's timeout", "set the preset's timeout"
+	if run == 0 {
+		run, source, fix = runDeadline, "run_timeout", "set run_timeout"
+	}
+	for _, step := range preset.Steps {
+		limit, from, change := run, source, fix+" or the step's timeout"
+		if own := time.Duration(step.TimeoutMillis) * time.Millisecond; own > 0 && own < run {
+			limit, from, change = own, "its own timeout", "set its timeout"
+		}
+		if limit > githubapp.TokenLifetime {
+			return fmt.Errorf("preset %q step %q may run %s (%s), but GitHub App tokens last %s; %s to %s or less", name, step.Name, limit, from, githubapp.TokenLifetime, change, githubapp.TokenLifetime)
+		}
+	}
+	return nil
 }
 
 func findPR(client *ghclient.Client) engine.PRFinder {

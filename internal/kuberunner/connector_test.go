@@ -321,3 +321,34 @@ func TestTheSandboxReadsTheTokenAndRemovesIt(t *testing.T) {
 		t.Fatal("an oversized token was accepted")
 	}
 }
+
+// A pod keeps the GitHub App token it started with, so a run that could
+// outlast it is refused before a Job exists, not an hour in.
+func TestARunLongerThanItsAppTokenStartsNothing(t *testing.T) {
+	c := Connector{Config: configuration()}
+	deleted := false
+	fakeCluster(&c, &deleted, true, func(context.Context) error { return nil })
+	base := c.run
+	created := false
+	c.run = func(ctx context.Context, input io.Reader, limit int, args ...string) ([]byte, error) {
+		if args[0] == "create" {
+			created = true
+		}
+		return base(ctx, input, limit, args...)
+	}
+	request := fixtureRequest()
+	request.GitHubToken = "ghs_run_token"
+	request.TimeoutMillis = (90 * time.Minute).Milliseconds()
+	result := c.Execute(t.Context(), request, t.TempDir())
+	if result.State != runner.StateFailed || !strings.Contains(result.Error, "run timeout of 1h30m0s") || !strings.Contains(result.Error, "1h0m0s") {
+		t.Fatalf("result = %+v", result)
+	}
+	if created {
+		t.Fatal("a Job was created")
+	}
+	// Without a run token the Secret's GH_TOKEN applies, and it has no such limit.
+	request.GitHubToken = ""
+	if result := c.Execute(t.Context(), request, t.TempDir()); result.State != runner.StateSucceeded {
+		t.Fatalf("without a run token: result = %+v", result)
+	}
+}
