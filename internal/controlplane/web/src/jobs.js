@@ -94,3 +94,24 @@ export function boardOf(tickets = [], running = new Set()) {
   columns.done.sort((a, b) => at(b, "updated_at") - at(a, "updated_at"));
   return columns;
 }
+
+// failureReason is why a failed job stopped: the last thing Machinist said on it.
+export function failureReason(entries = []) {
+  return entries.findLast(entry => entry.kind === "message")?.body || "";
+}
+
+// linkParts splits text into plain runs and web links, so the links can be
+// clicked. A full stop, comma or bracket at a link's end is left as text.
+const linkPattern = /https?:\/\/[^\s<>"]+/g;
+export function linkParts(text = "") {
+  const parts = [];
+  let at = 0;
+  for (const match of text.matchAll(linkPattern)) {
+    const href = match[0].replace(/[.,;:!?)\]}'"]+$/, "");
+    if (match.index > at) parts.push({ text: text.slice(at, match.index) });
+    parts.push({ href });
+    at = match.index + href.length;
+  }
+  if (at < text.length) parts.push({ text: text.slice(at) });
+  return parts;
+}

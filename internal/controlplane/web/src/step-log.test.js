@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { latestAction, outputLimit, pipeline, pollEvents, runSpend, spend, stepTime, steps } from "./step-log.js";
+import { latestAction, noStepsNote, outputLimit, pipeline, pollEvents, runSpend, spend, stepTime, steps } from "./step-log.js";
 
 const output = (text, stream = "stdout") => ({ type: "process.output", stream, encoding: "base64", data: Buffer.from(text).toString("base64") });
 const started = name => ({ type: "step.started", message: `name=${name}`, time: "2026-11-17T21:24:57Z" });
@@ -93,4 +93,13 @@ test("spend never shows an unreported cost as free", () => {
   const [review] = steps([], [{ name: "review", state: "succeeded", tokens: 10, cost_unknown: true }], "succeeded");
   assert.equal(review.cost_unknown, true);
   assert.equal(review.tokens, 10);
+});
+
+test("a run with no steps says why, and never waits forever on a finished run", () => {
+  assert.equal(noStepsNote("queued", false), "No step has started.");
+  assert.equal(noStepsNote("running", false), "Loading steps");
+  assert.equal(noStepsNote("running", true), "No step has started.");
+  assert.equal(noStepsNote("failed", false), "Loading steps");
+  assert.equal(noStepsNote("failed", true), "No steps ran.");
+  assert.equal(noStepsNote("cancelled", true), "No steps ran.");
 });

@@ -181,7 +181,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 	if e.GitHubToken != nil {
 		token, err = e.GitHubToken(ctx, claim.Ticket.Repo)
 		if err != nil {
-			message := fmt.Sprintf("Machinist could not get a GitHub token from the GitHub App: %v.", err)
+			message := sentence(fmt.Sprintf("Machinist could not get a GitHub token from the GitHub App: %v", err))
 			return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
 				return tickets.Transition{State: tickets.StateFailed, Message: message}
 			})
@@ -191,7 +191,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 	if e.Identity != nil {
 		gitName, gitEmail, err = e.Identity(ctx)
 		if err != nil {
-			message := fmt.Sprintf("Machinist could not look up the GitHub App's bot account: %v.", err)
+			message := sentence(fmt.Sprintf("Machinist could not look up the GitHub App's bot account: %v", err))
 			return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
 				return tickets.Transition{State: tickets.StateFailed, Message: message}
 			})

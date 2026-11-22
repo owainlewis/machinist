@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardOf, formatDuration, jobState, newestFirst, noPullRequest, prLink, prState, prSummary, runningJobs, runningTickets } from "./jobs.js";
+import { boardOf, failureReason, formatDuration, linkParts, jobState, newestFirst, noPullRequest, prLink, prState, prSummary, runningJobs, runningTickets } from "./jobs.js";
 
 test("ticket states read as the run API's job states", () => {
   assert.equal(jobState({ state: "working" }), "queued");
@@ -68,4 +68,27 @@ test("a job that ended without a pull request has none, not none yet", () => {
   assert.equal(noPullRequest("done"), "None");
   assert.equal(noPullRequest("failed"), "None");
   assert.equal(noPullRequest("cancelled"), "None");
+});
+
+test("a failed job's reason is the last thing Machinist said", () => {
+  const entries = [
+    { kind: "request", body: "Fix it" },
+    { kind: "message", body: "https://github.com/owner/repo/pull/4" },
+    { kind: "comment", body: "Try again" },
+    { kind: "message", body: "Preset \"gone\" is not in the factory." },
+    { kind: "comment", body: "Hm" },
+  ];
+  assert.equal(failureReason(entries), "Preset \"gone\" is not in the factory.");
+  assert.equal(failureReason([{ kind: "request", body: "Fix it" }]), "");
+  assert.equal(failureReason(), "");
+});
+
+test("links in text are split out so they can be clicked", () => {
+  assert.deepEqual(linkParts("Merged: https://github.com/owner/repo/pull/642"), [{ text: "Merged: " }, { href: "https://github.com/owner/repo/pull/642" }]);
+  assert.deepEqual(linkParts("See https://example.com/a. Then http://example.com/b, and done"), [
+    { text: "See " }, { href: "https://example.com/a" }, { text: ". Then " }, { href: "http://example.com/b" }, { text: ", and done" },
+  ]);
+  assert.deepEqual(linkParts("(https://example.com/x)"), [{ text: "(" }, { href: "https://example.com/x" }, { text: ")" }]);
+  assert.deepEqual(linkParts("no links here, javascript:alert(1)"), [{ text: "no links here, javascript:alert(1)" }]);
+  assert.deepEqual(linkParts(""), []);
 });

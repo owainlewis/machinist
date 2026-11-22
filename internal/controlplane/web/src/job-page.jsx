@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { State, relativeTime, useNow } from "./display.jsx";
-import { formatDuration, isFinished, jobState, noPullRequest, prLink, prState } from "./jobs.js";
-import { latestAction, pipeline, pollEvents, runSpend, spend, spendTitle, stepTime, steps } from "./step-log.js";
+import { failureReason, formatDuration, isFinished, jobState, linkParts, noPullRequest, prLink, prState } from "./jobs.js";
+import { latestAction, noStepsNote, pipeline, pollEvents, runSpend, spend, spendTitle, stepTime, steps } from "./step-log.js";
 import { Button } from "@/components/ui/button";
 
 const pollMillis = 2000;
@@ -22,14 +22,14 @@ function PullRequest({ ticket, link }) {
 }
 
 export function useRunEvents(run) {
-  const [snapshot, setSnapshot] = useState({ id: run.id, events: [], error: "" });
+  const [snapshot, setSnapshot] = useState({ id: run.id, events: [], error: "", loaded: false });
   const live = pollEvents(run);
   useEffect(() => {
     let stopped = false;
     let cursor = 0;
     let timer;
     const controller = new AbortController();
-    setSnapshot({ id: run.id, events: [], error: "" });
+    setSnapshot({ id: run.id, events: [], error: "", loaded: false });
     async function poll() {
       let retry = false;
       try {
@@ -37,7 +37,7 @@ export function useRunEvents(run) {
         while (more && !stopped) {
           const page = await api(`/api/v1/runs/${encodeURIComponent(run.id)}/events?after=${cursor}`, { signal: controller.signal });
           if (stopped) return;
-          setSnapshot(previous => ({ id: run.id, events: [...previous.events, ...page.events], error: "" }));
+          setSnapshot(previous => ({ id: run.id, events: [...previous.events, ...page.events], error: "", loaded: true }));
           cursor = page.cursor;
           more = page.events.length === eventPage;
         }
@@ -51,7 +51,7 @@ export function useRunEvents(run) {
     poll();
     return () => { stopped = true; window.clearTimeout(timer); controller.abort(); };
   }, [run.id, live]);
-  return snapshot.id === run.id ? snapshot : { events: [], error: "" };
+  return snapshot.id === run.id ? snapshot : { events: [], error: "", loaded: false };
 }
 
 const stepIcons = {
@@ -127,11 +127,12 @@ function Step({ step, chosen, now }) {
 }
 
 function Run({ run, number, presetSteps }) {
-  const { events, error } = useRunEvents(run);
+  const { events, error, loaded } = useRunEvents(run);
   const list = steps(events, run.stages || [], run.status);
   const now = useNow(run.status === "running");
   const current = run.status === "running" ? list.find(step => step.state === "running") : null;
   const action = current ? latestAction(current.output) : "";
+  const nodes = presetSteps ? pipeline(presetSteps, list, run.status) : [];
   // chosen counts each choice, so choosing the same step twice still opens it.
   const [chosen, setChosen] = useState({ name: "", times: 0 });
   const choose = name => setChosen(previous => ({ name, times: previous.times + 1 }));
@@ -148,9 +149,16 @@ function Run({ run, number, presetSteps }) {
     </p>}
     {current && <p className="run-now" aria-live="polite"><span className="run-now-step">{current.name}</span>{action || "Working"}</p>}
     {error && <p className="form-error" role="alert">{error}</p>}
-    {presetSteps && <Pipeline nodes={pipeline(presetSteps, list, run.status)} onChoose={choose} now={now} />}
-    {list.length > 0 ? <ol className="steps">{list.map(step => <Step key={step.name} step={step} chosen={chosen.name === step.name ? chosen.times : 0} now={now} />)}</ol> : <p className="page-note">{run.status === "queued" ? "No step has started." : "Loading steps"}</p>}
+    {nodes.length > 0 && <Pipeline nodes={nodes} onChoose={choose} now={now} />}
+    {list.length > 0 ? <ol className="steps">{list.map(step => <Step key={step.name} step={step} chosen={chosen.name === step.name ? chosen.times : 0} now={now} />)}</ol> : <p className="page-note">{noStepsNote(run.status, loaded)}</p>}
   </section>;
+}
+
+// Linked shows text with its web links made into links.
+function Linked({ text }) {
+  return linkParts(text).map((part, index) => part.href
+    ? <a key={index} href={part.href} target="_blank" rel="noreferrer">{part.href}</a>
+    : <Fragment key={index}>{part.text}</Fragment>);
 }
 
 function History({ entries }) {
@@ -193,6 +201,7 @@ export function JobView({ detail, onChange }) {
   const pr = prLink(ticket);
   const prompt = entries.find(entry => entry.kind === "request")?.body || "";
   const result = [...runs].reverse().find(run => run.report?.summary)?.report.summary || "";
+  const failure = state === "failed" ? failureReason(entries) : "";
   const attempts = runs.map((run, index) => ({ run, number: index + 1 })).reverse();
   return <div className="page job-page">
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
@@ -210,7 +219,11 @@ export function JobView({ detail, onChange }) {
       <div><dt>Started by</dt><dd>{ticket.created_by}</dd></div>
       <div><dt>Created</dt><dd><time dateTime={ticket.created_at}>{relativeTime(ticket.created_at)}</time></dd></div>
     </dl>
-    {result && isFinished(state) && <section className="panel" aria-labelledby="job-result"><h2 id="job-result" className="label">Result</h2><p className="prose">{result}</p></section>}
+    {failure && <section className="panel job-failure" aria-labelledby="job-failure">
+      <h2 id="job-failure" className="label"><CircleAlert className="size-3.5" aria-hidden="true" />Why it failed</h2>
+      <p className="prose"><Linked text={failure} /></p>
+    </section>}
+    {result && !failure && isFinished(state) && <section className="panel" aria-labelledby="job-result"><h2 id="job-result" className="label">Result</h2><p className="prose"><Linked text={result} /></p></section>}
     {prompt && <details className="panel prompt"><summary className="label">Prompt</summary><p className="prose">{prompt}</p></details>}
     {attempts.length ? attempts.map(({ run, number }, index) => <Run key={run.id} run={run} number={number} presetSteps={index === 0 ? presetSteps : null} />) : <>
       {presetSteps.length > 0 && <Pipeline nodes={pipeline(presetSteps, [], "")} onChoose={() => {}} />}
