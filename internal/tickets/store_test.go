@@ -180,6 +180,41 @@ func TestCompleteRunAppliesTransitionAndStoresResult(t *testing.T) {
 	}
 }
 
+func TestCompleteRunKeepsTheSavedPatch(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:1")
+	claim := claimRun(t, store, ticket)
+	if _, err := store.RunPatch(t.Context(), claim.Run.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("patch before completion: %v", err)
+	}
+	patch := []byte("Subject: [PATCH] Use Postgres\n\x00binary")
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed, Patch: patch}, completeTo(StateFailed)); err != nil {
+		t.Fatal(err)
+	}
+	if body, err := store.RunPatch(t.Context(), claim.Run.ID); err != nil || string(body) != string(patch) {
+		t.Fatalf("patch = %q, %v", body, err)
+	}
+	runs, err := store.Runs(t.Context(), ticket.ID)
+	if err != nil || len(runs) != 1 || !runs[0].Patch {
+		t.Fatalf("runs = %+v, err = %v", runs, err)
+	}
+}
+
+func TestARunWithoutAPatchSaysSo(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:1")
+	claim := claimRun(t, store, ticket)
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed}, completeTo(StateFailed)); err != nil {
+		t.Fatal(err)
+	}
+	if run, err := store.Run(t.Context(), claim.Run.ID); err != nil || run.Patch {
+		t.Fatalf("run = %+v, err = %v", run, err)
+	}
+	if _, err := store.RunPatch(t.Context(), claim.Run.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("patch: %v", err)
+	}
+}
+
 func TestCompleteRunStoresStagesInOrder(t *testing.T) {
 	store := openStore(t)
 	ticket := createTicket(t, store, "api:1")

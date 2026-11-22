@@ -316,6 +316,35 @@ func TestAutomationNeverWaitsForAPerson(t *testing.T) {
 	}
 }
 
+// A failed job whose change was saved says how to get it back, and the
+// patch is kept with the run.
+func TestAFailedRunWithAPatchSaysHowToRecoverTheChange(t *testing.T) {
+	e := newEngine(t)
+	ticket := newTicket(t, e, "api")
+	request := assignRun(t, e)
+	completion := protocol.Completion{State: tickets.RunFailed, Error: "step publish: GitHub rejected the push", Patch: []byte("Subject: [PATCH] Use Postgres\n")}
+	if err := e.Complete(t.Context(), request.RunID, completion); err != nil {
+		t.Fatal(err)
+	}
+	want := "The run ended without a report: step publish: GitHub rejected the push. " + PatchSaved
+	if message := lastMessage(t, e, ticket.ID); message != want {
+		t.Fatalf("message = %q\nwant %q", message, want)
+	}
+	if body, err := e.Store.RunPatch(t.Context(), request.RunID); err != nil || string(body) != string(completion.Patch) {
+		t.Fatalf("patch = %q, %v", body, err)
+	}
+}
+
+func TestCompleteRejectsAPatchTooLarge(t *testing.T) {
+	e := newEngine(t)
+	newTicket(t, e, "api")
+	request := assignRun(t, e)
+	completion := protocol.Completion{State: tickets.RunFailed, Patch: make([]byte, protocol.MaxPatchBytes+1)}
+	if err := e.Complete(t.Context(), request.RunID, completion); !errors.Is(err, ErrInvalidCompletion) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestCompleteRejectsUnknownStateAndInactiveRuns(t *testing.T) {
 	e := newEngine(t)
 	newTicket(t, e, "api")

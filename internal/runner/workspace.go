@@ -218,7 +218,25 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 		output.Error = err.Error()
 	}
 	output.Stages = results
+	output.Patch = savedPatch(workspace.Control)
 	return output
+}
+
+// savedPatch is the change a step saved in the control directory because it
+// could not push it, or nil. The workspace is removed after the run, so this is
+// the only copy. A patch over protocol.MaxPatchBytes, or one that is not a
+// regular file, is not kept.
+func savedPatch(control string) []byte {
+	path := filepath.Join(control, protocol.PatchFile)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > protocol.MaxPatchBytes {
+		return nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || len(body) > protocol.MaxPatchBytes {
+		return nil
+	}
+	return body
 }
 
 // stepUsage reads what the step's agent reported, which machinist agent

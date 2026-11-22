@@ -340,3 +340,26 @@ func TestEachStepStartsWithAFreshGitHubToken(t *testing.T) {
 		t.Fatalf("tokens seen by steps:\n%s", got)
 	}
 }
+
+// The workspace is removed after the run, so a change a step could not push
+// leaves with the result.
+func TestARunCarriesThePatchAStepSaved(t *testing.T) {
+	result, _ := run(t, stepsRequest(Step{Name: "publish", Run: `printf 'Subject: [PATCH] Use Postgres\n' > "$MACHINIST_DIR/change.patch"; exit 1`}))
+	if result.State != StateFailed || string(result.Patch) != "Subject: [PATCH] Use Postgres\n" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestARunWithoutAPatchOrWithOneTooLargeCarriesNone(t *testing.T) {
+	for _, script := range []string{
+		"exit 1",
+		`: > "$MACHINIST_DIR/change.patch"; exit 1`,
+		`head -c 4194305 /dev/zero > "$MACHINIST_DIR/change.patch"; exit 1`,
+		`ln -s /etc/hosts "$MACHINIST_DIR/change.patch"; exit 1`,
+	} {
+		result, _ := run(t, stepsRequest(Step{Name: "publish", Run: script}))
+		if result.Patch != nil {
+			t.Fatalf("%s: patch is %d bytes", script, len(result.Patch))
+		}
+	}
+}
