@@ -104,7 +104,7 @@ The shipped agents:
 | `implement` | Make the change with tests: a failing test first for a bug, the repository's own checks, and no claim that a check passed unless it ran. Commit it. Never push, open a pull request or merge |
 | `review` | Review the branch without changing it, run the checks, and write `review.json`: a verdict of `accepted`, `revision_needed` or `human_decision_needed`, and findings marked unambiguous or not |
 | `revise` | Fix the unambiguous findings and mark them addressed. `scripts/revise.sh` runs it only when the verdict is `revision_needed`, then runs `review` again |
-| `publish` | Push and open one ready pull request with a summary, testing, the review and assumptions. It never merges |
+| `publish` | Open one ready pull request with a summary, testing, the review and assumptions. It never pushes or merges. `scripts/publish.sh` pushes the branch first with `machinist push`, and runs it only when the branch has commits |
 
 The review is worth most from a different model family than the one that wrote the
 change. If Codex or agy is on your runners, set `harness: codex` or `harness: agy` in `agents/review.md`.
@@ -131,6 +131,14 @@ and only that verdict counts. When the first review accepted the change, no revi
 runs.
 
 `machinist verdict` prints the verdict, for scripts like these.
+
+`machinist push` pushes the job's branch. When GitHub rejects the push, for example because
+the token cannot change workflow files, the step fails with GitHub's answer. The job fails,
+says why, and the merge step never runs. A job whose branch has no commits pushes nothing
+and is done without a pull request.
+
+When any step fails, the job's result is the step's error and the last line the step wrote
+to stderr.
 
 ### Prompts and scripts
 
