@@ -357,22 +357,6 @@ func (s *system) read(t *testing.T, name string) string {
 	return string(body)
 }
 
-func (s *system) waitForCleanup(t *testing.T, runID string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for _, path := range []string{filepath.Join(s.data, "work", runID), filepath.Join(s.data, "runs", runID)} {
-		for {
-			if _, err := os.Stat(path); os.IsNotExist(err) {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s was not removed", path)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-}
-
 type jobView struct {
 	ID       string `json:"id"`
 	State    string `json:"state"`

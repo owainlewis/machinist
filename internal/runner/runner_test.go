@@ -582,12 +582,6 @@ func helperAgent(mode string, timeout time.Duration) Command {
 	return Command{Name: "plan", Args: []string{"/bin/sh", "-c", script}, Timeout: timeout}
 }
 
-func int64Pointer(value int64) *int64 { return &value }
-
-func equalInt64Pointers(left, right *int64) bool {
-	return left == nil && right == nil || left != nil && right != nil && *left == *right
-}
-
 func assertBlockedOutputStops(t *testing.T, ctx context.Context, timeout time.Duration, wantState State, wantExitCode int) {
 	t.Helper()
 	reader, writer, err := os.Pipe()

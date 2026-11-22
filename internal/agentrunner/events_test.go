@@ -37,7 +37,7 @@ func TestSpoolLostAckReplayAndPartialLine(t *testing.T) {
 			cursor = event.Sequence
 		}
 		if calls == 1 {
-			http.Error(out, "ack lost", 503)
+			http.Error(out, "ack lost", http.StatusServiceUnavailable)
 			return
 		}
 		_ = json.NewEncoder(out).Encode(protocol.RunEventPage{Cursor: cursor})
