@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
@@ -29,6 +31,12 @@ type Daemon struct {
 	heartbeatInterval time.Duration
 	eventInterval     time.Duration
 	retryInterval     time.Duration
+	// maxBackoff caps the wait between polls while the control plane
+	// rejects the runner's token.
+	maxBackoff time.Duration
+	// rejected is set while the control plane rejects the runner's token, so
+	// the slots explain it once rather than on every poll.
+	rejected atomic.Bool
 	// installed is the harnesses a local runner found on PATH at start, or
 	// nil when it did not look.
 	installed []string
@@ -48,6 +56,7 @@ func NewDaemon(runnerConfig config.Runner, executor Executor, log io.Writer) (*D
 		heartbeatInterval: 30 * time.Second,
 		eventInterval:     time.Second,
 		retryInterval:     2 * time.Second,
+		maxBackoff:        time.Minute,
 	}
 	// Steps on a local runner run the harnesses found on this PATH. A
 	// Kubernetes runner's steps run in its image, which it cannot see.
@@ -69,10 +78,26 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 func (d *Daemon) serveSlot(ctx context.Context) {
+	wait := d.pollInterval
 	for ctx.Err() == nil {
 		var request runner.RunRequest
 		poll := protocol.PollRequest{Harnesses: append(d.config.Harnesses(), d.installed...), Probed: d.installed != nil, Kind: d.config.Kind(), Slots: d.config.Slots}
 		err := d.client.Post(ctx, "/api/v1/runners/poll", poll, &request)
+		if rejectedToken(err) {
+			if ctx.Err() == nil && !d.rejected.Swap(true) {
+				fmt.Fprintf(d.log, "machinist: the control plane at %s rejected this runner's token (HTTP 401). It may be a different Machinist on that address, or the token was revoked. Polling less often until it is accepted.\n", d.client.base)
+			}
+			wait = max(wait*2, d.pollInterval)
+			if d.maxBackoff > 0 {
+				wait = min(wait, d.maxBackoff)
+			}
+			sleep(ctx, wait)
+			continue
+		}
+		wait = d.pollInterval
+		if err == nil && d.rejected.Swap(false) {
+			fmt.Fprintf(d.log, "machinist: the control plane at %s accepted this runner's token again.\n", d.client.base)
+		}
 		if err != nil && ctx.Err() == nil {
 			fmt.Fprintf(d.log, "machinist: runner poll: %v\n", err)
 		}
@@ -82,6 +107,12 @@ func (d *Daemon) serveSlot(ctx context.Context) {
 		}
 		d.handle(ctx, request)
 	}
+}
+
+// rejectedToken reports whether the control plane refused the runner's token.
+func rejectedToken(err error) bool {
+	var response *ResponseError
+	return errors.As(err, &response) && response.Status == http.StatusUnauthorized
 }
 
 func sleep(ctx context.Context, duration time.Duration) {
