@@ -29,7 +29,7 @@ func ProxyHandler(allowed []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, port, err := net.SplitHostPort(r.Host)
 		if r.Method != "CONNECT" || err != nil || port != "443" {
-			http.Error(w, "CONNECT to approved HTTPS destinations only", 403)
+			http.Error(w, "CONNECT to approved HTTPS destinations only", http.StatusForbidden)
 			return
 		}
 		host = strings.ToLower(host)
@@ -40,25 +40,25 @@ func ProxyHandler(allowed []string) http.Handler {
 			}
 		}
 		if !permitted {
-			http.Error(w, "destination is not approved", 403)
+			http.Error(w, "destination is not approved", http.StatusForbidden)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		if err != nil || len(ips) == 0 {
-			http.Error(w, "destination unavailable", 502)
+			http.Error(w, "destination unavailable", http.StatusBadGateway)
 			return
 		}
 		for _, ip := range ips {
 			if !PublicAddress(ip) {
-				http.Error(w, "internal destination denied", 403)
+				http.Error(w, "internal destination denied", http.StatusForbidden)
 				return
 			}
 		}
 		upstream, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(ips[0].String(), port))
 		if err != nil {
-			http.Error(w, "destination unavailable", 502)
+			http.Error(w, "destination unavailable", http.StatusBadGateway)
 			return
 		}
 		hijacker, ok := w.(http.Hijacker)

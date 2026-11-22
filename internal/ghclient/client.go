@@ -31,11 +31,7 @@ const (
 
 var (
 	repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$`)
-	// loginPattern is loose on purpose. Old accounts end in a hyphen and managed
-	// accounts contain an underscore, and refusing a real login would retry its
-	// comment forever.
-	loginPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,98}(?:\[bot\])?$`)
-	secretPattern = regexp.MustCompile(`(?i)(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+)`)
+	secretPattern     = regexp.MustCompile(`(?i)(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+)`)
 )
 
 type ErrorKind string

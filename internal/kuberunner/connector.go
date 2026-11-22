@@ -48,7 +48,7 @@ func (c Connector) command(ctx context.Context, input io.Reader, limit int, args
 	cmd.Stderr = &diagnostics
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("Kubernetes command interrupted: %w", ctx.Err())
+			return nil, fmt.Errorf("kubernetes command interrupted: %w", ctx.Err())
 		}
 		return nil, diagnostics.failure(err)
 	}
@@ -187,7 +187,7 @@ func (c Connector) prepareLog(ctx context.Context, pod string) string {
 func (c Connector) deleteJob(name string) error {
 	cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
-	unconfirmed := fmt.Errorf("Kubernetes Job %s may still be running; delete it by hand", name)
+	unconfirmed := fmt.Errorf("kubernetes Job %s may still be running; delete it by hand", name)
 	if _, err := c.command(cleanup, nil, 1<<20, "delete", "job", name, "--cascade=foreground", "--wait=true", "--timeout=30s", "--ignore-not-found"); err != nil {
 		return unconfirmed
 	}
