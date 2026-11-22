@@ -141,8 +141,13 @@ func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake
 		teams = append(teams, team)
 	}
 	slices.Sort(teams)
+	tracker := &sources.Linear{Token: linear.Token, AppUserID: linear.AppUserID, Teams: teams}
+	if linear.UsesClientCredentials() {
+		// The first poll, at startup, fetches the token.
+		tracker.Credentials = &sources.LinearCredentials{ClientID: linear.ClientID, ClientSecret: linear.ClientSecret}
+	}
 	return &sources.Poller{
-		Tracker:        &sources.Linear{Token: linear.Token, AppUserID: linear.AppUserID, Teams: teams},
+		Tracker:        tracker,
 		Rules:          sources.TrackerRules{AllowedUsers: linear.AllowedUsers, Preset: preset, Teams: linear.Teams},
 		Intake:         intake,
 		Store:          store,

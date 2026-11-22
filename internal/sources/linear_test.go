@@ -63,6 +63,8 @@ type fakeLinear struct {
 	moves       int
 	queries     []string
 	auth        string
+	// revoked are Authorization headers Linear answers with a 401.
+	revoked map[string]bool
 	// replies are comments people left, as Linear would list them.
 	replies []fakeReply
 	// endlessReplies makes a replies query with no upper time bound page on
@@ -97,6 +99,11 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&request)
 	f.queries = append(f.queries, request.Query)
+	if f.revoked[f.auth] {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"Authentication required, not authenticated","extensions":{"code":"AUTHENTICATION_ERROR"}}]}`))
+		return
+	}
 	if f.limited > 0 {
 		f.limited--
 		w.WriteHeader(http.StatusTooManyRequests)

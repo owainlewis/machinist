@@ -36,8 +36,10 @@ const (
 // Linear hands work to an agent while a person stays the assignee, or when the
 // app is its assignee, which older workspaces still do.
 type Linear struct {
-	// Token is the Machinist app's Linear access token.
+	// Token is a fixed Linear access token, such as LINEAR_API_TOKEN.
 	Token string
+	// Credentials, when set, get and renew the token instead.
+	Credentials *LinearCredentials
 	// AppUserID is the app's Linear user. Issues delegated or assigned to it
 	// are work.
 	AppUserID string
@@ -398,6 +400,28 @@ func (l *Linear) do(ctx context.Context, query string, variables map[string]any,
 	if err != nil {
 		return err
 	}
+	token := l.Token
+	if l.Credentials != nil {
+		if token, err = l.Credentials.Token(ctx); err != nil {
+			return err
+		}
+	}
+	err = l.send(ctx, body, token, into)
+	// A token from the client credentials can be revoked or expire early. Get
+	// a new one once and try again.
+	if errors.Is(err, errLinearUnauthorized) && l.Credentials != nil {
+		if token, err = l.Credentials.Renew(ctx, token); err != nil {
+			return err
+		}
+		err = l.send(ctx, body, token, into)
+	}
+	return err
+}
+
+// errLinearUnauthorized is Linear turning the access token down.
+var errLinearUnauthorized = errors.New("linear turned down the access token")
+
+func (l *Linear) send(ctx context.Context, body []byte, token string, into any) error {
 	endpoint := l.Endpoint
 	if endpoint == "" {
 		endpoint = LinearEndpoint
@@ -408,10 +432,10 @@ func (l *Linear) do(ctx context.Context, query string, variables map[string]any,
 	}
 	request.Header.Set("Content-Type", "application/json")
 	// A personal API key is sent as it is. An app's OAuth token is a bearer token.
-	if strings.HasPrefix(l.Token, "lin_api_") {
-		request.Header.Set("Authorization", l.Token)
+	if strings.HasPrefix(token, "lin_api_") {
+		request.Header.Set("Authorization", token)
 	} else {
-		request.Header.Set("Authorization", "Bearer "+l.Token)
+		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := l.Client
 	if client == nil {
@@ -429,6 +453,9 @@ func (l *Linear) do(ctx context.Context, query string, variables map[string]any,
 	if response.StatusCode == http.StatusTooManyRequests {
 		return fmt.Errorf("linear: %w", ErrRateLimited)
 	}
+	if response.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("linear: status 401: %w", errLinearUnauthorized)
+	}
 	var answer struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
@@ -443,8 +470,11 @@ func (l *Linear) do(ctx context.Context, query string, variables map[string]any,
 	}
 	if len(answer.Errors) > 0 {
 		first := answer.Errors[0]
-		if first.Extensions.Code == "RATELIMITED" {
+		switch first.Extensions.Code {
+		case "RATELIMITED":
 			return fmt.Errorf("linear: %w", ErrRateLimited)
+		case "AUTHENTICATION_ERROR":
+			return fmt.Errorf("linear: %s: %w", first.Message, errLinearUnauthorized)
 		}
 		return fmt.Errorf("linear: %s", first.Message)
 	}

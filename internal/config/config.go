@@ -66,8 +66,9 @@ type GitHubApp struct {
 
 // Linear starts jobs from issues assigned to the Machinist app, by asking
 // Linear's API for them on an interval. It is off until teams lists at least
-// one team. The access token comes from LINEAR_API_TOKEN, never from this file,
-// so the file can live in git.
+// one team. The app signs in with LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET, or
+// a fixed LINEAR_API_TOKEN, never with anything in this file, so the file can
+// live in git.
 type Linear struct {
 	// AppUserID is the Machinist app's Linear user. Assigning an issue to it
 	// starts a job.
@@ -86,15 +87,27 @@ type Linear struct {
 	// such as 60s. Poll holds it parsed.
 	PollInterval string        `yaml:"poll_interval"`
 	Poll         time.Duration `yaml:"-"`
-	// Token is the app's access token. It is read from the environment.
+	// ClientID and ClientSecret are the app's client credentials. Machinist
+	// gets and renews its own access token with them. They are read from the
+	// environment, and take the place of Token when both are set.
+	ClientID     string `yaml:"-"`
+	ClientSecret string `yaml:"-"`
+	// Token is a fixed access token. It is read from the environment.
 	Token string `yaml:"-"`
 }
+
+// UsesClientCredentials reports whether Machinist gets its own Linear token.
+func (l Linear) UsesClientCredentials() bool { return l.ClientID != "" }
 
 // Enabled reports whether Machinist takes work from Linear.
 func (l Linear) Enabled() bool { return len(l.Teams) > 0 }
 
-// LinearTokenEnv names the variable that holds the app's access token.
-const LinearTokenEnv = "LINEAR_API_TOKEN"
+// The variables that hold the app's Linear credentials.
+const (
+	LinearClientIDEnv     = "LINEAR_CLIENT_ID"
+	LinearClientSecretEnv = "LINEAR_CLIENT_SECRET"
+	LinearTokenEnv        = "LINEAR_API_TOKEN"
+)
 
 const (
 	defaultLinearJobsPerHour = 20
@@ -147,7 +160,7 @@ func LoadConfig(path string) (Config, error) {
 	if err := applyAppDefaults(machinistConfig.GitHub.App, machinistConfig.Server.configDir); err != nil {
 		return Config{}, err
 	}
-	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv(LinearTokenEnv))
+	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv)
 	if err != nil {
 		return Config{}, err
 	}
@@ -244,17 +257,26 @@ func applyServerDefaults(server Server) (Server, error) {
 	return server, nil
 }
 
-func applyLinearDefaults(linear Linear, token string) (Linear, error) {
+func applyLinearDefaults(linear Linear, getenv func(string) string) (Linear, error) {
 	if !linear.Enabled() {
 		if linear.AppUserID != "" || linear.Preset != "" || len(linear.AllowedUsers) > 0 {
 			return Linear{}, errors.New("linear: set teams to take work from Linear, or remove the linear section")
 		}
 		return linear, nil
 	}
-	if strings.TrimSpace(token) == "" {
-		return Linear{}, fmt.Errorf("linear: set %s to the Machinist app's Linear access token", LinearTokenEnv)
+	clientID := strings.TrimSpace(getenv(LinearClientIDEnv))
+	clientSecret := strings.TrimSpace(getenv(LinearClientSecretEnv))
+	token := strings.TrimSpace(getenv(LinearTokenEnv))
+	switch {
+	case clientID != "" && clientSecret != "":
+		linear.ClientID, linear.ClientSecret = clientID, clientSecret
+	case clientID != "" || clientSecret != "":
+		return Linear{}, fmt.Errorf("linear: set both %s and %s to the Machinist app's client credentials", LinearClientIDEnv, LinearClientSecretEnv)
+	case token != "":
+		linear.Token = token
+	default:
+		return Linear{}, fmt.Errorf("linear: set %s and %s to the Machinist app's client credentials, or %s to an access token", LinearClientIDEnv, LinearClientSecretEnv, LinearTokenEnv)
 	}
-	linear.Token = strings.TrimSpace(token)
 	linear.Poll = defaultLinearPoll
 	if linear.PollInterval != "" {
 		poll, err := time.ParseDuration(linear.PollInterval)

@@ -98,7 +98,7 @@ func TestLinearSettingsSayHowToTurnItOnAndNeverShowTheToken(t *testing.T) {
 	f := newFixture(t)
 	status, body := f.get(t, "/api/v1/settings/linear")
 	off := decodeAs[LinearSettings](t, status, http.StatusOK, body)
-	if off.Enabled || off.TokenEnv != "LINEAR_API_TOKEN" || !strings.HasSuffix(off.Docs, "linear.md") || off.Teams == nil || off.AllowedUsers == nil {
+	if off.Enabled || !slices.Equal(off.CredentialEnv, []string{"LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"}) || !strings.HasSuffix(off.Docs, "linear.md#set-it-up") || off.Teams == nil || off.AllowedUsers == nil {
 		t.Fatalf("settings = %+v", off)
 	}
 
@@ -117,8 +117,23 @@ func TestLinearSettingsSayHowToTurnItOnAndNeverShowTheToken(t *testing.T) {
 	if !on.Enabled || on.AppUserID != "app-user" || !slices.Equal(on.AllowedUsers, []string{"alice-id", "bob-id"}) || !slices.Equal(on.Teams, want) || on.PollSeconds != 90 || on.Preset != "default" || on.MaxJobsPerHour != 20 {
 		t.Fatalf("settings = %+v", on)
 	}
+	if on.Renews || !slices.Equal(on.CredentialEnv, []string{"LINEAR_API_TOKEN"}) {
+		t.Fatalf("a fixed token: settings = %+v", on)
+	}
 	if strings.Contains(string(body), "lin_api_secret_value") {
 		t.Fatalf("the Linear token leaked: %s", body)
+	}
+
+	f.server.config.Linear.Token = ""
+	f.server.config.Linear.ClientID = "client-id-value"
+	f.server.config.Linear.ClientSecret = "client-secret-value"
+	status, body = f.get(t, "/api/v1/settings/linear")
+	renewing := decodeAs[LinearSettings](t, status, http.StatusOK, body)
+	if !renewing.Renews || !slices.Equal(renewing.CredentialEnv, []string{"LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"}) {
+		t.Fatalf("client credentials: settings = %+v", renewing)
+	}
+	if strings.Contains(string(body), "client-secret-value") || strings.Contains(string(body), "client-id-value") {
+		t.Fatalf("the Linear credentials leaked: %s", body)
 	}
 }
 
