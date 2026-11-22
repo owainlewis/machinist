@@ -133,7 +133,7 @@ needs different steps.
 ### Start jobs from Linear
 
 1. In Linear, create an app called Machinist and install it with `actor=app`.
-2. Put its access token in `LINEAR_API_TOKEN`, and its user ID in the `linear` section of `config.yaml`.
+2. Put its access token in `LINEAR_API_TOKEN`. In the `linear` section of `config.yaml`, set `app_user_id` (the app's user ID), `teams` (Linear team key to repository) and a non-empty `allowed_users`. Then restart the control plane.
 3. Delegate an issue to the Machinist app. Machinist starts a job for it within a minute.
 
 See [Linear](docs/linear.md) for the details.
