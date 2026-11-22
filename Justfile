@@ -66,8 +66,13 @@ staticcheck:
 format-check:
     files="$(gofmt -l cmd internal)"; test -z "$files" || { printf '%s\n' "$files"; exit 1; }
 
+# Add the notes for a new version to CHANGELOG.md, for the release-prep PR.
+release-notes version:
+    scripts/release-notes.sh {{version}}
+
 check:
     node --test .github/scripts/issue-triage.test.cjs
+    python3 -m unittest discover -s scripts -p 'test_*.py'
     cd internal/controlplane/web && npm ci && npm test && npm run build
     just format-check
     python3 -m unittest discover -s deploy/kubernetes -p 'test_*.py'
