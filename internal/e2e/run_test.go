@@ -323,18 +323,23 @@ func (s *system) createTicket(t *testing.T) tickets.Ticket {
 	return ticket
 }
 
+// waitForState waits until a ticket is in the wanted state. It waits as long
+// as the test binary may run, not a fixed time, so a slow machine only makes it
+// slower. It fails at once when the ticket ends in another final state, so a
+// broken run does not wait out the deadline.
 func (s *system) waitForState(t *testing.T, id, want string) tickets.Ticket {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := waitDeadline(t)
 	for {
 		ticket, err := s.store.Ticket(t.Context(), id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ticket.State == want {
+		reached, err := stateReached(ticket.State, want)
+		if reached {
 			return ticket
 		}
-		if time.Now().After(deadline) {
+		if err != nil || time.Now().After(deadline) {
 			entries, _ := s.store.Entries(t.Context(), id)
 			runs, _ := s.store.Runs(t.Context(), id)
 			t.Fatalf("state = %s, want %s\nentries: %+v\nruns: %+v", ticket.State, want, entries, runs)
