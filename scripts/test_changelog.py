@@ -204,8 +204,10 @@ class ReleaseNotesTest(unittest.TestCase):
         self.assertEqual(self.run_script("previous-tag.sh", "v0.1.0").stdout, "")
         self.assertEqual(self.run_script("previous-tag.sh", "v0.2.0").stdout.strip(), "v0.1.0")
         self.assertEqual(
-            self.run_script("previous-tag.sh", "v0.2.1-rc.1", "HEAD").stdout.strip(), "v0.2.0-rc.1"
+            self.run_script("previous-tag.sh", "v0.2.1-rc.1", "HEAD").stdout.strip(), "v0.2.0"
         )
+        # Preparing a release with no commits since the last tag finds that tag.
+        self.assertEqual(self.run_script("previous-tag.sh", "v0.3.0", "HEAD").stdout.strip(), "v0.2.0")
         self.commit("Five")
         self.assertEqual(self.run_script("previous-tag.sh", "v0.3.0", "HEAD").stdout.strip(), "v0.2.0")
 
