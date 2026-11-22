@@ -53,7 +53,7 @@ var piEvents = map[string]bool{"agent_start": true, "agent_end": true, "turn_sta
 func (Pi) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	var usage *Usage
 	turns := 0
-	err := eachLine(r, w, func(line string) ([]string, bool) {
+	err := eachLine(r, w, cwd, func(line string) ([]string, bool) {
 		var e piEvent
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || !piEvents[e.Type] {
 			return nil, false

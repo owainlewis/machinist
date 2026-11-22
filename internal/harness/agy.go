@@ -72,7 +72,7 @@ func (Agy) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	var usage *Usage
 	var model string
 	var text strings.Builder
-	err := eachLine(r, w, func(line string) ([]string, bool) {
+	err := eachLine(r, w, cwd, func(line string) ([]string, bool) {
 		var e agyEvent
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || !agyEvents[e.Event] {
 			return nil, false
@@ -126,7 +126,7 @@ func (Agy) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	})
 	// A run cut off mid-answer still shows what the agent had said.
 	if said := strings.TrimSpace(text.String()); err == nil && said != "" {
-		_, err = fmt.Fprintln(w, said)
+		_, err = fmt.Fprintln(w, unlinkFiles(cwd, said))
 	}
 	return withModel(usage, model), err
 }

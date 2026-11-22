@@ -57,7 +57,7 @@ var codexEvents = map[string]bool{"thread.started": true, "turn.started": true, 
 func (Codex) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	var usage *Usage
 	turns := 0
-	err := eachLine(r, w, func(line string) ([]string, bool) {
+	err := eachLine(r, w, cwd, func(line string) ([]string, bool) {
 		var e codexEvent
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || !codexEvents[e.Type] {
 			return nil, false

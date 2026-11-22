@@ -25,7 +25,7 @@ func (Claude) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) { ret
 
 // claudeEvents are the event types Claude Code's stream-json writes. A JSON
 // line of any other type is not Claude Code's, so it passes through.
-var claudeEvents = map[string]bool{"system": true, "assistant": true, "user": true, "result": true}
+var claudeEvents = map[string]bool{"system": true, "assistant": true, "user": true, "result": true, "rate_limit_event": true}
 
 type event struct {
 	Type    string `json:"type"`
@@ -44,6 +44,12 @@ type event struct {
 		CacheCreation int64 `json:"cache_creation_input_tokens"`
 		CacheRead     int64 `json:"cache_read_input_tokens"`
 	} `json:"usage"`
+	RateLimit struct {
+		Status      string  `json:"status"`
+		ResetsAt    int64   `json:"resetsAt"`
+		Type        string  `json:"rateLimitType"`
+		Utilization float64 `json:"utilization"`
+	} `json:"rate_limit_info"`
 }
 
 type block struct {
@@ -60,7 +66,7 @@ type block struct {
 func Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	var usage *Usage
 	var model string
-	err := eachLine(r, w, func(line string) ([]string, bool) {
+	err := eachLine(r, w, cwd, func(line string) ([]string, bool) {
 		var parsed event
 		if json.Unmarshal([]byte(line), &parsed) != nil || !claudeEvents[parsed.Type] {
 			return nil, false
@@ -104,6 +110,8 @@ func describe(e event, cwd string) []string {
 			}
 		}
 		return lines
+	case "rate_limit_event":
+		return rateLimit(e)
 	case "result":
 		summary := fmt.Sprintf("Finished after %d turns in %s", e.NumTurns, (time.Duration(e.DurationMS) * time.Millisecond).Round(time.Second))
 		if e.TotalCost > 0 {
@@ -113,6 +121,30 @@ func describe(e event, cwd string) []string {
 			summary = "Stopped (" + e.Subtype + ") after " + strings.TrimPrefix(summary, "Finished after ")
 		}
 		return []string{summary}
+	}
+	return nil
+}
+
+// rateLimit says when Claude Code is near or over its rate limit. Within the
+// limit, which it reports often, it says nothing.
+func rateLimit(e event) []string {
+	limit := "the rate limit"
+	if e.RateLimit.Type != "" {
+		limit = "the " + strings.ReplaceAll(e.RateLimit.Type, "_", "-") + " rate limit"
+	}
+	switch e.RateLimit.Status {
+	case "allowed_warning":
+		notice := "Near " + limit
+		if e.RateLimit.Utilization > 0 {
+			notice += fmt.Sprintf(" (%.0f%% used)", e.RateLimit.Utilization*100)
+		}
+		return []string{notice}
+	case "rejected":
+		notice := "Hit " + limit
+		if e.RateLimit.ResetsAt > 0 {
+			notice += ", resets at " + time.Unix(e.RateLimit.ResetsAt, 0).UTC().Format("2006-01-02 15:04 UTC")
+		}
+		return []string{notice}
 	}
 	return nil
 }
