@@ -65,6 +65,7 @@ type pullRequest struct {
 	URL              string `json:"url"`
 	State            string `json:"state"`
 	MergeStateStatus string `json:"mergeStateStatus"`
+	HeadRefOid       string `json:"headRefOid"`
 }
 
 type check struct {
@@ -95,7 +96,11 @@ func Merge(ctx context.Context, options MergeOptions) error {
 	// checks take a while to register, so each one must come back before the
 	// pull request may merge, or a round that sees none would merge without CI.
 	var seen []string
+	// The head commit whose checks the last round saw. The merge names it, so
+	// GitHub refuses to merge any other commit.
+	var head string
 	for updates := 0; ; updates++ {
+		head = pr.HeadRefOid
 		names, err := awaitChecks(ctx, options, pr, seen)
 		if err != nil {
 			var failed *CheckFailedError
@@ -126,9 +131,19 @@ func Merge(ctx context.Context, options MergeOptions) error {
 		if _, stderr, err := options.GH(ctx, "pr", "update-branch", strconv.Itoa(pr.Number)); err != nil {
 			return leaveOpen(options, pr, "GitHub could not update the branch: "+firstLine(stderr, err))
 		}
+		// Until the pull request reports the new head, gh still shows the old
+		// head's passed checks, which would merge the update without CI.
+		moved, ok, err := awaitNewHead(ctx, options, pr)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return leaveOpen(options, pr, "the pull request did not move to the updated branch")
+		}
+		pr = moved
 	}
 	fmt.Fprintf(options.Log, "▸ Merge pull request #%d\n", pr.Number)
-	if _, stderr, err := options.GH(ctx, "pr", "merge", strconv.Itoa(pr.Number), "--merge", "--delete-branch"); err != nil {
+	if _, stderr, err := options.GH(ctx, "pr", "merge", strconv.Itoa(pr.Number), "--merge", "--delete-branch", "--match-head-commit", head); err != nil {
 		return leaveOpen(options, pr, "GitHub refused the merge: "+firstLine(stderr, err))
 	}
 	return writeResult(options.Control, "Merged: "+pr.URL)
@@ -176,7 +191,7 @@ func leaveOpen(options MergeOptions, pr pullRequest, reason string) error {
 // findPR finds the open pull request on the job's branch.
 func findPR(ctx context.Context, options MergeOptions) (pullRequest, bool, error) {
 	var pr pullRequest
-	stdout, stderr, err := options.GH(ctx, "pr", "view", options.Branch, "--json", "number,url,state,mergeStateStatus")
+	stdout, stderr, err := options.GH(ctx, "pr", "view", options.Branch, "--json", "number,url,state,mergeStateStatus,headRefOid")
 	if err != nil {
 		if strings.Contains(stderr, "no pull requests found") {
 			return pr, false, nil
@@ -190,6 +205,27 @@ func findPR(ctx context.Context, options MergeOptions) (pullRequest, bool, error
 		return pr, false, fmt.Errorf("pull request #%d is %s, not open", pr.Number, strings.ToLower(pr.State))
 	}
 	return pr, true, nil
+}
+
+// awaitNewHead waits until the pull request's head commit is no longer the one
+// in pr, and returns the pull request as it now is. It reports false when the
+// head has not moved after StartTries waits.
+func awaitNewHead(ctx context.Context, options MergeOptions, pr pullRequest) (pullRequest, bool, error) {
+	for tries := 0; ; tries++ {
+		now, _, err := findPR(ctx, options)
+		if err != nil {
+			return pr, false, err
+		}
+		if now.HeadRefOid != "" && now.HeadRefOid != pr.HeadRefOid {
+			return now, true, nil
+		}
+		if tries == options.StartTries {
+			return pr, false, nil
+		}
+		if !options.Sleep(ctx, options.StartWait) {
+			return pr, false, ctx.Err()
+		}
+	}
 }
 
 // missingChecksError means checks seen on an earlier round never started on

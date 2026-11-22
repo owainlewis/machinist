@@ -36,7 +36,7 @@ case "$1 $2" in
   case "$*" in
   *--json*)
     state=$(sed -n 's/.*"number":'"$number"',"state":"\([A-Z]*\)".*/\1/p' "$file")
-    printf '{"number":%%s,"url":"https://github.com/owner/repo/pull/%%s","state":"%%s","mergeStateStatus":"CLEAN"}\n' "$number" "$number" "$state";;
+    printf '{"number":%%s,"url":"https://github.com/owner/repo/pull/%%s","state":"%%s","mergeStateStatus":"CLEAN","headRefOid":"fakehead"}\n' "$number" "$number" "$state";;
   *) echo "https://github.com/owner/repo/pull/$number";;
   esac
   exit 0;;
