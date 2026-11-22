@@ -169,21 +169,41 @@ func linearPoller(ctx context.Context, machinistConfig config.Config, loaded *fa
 }
 
 // loadApp loads the GitHub App, when one is configured. Its tokens last an
-// hour, so no run may be allowed longer than that.
+// hour. A local runner asks for a new one before each step, so no step may be
+// allowed longer than that; the run as a whole may be. A Kubernetes run keeps
+// the token it started with, and its connector refuses a run longer than one
+// token.
 func loadApp(machinistConfig config.Config, loaded *factory.Factory) (*githubapp.App, error) {
 	settings := machinistConfig.GitHub.App
 	if settings == nil {
 		return nil, nil
 	}
-	if machinistConfig.Server.RunDeadline() > githubapp.TokenLifetime {
-		return nil, fmt.Errorf("run_timeout is %s, but GitHub App tokens last %s; set run_timeout to %s or less", machinistConfig.Server.RunDeadline(), githubapp.TokenLifetime, githubapp.TokenLifetime)
-	}
-	for name, preset := range loaded.Presets {
-		if preset.Timeout > githubapp.TokenLifetime {
-			return nil, fmt.Errorf("preset %q has a timeout of %s, but GitHub App tokens last %s; set it to %s or less", name, preset.Timeout, githubapp.TokenLifetime, githubapp.TokenLifetime)
+	for _, name := range slices.Sorted(maps.Keys(loaded.Presets)) {
+		if err := stepsFitInAToken(name, loaded.Presets[name], machinistConfig.Server.RunDeadline()); err != nil {
+			return nil, err
 		}
 	}
 	return githubapp.Load(settings.ID, settings.PrivateKeyFile)
+}
+
+// stepsFitInAToken reports the first step of a preset that could run longer
+// than a GitHub App token lasts. A step runs for its own timeout or, without
+// one, for the rest of the run: the preset's timeout, else run_timeout.
+func stepsFitInAToken(name string, preset factory.Preset, runDeadline time.Duration) error {
+	run, source, fix := preset.Timeout, "the preset's timeout", "set the preset's timeout"
+	if run == 0 {
+		run, source, fix = runDeadline, "run_timeout", "set run_timeout"
+	}
+	for _, step := range preset.Steps {
+		limit, from, change := run, source, fix+" or the step's timeout"
+		if own := time.Duration(step.TimeoutMillis) * time.Millisecond; own > 0 && own < run {
+			limit, from, change = own, "its own timeout", "set its timeout"
+		}
+		if limit > githubapp.TokenLifetime {
+			return fmt.Errorf("preset %q step %q may run %s (%s), but GitHub App tokens last %s; %s to %s or less", name, step.Name, limit, from, githubapp.TokenLifetime, change, githubapp.TokenLifetime)
+		}
+	}
+	return nil
 }
 
 func findPR(client *ghclient.Client) engine.PRFinder {

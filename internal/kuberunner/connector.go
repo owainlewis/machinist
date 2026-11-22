@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/githubapp"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 )
@@ -106,6 +107,11 @@ func (c Connector) Execute(ctx context.Context, request runner.RunRequest, dataD
 		return failure(err)
 	}
 	timeout := time.Duration(request.TimeoutMillis) * time.Millisecond
+	// The pod cannot ask for a new GitHub token, unlike a local runner between
+	// steps, so the token it starts with must last the whole run.
+	if request.GitHubToken != "" && timeout > githubapp.TokenLifetime {
+		return failure(fmt.Errorf("the run timeout of %s is longer than the one GitHub App token a Kubernetes run keeps, which lasts %s; set the preset's timeout or run_timeout to %s or less", timeout, githubapp.TokenLifetime, githubapp.TokenLifetime))
+	}
 	runContext, cancel := context.WithTimeout(ctx, timeout+setupAllowance)
 	defer cancel()
 	name := objectName("run-", request.RunID)

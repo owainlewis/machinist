@@ -122,7 +122,9 @@ Steps use `gh` and `git` directly, with the bot's token. They push branches and 
 requests themselves. With a [GitHub App](docs/github-app.md), the control plane holds the
 app's private key and makes a new token for each run when a runner claims it. The token
 reaches only that run's repository, lasts an hour, and travels in the run request; the
-runner uses it in place of its own `GH_TOKEN`. The control plane's own GitHub calls use
+runner uses it in place of its own `GH_TOKEN`. A local runner asks for a new token before
+each step, so only a step must fit in an hour; a Kubernetes pod keeps its first token, so
+there the whole run must. The control plane's own GitHub calls use
 cached tokens from the same app. Model and tracker credentials live on runners, never on the control
 plane. Branch protection and the login's permissions are what limit a step. At startup the control plane refuses a
 token that is not the bot's, and warns about an unprotected default branch or admin rights.

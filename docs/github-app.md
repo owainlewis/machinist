@@ -150,8 +150,12 @@ permissions, and Machinist's request fails with the `422` above.
 
 - A token lasts one hour. A local runner asks the control plane for a new one before each
   step, for the same repository, so a late step such as `merge` starts with a full hour.
-  Kubernetes runs keep the token they started with. Either way, `run_timeout` and every
-  preset's `timeout` must be one hour or less. Startup stops and names the setting otherwise.
+  So no step may run longer than an hour, but a whole run may. A step runs for its own
+  `timeout` or, without one, for the rest of the run: the preset's `timeout`, else
+  `run_timeout`. Startup stops and names the step and the setting when a step could outlast
+  its token. To let a run go past an hour, give every step a `timeout` of one hour or less.
+- Kubernetes runs keep the token they started with, so there the whole run must fit in an
+  hour. A Kubernetes runner fails a run whose timeout is longer, before it starts a pod.
 - The key is the one long-lived secret left. Anyone who has it can make tokens for every
   repository the app is installed on. Keep it readable only by the control plane's user.
   If it leaks, generate a new one in the app's settings and delete the old one.
