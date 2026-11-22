@@ -57,8 +57,12 @@ type linearIssue struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
 	URL         string    `json:"url"`
+	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
-	Team        struct {
+	// Creator is who created the issue. It is nil for issues Linear made
+	// itself, such as from an integration with no user.
+	Creator *linearUser `json:"creator"`
+	Team    struct {
 		Key string `json:"key"`
 	} `json:"team"`
 	Project *struct {
@@ -90,7 +94,7 @@ func (l *Linear) givenToApp() string {
 func (l *Linear) Assignments(ctx context.Context, since time.Time) ([]Assignment, error) {
 	query := fmt.Sprintf(`query Assigned($after: String) {
   issues(first: %d, after: $after, orderBy: updatedAt, filter: {%s, updatedAt: {gt: %s}}) {
-    nodes { id identifier title description url updatedAt team { key } project { id name }
+    nodes { id identifier title description url createdAt updatedAt creator { id } team { key } project { id name }
       history(first: %d) { nodes { createdAt actorId toAssigneeId toDelegate { id } } } }
     pageInfo { hasNextPage endCursor }
   }
@@ -124,7 +128,9 @@ func (l *Linear) Assignments(ctx context.Context, since time.Time) ([]Assignment
 }
 
 // assignment finds who gave the issue to the app: the actor of the latest
-// history entry that delegated or assigned it to the app.
+// history entry that delegated or assigned it to the app. An issue given to
+// the app as it was created often has no such entry, as Linear folds the
+// delegation into the creation, so then it is whoever created the issue.
 func (l *Linear) assignment(issue linearIssue) Assignment {
 	var actor string
 	var at time.Time
@@ -133,6 +139,9 @@ func (l *Linear) assignment(issue linearIssue) Assignment {
 		if given && entry.ActorID != "" && !entry.CreatedAt.Before(at) {
 			actor, at = entry.ActorID, entry.CreatedAt
 		}
+	}
+	if actor == "" && issue.Creator != nil {
+		actor, at = issue.Creator.ID, issue.CreatedAt
 	}
 	assignment := Assignment{
 		Key:        "linear:" + issue.ID,

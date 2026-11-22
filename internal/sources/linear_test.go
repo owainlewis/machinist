@@ -185,7 +185,11 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	nodes := []linearIssue{}
 	for _, issue := range f.issues {
 		if issue.givenToApp(request.Query) && issue.UpdatedAt.After(since) {
-			nodes = append(nodes, issue.linearIssue)
+			node := issue.linearIssue
+			if !strings.Contains(request.Query, "creator { id }") {
+				node.Creator = nil
+			}
+			nodes = append(nodes, node)
 		}
 	}
 	// Linear lists the most recently updated first.
@@ -246,6 +250,23 @@ func (f *fakeLinear) delegate(id, team, actor string, at time.Time) {
 		issue.assignee = actor
 		issue.delegate = appUser
 		change.ToDelegate = &linearUser{ID: appUser}
+	})
+}
+
+// delegateAtCreation adds an issue that creator made already delegated to the
+// app at the given time. Linear folds the delegation into the creation, so no
+// history entry says who delegated it; at most one names the app with no
+// actor, as integrations leave.
+func (f *fakeLinear) delegateAtCreation(id, team, creator string, at time.Time, entry bool) {
+	f.add(id, team, "", at, func(*fakeIssue, *linearChange) {})
+	f.set(id, func(issue *fakeIssue) {
+		issue.Creator = &linearUser{ID: creator}
+		issue.CreatedAt = at
+		issue.assignee = creator
+		issue.delegate = appUser
+		if entry {
+			issue.History.Nodes = []linearChange{{CreatedAt: at, ToDelegate: &linearUser{ID: appUser}}}
+		}
 	})
 }
 
@@ -471,6 +492,42 @@ func TestARejectedNoRepositoryCommentDoesNotStopThePoll(t *testing.T) {
 	p.poll(t)
 	if comments := p.linear.comments["archived"]; len(comments) != 1 {
 		t.Fatalf("comments = %q", comments)
+	}
+}
+
+func TestAnIssueDelegatedAsItIsCreatedIsGivenByItsCreator(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.delegateAtCreation("made", "ENG", "owain", p.now, false)
+	p.linear.delegateAtCreation("integrated", "ENG", "owain", p.now.Add(time.Second), true)
+	p.linear.delegateAtCreation("strange", "ENG", "mallory", p.now.Add(2*time.Second), false)
+	p.poll(t)
+	titles := map[string]bool{}
+	for _, ticket := range p.tickets(t) {
+		titles[ticket.Title] = true
+	}
+	if len(titles) != 2 || !titles["Fix made"] || !titles["Fix integrated"] {
+		t.Fatalf("tickets = %v", titles)
+	}
+	if want := `user "mallory" may not start jobs`; !strings.Contains(p.log.String(), want) {
+		t.Fatalf("log lacks %q:\n%s", want, p.log)
+	}
+}
+
+func TestADelegationInHistoryOutranksTheCreator(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	// mallory created it, but owain delegated it.
+	p.linear.delegate("handed", "ENG", "owain", p.now)
+	p.linear.set("handed", func(issue *fakeIssue) { issue.Creator = &linearUser{ID: "mallory"} })
+	// owain created it, but mallory delegated it.
+	p.linear.delegate("taken", "ENG", "mallory", p.now.Add(time.Second))
+	p.linear.set("taken", func(issue *fakeIssue) { issue.Creator = &linearUser{ID: "owain"} })
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 || listed[0].Title != "Fix handed" {
+		t.Fatalf("tickets = %+v", listed)
 	}
 }
 
