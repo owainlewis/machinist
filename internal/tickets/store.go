@@ -1280,12 +1280,30 @@ func (s *Store) RevokeToken(ctx context.Context, name string) error {
 	return err
 }
 
-// TokenName returns the name and role of a valid token and records its use.
+// tokenUseInterval is how stale last_used_at may get before a request
+// records a new use. Every authenticated request calls TokenName, so writing
+// each time would turn the web UI's polling and runner heartbeats into
+// writes that compete with run event ingestion.
+const tokenUseInterval = time.Minute
+
+// TokenName returns the name and role of a valid token and records its use,
+// at most once per tokenUseInterval.
 func (s *Store) TokenName(ctx context.Context, token string) (name, role string, err error) {
-	err = s.db.QueryRowContext(ctx, `UPDATE tokens SET last_used_at=? WHERE token_hash=? AND revoked_at IS NULL RETURNING name,role`, stamp(s.now()), hashToken(token)).Scan(&name, &role)
+	now := s.now()
+	hash := hashToken(token)
+	// Stamps are fixed-width UTC, so they compare as strings.
+	cutoff := stamp(now.Add(-tokenUseInterval))
+	var stale bool
+	err = s.db.QueryRowContext(ctx, `SELECT name,role,coalesce(last_used_at,'')<? FROM tokens WHERE token_hash=? AND revoked_at IS NULL`, cutoff, hash).Scan(&name, &role, &stale)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", ErrNotFound
 	}
+	if err != nil || !stale {
+		return name, role, err
+	}
+	// The guard repeats the staleness check so that concurrent requests
+	// write once between them.
+	_, err = s.db.ExecContext(ctx, `UPDATE tokens SET last_used_at=? WHERE token_hash=? AND revoked_at IS NULL AND coalesce(last_used_at,'')<?`, stamp(now), hash, cutoff)
 	return name, role, err
 }
 
