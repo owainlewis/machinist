@@ -321,3 +321,110 @@ func TestOnlyALocalRunnerProbesItsHarnesses(t *testing.T) {
 		t.Fatalf("a Kubernetes runner reported %v from its own PATH", kube.installed)
 	}
 }
+
+// lockedBuffer is a log that slots can write to at once.
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+func TestDaemonExplainsARejectedTokenOnceAndBacksOff(t *testing.T) {
+	var polls atomic.Int64
+	var accept atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls.Add(1)
+		if accept.Load() {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+	log := &lockedBuffer{}
+	daemon := &Daemon{
+		config:       config.Runner{DataDirectory: t.TempDir(), Slots: 2},
+		client:       NewClient(server.URL, "runner-token"),
+		log:          log,
+		pollInterval: 5 * time.Millisecond,
+		maxBackoff:   time.Hour,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	finished := make(chan struct{})
+	go func() { _ = daemon.Run(ctx); close(finished) }()
+	time.Sleep(400 * time.Millisecond)
+	cancel()
+	<-finished
+
+	// Two slots polling every 5ms for 400ms would poll about 160 times.
+	// Doubling from 5ms, each slot polls at most 8 times.
+	if got := polls.Load(); got > 20 {
+		t.Fatalf("polled %d times with a rejected token, want backoff", got)
+	}
+	want := "the control plane at " + server.URL + " rejected this runner's token"
+	if got := strings.Count(log.String(), want); got != 1 {
+		t.Fatalf("logged the rejection %d times, want once; log:\n%s", got, log.String())
+	}
+	if !strings.Contains(log.String(), "a different Machinist") || !strings.Contains(log.String(), "revoked") {
+		t.Fatalf("log does not explain the likely causes:\n%s", log.String())
+	}
+	if strings.Contains(log.String(), "runner poll:") {
+		t.Fatalf("logged each rejected poll:\n%s", log.String())
+	}
+}
+
+func TestDaemonRecoversWhenItsTokenIsAcceptedAgain(t *testing.T) {
+	var rejecting atomic.Bool
+	rejecting.Store(true)
+	var polls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls.Add(1)
+		if rejecting.Load() {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	log := &lockedBuffer{}
+	daemon := &Daemon{
+		config:       config.Runner{DataDirectory: t.TempDir(), Slots: 1},
+		client:       NewClient(server.URL, "runner-token"),
+		log:          log,
+		pollInterval: 5 * time.Millisecond,
+		maxBackoff:   20 * time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	finished := make(chan struct{})
+	go func() { _ = daemon.Run(ctx); close(finished) }()
+	t.Cleanup(func() { cancel(); <-finished })
+
+	waitFor(t, func() bool { return strings.Contains(log.String(), "rejected this runner's token") })
+	rejecting.Store(false)
+	waitFor(t, func() bool { return strings.Contains(log.String(), "accepted this runner's token") })
+	// Back at the normal interval, polls come quickly again.
+	before := polls.Load()
+	waitFor(t, func() bool { return polls.Load() >= before+10 })
+}
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met in time")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
