@@ -36,7 +36,7 @@ func TestInitInstallsDefaultConfiguration(t *testing.T) {
 	installed := regularFiles(t, directory)
 	for _, name := range []string{
 		"config.yaml", "runner.yaml", ".machinist/runner.token", ".gitignore",
-		"factory/presets/default.yaml", "factory/prompts/rules.md", "factory/agents/implement.md", "factory/agents/publish.md", "factory/scripts/checkout.sh", "factory/scripts/review.sh", "factory/scripts/revise.sh",
+		"factory/presets/default.yaml", "factory/prompts/rules.md", "factory/agents/implement.md", "factory/agents/publish.md", "factory/scripts/checkout.sh", "factory/scripts/review.sh", "factory/scripts/revise.sh", "factory/scripts/publish.sh",
 	} {
 		if !slices.Contains(installed, name) {
 			t.Fatalf("%s is missing from %q", name, installed)

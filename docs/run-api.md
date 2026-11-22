@@ -33,6 +33,39 @@ The reply is the job, with `201` when it was created and `200` when the key alre
 | `POST /machinist/jobs/{id}/cancel` | Stops it. Its pull request stays open |
 | `POST /machinist/jobs/{id}/rerun` | Runs an ended job again, on the same branch, and returns it |
 
+A job looks like this:
+
+```json
+{
+  "id": "t_cc205867de0efc0e",
+  "key": "linear:ENG-142",
+  "preset": "default",
+  "vars": {"repo": "owner/name"},
+  "title": "Add a retry to the upload client. See ENG-142.",
+  "state": "running",
+  "current_step": "work",
+  "tokens": 0,
+  "cost_usd": null,
+  "created_by": "linear",
+  "created_at": "2026-11-22T15:00:00Z",
+  "updated_at": "2026-11-22T15:01:00Z"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Machinist's ID for the job. Use it in the routes above |
+| `key` | The key the job was started with. A job that came from somewhere else, such as a schedule, shows that source's key |
+| `preset`, `vars`, `title` | What the job runs, as in the request |
+| `state` | Where the job is. See the table below |
+| `current_step` | The preset step a running job is on. Empty when the job is not running, or has not started a step yet |
+| `tokens` | Tokens the job's runs used, added up. It counts a run once the run ends |
+| `cost_usd` | What the job's runs cost in US dollars, added up as runs end. `null` until a run reports a cost. Some harnesses report tokens but no cost |
+| `pr_number`, `pr_state` | The job's pull request, once it has one |
+| `created_by` | The token that started the job |
+| `created_at` | When the job was made |
+| `updated_at` | When the job last changed: it started running, opened a pull request, ended, or its pull request merged or closed |
+
 | State | Meaning |
 | --- | --- |
 | `queued` | Waiting for a runner |
