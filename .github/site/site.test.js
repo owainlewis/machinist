@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { layout, pageName, pages } from './layout.js';
 import { fallbackCopy, selectCommand, toggleSound } from './site.js';
 
 test('fallbackCopy copies the full command passed to it', () => {
@@ -87,9 +88,11 @@ test('toggleSound unmutes and restarts the explainer, then mutes it again', () =
 });
 
 const read = (path) => import('node:fs/promises').then(({ readFile }) => readFile(new URL(path, import.meta.url), 'utf8'));
+// rendered is a page as it is served: with the shared header and footer.
+const rendered = async (file) => layout(await read(`./${file}`), { header: await read('./partials/header.html'), footer: await read('./partials/footer.html') });
 
 test('setup snippets match the quick start in the README', async () => {
-  const source = await read('./index.html');
+  const source = await read('./get-started/index.html');
   const readme = await read('../../README.md');
   const copied = [...source.matchAll(/data-copy="([^"]+)"/g)].map(([, value]) => value.replaceAll('&amp;', '&').replaceAll('&quot;', '"'));
   assert.deepEqual(copied, [
@@ -158,7 +161,7 @@ test('public identity matches the web app: Inter, indigo and the stacked-runs ma
     assert.ok(styles.includes(token), `site uses ${token}`);
   }
   assert.match(styles, /Inter Variable/);
-  assert.match(source, /class="brand-mark"/);
+  assert.match(await rendered('index.html'), /class="brand-mark"/);
   assert.match(source, /<meta name="color-scheme" content="dark">/);
   assert.doesNotMatch(source, /technical-drawings|fonts\.googleapis\.com|machinist-bot/);
   assert.doesNotMatch(styles, /Manrope|Newsreader|#1d6683/);
@@ -172,7 +175,7 @@ test('the site, README, web app and social card all use the same stacked-runs ma
   const favicon = await read('./favicon.svg');
   assert.equal(await read('../assets/machinist-mark.svg'), favicon, 'README mark matches the site favicon');
   assert.equal(await read('../../internal/controlplane/web/public/favicon.svg'), favicon, 'web app favicon matches the site favicon');
-  for (const [name, text] of [['favicon', favicon], ['site', await read('./index.html')], ['web app', await read('../../internal/controlplane/web/src/components/ui/brand.jsx')], ['social card', await read('./social-card.svg')]]) {
+  for (const [name, text] of [['favicon', favicon], ['site', await rendered('index.html')], ['web app', await read('../../internal/controlplane/web/src/components/ui/brand.jsx')], ['social card', await read('./social-card.svg')]]) {
     for (const bar of bars) assert.ok(text.includes(bar), `${name} draws the bar at ${bar}`);
     assert.doesNotMatch(text, /aria-hidden="true">M</, `${name} no longer uses the letter M`);
   }
@@ -181,8 +184,8 @@ test('the site, README, web app and social card all use the same stacked-runs ma
 test('the explainer video and its poster ship with the site', async () => {
   const { access } = await import('node:fs/promises');
   const source = await read('./index.html');
-  assert.match(source, /src="machinist\.mp4"/);
-  assert.match(source, /poster="poster\.jpg"/);
+  assert.match(source, /src="\/machinist\.mp4"/);
+  assert.match(source, /poster="\/poster\.jpg"/);
   await access(new URL('./public/machinist.mp4', import.meta.url));
   await access(new URL('./public/poster.jpg', import.meta.url));
 });
@@ -199,4 +202,40 @@ test('repository quick start links to guides that exist', async () => {
     await access(new URL(`../../${guide}`, import.meta.url));
   }
   assert.doesNotMatch(source, /machinist submit|docs\/getting-started|docs\/how-it-works|docs\/control-plane|docs\/secure-self-hosting/);
+});
+
+test('every page shares the header and footer, marks itself in the nav and links only to pages that exist', async () => {
+  const { access } = await import('node:fs/promises');
+  const paths = new Set(Object.values(pages).map((page) => page.path));
+  const titles = new Set();
+  for (const [name, page] of Object.entries(pages)) {
+    const source = await read(`./${page.file}`);
+    const html = await rendered(page.file);
+    assert.equal(pageName(source), name, `${page.file} names itself ${name}`);
+    assert.doesNotMatch(html, /<!-- site-(header|footer) -->/, `${page.file} gets the header and footer`);
+    assert.equal((html.match(/<header class="site-header">/g) || []).length, 1);
+    assert.equal((html.match(/<footer>/g) || []).length, 1);
+    const current = [...html.matchAll(/<a href="([^"]+)" data-nav="(\w+)" aria-current="page">/g)];
+    assert.deepEqual(current.map(([, , nav]) => nav), name === 'home' ? [] : [name], `${page.file} marks only its own link`);
+    if (current.length) assert.equal(current[0][1], page.path);
+    assert.match(html, new RegExp(`<link rel="canonical" href="https://machinist\\.sh${page.path}">`));
+    const title = /<title>([^<]+)<\/title>/.exec(html)[1];
+    assert.ok(!titles.has(title), `${page.file} has its own title`);
+    titles.add(title);
+    assert.match(html, /<meta name="description" content="[^"]{40,}">/);
+    assert.match(html, /<h1 /, `${page.file} has a heading`);
+    // Every link on the site is to a page, an asset that ships, an anchor on the same page or an outside site.
+    for (const [, href] of html.matchAll(/(?:href|src|poster)="([^"]+)"/g)) {
+      if (/^https?:/.test(href)) continue;
+      if (href.startsWith('#')) {
+        assert.match(html, new RegExp(`id="${href.slice(1)}"`), `${page.file} has the anchor ${href}`);
+        continue;
+      }
+      assert.ok(href.startsWith('/'), `${page.file} links ${href} from the site root, so it works on every page`);
+      if (paths.has(href)) continue;
+      const asset = href.slice(1);
+      await access(new URL(`./public/${asset}`, import.meta.url)).catch(() => access(new URL(`./${asset}`, import.meta.url)));
+    }
+    assert.doesNotMatch(html, /—/);
+  }
 });

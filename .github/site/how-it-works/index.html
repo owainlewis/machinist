@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="How Machinist turns a coding task into a pull request: the steps a job runs, presets and agents in files, and the run API.">
+    <meta name="theme-color" content="#161618">
+    <meta name="color-scheme" content="dark">
+    <title>How it works | Machinist</title>
+    <link rel="canonical" href="https://machinist.sh/how-it-works/">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://machinist.sh/how-it-works/">
+    <meta property="og:title" content="How it works | Machinist">
+    <meta property="og:description" content="An open-source software factory that runs on your own servers. For teams and solo developers.">
+    <meta property="og:image" content="https://machinist.sh/og.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="How it works | Machinist">
+    <meta name="twitter:description" content="An open-source software factory that runs on your own servers. For teams and solo developers.">
+    <meta name="twitter:image" content="https://machinist.sh/og.png">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body data-page="how">
+    <!-- site-header -->
+
+    <main id="top">
+      <section class="hero page-hero" aria-labelledby="page-title">
+        <span class="kicker">How it works</span>
+        <h1 id="page-title">From a task to a merged pull request</h1>
+        <p class="lede">Each task is a job. A job runs the same steps every time, on a runner you control. It does not stop to ask questions. If an agent has to guess, it says so in the pull request.</p>
+      </section>
+
+      <section class="section section-first" id="steps" aria-label="The steps of a job">
+        <ol class="steps">
+          <li><span class="step-index">01</span><h3>Task</h3><p>Start a job from the web app, the run API or a Linear issue.</p></li>
+          <li><span class="step-index">02</span><h3>Checkout</h3><p>A runner takes the job. It clones the repository onto a new branch.</p></li>
+          <li><span class="step-index">03</span><h3>Implement</h3><p>An agent makes the change. It adds tests and runs the repository's checks.</p></li>
+          <li><span class="step-index">04</span><h3>Review</h3><p>An agent on a different model reviews the change. A revise step fixes what it finds.</p></li>
+          <li><span class="step-index">05</span><h3>Ship</h3><p>Machinist opens a pull request. It merges when CI passes and the review is clean. A Linear issue moves to Done.</p></li>
+        </ol>
+      </section>
+
+      <section class="section split" id="presets" aria-labelledby="presets-title">
+        <div class="split-copy">
+          <span class="kicker">Presets and agents</span>
+          <h2 id="presets-title">You set the steps in files</h2>
+          <p>A preset is a list of steps in YAML. A step runs a shell script or an agent. An agent is a Markdown file. It holds a prompt. Its header names the harness and the model. One step can use Claude Code and the next can use Codex.</p>
+          <ul class="check-list">
+            <li>To change the steps, edit a file</li>
+            <li>Keep the files in git and review them like code</li>
+            <li>A failed shell step stops the job</li>
+          </ul>
+          <a class="text-link" href="https://github.com/owainlewis/machinist/blob/main/docs/factory.md">Read about factory files <span aria-hidden="true">→</span></a>
+        </div>
+        <div class="code-stack">
+          <div class="code-window">
+            <div class="code-bar"><span>factory/presets/default.yaml</span></div>
+<pre><code><span class="c-key">description</span>: Make the change, review it and ship it.
+<span class="c-key">steps</span>:
+  - <span class="c-key">name</span>: checkout
+    <span class="c-key">run</span>: checkout.sh
+  - <span class="c-key">name</span>: implement
+    <span class="c-key">agent</span>: implement
+  - <span class="c-key">name</span>: review
+    <span class="c-key">agent</span>: review
+  - <span class="c-key">name</span>: revise
+    <span class="c-key">agent</span>: revise
+  - <span class="c-key">name</span>: publish
+    <span class="c-key">agent</span>: publish</code></pre>
+          </div>
+          <div class="code-window code-window-offset">
+            <div class="code-bar"><span>factory/agents/review.md</span></div>
+<pre><code><span class="c-dim">---</span>
+<span class="c-key">harness</span>: codex
+<span class="c-dim">---</span>
+Review the change on this branch.
+List each problem you find.</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="features-title">
+        <div class="section-head">
+          <span class="kicker">Features</span>
+          <h2 id="features-title">What Machinist does</h2>
+        </div>
+        <div class="feature-grid">
+          <article><h3>Runs on your machines</h3><p>A runner is a small program. It asks the control plane for work. Run it on a Mac, a VM or Kubernetes. It needs no open inbound port.</p></article>
+          <article><h3>Choose the harness and model</h3><p>Use Claude Code, Codex, Antigravity or Pi. Choose a model for each step.</p></article>
+          <article><h3>Review by a second model</h3><p>A different model reviews each change before it ships. The revise step fixes what the review finds.</p></article>
+          <article><h3>Auto-merge you can turn off</h3><p>By default, a pull request merges when its checks pass. Set <code>github.auto_merge: false</code> to merge each one yourself.</p></article>
+          <article><h3>Linear</h3><p>Assign a Linear issue to Machinist to start a job. When the pull request merges, the issue moves to Done.</p></article>
+          <article><h3>Dashboard</h3><p>See each job, its status and the output of each step. See the success rate and token use. Cost shows when the harness reports it.</p></article>
+        </div>
+      </section>
+
+      <section class="section api" aria-labelledby="api-title">
+        <div class="section-head">
+          <span class="kicker">Run API</span>
+          <h2 id="api-title">Start a job with one request</h2>
+          <p>Send a POST request to start a job. A tracker, a cron job or a webhook can do this. Each request has a key. If you send the same key twice, Machinist starts one job.</p>
+        </div>
+        <div class="code-window code-window-wide">
+          <div class="code-bar"><span>Terminal</span></div>
+<pre><code><span class="c-dim">$</span> curl -X POST https://machinist.example.com/machinist/run \
+    -H "Authorization: Bearer $TOKEN" \
+    -d '{"key":"fix-1","vars":{"repo":"acme/web"},"prompt":"Fix the toast position"}'</code></pre>
+        </div>
+      </section>
+
+      <section class="final-cta">
+        <span class="brand-mark brand-mark-large" aria-hidden="true"><svg viewBox="0 0 64 64" aria-hidden="true"><rect x="14" y="16" width="26" height="8" rx="4" fill="#fff" fill-opacity=".45"/><rect x="19" y="28" width="26" height="8" rx="4" fill="#fff" fill-opacity=".72"/><rect x="24" y="40" width="26" height="8" rx="4" fill="#fff"/></svg></span>
+        <h2>Machinist is open source</h2>
+        <p>It uses the MIT License. You run it on your own machines.</p>
+        <div class="hero-actions">
+          <a class="button button-light" href="/get-started/">Get started</a>
+          <a class="button button-ghost" href="https://github.com/owainlewis/machinist/tree/main/docs">Read the docs</a>
+        </div>
+      </section>
+    </main>
+
+    <!-- site-footer -->
+    <script type="module" src="/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Run Machinist on your computer in four steps: build it, initialize a factory, configure it and start the control plane and a runner.">
+    <meta name="theme-color" content="#161618">
+    <meta name="color-scheme" content="dark">
+    <title>Get started | Machinist</title>
+    <link rel="canonical" href="https://machinist.sh/get-started/">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://machinist.sh/get-started/">
+    <meta property="og:title" content="Get started | Machinist">
+    <meta property="og:description" content="An open-source software factory that runs on your own servers. For teams and solo developers.">
+    <meta property="og:image" content="https://machinist.sh/og.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Get started | Machinist">
+    <meta name="twitter:description" content="An open-source software factory that runs on your own servers. For teams and solo developers.">
+    <meta name="twitter:image" content="https://machinist.sh/og.png">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body data-page="start">
+    <!-- site-header -->
+
+    <main id="top">
+      <section class="hero page-hero" aria-labelledby="page-title">
+        <span class="kicker">Get started</span>
+        <h1 id="page-title">Run Machinist on your computer</h1>
+        <p class="lede">Set up the control plane and a runner on your own machine in four steps. You need Go, Git, the GitHub CLI and Claude Code. Sign in to the GitHub CLI and Claude Code first. You do not need a Machinist account.</p>
+      </section>
+
+      <section class="section section-first" id="start" aria-label="Setup steps">
+        <ol class="setup-steps">
+          <li>
+            <div><span class="step-index">01</span><h3>Build</h3><p>Build one program. It has the CLI, the control plane, the runner and the web app. Add it to your PATH.</p></div>
+            <button class="copy-command" type="button" data-copy="go build -o ./bin/machinist ./cmd/machinist &amp;&amp; export PATH=&quot;$PWD/bin:$PATH&quot;" aria-label="Copy build command"><code>go build -o ./bin/machinist ./cmd/machinist &amp;&amp; export PATH=&quot;$PWD/bin:$PATH&quot;</code><span aria-live="polite">Copy</span></button>
+          </li>
+          <li>
+            <div><span class="step-index">02</span><h3>Initialize</h3><p>Make a new directory and keep it in git. Run this there. It writes the config, a runner and the starter steps.</p></div>
+            <button class="copy-command" type="button" data-copy="machinist init" aria-label="Copy initialize command"><code>machinist init</code><span aria-live="polite">Copy</span></button>
+          </li>
+          <li>
+            <div><span class="step-index">03</span><h3>Configure</h3><p>In <code>config.yaml</code>, set <code>github.handle</code> to your GitHub login and list the repositories jobs may work on. In <code>runner.yaml</code>, set <code>env: []</code> and turn on <code>login: true</code>.</p></div>
+            <button class="copy-command" type="button" data-copy="gh api user --jq .login" aria-label="Copy command that prints your GitHub login"><code>gh api user --jq .login</code><span aria-live="polite">Copy</span></button>
+          </li>
+          <li>
+            <div><span class="step-index">04</span><h3>Start</h3><p>Start the control plane. In a second terminal, run <code>GH_TOKEN=$(gh auth token) machinist runner start</code>. Make a token with <code>machinist token create "$USER"</code>. Sign in to the web app and select New job.</p></div>
+            <button class="copy-command" type="button" data-copy="GH_TOKEN=$(gh auth token) machinist start" aria-label="Copy start command"><code>GH_TOKEN=$(gh auth token) machinist start</code><span aria-live="polite">Copy</span></button>
+          </li>
+        </ol>
+        <a class="text-link" href="https://github.com/owainlewis/machinist#quick-start">Read the full quick start <span aria-hidden="true">→</span></a>
+      </section>
+
+      <section class="section" aria-labelledby="next-title">
+        <div class="section-head">
+          <span class="kicker">Next</span>
+          <h2 id="next-title">Run it for a team</h2>
+          <p>When it works on your computer, move it to a server. Runners can sit on a VM or in Kubernetes.</p>
+        </div>
+        <div class="feature-grid link-grid">
+          <a href="https://github.com/owainlewis/machinist/blob/main/docs/vm-deployment.md"><h3>Run on a VM</h3><p>Run the control plane and a runner as services on one Linux server.</p><span class="text-link">Read the VM guide <span aria-hidden="true">→</span></span></a>
+          <a href="https://github.com/owainlewis/machinist/blob/main/docs/runners.md"><h3>Add runners</h3><p>Add runners on more machines, or in a Kubernetes cluster.</p><span class="text-link">Read about runners <span aria-hidden="true">→</span></span></a>
+          <a href="https://github.com/owainlewis/machinist/blob/main/docs/credentials.md"><h3>Credentials</h3><p>Give agents the keys they need, and nothing more.</p><span class="text-link">Read about credentials <span aria-hidden="true">→</span></span></a>
+        </div>
+      </section>
+    </main>
+
+    <!-- site-footer -->
+    <script type="module" src="/site.js"></script>
+  </body>
+</html>
