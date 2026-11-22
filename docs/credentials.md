@@ -22,9 +22,13 @@ lasts an hour, and the rest of this section does not apply.
 Without one, steps get the runner's `GH_TOKEN`, so `gh` and `git` can clone, push and open
 pull requests.
 `machinist runner check` and `machinist runner start` print one warning if a classic token
-reports scopes beyond `repo` (private repositories) or `public_repo` (public repositories).
-The warning names the extra scopes, such as `delete_repo` or `admin:public_key`: any step
-can use these permissions too.
+reports scopes beyond `repo` (private repositories), `public_repo` (public repositories)
+and `workflow` (changes to `.github/workflows/`). The warning names the extra scopes, such
+as `delete_repo` or `admin:public_key`: any step can use these permissions too.
+
+They also print one warning if a classic token lacks `workflow`, because GitHub refuses a
+push that changes `.github/workflows/` without it. Add the scope with
+`gh auth refresh -s workflow`.
 
 Use a token limited to the repositories the bot works on. Fine-grained tokens do
 not report OAuth scopes, so they produce no scope warning. A missing warning is

@@ -29,9 +29,11 @@ See [Vision](VISION.md) for what Machinist is for, where it is, and what comes n
 ## Quick start
 
 This runs the control plane and one runner on your machine. You need Go 1.26.6, Git, the
-GitHub CLI signed in with `gh auth login`, and Claude Code signed in.
+GitHub CLI signed in with `gh auth login`, and Claude Code signed in. Give the GitHub CLI
+the `workflow` scope too, so jobs can push changes to `.github/workflows/`:
 
 ```sh
+gh auth refresh -s workflow
 git clone https://github.com/owainlewis/machinist.git
 cd machinist
 go build -o ./bin/machinist ./cmd/machinist
