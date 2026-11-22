@@ -660,3 +660,52 @@ func TestAClaimLooksPastRunsTheRunnerCannotTake(t *testing.T) {
 		t.Fatalf("claim = %+v, err = %v", none, err)
 	}
 }
+
+func TestTokenUseIsRecordedAtMostOncePerMinute(t *testing.T) {
+	store := openStore(t)
+	token, err := store.CreateToken(t.Context(), "runner-1", RoleAll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE token_writes (at TEXT)`,
+		`CREATE TRIGGER count_token_writes AFTER UPDATE OF last_used_at ON tokens BEGIN INSERT INTO token_writes VALUES (NEW.last_used_at); END`,
+	} {
+		if _, err := store.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writes := func() int {
+		t.Helper()
+		var count int
+		if err := store.db.QueryRow(`SELECT count(*) FROM token_writes`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	start := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	for _, step := range []struct {
+		at     time.Duration
+		writes int
+	}{
+		{0, 1},
+		{30 * time.Second, 1},
+		{59 * time.Second, 1},
+		{61 * time.Second, 2},
+		{90 * time.Second, 2},
+		{122 * time.Second, 3},
+	} {
+		now := start.Add(step.at)
+		store.SetClock(func() time.Time { return now })
+		if name, role, err := store.TokenName(t.Context(), token); err != nil || name != "runner-1" || role != RoleAll {
+			t.Fatalf("at %v: name = %q, role = %q, err = %v", step.at, name, role, err)
+		}
+		if got := writes(); got != step.writes {
+			t.Fatalf("at %v: writes = %d, want %d", step.at, got, step.writes)
+		}
+	}
+	tokens, err := store.ListTokens(t.Context())
+	if err != nil || len(tokens) != 1 || tokens[0].LastUsedAt == nil || !tokens[0].LastUsedAt.Equal(start.Add(122*time.Second)) {
+		t.Fatalf("tokens = %+v, err = %v", tokens, err)
+	}
+}
