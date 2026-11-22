@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 
@@ -95,19 +96,36 @@ func loadRunner(ctx context.Context, options *commandOptions) (config.Runner, ag
 	executor, err := agentrunner.NewLocal(runnerConfig)
 	if err == nil {
 		// A failed scope lookup must not prevent the runner from taking work.
-		scopes, scopeErr := ghclient.New().TokenScopes(ctx)
-		if scopeErr == nil {
-			var extra []string
-			for _, scope := range scopes {
-				// Classic tokens need repo for private repositories, or public_repo for public ones.
-				if scope != "repo" && scope != "public_repo" {
-					extra = append(extra, scope)
-				}
-			}
-			if len(extra) > 0 {
-				fmt.Fprintf(options.stderr, "machinist: warning: the GitHub token has extra scopes: %s; use a token limited to the repositories the bot works on\n", strings.Join(extra, ", "))
-			}
+		if scopes, scopeErr := ghclient.New().TokenScopes(ctx); scopeErr == nil {
+			warnAboutTokenScopes(options.stderr, scopes)
 		}
 	}
 	return runnerConfig, executor, err
+}
+
+// warnAboutTokenScopes warns about a classic token's scopes. GitHub App and
+// fine-grained tokens report no scopes, so they get no warning.
+func warnAboutTokenScopes(stderr io.Writer, scopes []string) {
+	if len(scopes) == 0 {
+		return
+	}
+	var extra []string
+	hasWorkflow := false
+	for _, scope := range scopes {
+		switch scope {
+		// Classic tokens need repo for private repositories, or public_repo for
+		// public ones, and workflow to push changes to .github/workflows/.
+		case "repo", "public_repo":
+		case "workflow":
+			hasWorkflow = true
+		default:
+			extra = append(extra, scope)
+		}
+	}
+	if len(extra) > 0 {
+		fmt.Fprintf(stderr, "machinist: warning: the GitHub token has extra scopes: %s; use a token limited to the repositories the bot works on\n", strings.Join(extra, ", "))
+	}
+	if !hasWorkflow {
+		fmt.Fprintln(stderr, "machinist: warning: the GitHub token has no workflow scope, so jobs cannot push changes to .github/workflows/; run gh auth refresh -s workflow")
+	}
 }

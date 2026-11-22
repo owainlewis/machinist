@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/githubauth"
@@ -185,7 +186,8 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 	deadline := time.Now().Add(time.Duration(request.TimeoutMillis) * time.Millisecond)
 	for index, step := range request.Steps {
 		workspace.Environment = freshToken(ctx, request, workspace.Environment)
-		result, err := runStep(ctx, request, step, workspace, dataDirectory, log, time.Until(deadline))
+		stderr := &lastLine{}
+		result, err := runStep(ctx, request, step, workspace, dataDirectory, log, time.Until(deadline), stderr)
 		if result.State == "" {
 			result.State = StateFailed
 		}
@@ -197,6 +199,10 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 			output.State = result.State
 			if err != nil {
 				entry.Error = err.Error()
+			}
+			// A failed step's own last word on stderr is usually why it failed.
+			if said := stderr.String(); said != "" && result.State == StateFailed {
+				entry.Error = strings.TrimPrefix(entry.Error+": "+said, ": ")
 			}
 			output.Error = fmt.Sprintf("step %s: %s", step.Name, entry.Error)
 			break
@@ -301,7 +307,7 @@ func freshToken(ctx context.Context, request RunRequest, environment []string) [
 	return fresh
 }
 
-func runStep(ctx context.Context, request RunRequest, step Step, workspace Workspace, dataDirectory string, log *eventLog, remaining time.Duration) (Result, error) {
+func runStep(ctx context.Context, request RunRequest, step Step, workspace Workspace, dataDirectory string, log *eventLog, remaining time.Duration, stderr io.Writer) (Result, error) {
 	if remaining <= 0 {
 		return Result{State: StateTimedOut}, errors.New("the run timed out before this step started")
 	}
@@ -327,7 +333,47 @@ func runStep(ctx context.Context, request RunRequest, step Step, workspace Works
 		Directory:     workspace.Directory,
 		DataDirectory: dataDirectory,
 		Stdout:        io.Discard,
-		Stderr:        io.Discard,
+		Stderr:        stderr,
 		log:           log,
 	})
+}
+
+const (
+	// lastLineKept is how much of a step's stderr is kept to find its last line.
+	lastLineKept = 4096
+	// lastLineShown caps the last line a failed step's error carries.
+	lastLineShown = 300
+)
+
+// lastLine keeps the end of what a step writes, so a failed step's error can
+// carry the last line it wrote.
+type lastLine struct {
+	mu   sync.Mutex
+	tail []byte
+}
+
+func (l *lastLine) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tail = append(l.tail, p...)
+	if extra := len(l.tail) - lastLineKept; extra > 0 {
+		l.tail = append(l.tail[:0], l.tail[extra:]...)
+	}
+	return len(p), nil
+}
+
+// String is the last line that is not blank, or "" when there is none. A long
+// line keeps its end, where a message usually says what went wrong.
+func (l *lastLine) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	text := strings.TrimRight(string(l.tail), " \t\r\n")
+	if index := strings.LastIndexByte(text, '\n'); index >= 0 {
+		text = text[index+1:]
+	}
+	text = strings.TrimSpace(text)
+	if len(text) > lastLineShown {
+		text = "…" + strings.ToValidUTF8(text[len(text)-lastLineShown:], "")
+	}
+	return text
 }

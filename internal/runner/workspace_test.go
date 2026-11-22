@@ -131,6 +131,25 @@ func TestFailingStepStopsTheRun(t *testing.T) {
 	}
 }
 
+func TestAFailedStepSaysWhatItLastWroteToStderr(t *testing.T) {
+	result, _ := run(t, stepsRequest(Step{Name: "publish", Run: `echo progress; printf 'warming up\nmachinist: GitHub rejected the push: no workflows  \n\n' >&2; exit 2`}))
+	want := "step publish: command exited with status 2: machinist: GitHub rejected the push: no workflows"
+	if result.State != StateFailed || result.Error != want || result.Stages[0].Error != "command exited with status 2: machinist: GitHub rejected the push: no workflows" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestAFailedStepWithLongStderrKeepsItsEnd(t *testing.T) {
+	result, _ := run(t, stepsRequest(Step{Name: "test", Run: `head -c 100000 /dev/zero | tr '\0' x >&2; echo >&2; printf 'the tests failed' >&2; exit 1`}))
+	if result.Error != "step test: command exited with status 1: the tests failed" {
+		t.Fatalf("error = %.200q", result.Error)
+	}
+	result, _ = run(t, stepsRequest(Step{Name: "test", Run: `head -c 100000 /dev/zero | tr '\0' x >&2; exit 1`}))
+	if len(result.Error) > 600 || !strings.Contains(result.Error, "status 1: …xxx") {
+		t.Fatalf("error = %.200q (%d bytes)", result.Error, len(result.Error))
+	}
+}
+
 func TestAFailingCommandFailsItsStep(t *testing.T) {
 	result, workspace := run(t, stepsRequest(Step{Name: "test", Run: "false\ntouch after"}))
 	if result.State != StateFailed || !strings.Contains(result.Error, "step test: command exited with status 1") {
