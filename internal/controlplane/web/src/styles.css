@@ -194,15 +194,20 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .job-facts a:hover { text-decoration: underline; }
 .job-actions { display: flex; flex: none; align-items: flex-start; gap: 10px; }
 .job-actions .pill { margin-top: 3px; }
+.job-failure { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); background: var(--danger-soft); }
+.job-failure .label { display: flex; align-items: center; gap: 6px; color: var(--danger); }
+.job-page .prose a { color: var(--info); overflow-wrap: anywhere; }
+.job-page .prose a:hover { text-decoration: underline; }
 .run-again { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 
 /* The pipeline: one node per step, left to right, joined by an edge. */
-.pipeline { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--border) 70%, transparent) 1px, transparent 0) 0 0 / 16px 16px, var(--surface); padding: 14px; }
-.pipeline ol { display: flex; width: max-content; min-width: 100%; align-items: center; margin: 0; padding: 0; list-style: none; }
-.pipeline li { display: flex; flex: 1 0 auto; align-items: center; }
-.pipeline-edge { display: block; width: 14px; height: 2px; flex: none; background: var(--border); }
+.pipeline { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--border) 70%, transparent) 1px, transparent 0) 0 0 / 16px 16px, var(--surface); padding: 10px; }
+/* The list's own padding keeps the running node's ring inside the scroll area, at both ends. */
+.pipeline ol { display: flex; width: max-content; min-width: 100%; align-items: stretch; margin: 0; padding: 4px; list-style: none; }
+.pipeline li { display: flex; flex: 1 0 auto; align-items: stretch; }
+.pipeline-edge { display: block; width: 14px; height: 2px; flex: none; align-self: center; background: var(--border); }
 .pipeline li[data-state="succeeded"] + li .pipeline-edge, .pipeline li[data-state="succeeded"] + li[data-state] .pipeline-edge { background: color-mix(in srgb, var(--success) 55%, var(--border)); }
-.pipeline-node { position: relative; display: grid; overflow: hidden; width: 100%; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 8px; align-items: center; border: 1px solid var(--border); border-radius: 10px; background: var(--background); padding: 8px 10px; text-align: left; }
+.pipeline-node { position: relative; display: grid; overflow: hidden; width: 100%; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; align-content: start; column-gap: 8px; align-items: center; border: 1px solid var(--border); border-radius: 10px; background: var(--background); padding: 8px 10px; text-align: left; }
 .pipeline-node:not(:disabled):hover { border-color: color-mix(in srgb, var(--foreground) 25%, var(--border)); }
 .pipeline-node:disabled { cursor: default; }
 .pipeline-node > svg { grid-row: span 2; }
@@ -250,8 +255,11 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 
 /* The New job form. */
 .new-job { display: flex; flex-direction: column; gap: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 20px; }
-.new-job select.field-control { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%), linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
-.new-job-prompt { min-height: 240px; resize: vertical; font-size: 14px; line-height: 1.6; }
+.select-field { position: relative; display: block; }
+.select-field select.field-control { appearance: none; background-image: none; padding-right: 34px; }
+.select-field-chevron { position: absolute; top: 50%; right: 11px; transform: translateY(-50%); color: var(--muted-foreground); pointer-events: none; }
+.select-field select:disabled + .select-field-chevron { opacity: .5; }
+.new-job-prompt { min-height: 160px; resize: vertical; font-size: 14px; line-height: 1.6; }
 .field-hint { margin-top: 6px; color: var(--faint); font-size: 13px; }
 .field-hint strong { color: var(--muted-foreground); font-weight: 500; }
 .new-job-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
@@ -373,6 +381,8 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
   .step-error, .step-spend { display: none; }
   .group-table th:nth-child(3), .group-table td:nth-child(3), .group-table th:nth-child(4), .group-table td:nth-child(4) { display: none; }
   .rate-track { display: none; }
+  /* The last date label is centred on a narrow column, so it needs room past the plot's edge. */
+  .chart-body, .chart-dates { padding-right: 20px; }
 }
 
 /* Settings: a side nav of topics beside one topic's page. */

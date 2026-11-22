@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Play } from "lucide-react";
+import { ArrowLeft, ChevronDown, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
 import { canStart, initialPreset, keyFor, runRequest, titleOf } from "./new-job.js";
@@ -7,6 +7,14 @@ import { jobHref } from "./routes.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { HarnessMark } from "./harness-mark.jsx";
 import { presetAgents } from "./agents.js";
+
+// Select is a native select with one chevron of the app's own.
+function Select({ onChange, children, ...props }) {
+  return <span className="select-field">
+    <select className="field-control" onChange={event => onChange(event.target.value)} {...props}>{children}</select>
+    <ChevronDown className="select-field-chevron size-4" aria-hidden="true" />
+  </span>;
+}
 
 // NewJobPage starts a job through the run API, like curl or a tracker would.
 export function NewJobPage({ onSignedOut }) {
@@ -67,15 +75,15 @@ export function NewJobPage({ onSignedOut }) {
     {options && <form className="new-job" onSubmit={submit}>
       <div>
         <label className="field-label" htmlFor="new-job-repo">Repository</label>
-        <select id="new-job-repo" className="field-control" value={repo} onChange={event => setRepo(event.target.value)} disabled={!options.repositories.length}>
+        <Select id="new-job-repo" value={repo} onChange={setRepo} disabled={!options.repositories.length}>
           {options.repositories.map(name => <option key={name} value={name}>{name}</option>)}
-        </select>
+        </Select>
       </div>
       <div>
         <label className="field-label" htmlFor="new-job-preset">Preset</label>
-        <select id="new-job-preset" className="field-control" value={preset} onChange={event => setPreset(event.target.value)} aria-describedby="new-job-preset-about">
+        <Select id="new-job-preset" value={preset} onChange={setPreset} aria-describedby="new-job-preset-about">
           {options.presets.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
-        </select>
+        </Select>
         {chosen && <div id="new-job-preset-about" className="preset-about">
           {chosen.description && <p>{chosen.description}</p>}
           <ol className="preset-steps" aria-label="Steps">{chosen.steps.map(step => <li key={step.name}><span>{step.name}{step.agents.map((agent, index) => <HarnessMark key={index} harness={agent.harness} className="preset-step-mark" />)}</span></li>)}</ol>
@@ -84,7 +92,7 @@ export function NewJobPage({ onSignedOut }) {
       </div>
       <div>
         <label className="field-label" htmlFor="new-job-prompt">Prompt</label>
-        <textarea id="new-job-prompt" className="field-control new-job-prompt" rows={14} value={prompt} onChange={event => setPrompt(event.target.value)} onKeyDown={submitOnShortcut} placeholder={"What should the agent do? Paste a spec or describe the change.\n\nThe first line becomes the job's title."} />
+        <textarea id="new-job-prompt" className="field-control new-job-prompt" rows={8} value={prompt} onChange={event => setPrompt(event.target.value)} onKeyDown={submitOnShortcut} placeholder="What should the agent do? Paste a spec or describe the change." />
         <p className="field-hint">{title ? <>Title: <strong>{title}</strong></> : "The first line becomes the job's title."}</p>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}

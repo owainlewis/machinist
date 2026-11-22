@@ -119,3 +119,11 @@ export function runSpend(stages = []) {
 export function spendTitle(unknown) {
   return unknown ? "An agent here reports no cost, so its spend is not counted" : undefined;
 }
+
+// noStepsNote is what a run with no steps to show says. Its events may still
+// be loading. Once they have loaded, a finished run with none never ran a step.
+export function noStepsNote(runStatus, loaded) {
+  if (runStatus === "queued") return "No step has started.";
+  if (!loaded) return "Loading steps";
+  return runStatus === "running" ? "No step has started." : "No steps ran.";
+}
