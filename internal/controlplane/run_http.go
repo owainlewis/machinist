@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/sources"
@@ -19,14 +20,23 @@ const (
 
 // job is what the run API returns. It hides the ticket model behind it.
 type job struct {
-	ID       string            `json:"id"`
+	ID string `json:"id"`
+	// Key is the key the job was started with. A job from another source shows
+	// that source's key.
+	Key      string            `json:"key"`
 	Preset   string            `json:"preset"`
 	Vars     map[string]string `json:"vars"`
 	Title    string            `json:"title"`
 	State    string            `json:"state"`
 	PRNumber int               `json:"pr_number,omitempty"`
 	// PRState is open, merged or closed, once the job has a pull request.
-	PRState   string    `json:"pr_state,omitempty"`
+	PRState string `json:"pr_state,omitempty"`
+	// CurrentStep is the preset step a running job is on, or empty.
+	CurrentStep string `json:"current_step"`
+	// Tokens and CostUSD add up what the job's ended runs reported. CostUSD is
+	// null until a run reports a cost.
+	Tokens    int64     `json:"tokens"`
+	CostUSD   *float64  `json:"cost_usd"`
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -57,8 +67,16 @@ func (s *Server) job(r *http.Request, ticket tickets.Ticket) (job, error) {
 	if err != nil {
 		return job{}, err
 	}
-	return job{
+	key, err := s.store.RequestKey(r.Context(), ticket.ID)
+	if err != nil {
+		return job{}, err
+	}
+	if ticket.Source == "run" {
+		key = strings.TrimPrefix(key, "run:")
+	}
+	view := job{
 		ID:        ticket.ID,
+		Key:       key,
 		Preset:    ticket.Agent,
 		Vars:      map[string]string{"repo": ticket.Repo},
 		Title:     ticket.Title,
@@ -68,7 +86,25 @@ func (s *Server) job(r *http.Request, ticket tickets.Ticket) (job, error) {
 		CreatedBy: ticket.CreatedBy,
 		CreatedAt: ticket.CreatedAt,
 		UpdatedAt: ticket.UpdatedAt,
-	}, nil
+	}
+	if view.State == JobRunning {
+		if view.CurrentStep, err = s.store.CurrentStep(r.Context(), ticket.ID); err != nil {
+			return job{}, err
+		}
+	}
+	for _, run := range runs {
+		if run.Tokens != nil {
+			view.Tokens += *run.Tokens
+		}
+		if run.Cost != nil {
+			total := *run.Cost
+			if view.CostUSD != nil {
+				total += *view.CostUSD
+			}
+			view.CostUSD = &total
+		}
+	}
+	return view, nil
 }
 
 func (s *Server) writeJob(w http.ResponseWriter, r *http.Request, status int, ticket tickets.Ticket) {
