@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleDashed, LoaderCircle, Minus, RotateCcw } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { State, relativeTime, useNow } from "./display.jsx";
@@ -142,6 +142,10 @@ function Run({ run, number, presetSteps }) {
       {run.started_at && <span>{formatDuration((run.ended_at ? Date.parse(run.ended_at) : now) - Date.parse(run.started_at))}</span>}
       {runSpend(run.stages) && <span title={spendTitle((run.stages || []).some(stage => stage.cost_unknown))}>{runSpend(run.stages)}</span>}
     </div>
+    {run.patch && <p className="run-patch">
+      <a href={`/api/v1/runs/${encodeURIComponent(run.id)}/patch`} download><Download className="size-3.5" aria-hidden="true" />Download the change as a patch</a>
+      <span>This attempt could not push its work. Apply it with <code>git am</code>.</span>
+    </p>}
     {current && <p className="run-now" aria-live="polite"><span className="run-now-step">{current.name}</span>{action || "Working"}</p>}
     {error && <p className="form-error" role="alert">{error}</p>}
     {presetSteps && <Pipeline nodes={pipeline(presetSteps, list, run.status)} onChoose={choose} now={now} />}

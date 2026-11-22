@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/harness"
+	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -153,6 +155,40 @@ func TestRunEventsPage(t *testing.T) {
 	}
 	if response, _ := f.call(t, http.MethodGet, "/api/v1/runs/run_missing/events", f.token, nil); response.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d", response.StatusCode)
+	}
+}
+
+// A run that could not push its change sends it as a patch, which the job page
+// downloads. A patch is larger than other requests, so its completion is too.
+func TestARunsSavedPatchDownloads(t *testing.T) {
+	f := newFixture(t)
+	run := f.queueRun(t)
+	path := "/api/v1/runs/" + run.RunID + "/patch"
+	if response, _ := f.call(t, http.MethodGet, path, f.token, nil); response.StatusCode != http.StatusNotFound {
+		t.Fatalf("status before completion = %d", response.StatusCode)
+	}
+	patch := []byte("Subject: [PATCH] Use Postgres\n" + strings.Repeat("+x\n", 1<<20))
+	if response, body := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/complete", f.token, protocol.Completion{State: tickets.RunFailed, Error: "step publish: GitHub rejected the push", Patch: patch}); response.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	response, body := f.call(t, http.MethodGet, path, f.token, nil)
+	if response.StatusCode != http.StatusOK || !bytes.Equal(body, patch) {
+		t.Fatalf("status = %d, %d bytes", response.StatusCode, len(body))
+	}
+	if got := response.Header.Get("Content-Disposition"); got != `attachment; filename="`+run.TicketID+`.patch"` {
+		t.Fatalf("Content-Disposition = %q", got)
+	}
+	if response, _ := f.call(t, http.MethodGet, "/api/v1/runs/run_missing/patch", f.token, nil); response.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+}
+
+func TestPatchNameKeepsOnlySafeCharacters(t *testing.T) {
+	if got := patchName(`t_1"; x=y`); got != "t_1xy.patch" {
+		t.Fatalf("name = %q", got)
+	}
+	if got := patchName(`"`); got != "change.patch" {
+		t.Fatalf("name = %q", got)
 	}
 }
 

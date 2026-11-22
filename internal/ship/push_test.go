@@ -4,14 +4,33 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func fakeGit(stderr string, err error, calls *[]string) Git {
-	return func(_ context.Context, args ...string) (string, error) {
+	return func(_ context.Context, _ io.Writer, args ...string) (string, error) {
 		*calls = append(*calls, strings.Join(args, " "))
 		return stderr, err
+	}
+}
+
+// patchGit rejects the push and answers format-patch with patch, or with
+// formatErr.
+func patchGit(patch string, formatErr error, calls *[]string) Git {
+	return func(_ context.Context, stdout io.Writer, args ...string) (string, error) {
+		*calls = append(*calls, strings.Join(args, " "))
+		if args[0] == "push" {
+			return " ! [remote rejected] HEAD -> machinist/t_1 (no workflows)\n", errors.New("exit status 1")
+		}
+		io.WriteString(stdout, patch)
+		if formatErr != nil {
+			return "fatal: bad revision 'origin/HEAD..HEAD'\n", formatErr
+		}
+		return "", nil
 	}
 }
 
@@ -68,5 +87,65 @@ func TestPushCapsALongAnswer(t *testing.T) {
 	var rejected *PushRejectedError
 	if !errors.As(err, &rejected) || len(rejected.Reason) > maxReason+len("…") || !strings.HasSuffix(rejected.Reason, "…") {
 		t.Fatalf("reason = %q", rejected.Reason)
+	}
+}
+
+func TestARejectedPushSavesTheChangeAsAPatch(t *testing.T) {
+	var calls []string
+	var log bytes.Buffer
+	path := filepath.Join(t.TempDir(), "change.patch")
+	patch := "From 1234 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] Use Postgres\n"
+	err := Push(t.Context(), PushOptions{Git: patchGit(patch, nil, &calls), Log: &log, Patch: path, Base: "origin/HEAD"})
+	var rejected *PushRejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Join(calls, "; ") != "push -u origin HEAD; format-patch --stdout origin/HEAD..HEAD" {
+		t.Fatalf("calls = %v", calls)
+	}
+	if body, err := os.ReadFile(path); err != nil || string(body) != patch {
+		t.Fatalf("patch = %q, %v", body, err)
+	}
+	if !strings.Contains(log.String(), "Save the change as a patch") {
+		t.Fatalf("log = %s", log.String())
+	}
+}
+
+func TestAPatchThatCannotBeMadeIsNotLeftBehind(t *testing.T) {
+	for _, test := range []struct {
+		name, patch string
+		err         error
+		said        string
+	}{
+		{"format-patch fails", "From 1234 partial", errors.New("exit status 128"), "bad revision"},
+		{"no commits", "", nil, "no commits beyond origin/HEAD"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls []string
+			var log bytes.Buffer
+			path := filepath.Join(t.TempDir(), "change.patch")
+			err := Push(t.Context(), PushOptions{Git: patchGit(test.patch, test.err, &calls), Log: &log, Patch: path, Base: "origin/HEAD"})
+			var rejected *PushRejectedError
+			if !errors.As(err, &rejected) {
+				t.Fatalf("err = %v", err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the patch was left behind: %v", err)
+			}
+			if !strings.Contains(log.String(), "not saved as a patch: ") || !strings.Contains(log.String(), test.said) {
+				t.Fatalf("log = %s", log.String())
+			}
+		})
+	}
+}
+
+func TestAPushThatWorksSavesNoPatch(t *testing.T) {
+	var calls []string
+	path := filepath.Join(t.TempDir(), "change.patch")
+	if err := Push(t.Context(), PushOptions{Git: fakeGit("", nil, &calls), Patch: path, Base: "origin/HEAD"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) || len(calls) != 1 {
+		t.Fatalf("calls = %v, stat = %v", calls, err)
 	}
 }

@@ -5,9 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 
+	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/ship"
 	"github.com/spf13/cobra"
 )
@@ -48,13 +51,21 @@ func newPushCommand(options *commandOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "push",
 		Short: "Push the job's branch to origin, inside a step",
-		Long:  "Push HEAD to origin and track it. When the push fails, the step fails and says what GitHub answered.",
-		Args:  cobra.NoArgs,
+		Long: "Push HEAD to origin and track it. When the push fails, the step fails and says what GitHub answered, " +
+			"and the commits beyond origin/HEAD are saved as " + protocol.PatchFile + " in the control directory, " +
+			"which the job page links to.",
+		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			if _, err := controlDirectory("push"); err != nil {
+			control, err := controlDirectory("push")
+			if err != nil {
 				return err
 			}
-			return ship.Push(command.Context(), ship.PushOptions{Git: runGit, Log: options.stdout})
+			return ship.Push(command.Context(), ship.PushOptions{
+				Git:   runGit,
+				Log:   options.stdout,
+				Patch: filepath.Join(control, protocol.PatchFile),
+				Base:  "origin/HEAD",
+			})
 		},
 	}
 }
@@ -89,9 +100,10 @@ func controlDirectory(command string) (string, error) {
 	return control, nil
 }
 
-func runGit(ctx context.Context, args ...string) (string, error) {
+func runGit(ctx context.Context, stdout io.Writer, args ...string) (string, error) {
 	var stderr bytes.Buffer
 	command := exec.CommandContext(ctx, "git", args...)
+	command.Stdout = stdout
 	command.Stderr = &stderr
 	err := command.Run()
 	return stderr.String(), err

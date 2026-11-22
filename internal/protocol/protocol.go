@@ -22,7 +22,9 @@ type HeartbeatResponse struct {
 	Cancel bool `json:"cancel"`
 }
 
-// Completion ends a run. Error says why a run has no report.
+// Completion ends a run. Error says why a run has no report. Patch is the
+// change a step saved when it could not push it, so it can be recovered
+// without running the job again.
 type Completion struct {
 	State  string        `json:"state"`
 	Report *Report       `json:"report,omitempty"`
@@ -30,7 +32,16 @@ type Completion struct {
 	Cost   *float64      `json:"cost,omitempty"`
 	Error  string        `json:"error,omitempty"`
 	Stages []StageResult `json:"stages,omitempty"`
+	Patch  []byte        `json:"patch,omitempty"`
 }
+
+const (
+	// PatchFile is where a step leaves the job's change, in the control
+	// directory, when it could not push it. machinist push writes it.
+	PatchFile = "change.patch"
+	// MaxPatchBytes caps a saved patch. A larger one is not kept.
+	MaxPatchBytes = 4 << 20
+)
 
 // GitHubToken is a new token for a run's repository, for a runner whose run
 // outlasts the one it started with.

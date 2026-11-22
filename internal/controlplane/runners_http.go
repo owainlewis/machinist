@@ -119,7 +119,8 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, tokenName stri
 		return
 	}
 	var completion protocol.Completion
-	if !decodeJSON(w, r, maxRequestBytes, &completion) {
+	// A completion can carry a saved patch, base64 in JSON.
+	if !decodeJSON(w, r, maxRequestBytes+2*protocol.MaxPatchBytes, &completion) {
 		return
 	}
 	if err := s.engine.Complete(r.Context(), r.PathValue("id"), completion); err != nil {

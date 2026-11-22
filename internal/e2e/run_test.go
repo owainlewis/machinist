@@ -22,6 +22,7 @@ import (
 	"github.com/owainlewis/machinist/internal/agentrunner"
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/controlplane"
+	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/fakegh"
 	"github.com/owainlewis/machinist/internal/protocol"
@@ -553,9 +554,12 @@ func TestAFailedCheckFailsTheJob(t *testing.T) {
 
 // A push GitHub rejects fails the job and says why, and the merge step never
 // runs. Before, the publish agent said so in result.md and exited 0, so the
-// job was done.
+// job was done. The change is saved as a patch the job page links to, because
+// the workspace is removed, so the work is not lost.
 func TestARejectedPushFailsTheJob(t *testing.T) {
-	s := startWith(t, options{claude: claudeScript})
+	s := startWith(t, options{claude: func(output string) string {
+		return "#!/bin/sh\n" + fakeLaterSteps(output) + "cat > /dev/null\necho postgres > database.txt\ngit add database.txt\ngit commit --quiet -m 'Use Postgres'\n"
+	}})
 	writeFile(t, filepath.Join(s.remote, "hooks", "pre-receive"), "#!/bin/sh\necho 'refusing to allow a GitHub App to create or update workflow without workflows permission' >&2\nexit 1\n", 0o700)
 	ticket := s.createTicket(t)
 	s.waitForState(t, ticket.ID, tickets.StateFailed)
@@ -581,6 +585,22 @@ func TestARejectedPushFailsTheJob(t *testing.T) {
 	}
 	if view := s.job(t, ticket.ID); view.PRNumber != 0 {
 		t.Fatalf("job = %+v", view)
+	}
+	if !strings.HasSuffix(last, engine.PatchSaved) || !runs[0].Patch {
+		t.Fatalf("the result does not say the change is saved: %s (run %+v)", last, runs[0])
+	}
+	s.waitForCleanup(t, runs[0].ID)
+	status, patch := s.call(t, http.MethodGet, "/api/v1/runs/"+runs[0].ID+"/patch", nil)
+	if status != http.StatusOK || !strings.Contains(string(patch), "Subject: [PATCH] Use Postgres") || !strings.Contains(string(patch), "+postgres") {
+		t.Fatalf("status = %d, patch:\n%s", status, patch)
+	}
+	// The patch applies to the base branch with git am, which is the advice.
+	clone := t.TempDir()
+	git(t, clone, "clone", "--quiet", s.remote, ".")
+	writeFile(t, filepath.Join(clone, "change.patch"), string(patch), 0o600)
+	git(t, clone, "-c", "user.name=a", "-c", "user.email=a@example.com", "am", "--quiet", "change.patch")
+	if body, err := os.ReadFile(filepath.Join(clone, "database.txt")); err != nil || string(body) != "postgres\n" {
+		t.Fatalf("database.txt = %q, %v", body, err)
 	}
 }
 

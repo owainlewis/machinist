@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS run_stages (
   run TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '',
   tokens INTEGER, cost REAL, duration_millis INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', agents TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(run, position));
-CREATE TABLE IF NOT EXISTS projects (repo TEXT PRIMARY KEY COLLATE NOCASE, added_by TEXT NOT NULL, added_at TEXT NOT NULL);`
+CREATE TABLE IF NOT EXISTS projects (repo TEXT PRIMARY KEY COLLATE NOCASE, added_by TEXT NOT NULL, added_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS run_patches (run TEXT PRIMARY KEY, body BLOB NOT NULL);`
 
 type Store struct {
 	db  *sql.DB
@@ -142,19 +143,21 @@ type Entry struct {
 
 // Run is one run of a ticket. Stages is filled only by Runs.
 type Run struct {
-	ID        string                 `json:"id"`
-	TicketID  string                 `json:"ticket_id"`
-	Kind      string                 `json:"kind"`
-	Reviewer  string                 `json:"reviewer,omitempty"`
-	Harness   string                 `json:"harness"`
-	Runner    string                 `json:"runner,omitempty"`
-	Status    string                 `json:"status"`
-	Tokens    *int64                 `json:"tokens,omitempty"`
-	Cost      *float64               `json:"cost,omitempty"`
-	Report    *protocol.Report       `json:"report,omitempty"`
-	Stages    []protocol.StageResult `json:"stages,omitempty"`
-	StartedAt *time.Time             `json:"started_at,omitempty"`
-	EndedAt   *time.Time             `json:"ended_at,omitempty"`
+	ID       string                 `json:"id"`
+	TicketID string                 `json:"ticket_id"`
+	Kind     string                 `json:"kind"`
+	Reviewer string                 `json:"reviewer,omitempty"`
+	Harness  string                 `json:"harness"`
+	Runner   string                 `json:"runner,omitempty"`
+	Status   string                 `json:"status"`
+	Tokens   *int64                 `json:"tokens,omitempty"`
+	Cost     *float64               `json:"cost,omitempty"`
+	Report   *protocol.Report       `json:"report,omitempty"`
+	Stages   []protocol.StageResult `json:"stages,omitempty"`
+	// Patch says the run saved its change as a patch, which RunPatch reads.
+	Patch     bool       `json:"patch,omitempty"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
 }
 
 // NewTicket is one piece of intake. SourceKey makes it idempotent.
@@ -202,6 +205,8 @@ type RunCompletion struct {
 	Tokens *int64
 	Cost   *float64
 	Stages []protocol.StageResult
+	// Patch is the change the run saved because it could not push it.
+	Patch []byte
 }
 
 // Claim is a run given to a runner, with the ticket and log it works from.
@@ -356,14 +361,15 @@ func (s *Store) Ticket(ctx context.Context, id string) (Ticket, error) {
 	return loadTicket(ctx, s.db, id)
 }
 
-const runColumns = `id,ticket_id,kind,reviewer,harness,runner,status,tokens,cost,report,started_at,ended_at`
+const runColumns = `id,ticket_id,kind,reviewer,harness,runner,status,tokens,cost,report,started_at,ended_at,
+  EXISTS(SELECT 1 FROM run_patches WHERE run_patches.run=runs.id)`
 
 func scanRun(row scanner) (Run, error) {
 	var run Run
 	var tokens sql.NullInt64
 	var cost sql.NullFloat64
 	var report, started, ended sql.NullString
-	if err := row.Scan(&run.ID, &run.TicketID, &run.Kind, &run.Reviewer, &run.Harness, &run.Runner, &run.Status, &tokens, &cost, &report, &started, &ended); err != nil {
+	if err := row.Scan(&run.ID, &run.TicketID, &run.Kind, &run.Reviewer, &run.Harness, &run.Runner, &run.Status, &tokens, &cost, &report, &started, &ended, &run.Patch); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Run{}, ErrNotFound
 		}
@@ -390,6 +396,16 @@ func loadRun(ctx context.Context, q querier, id string) (Run, error) {
 }
 
 func (s *Store) Run(ctx context.Context, id string) (Run, error) { return loadRun(ctx, s.db, id) }
+
+// RunPatch is the change a run saved as a patch. ErrNotFound means it saved none.
+func (s *Store) RunPatch(ctx context.Context, runID string) ([]byte, error) {
+	var body []byte
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM run_patches WHERE run=?`, runID).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return body, err
+}
 
 // Runs lists a ticket's runs with their stages, oldest first.
 func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
@@ -1017,6 +1033,11 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 		now := s.now()
 		if _, err = tx.ExecContext(ctx, `UPDATE runs SET status=?,tokens=?,cost=?,report=?,ended_at=? WHERE id=?`, status, completion.Tokens, completion.Cost, report, stamp(now), run.ID); err != nil {
 			return err
+		}
+		if len(completion.Patch) > 0 {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO run_patches(run,body) VALUES(?,?)`, run.ID, completion.Patch); err != nil {
+				return err
+			}
 		}
 		for position, stage := range completion.Stages {
 			agents := ""

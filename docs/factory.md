@@ -137,6 +137,12 @@ the token cannot change workflow files, the step fails with GitHub's answer. The
 says why, and the merge step never runs. A job whose branch has no commits pushes nothing
 and is done without a pull request.
 
+The runner removes the workspace when the run ends, so a rejected push first saves the
+change: `git format-patch` of the commits beyond `origin/HEAD`, written to `change.patch` in
+the control directory. The control plane keeps it with the run, and the job page links to
+it. Download it and apply it with `git am`, then push it yourself, without running the agent
+again. Any step can leave `change.patch` the same way. A patch over 4 MiB is not kept.
+
 When any step fails, the job's result is the step's error and the last line the step wrote
 to stderr.
 
