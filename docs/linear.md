@@ -1,7 +1,9 @@
 # Start jobs from Linear
 
-Machinist is a user in Linear. When an allowed person assigns an issue in a connected team
-to the Machinist app, Machinist starts a job in that team's repository. The job's prompt is
+Machinist is a user in Linear. When an allowed person delegates an issue in a connected
+team to the Machinist app, Machinist starts a job in that team's repository. Linear records
+the app as the issue's delegate and keeps the person as its assignee. Assigning the issue to
+the app directly works too. The job's prompt is
 the issue's title, description and link. Each issue starts one job, ever, and the
 conversation stays on that job: a reply on the issue runs the same job again on the same
 branch.
@@ -32,8 +34,8 @@ linear:
 
 | Key | Meaning |
 | --- | --- |
-| `app_user_id` | The Machinist app's Linear user. Assigning an issue to it starts a job |
-| `allowed_users` | The Linear user IDs who may start jobs. An assignment by anyone else is ignored |
+| `app_user_id` | The Machinist app's Linear user. Delegating or assigning an issue to it starts a job |
+| `allowed_users` | The Linear user IDs who may start jobs. A delegation or assignment by anyone else is ignored |
 | `preset` | The preset Linear jobs use. Defaults to `server.default_preset` |
 | `teams` | Linear team key to repository. Each repository must be in `github.repositories`. Issues from other teams are never read |
 | `poll_interval` | Time between polls. Defaults to `60s`, and must be at least `10s` |
@@ -63,7 +65,8 @@ Machinist writes to Linear itself. The agent gets no Linear access.
   ended, runs the job again with the comment added to its log, on the same branch and pull
   request. A reply left while the job runs waits until the run ends. Comments by anyone
   else, and Machinist's own, are ignored.
-- **Cancel.** If someone unassigns the issue from Machinist, or moves it out of every
+- **Cancel.** If someone removes Machinist as the issue's delegate and it is not the
+  assignee either, or moves the issue out of every
   started state, Machinist cancels the job on the next poll. Moving it to another started
   state, such as **In Review**, does not.
 
@@ -75,7 +78,7 @@ Each of these happens once per job. If a write to Linear fails, the next poll tr
   were already assigned.
 - Machinist stores how far it has read, so a restart neither misses nor repeats an
   assignment.
-- Who assigned the issue is read from the issue's history. An assignment by anyone outside
+- Who delegated or assigned the issue is read from the issue's history. One by anyone outside
   `allowed_users`, or by someone Machinist cannot find, is ignored and logged.
 - Past `max_jobs_per_hour`, an assignment waits and is picked up by a later poll.
 - When Linear fails or rate-limits a poll, the wait doubles each time, up to five minutes,

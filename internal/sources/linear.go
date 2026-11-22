@@ -29,12 +29,17 @@ const (
 	maxReplyPages = 40
 )
 
-// Linear reads issues assigned to the Machinist app from Linear's API, moves
-// them between states and comments on them. It is a Tracker.
+// Linear reads issues given to the Machinist app from Linear's API, moves them
+// between states and comments on them. It is a Tracker.
+//
+// An issue is given to the app when the app is its delegate, which is how
+// Linear hands work to an agent while a person stays the assignee, or when the
+// app is its assignee, which older workspaces still do.
 type Linear struct {
 	// Token is the Machinist app's Linear access token.
 	Token string
-	// AppUserID is the app's Linear user. Issues assigned to it are work.
+	// AppUserID is the app's Linear user. Issues delegated or assigned to it
+	// are work.
 	AppUserID string
 	// Teams are the connected team keys. Other teams are never read.
 	Teams    []string
@@ -57,24 +62,34 @@ type linearIssue struct {
 		Key string `json:"key"`
 	} `json:"team"`
 	History struct {
-		Nodes []struct {
-			CreatedAt    time.Time `json:"createdAt"`
-			ActorID      string    `json:"actorId"`
-			ToAssigneeID string    `json:"toAssigneeId"`
-		} `json:"nodes"`
+		Nodes []linearChange `json:"nodes"`
 	} `json:"history"`
 }
 
-// Assignments returns the issues assigned to the app in connected teams and
-// updated after since, oldest first.
+// linearChange is one entry in an issue's history.
+type linearChange struct {
+	CreatedAt    time.Time   `json:"createdAt"`
+	ActorID      string      `json:"actorId"`
+	ToAssigneeID string      `json:"toAssigneeId"`
+	ToDelegate   *linearUser `json:"toDelegate"`
+}
+
+// givenToApp is the part of an issue filter that matches issues delegated or
+// assigned to the app.
+func (l *Linear) givenToApp() string {
+	return fmt.Sprintf(`or: [{delegate: {id: {eq: %[1]s}}}, {assignee: {id: {eq: %[1]s}}}]`, quote(l.AppUserID))
+}
+
+// Assignments returns the issues delegated or assigned to the app in connected
+// teams and updated after since, oldest first.
 func (l *Linear) Assignments(ctx context.Context, since time.Time) ([]Assignment, error) {
 	query := fmt.Sprintf(`query Assigned($after: String) {
-  issues(first: %d, after: $after, orderBy: updatedAt, filter: {assignee: {id: {eq: %s}}, team: {key: {in: %s}}, updatedAt: {gt: %s}}) {
+  issues(first: %d, after: $after, orderBy: updatedAt, filter: {%s, team: {key: {in: %s}}, updatedAt: {gt: %s}}) {
     nodes { id identifier title description url updatedAt team { key }
-      history(first: %d) { nodes { createdAt actorId toAssigneeId } } }
+      history(first: %d) { nodes { createdAt actorId toAssigneeId toDelegate { id } } } }
     pageInfo { hasNextPage endCursor }
   }
-}`, linearPage, quote(l.AppUserID), quote(l.Teams), quote(since.UTC().Format(time.RFC3339Nano)), linearHistory)
+}`, linearPage, l.givenToApp(), quote(l.Teams), quote(since.UTC().Format(time.RFC3339Nano)), linearHistory)
 	var assignments []Assignment
 	var after *string
 	for page := 0; page < maxLinearPages; page++ {
@@ -103,13 +118,14 @@ func (l *Linear) Assignments(ctx context.Context, since time.Time) ([]Assignment
 	return assignments, nil
 }
 
-// assignment finds who assigned the issue to the app: the actor of the latest
-// history entry that moved it to the app.
+// assignment finds who gave the issue to the app: the actor of the latest
+// history entry that delegated or assigned it to the app.
 func (l *Linear) assignment(issue linearIssue) Assignment {
 	var actor string
 	var at time.Time
 	for _, entry := range issue.History.Nodes {
-		if entry.ToAssigneeID == l.AppUserID && entry.ActorID != "" && !entry.CreatedAt.Before(at) {
+		given := entry.ToDelegate.is(l.AppUserID) || entry.ToAssigneeID == l.AppUserID
+		if given && entry.ActorID != "" && !entry.CreatedAt.Before(at) {
 			actor, at = entry.ActorID, entry.CreatedAt
 		}
 	}
@@ -197,19 +213,19 @@ func (l *Linear) Return(ctx context.Context, issue, comment string) error {
 	return l.Comment(ctx, issue, comment)
 }
 
-// Replies returns comments by anyone but the app on issues assigned to the
-// app in connected teams, created after since, oldest first.
+// Replies returns comments by anyone but the app on issues delegated or
+// assigned to the app in connected teams, created after since, oldest first.
 func (l *Linear) Replies(ctx context.Context, since, until time.Time) ([]Reply, error) {
 	window := fmt.Sprintf("gt: %s", quote(since.UTC().Format(time.RFC3339Nano)))
 	if !until.IsZero() {
 		window += fmt.Sprintf(", lte: %s", quote(until.UTC().Format(time.RFC3339Nano)))
 	}
 	query := fmt.Sprintf(`query Replies($after: String) {
-  comments(first: %d, after: $after, orderBy: createdAt, filter: {createdAt: {%s}, user: {id: {neq: %s}}, issue: {assignee: {id: {eq: %s}}, team: {key: {in: %s}}}}) {
+  comments(first: %d, after: $after, orderBy: createdAt, filter: {createdAt: {%s}, user: {id: {neq: %s}}, issue: {%s, team: {key: {in: %s}}}}) {
     nodes { id body createdAt user { id } issue { id } }
     pageInfo { hasNextPage endCursor }
   }
-}`, linearPage, window, quote(l.AppUserID), quote(l.AppUserID), quote(l.Teams))
+}`, linearPage, window, quote(l.AppUserID), l.givenToApp(), quote(l.Teams))
 	var replies []Reply
 	var after *string
 	for page := 0; ; page++ {
@@ -269,7 +285,8 @@ func (l *Linear) Finish(ctx context.Context, issue string) error {
 	return l.move(ctx, issue, state)
 }
 
-// States reads whether each issue is still assigned to the app and started.
+// States reads whether each issue is still delegated or assigned to the app,
+// and started. Removing the app as delegate counts as unassigning it.
 func (l *Linear) States(ctx context.Context, issues []string) (map[string]IssueState, error) {
 	states := map[string]IssueState{}
 	for len(issues) > 0 {
@@ -278,29 +295,34 @@ func (l *Linear) States(ctx context.Context, issues []string) (map[string]IssueS
 		var answer struct {
 			Issues struct {
 				Nodes []struct {
-					ID       string `json:"id"`
-					Assignee *struct {
-						ID string `json:"id"`
-					} `json:"assignee"`
-					State struct {
+					ID       string      `json:"id"`
+					Assignee *linearUser `json:"assignee"`
+					Delegate *linearUser `json:"delegate"`
+					State    struct {
 						Type string `json:"type"`
 					} `json:"state"`
 				} `json:"nodes"`
 			} `json:"issues"`
 		}
-		query := `query States($ids: [ID!]) { issues(first: 50, filter: {id: {in: $ids}}) { nodes { id assignee { id } state { type } } } }`
+		query := `query States($ids: [ID!]) { issues(first: 50, filter: {id: {in: $ids}}) { nodes { id assignee { id } delegate { id } state { type } } } }`
 		if err := l.do(ctx, query, map[string]any{"ids": batch}, &answer); err != nil {
 			return nil, err
 		}
 		for _, node := range answer.Issues.Nodes {
 			states[node.ID] = IssueState{
-				Assigned: node.Assignee != nil && node.Assignee.ID == l.AppUserID,
+				Assigned: node.Delegate.is(l.AppUserID) || node.Assignee.is(l.AppUserID),
 				Active:   node.State.Type == "started",
 			}
 		}
 	}
 	return states, nil
 }
+
+type linearUser struct {
+	ID string `json:"id"`
+}
+
+func (u *linearUser) is(id string) bool { return u != nil && u.ID == id }
 
 type linearState struct {
 	ID       string  `json:"id"`
