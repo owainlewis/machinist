@@ -35,9 +35,16 @@ type Assignment struct {
 	Body       string
 	URL        string
 	Team       string
+	// Project and ProjectID name the issue's project. Both are empty when it
+	// has none.
+	Project   string
+	ProjectID string
 	// Actor is the user who made the assignment. Empty means it could not be
 	// found, and the assignment is ignored.
-	Actor     string
+	Actor string
+	// GivenAt is when the issue was last handed to Machinist. It is zero when
+	// that could not be found.
+	GivenAt   time.Time
 	UpdatedAt time.Time
 }
 
@@ -96,15 +103,42 @@ type TrackerRules struct {
 	// AllowedUsers may send work. An assignment by anyone else is ignored.
 	AllowedUsers []string
 	Preset       string
-	// Teams maps a team key to a repository.
+	// Projects maps a project name or ID to a repository. A project's mapping
+	// wins over its team's.
+	Projects map[string]string
+	// Teams maps a team key to a repository, for issues whose project is not
+	// mapped.
 	Teams map[string]string
+}
+
+// Route returns the repository an assignment runs in, or the reason it has
+// none.
+func (rules TrackerRules) Route(assignment Assignment) (string, string) {
+	// An ID is exact. A name matches in any case.
+	if repository, ok := rules.Projects[assignment.ProjectID]; ok && assignment.ProjectID != "" {
+		return repository, ""
+	}
+	for project, repository := range rules.Projects {
+		if assignment.Project != "" && strings.EqualFold(project, assignment.Project) {
+			return repository, ""
+		}
+	}
+	for team, repository := range rules.Teams {
+		if assignment.Team != "" && strings.EqualFold(team, assignment.Team) {
+			return repository, ""
+		}
+	}
+	if assignment.Project == "" {
+		return "", fmt.Sprintf("team %q is not connected", assignment.Team)
+	}
+	return "", fmt.Sprintf("project %q and team %q are not connected", assignment.Project, assignment.Team)
 }
 
 // Decide returns the job an assignment starts, or the reason it starts none.
 func (rules TrackerRules) Decide(assignment Assignment) (start, string) {
-	repository, ok := rules.team(assignment.Team)
-	if !ok {
-		return start{}, fmt.Sprintf("team %q is not connected", assignment.Team)
+	repository, reason := rules.Route(assignment)
+	if reason != "" {
+		return start{}, reason
 	}
 	if assignment.Actor == "" {
 		return start{}, "who assigned it is not known"
@@ -113,15 +147,6 @@ func (rules TrackerRules) Decide(assignment Assignment) (start, string) {
 		return start{}, fmt.Sprintf("user %q may not start jobs", assignment.Actor)
 	}
 	return start{key: assignment.Key, preset: rules.Preset, repo: repository, prompt: trackerPrompt(assignment)}, ""
-}
-
-func (rules TrackerRules) team(key string) (string, bool) {
-	for team, repository := range rules.Teams {
-		if key != "" && strings.EqualFold(team, key) {
-			return repository, true
-		}
-	}
-	return "", false
 }
 
 func trackerPrompt(assignment Assignment) string {
@@ -374,6 +399,12 @@ const (
 // reached and the assignment waits for a later poll.
 func (p *Poller) handle(ctx context.Context, assignment Assignment) (handled, error) {
 	name := p.Tracker.Name()
+	// Only an allowed person hears that an issue maps to no repository, so
+	// anyone else who can hand Machinist an issue learns nothing of its config.
+	if _, reason := p.Rules.Route(assignment); reason != "" && slices.Contains(p.Rules.AllowedUsers, assignment.Actor) {
+		fmt.Fprintf(p.log(), "machinist: %s issue %s ignored: %s\n", name, assignment.Identifier, reason)
+		return handledSkipped, p.unrouted(ctx, assignment, reason)
+	}
 	job, reason := p.Rules.Decide(assignment)
 	if reason != "" {
 		fmt.Fprintf(p.log(), "machinist: %s issue %s ignored: %s\n", name, assignment.Identifier, reason)
@@ -399,6 +430,33 @@ func (p *Poller) handle(ctx context.Context, assignment Assignment) (handled, er
 	}
 	fmt.Fprintf(p.log(), "machinist: %s issue %s started job %s\n", name, assignment.Identifier, ticket.ID)
 	return handledStarted, nil
+}
+
+// unroutedCursor prefixes the cursor that records when Machinist last told an
+// issue it maps to no repository.
+const unroutedCursor = "#unrouted:"
+
+// unrouted comments on an issue that maps to no repository, once each time it
+// is handed to Machinist, so later edits to the issue do not repeat it. The
+// comment is only an explanation, so a tracker that refuses it is logged and
+// does not stop the poll; the comment is tried again the next time the issue
+// is handed over.
+func (p *Poller) unrouted(ctx context.Context, assignment Assignment, reason string) error {
+	name := p.Tracker.Name()
+	told, found, err := p.Store.Cursor(ctx, name, unroutedCursor+assignment.Issue)
+	if err != nil {
+		return err
+	}
+	if found && !assignment.GivenAt.After(told) {
+		return nil
+	}
+	comment := "Machinist cannot start a job for this issue: its " + reason + " to a repository.\n\n" +
+		"Map the project in `linear.projects` or the team in `linear.teams` in Machinist's config, then hand the issue to Machinist again."
+	if err := p.Tracker.Comment(ctx, assignment.Issue, comment); err != nil {
+		fmt.Fprintf(p.log(), "machinist: %s issue %s: comment failed: %v\n", name, assignment.Identifier, err)
+		return nil
+	}
+	return p.Store.SetCursor(ctx, name, unroutedCursor+assignment.Issue, assignment.GivenAt)
 }
 
 // allow counts a job against the hourly cap, if there is room.
