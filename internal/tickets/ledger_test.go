@@ -85,3 +85,63 @@ func markMerged(store *Store, ticketID string, humanCommits int, mergedAt time.T
 	_, err := store.db.Exec(`UPDATE tickets SET state=?,human_commits=?,merged_at=? WHERE id=?`, StateDone, humanCommits, stamp(mergedAt), ticketID)
 	return err
 }
+
+// The self-test saw 1004s for a job that queued for 508s and ran for 496s.
+func TestTicketElapsedCountsOnlyTimeRunsSpentRunning(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	created := time.Date(2026, 11, 22, 11, 17, 6, 0, time.UTC)
+	at := func(offset time.Duration) { store.SetClock(func() time.Time { return created.Add(offset) }) }
+	at(0)
+	ticket := createTicket(t, store, "api:elapsed")
+	queue := func() {
+		t.Helper()
+		if _, err := store.QueueRun(ctx, ticket.ID, "claude"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	answer := func() {
+		t.Helper()
+		if _, _, err := store.AddInput(ctx, ticket.ID, Input{Kind: EntryComment, Author: "alice", Body: "again"}); err != nil {
+			t.Fatal(err)
+		}
+		queue()
+	}
+	complete := func(claimed, ended time.Duration) {
+		t.Helper()
+		at(claimed)
+		claim, err := store.ClaimRun(ctx, "runner", []string{"claude"}, created.Add(claimed+time.Hour), nil)
+		if err != nil || claim == nil {
+			t.Fatalf("claim = %v, err = %v", claim, err)
+		}
+		at(ended)
+		if err := store.CompleteRun(ctx, RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: &protocol.Report{Outcome: "pr_ready", Summary: "s"}}, func(Ticket, string) Transition {
+			return Transition{State: StatePRReady}
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queue()
+	complete(508*time.Second, 1004*time.Second)
+	// The pull request changes hours later, which updates the ticket.
+	if _, err := store.db.Exec(`UPDATE tickets SET updated_at=? WHERE id=?`, stamp(created.Add(3*time.Hour)), ticket.ID); err != nil {
+		t.Fatal(err)
+	}
+	if figures, err := store.TicketFigures(ctx, ticket.ID); err != nil || figures.Elapsed != 496*time.Second {
+		t.Fatalf("figures = %+v, err = %v", figures, err)
+	}
+
+	// A second run adds its own running time, and a run still going counts up to now.
+	at(4 * time.Hour)
+	answer()
+	complete(4*time.Hour+10*time.Second, 4*time.Hour+110*time.Second)
+	at(5 * time.Hour)
+	answer()
+	if claim, err := store.ClaimRun(ctx, "runner", []string{"claude"}, created.Add(6*time.Hour), nil); err != nil || claim == nil {
+		t.Fatalf("claim = %v, err = %v", claim, err)
+	}
+	at(5*time.Hour + 30*time.Second)
+	if figures, err := store.TicketFigures(ctx, ticket.ID); err != nil || figures.Elapsed != 626*time.Second {
+		t.Fatalf("figures = %+v, err = %v", figures, err)
+	}
+}
