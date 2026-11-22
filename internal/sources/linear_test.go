@@ -65,6 +65,8 @@ type fakeLinear struct {
 	auth        string
 	// replies are comments people left, as Linear would list them.
 	replies []fakeReply
+	// brokenComments are issues whose comments Linear rejects.
+	brokenComments map[string]bool
 	// endlessReplies makes a replies query with no upper time bound page on
 	// for ever, as a huge backlog would.
 	endlessReplies bool
@@ -164,6 +166,10 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(request.Query, "commentCreate") {
 		issue, _ := request.Variables["issue"].(string)
 		body, _ := request.Variables["body"].(string)
+		if f.brokenComments[issue] {
+			_, _ = w.Write([]byte(`{"errors":[{"message":"issue is archived"}]}`))
+			return
+		}
 		f.comments[issue] = append(f.comments[issue], body)
 		_, _ = w.Write([]byte(`{"data":{"commentCreate":{"success":true}}}`))
 		return
@@ -271,7 +277,7 @@ func newPolling(t *testing.T) *polling {
 	t.Cleanup(server.Close)
 	p := &polling{linear: fake, store: intake.Store, now: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC), log: &bytes.Buffer{}}
 	p.poller = &Poller{
-		Tracker:        &Linear{Token: "lin_oauth_token", AppUserID: appUser, Teams: []string{"ENG"}, Endpoint: server.URL, Client: server.Client()},
+		Tracker:        &Linear{Token: "lin_oauth_token", AppUserID: appUser, Endpoint: server.URL, Client: server.Client()},
 		Rules:          TrackerRules{AllowedUsers: []string{"owain"}, Preset: "default", Teams: map[string]string{"ENG": "owner/repo"}},
 		Intake:         intake,
 		Store:          intake.Store,
@@ -327,10 +333,14 @@ func TestAnAssignmentStartsOneJob(t *testing.T) {
 			query = sent
 		}
 	}
-	for _, want := range []string{`assignee: {id: {eq: "app-user"}}`, `team: {key: {in: ["ENG"]}}`, "toAssigneeId"} {
+	for _, want := range []string{`assignee: {id: {eq: "app-user"}}`, "project { id name }", "toAssigneeId"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("query lacks %s:\n%s", want, query)
 		}
+	}
+	// Every team is read, so an issue that maps to no repository can be told.
+	if strings.Contains(query, "team: {key") {
+		t.Fatalf("query filters by team:\n%s", query)
 	}
 
 	// The same issue again, a later edit to it, and a restart all start nothing.
@@ -409,6 +419,7 @@ func TestOnlyAllowedUsersInConnectedTeamsStartJobs(t *testing.T) {
 	p.linear.assign("stranger", "ENG", "mallory", p.now)
 	p.linear.assign("unknown", "ENG", "", p.now)
 	p.linear.assign("elsewhere", "OPS", "owain", p.now)
+	p.linear.assign("outsider", "OPS", "mallory", p.now)
 	p.poll(t)
 	if listed := p.tickets(t); len(listed) != 0 {
 		t.Fatalf("tickets = %+v", listed)
@@ -417,6 +428,42 @@ func TestOnlyAllowedUsersInConnectedTeamsStartJobs(t *testing.T) {
 		if !strings.Contains(p.log.String(), want) {
 			t.Fatalf("log lacks %q:\n%s", want, p.log)
 		}
+	}
+	// Only the issue that maps to no repository is told why.
+	if comments := p.linear.comments["elsewhere"]; len(comments) != 1 || !strings.Contains(comments[0], `its team "OPS" is not connected to a repository`) {
+		t.Fatalf("comments = %q", comments)
+	}
+	// Someone not allowed hears nothing, even about an unconnected team.
+	for _, issue := range []string{"stranger", "outsider"} {
+		if comments := p.linear.comments[issue]; len(comments) != 0 {
+			t.Fatalf("%s comments = %q", issue, comments)
+		}
+	}
+}
+
+func TestARejectedNoRepositoryCommentDoesNotStopThePoll(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.brokenComments = map[string]bool{"archived": true}
+	p.linear.assign("archived", "OPS", "owain", p.now)
+	p.linear.assign("a1", "ENG", "owain", p.now.Add(time.Second))
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 || listed[0].Title != "Fix a1" {
+		t.Fatalf("tickets = %+v", listed)
+	}
+	if want := "issue OPS-archived: comment failed"; !strings.Contains(p.log.String(), want) {
+		t.Fatalf("log lacks %q:\n%s", want, p.log)
+	}
+	// Once Linear takes comments again, the next handover is told why.
+	p.now = p.now.Add(time.Minute)
+	p.linear.mu.Lock()
+	p.linear.brokenComments = nil
+	p.linear.mu.Unlock()
+	p.linear.assign("archived", "OPS", "owain", p.now)
+	p.poll(t)
+	if comments := p.linear.comments["archived"]; len(comments) != 1 {
+		t.Fatalf("comments = %q", comments)
 	}
 }
 
@@ -904,5 +951,100 @@ func TestAHugeReplyBacklogIsReadInShorterSpans(t *testing.T) {
 	p.poll(t)
 	if got := p.state(t, job.ID); got != tickets.StateWorking {
 		t.Fatalf("the reply in the backlog was never read: %q", got)
+	}
+}
+
+// inProject puts an issue in a Linear project.
+func (f *fakeLinear) inProject(id, projectID, name string) {
+	f.set(id, func(issue *fakeIssue) {
+		issue.Project = &struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}{ID: projectID, Name: name}
+	})
+}
+
+func TestAProjectMappingChoosesTheRepository(t *testing.T) {
+	p := newPolling(t)
+	p.poller.Rules.Projects = map[string]string{"Machinist": "owainlewis/machinist", "airtime": "owainlewis/airtime", "p-slip": "owainlewis/slip"}
+	p.poller.Rules.Teams = map[string]string{"ENG": "owainlewis/fallback"}
+	p.poller.Intake.Repositories = []string{"owainlewis/machinist", "owainlewis/airtime", "owainlewis/slip", "owainlewis/fallback"}
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	// By name in any case, by ID, and the team for a project with no mapping.
+	p.linear.delegate("air", "ENG", "owain", p.now)
+	p.linear.inProject("air", "p-air", "Airtime")
+	p.linear.delegate("slip", "ENG", "owain", p.now.Add(time.Second))
+	p.linear.inProject("slip", "p-slip", "Slip")
+	p.linear.delegate("other", "ENG", "owain", p.now.Add(2*time.Second))
+	p.linear.inProject("other", "p-other", "Other")
+	p.linear.delegate("none", "ENG", "owain", p.now.Add(3*time.Second))
+	p.poll(t)
+	repos := map[string]string{}
+	for _, job := range p.tickets(t) {
+		repos[job.Title] = job.Repo
+	}
+	want := map[string]string{"Fix air": "owainlewis/airtime", "Fix slip": "owainlewis/slip", "Fix other": "owainlewis/fallback", "Fix none": "owainlewis/fallback"}
+	if len(repos) != len(want) {
+		t.Fatalf("repos = %v", repos)
+	}
+	for title, repo := range want {
+		if repos[title] != repo {
+			t.Fatalf("repos = %v", repos)
+		}
+	}
+}
+
+func TestAProjectMappingWorksWithNoTeams(t *testing.T) {
+	p := newPolling(t)
+	p.poller.Rules.Projects = map[string]string{"Airtime": "owainlewis/airtime"}
+	p.poller.Rules.Teams = nil
+	p.poller.Intake.Repositories = []string{"owainlewis/airtime"}
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.delegate("air", "OPS", "owain", p.now)
+	p.linear.inProject("air", "p-air", "Airtime")
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 || listed[0].Repo != "owainlewis/airtime" {
+		t.Fatalf("tickets = %+v", listed)
+	}
+}
+
+func TestAnIssueThatMapsToNoRepositoryIsToldOnce(t *testing.T) {
+	p := newPolling(t)
+	p.poller.Rules.Projects = map[string]string{"Machinist": "owainlewis/machinist"}
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.delegate("lost", "OPS", "owain", p.now)
+	p.linear.inProject("lost", "p-slip", "Slip")
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 0 {
+		t.Fatalf("tickets = %+v", listed)
+	}
+	if want := `issue OPS-lost ignored: project "Slip" and team "OPS" are not connected`; !strings.Contains(p.log.String(), want) {
+		t.Fatalf("log lacks %q:\n%s", want, p.log)
+	}
+	comments := p.linear.news("lost")
+	if len(comments) != 1 || !strings.Contains(comments[0], `its project "Slip" and team "OPS" are not connected to a repository`) || !strings.Contains(comments[0], "linear.projects") {
+		t.Fatalf("comments = %q", comments)
+	}
+
+	// An edit to the issue does not repeat the comment.
+	p.now = p.now.Add(time.Minute)
+	p.linear.set("lost", func(issue *fakeIssue) { issue.UpdatedAt = p.now })
+	p.poll(t)
+	if comments := p.linear.news("lost"); len(comments) != 1 {
+		t.Fatalf("comments = %q", comments)
+	}
+
+	// Handing it to Machinist again tells it again.
+	p.now = p.now.Add(time.Minute)
+	p.linear.set("lost", func(issue *fakeIssue) {
+		issue.UpdatedAt = p.now
+		issue.History.Nodes = append(issue.History.Nodes, linearChange{CreatedAt: p.now, ActorID: "owain", ToDelegate: &linearUser{ID: appUser}})
+	})
+	p.poll(t)
+	if comments := p.linear.news("lost"); len(comments) != 2 {
+		t.Fatalf("comments = %q", comments)
 	}
 }

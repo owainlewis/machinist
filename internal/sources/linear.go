@@ -39,12 +39,10 @@ type Linear struct {
 	// Token is the Machinist app's Linear access token.
 	Token string
 	// AppUserID is the app's Linear user. Issues delegated or assigned to it
-	// are work.
+	// are work, in any team. TrackerRules decide where each one runs.
 	AppUserID string
-	// Teams are the connected team keys. Other teams are never read.
-	Teams    []string
-	Endpoint string
-	Client   *http.Client
+	Endpoint  string
+	Client    *http.Client
 }
 
 var _ Tracker = (*Linear)(nil)
@@ -61,6 +59,10 @@ type linearIssue struct {
 	Team        struct {
 		Key string `json:"key"`
 	} `json:"team"`
+	Project *struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"project"`
 	History struct {
 		Nodes []linearChange `json:"nodes"`
 	} `json:"history"`
@@ -80,16 +82,17 @@ func (l *Linear) givenToApp() string {
 	return fmt.Sprintf(`or: [{delegate: {id: {eq: %[1]s}}}, {assignee: {id: {eq: %[1]s}}}]`, quote(l.AppUserID))
 }
 
-// Assignments returns the issues delegated or assigned to the app in connected
-// teams and updated after since, oldest first.
+// Assignments returns the issues delegated or assigned to the app and updated
+// after since, oldest first. Issues in every team are read, so one that maps
+// to no repository can be told why it starts no job.
 func (l *Linear) Assignments(ctx context.Context, since time.Time) ([]Assignment, error) {
 	query := fmt.Sprintf(`query Assigned($after: String) {
-  issues(first: %d, after: $after, orderBy: updatedAt, filter: {%s, team: {key: {in: %s}}, updatedAt: {gt: %s}}) {
-    nodes { id identifier title description url updatedAt team { key }
+  issues(first: %d, after: $after, orderBy: updatedAt, filter: {%s, updatedAt: {gt: %s}}) {
+    nodes { id identifier title description url updatedAt team { key } project { id name }
       history(first: %d) { nodes { createdAt actorId toAssigneeId toDelegate { id } } } }
     pageInfo { hasNextPage endCursor }
   }
-}`, linearPage, l.givenToApp(), quote(l.Teams), quote(since.UTC().Format(time.RFC3339Nano)), linearHistory)
+}`, linearPage, l.givenToApp(), quote(since.UTC().Format(time.RFC3339Nano)), linearHistory)
 	var assignments []Assignment
 	var after *string
 	for page := 0; page < maxLinearPages; page++ {
@@ -129,7 +132,7 @@ func (l *Linear) assignment(issue linearIssue) Assignment {
 			actor, at = entry.ActorID, entry.CreatedAt
 		}
 	}
-	return Assignment{
+	assignment := Assignment{
 		Key:        "linear:" + issue.ID,
 		Issue:      issue.ID,
 		Identifier: issue.Identifier,
@@ -138,8 +141,13 @@ func (l *Linear) assignment(issue linearIssue) Assignment {
 		URL:        issue.URL,
 		Team:       issue.Team.Key,
 		Actor:      actor,
+		GivenAt:    at,
 		UpdatedAt:  issue.UpdatedAt,
 	}
+	if issue.Project != nil {
+		assignment.ProjectID, assignment.Project = issue.Project.ID, issue.Project.Name
+	}
+	return assignment
 }
 
 // Comment posts body on an issue as the app.
@@ -214,18 +222,19 @@ func (l *Linear) Return(ctx context.Context, issue, comment string) error {
 }
 
 // Replies returns comments by anyone but the app on issues delegated or
-// assigned to the app in connected teams, created after since, oldest first.
+// assigned to the app, created after since, oldest first. Only those on an
+// issue with a job are used.
 func (l *Linear) Replies(ctx context.Context, since, until time.Time) ([]Reply, error) {
 	window := fmt.Sprintf("gt: %s", quote(since.UTC().Format(time.RFC3339Nano)))
 	if !until.IsZero() {
 		window += fmt.Sprintf(", lte: %s", quote(until.UTC().Format(time.RFC3339Nano)))
 	}
 	query := fmt.Sprintf(`query Replies($after: String) {
-  comments(first: %d, after: $after, orderBy: createdAt, filter: {createdAt: {%s}, user: {id: {neq: %s}}, issue: {%s, team: {key: {in: %s}}}}) {
+  comments(first: %d, after: $after, orderBy: createdAt, filter: {createdAt: {%s}, user: {id: {neq: %s}}, issue: {%s}}) {
     nodes { id body createdAt user { id } issue { id } }
     pageInfo { hasNextPage endCursor }
   }
-}`, linearPage, window, quote(l.AppUserID), l.givenToApp(), quote(l.Teams))
+}`, linearPage, window, quote(l.AppUserID), l.givenToApp())
 	var replies []Reply
 	var after *string
 	for page := 0; ; page++ {
