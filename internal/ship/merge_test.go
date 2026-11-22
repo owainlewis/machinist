@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,9 +22,14 @@ type fakeGH struct {
 	refuse     string   // pr merge fails with this text
 	repo       string   // stdout of gh api repos/{owner}/{repo}; "" allows merge commits
 	repoErr    string   // gh api fails with this text
-	calls      []string
-	views      int
-	looks      int
+	// headLag is how many pr views after an update still report the old head
+	// commit; -1 means the head never moves.
+	headLag int
+	updates int // head commit n is "sha<n>"
+	moveAt  int // the pr view from which the head is the updated one
+	calls   []string
+	views   int
+	looks   int
 }
 
 func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, string, error) {
@@ -43,7 +49,7 @@ func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, string, error) 
 			merge = f.mergeState[min(f.views, len(f.mergeState)-1)]
 		}
 		f.views++
-		return []byte(`{"number":7,"url":"https://github.com/o/r/pull/7","state":"` + state + `","mergeStateStatus":"` + merge + `"}`), "", nil
+		return []byte(`{"number":7,"url":"https://github.com/o/r/pull/7","state":"` + state + `","mergeStateStatus":"` + merge + `","headRefOid":"` + f.head() + `"}`), "", nil
 	case strings.HasPrefix(call, "pr checks"):
 		out := f.checks[min(f.looks, len(f.checks)-1)]
 		f.looks++
@@ -58,8 +64,15 @@ func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, string, error) 
 		if f.refuse != "" {
 			return nil, f.refuse, errors.New("exit status 1")
 		}
+		if want := args[len(args)-1]; want != f.head() {
+			return nil, "Head branch was modified. Review and try the merge again.", errors.New("exit status 1")
+		}
 		return nil, "", nil
 	case strings.HasPrefix(call, "pr update-branch"):
+		if f.headLag >= 0 {
+			f.updates++
+			f.moveAt = f.views + f.headLag
+		}
 		return nil, "", nil
 	case call == "api repos/{owner}/{repo}":
 		if f.repoErr != "" {
@@ -74,11 +87,20 @@ func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, string, error) 
 	return nil, "", nil
 }
 
+// head is the head commit GitHub reports to the next pr view.
+func (f *fakeGH) head() string {
+	n := f.updates
+	if n > 0 && f.views < f.moveAt {
+		n--
+	}
+	return "sha" + strconv.Itoa(n)
+}
+
 func (f *fakeGH) merged() bool { return f.mergedWith("merge") }
 
 func (f *fakeGH) mergedWith(method string) bool {
 	for _, call := range f.calls {
-		if call == "pr merge 7 --"+method+" --delete-branch" {
+		if strings.HasPrefix(call, "pr merge 7 --"+method+" --delete-branch ") {
 			return true
 		}
 	}
@@ -310,5 +332,105 @@ func TestMergeSaysWhenThePendingChecksChange(t *testing.T) {
 	}
 	if got := strings.Count(log.String(), "▸ Wait for"); got != 2 || !strings.Contains(log.String(), "Wait for 1 of 2") {
 		t.Fatalf("log:\n%s", log.String())
+	}
+}
+
+// After an update the new head commit's checks take a while to register. A
+// pull request that had checks never merges on a round that sees none.
+func TestMergeWaitsForChecksOnTheUpdatedBranch(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	options.StartTries = 3
+	gh := &fakeGH{t: t, checks: []string{passed, "none"}, mergeState: []string{"CLEAN", "BEHIND", "CLEAN"}}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if gh.merged() {
+		t.Fatalf("merged with no checks on the updated branch; calls %v", gh.calls)
+	}
+	if got := result(t, control); got != `Left open: the checks "test" did not start on the updated branch. https://github.com/o/r/pull/7` {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+// Each check from the first round must come back, so one fast check does not
+// stand in for a slow one that has not registered yet.
+func TestMergeWaitsForEveryCheckToComeBackAfterAnUpdate(t *testing.T) {
+	_, options := setup(t, `{"verdict":"accepted"}`)
+	both := `[{"name":"lint","bucket":"pass"},{"name":"test","bucket":"pass"}]`
+	gh := &fakeGH{t: t, checks: []string{both, "none", `[{"name":"lint","bucket":"pass"}]`, both}, mergeState: []string{"CLEAN", "BEHIND", "CLEAN"}}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil || !gh.merged() {
+		t.Fatalf("err = %v, merged = %v", err, gh.merged())
+	}
+	if gh.looks != 4 {
+		t.Fatalf("looks = %d, want 4", gh.looks)
+	}
+}
+
+func TestMergeLeavesItOpenWhenACheckDoesNotComeBackAfterAnUpdate(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	options.StartTries = 2
+	both := `[{"name":"lint","bucket":"pass"},{"name":"test","bucket":"pass"}]`
+	gh := &fakeGH{t: t, checks: []string{both, `[{"name":"lint","bucket":"pass"}]`}, mergeState: []string{"CLEAN", "BEHIND", "CLEAN"}}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil || gh.merged() {
+		t.Fatalf("err = %v, merged = %v", err, gh.merged())
+	}
+	if got := result(t, control); got != `Left open: the checks "test" did not start on the updated branch. https://github.com/o/r/pull/7` {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+// Right after an update gh can still report the old head commit and its passed
+// checks. The pull request waits for the new head, and never merges on the old
+// head's checks.
+func TestMergeLeavesItOpenWhenTheHeadDoesNotMoveAfterAnUpdate(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	options.StartTries = 2
+	gh := &fakeGH{t: t, checks: []string{passed}, mergeState: []string{"CLEAN", "BEHIND", "CLEAN"}, headLag: -1}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil || gh.merged() {
+		t.Fatalf("err = %v, merged = %v; calls %v", err, gh.merged(), gh.calls)
+	}
+	if gh.looks != 1 {
+		t.Fatalf("looks = %d, want 1: the old head's checks were read again", gh.looks)
+	}
+	if got := result(t, control); got != "Left open: the pull request did not move to the updated branch. https://github.com/o/r/pull/7" {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+func TestMergeWaitsForTheNewHeadAndMergesThatCommit(t *testing.T) {
+	_, options := setup(t, `{"verdict":"accepted"}`)
+	gh := &fakeGH{t: t, checks: []string{passed}, mergeState: []string{"CLEAN", "BEHIND", "CLEAN"}, headLag: 2}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil || !gh.merged() {
+		t.Fatalf("err = %v, merged = %v; calls %v", err, gh.merged(), gh.calls)
+	}
+	if last := gh.calls[len(gh.calls)-1]; last != "pr merge 7 --merge --delete-branch --match-head-commit sha1" {
+		t.Fatalf("merge call = %q", last)
+	}
+}
+
+// A push during the wait moves the head after its checks were read, so the
+// merge names the checked commit and GitHub refuses it.
+func TestMergeNamesTheCheckedHeadCommit(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	gh := &fakeGH{t: t, checks: []string{passed}}
+	options.GH = func(ctx context.Context, args ...string) ([]byte, string, error) {
+		if args[1] == "checks" {
+			gh.updates, gh.moveAt = 1, 0
+		}
+		return gh.run(ctx, args...)
+	}
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(gh.calls, "\n"), "--match-head-commit sha0") {
+		t.Fatalf("calls = %v", gh.calls)
+	}
+	if got := result(t, control); !strings.HasPrefix(got, "Left open: GitHub refused the merge: Head branch was modified") {
+		t.Fatalf("result = %q", got)
 	}
 }

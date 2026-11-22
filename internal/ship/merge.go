@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -64,6 +65,7 @@ type pullRequest struct {
 	URL              string `json:"url"`
 	State            string `json:"state"`
 	MergeStateStatus string `json:"mergeStateStatus"`
+	HeadRefOid       string `json:"headRefOid"`
 }
 
 type check struct {
@@ -90,14 +92,28 @@ func Merge(ctx context.Context, options MergeOptions) error {
 	// A failed check fails the job whether or not the change may merge, so a
 	// pull request left for a person never hides one.
 	reason := blocker(options)
+	// The checks seen on the last round. After an update the new head commit's
+	// checks take a while to register, so each one must come back before the
+	// pull request may merge, or a round that sees none would merge without CI.
+	var seen []string
+	// The head commit whose checks the last round saw. The merge names it, so
+	// GitHub refuses to merge any other commit.
+	var head string
 	for updates := 0; ; updates++ {
-		if err := awaitChecks(ctx, options, pr); err != nil {
+		head = pr.HeadRefOid
+		names, err := awaitChecks(ctx, options, pr, seen)
+		if err != nil {
 			var failed *CheckFailedError
 			if errors.As(err, &failed) {
 				return errors.Join(writeResult(options.Control, fmt.Sprintf("Left open: %s. %s", failed.Error(), pr.URL)), err)
 			}
+			var missing *missingChecksError
+			if errors.As(err, &missing) {
+				return leaveOpen(options, pr, missing.Error())
+			}
 			return err
 		}
+		seen = names
 		if reason != "" {
 			return leaveOpen(options, pr, reason)
 		}
@@ -115,10 +131,20 @@ func Merge(ctx context.Context, options MergeOptions) error {
 		if _, stderr, err := options.GH(ctx, "pr", "update-branch", strconv.Itoa(pr.Number)); err != nil {
 			return leaveOpen(options, pr, "GitHub could not update the branch: "+firstLine(stderr, err))
 		}
+		// Until the pull request reports the new head, gh still shows the old
+		// head's passed checks, which would merge the update without CI.
+		moved, ok, err := awaitNewHead(ctx, options, pr)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return leaveOpen(options, pr, "the pull request did not move to the updated branch")
+		}
+		pr = moved
 	}
 	method := mergeMethod(ctx, options)
 	fmt.Fprintf(options.Log, "▸ Merge pull request #%d with %s\n", pr.Number, method)
-	if _, stderr, err := options.GH(ctx, "pr", "merge", strconv.Itoa(pr.Number), "--"+method, "--delete-branch"); err != nil {
+	if _, stderr, err := options.GH(ctx, "pr", "merge", strconv.Itoa(pr.Number), "--"+method, "--delete-branch", "--match-head-commit", head); err != nil {
 		return leaveOpen(options, pr, "GitHub refused the merge: "+firstLine(stderr, err))
 	}
 	return writeResult(options.Control, "Merged: "+pr.URL)
@@ -204,7 +230,7 @@ func leaveOpen(options MergeOptions, pr pullRequest, reason string) error {
 // findPR finds the open pull request on the job's branch.
 func findPR(ctx context.Context, options MergeOptions) (pullRequest, bool, error) {
 	var pr pullRequest
-	stdout, stderr, err := options.GH(ctx, "pr", "view", options.Branch, "--json", "number,url,state,mergeStateStatus")
+	stdout, stderr, err := options.GH(ctx, "pr", "view", options.Branch, "--json", "number,url,state,mergeStateStatus,headRefOid")
 	if err != nil {
 		if strings.Contains(stderr, "no pull requests found") {
 			return pr, false, nil
@@ -220,10 +246,45 @@ func findPR(ctx context.Context, options MergeOptions) (pullRequest, bool, error
 	return pr, true, nil
 }
 
+// awaitNewHead waits until the pull request's head commit is no longer the one
+// in pr, and returns the pull request as it now is. It reports false when the
+// head has not moved after StartTries waits.
+func awaitNewHead(ctx context.Context, options MergeOptions, pr pullRequest) (pullRequest, bool, error) {
+	for tries := 0; ; tries++ {
+		now, _, err := findPR(ctx, options)
+		if err != nil {
+			return pr, false, err
+		}
+		if now.HeadRefOid != "" && now.HeadRefOid != pr.HeadRefOid {
+			return now, true, nil
+		}
+		if tries == options.StartTries {
+			return pr, false, nil
+		}
+		if !options.Sleep(ctx, options.StartWait) {
+			return pr, false, ctx.Err()
+		}
+	}
+}
+
+// missingChecksError means checks seen on an earlier round never started on
+// the updated branch, so the pull request stays open.
+type missingChecksError struct{ Checks []string }
+
+func (err *missingChecksError) Error() string {
+	quoted := make([]string, len(err.Checks))
+	for i, name := range err.Checks {
+		quoted[i] = strconv.Quote(name)
+	}
+	return fmt.Sprintf("the checks %s did not start on the updated branch", strings.Join(quoted, ", "))
+}
+
 // awaitChecks waits until every check on the pull request has finished, and
-// fails on the first that did not pass. A repository with no checks passes once
-// none have appeared after StartTries waits.
-func awaitChecks(ctx context.Context, options MergeOptions, pr pullRequest) error {
+// fails on the first that did not pass. It returns the names of the checks.
+// Each check named in want must appear, and a *missingChecksError says which
+// did not after StartTries waits. With want empty, a repository with no checks
+// passes once none have appeared after StartTries waits.
+func awaitChecks(ctx context.Context, options MergeOptions, pr pullRequest, want []string) ([]string, error) {
 	empty := 0
 	// The step prints whenever the count of pending checks changes, and at
 	// least every few minutes, so its idle timeout never stops a long wait.
@@ -231,40 +292,57 @@ func awaitChecks(ctx context.Context, options MergeOptions, pr pullRequest) erro
 	for {
 		checks, err := readChecks(ctx, options, pr.Number)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if len(checks) == 0 {
-			if empty == options.StartTries {
-				fmt.Fprintln(options.Log, "No checks started, so there are none to wait for")
-				return nil
-			}
-			empty++
-			if !options.Sleep(ctx, options.StartWait) {
-				return ctx.Err()
-			}
-			continue
-		}
+		names := make([]string, len(checks))
 		pending := 0
-		for _, check := range checks {
+		for i, check := range checks {
+			names[i] = check.Name
 			switch check.Bucket {
 			case "fail", "cancel":
-				return &CheckFailedError{Check: check.Name, Link: check.Link}
+				return nil, &CheckFailedError{Check: check.Name, Link: check.Link}
 			case "pending":
 				pending++
 			}
 		}
+		missing := absent(want, names)
+		if len(checks) == 0 || len(missing) > 0 {
+			if empty == options.StartTries {
+				if len(missing) > 0 {
+					return nil, &missingChecksError{Checks: missing}
+				}
+				fmt.Fprintln(options.Log, "No checks started, so there are none to wait for")
+				return nil, nil
+			}
+			empty++
+			if !options.Sleep(ctx, options.StartWait) {
+				return nil, ctx.Err()
+			}
+			continue
+		}
 		if pending == 0 {
 			fmt.Fprintf(options.Log, "All %d checks passed\n", len(checks))
-			return nil
+			return names, nil
 		}
 		if pending != lastPending || time.Since(lastSaid) >= waitReminder {
 			fmt.Fprintf(options.Log, "▸ Wait for %d of %d checks on pull request #%d\n", pending, len(checks), pr.Number)
 			lastPending, lastSaid = pending, time.Now()
 		}
 		if !options.Sleep(ctx, options.Poll) {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 	}
+}
+
+// absent returns the names in want that are not in have.
+func absent(want, have []string) []string {
+	var missing []string
+	for _, name := range want {
+		if !slices.Contains(have, name) {
+			missing = append(missing, name)
+		}
+	}
+	return missing
 }
 
 func readChecks(ctx context.Context, options MergeOptions, number int) ([]check, error) {
