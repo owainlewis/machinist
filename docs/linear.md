@@ -103,8 +103,8 @@ Pick out the `id` of each person who may send Machinist work. These go in `allow
 
 ### 4. Add the `linear` section
 
-Add a `linear` section to `config.yaml`. Each team's repository must also be in
-`github.repositories`.
+Add a `linear` section to `config.yaml`. Each repository it names must be connected: in
+`github.repositories`, or added in **Settings → Projects**.
 
 ```yaml
 linear:
@@ -123,8 +123,8 @@ linear:
 | `app_user_id` | The Machinist app's Linear user. Delegating or assigning an issue to it starts a job |
 | `allowed_users` | The Linear user IDs who may start jobs. A delegation or assignment by anyone else is ignored |
 | `preset` | The preset Linear jobs use. Defaults to `server.default_preset` |
-| `projects` | Linear project, by name or ID, to repository. Names match in any case. Each repository must be in `github.repositories` |
-| `teams` | Linear team key to repository, for issues whose project is not in `projects`. Each repository must be in `github.repositories` |
+| `projects` | Linear project, by name or ID, to repository. Names match in any case. Each repository must be in `github.repositories` or **Settings → Projects** |
+| `teams` | Linear team key to repository, for issues whose project is not in `projects`. Each repository must be in `github.repositories` or **Settings → Projects** |
 | `poll_interval` | Time between polls. Defaults to `60s`, and must be at least `10s` |
 | `max_jobs_per_hour` | The most jobs Linear can start in any hour. Defaults to 20 |
 

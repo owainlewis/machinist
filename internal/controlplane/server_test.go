@@ -229,7 +229,8 @@ func TestLinearSignsInWithTheCredentialsItWasGiven(t *testing.T) {
 	machinistConfig := testConfig()
 	machinistConfig.GitHub.Repositories = []string{"owner/repo"}
 	machinistConfig.Linear = config.Linear{AppUserID: "app-user", AllowedUsers: []string{"owain"}, Teams: map[string]string{"ENG": "owner/repo"}, Token: "lin_api_key"}
-	poller, err := linearPoller(machinistConfig, testFactory(), &sources.Intake{}, nil, io.Discard)
+	intake := linearIntake(t, machinistConfig.GitHub.Repositories...)
+	poller, err := linearPoller(t.Context(), machinistConfig, testFactory(), intake, intake.Store, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +239,7 @@ func TestLinearSignsInWithTheCredentialsItWasGiven(t *testing.T) {
 	}
 	machinistConfig.Linear.Token = ""
 	machinistConfig.Linear.ClientID, machinistConfig.Linear.ClientSecret = "client-id", "client-secret"
-	poller, err = linearPoller(machinistConfig, testFactory(), &sources.Intake{}, nil, io.Discard)
+	poller, err = linearPoller(t.Context(), machinistConfig, testFactory(), intake, intake.Store, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

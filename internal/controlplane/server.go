@@ -96,7 +96,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 			return ok
 		},
 	}
-	linear, err := linearPoller(machinistConfig, loaded, intake, store, log)
+	linear, err := linearPoller(context.Background(), machinistConfig, loaded, intake, store, log)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,9 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 
 // linearPoller checks the Linear section against the factory and the
 // connected repositories, so a mistake stops startup instead of dropping work.
-func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake *sources.Intake, store *tickets.Store, log io.Writer) (*sources.Poller, error) {
+// A connected repository is one in github.repositories or one added in
+// Settings → Projects.
+func linearPoller(ctx context.Context, machinistConfig config.Config, loaded *factory.Factory, intake *sources.Intake, store *tickets.Store, log io.Writer) (*sources.Poller, error) {
 	linear := machinistConfig.Linear
 	if !linear.Enabled() {
 		return nil, nil
@@ -134,6 +136,10 @@ func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake
 	if _, ok := loaded.Preset(preset); !ok {
 		return nil, fmt.Errorf("linear.preset %q is not in the factory", preset)
 	}
+	connected, err := intake.Connected(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list connected repositories: %w", err)
+	}
 	for _, mapping := range []struct {
 		key   string
 		repos map[string]string
@@ -141,8 +147,8 @@ func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake
 		names := slices.Sorted(maps.Keys(mapping.repos))
 		for _, name := range names {
 			repository := mapping.repos[name]
-			if !slices.ContainsFunc(machinistConfig.GitHub.Repositories, func(connected string) bool { return strings.EqualFold(connected, repository) }) {
-				return nil, fmt.Errorf("linear.%s.%s: %s is not in github.repositories", mapping.key, name, repository)
+			if !slices.ContainsFunc(connected, func(listed string) bool { return strings.EqualFold(listed, repository) }) {
+				return nil, fmt.Errorf("linear.%s.%s: %s is not a connected repository; add it to github.repositories or in Settings → Projects", mapping.key, name, repository)
 			}
 		}
 	}
