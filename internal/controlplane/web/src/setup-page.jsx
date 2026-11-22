@@ -2,8 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Check, ChevronRight, CircleAlert, ExternalLink, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
-import { settingsHref } from "./routes.js";
-import { checkPage } from "./settings.js";
+import { checkLink } from "./settings.js";
 import { repoName, setupLine } from "./setup.js";
 
 const refreshMillis = 10_000;
@@ -14,7 +13,7 @@ export const sentence = text => text.charAt(0).toUpperCase() + text.slice(1).rep
 function CheckRow({ check }) {
   const tone = check.ok ? "pill-success" : check.required ? "pill-warning" : "";
   const Icon = check.ok ? Check : CircleAlert;
-  const page = checkPage(check.name);
+  const [href, label] = checkLink(check.name);
   return <li className="setup-check">
     <span className={`pill ${tone}`}><Icon className="size-3.5" aria-hidden="true" />{check.ok ? "Done" : check.required ? "Needed" : "Optional"}</span>
     <div>
@@ -23,7 +22,7 @@ function CheckRow({ check }) {
       {!check.ok && check.fix && <p className="setup-fix">{check.fix}{check.link && <> <a href={check.link} target="_blank" rel="noreferrer">Read how<ExternalLink className="size-3" aria-hidden="true" /></a></>}</p>}
       {check.ok && check.fix && check.link && <p className="ticket-meta"><a href={check.link} target="_blank" rel="noreferrer">{check.fix}</a></p>}
     </div>
-    {page && <a className="setup-check-open" href={settingsHref(page)} aria-label={`Open ${check.name} settings`}><ChevronRight className="size-4" aria-hidden="true" /></a>}
+    {href && <a className="setup-check-open" href={href} aria-label={label}><ChevronRight className="size-4" aria-hidden="true" /></a>}
   </li>;
 }
 

@@ -544,3 +544,36 @@ func TestAJobGoesOnlyToARunnerWithItsHarnesses(t *testing.T) {
 		t.Fatalf("a runner that did not probe got %v, err %v", request, err)
 	}
 }
+
+// An error that already ends a sentence is not given a second full stop.
+func TestAssignFailureMessagesEndWithOneFullStop(t *testing.T) {
+	// Some errors, such as GitHub's, are whole sentences.
+	notInstalled, unauthorized := "the GitHub App is not installed on owner/repo.", "GitHub replied 401."
+	for name, setup := range map[string]func(*Engine){
+		"token": func(e *Engine) {
+			e.GitHubToken = func(context.Context, string) (string, error) {
+				return "", errors.New(notInstalled)
+			}
+		},
+		"identity": func(e *Engine) {
+			e.Identity = func(context.Context) (string, string, error) {
+				return "", "", errors.New(unauthorized)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEngine(t)
+			setup(e)
+			ticket := newTicket(t, e, "api")
+			if err := e.Tick(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false); err != nil {
+				t.Fatal(err)
+			}
+			if message := lastMessage(t, e, ticket.ID); strings.HasSuffix(message, "..") || !strings.HasSuffix(message, ".") {
+				t.Fatalf("message = %q", message)
+			}
+		})
+	}
+}

@@ -10,10 +10,17 @@ export const settingsPages = [
   ["presets", "Presets and agents"],
 ];
 
-// checkPage is the Settings page that holds more about a setup check.
-const checkPages = { GitHub: "github", Projects: "projects", Linear: "linear", Agents: "presets" };
-export function checkPage(name) {
-  return checkPages[name] || "";
+// checkLink is the page that holds more about a setup check, and what its
+// link is called. Most are Settings pages. Runners have a page of their own.
+const checkLinks = {
+  GitHub: ["#/settings/github", "Open GitHub settings"],
+  Projects: ["#/settings/projects", "Open Projects settings"],
+  Linear: ["#/settings/linear", "Open Linear settings"],
+  Agents: ["#/settings/presets", "Open Agents settings"],
+  Runner: ["#/runners", "Open Runners"],
+};
+export function checkLink(name) {
+  return checkLinks[name] || ["", ""];
 }
 
 // pollLabel says how often Linear is asked, such as "Every 1m 30s".

@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkPage, dayLabel, githubLine, githubWarnings, pollLabel, roleLabel, settingsPages, tokenLine } from "./settings.js";
+import { checkLink, dayLabel, githubLine, githubWarnings, pollLabel, roleLabel, settingsPages, tokenLine } from "./settings.js";
 
 test("the side nav lists one page per topic, overview first", () => {
   assert.deepEqual(settingsPages.map(([page]) => page), ["overview", "projects", "github", "linear", "tokens", "presets"]);
 });
 
 test("a setup check links to the page that holds more about it", () => {
-  assert.equal(checkPage("GitHub"), "github");
-  assert.equal(checkPage("Projects"), "projects");
-  assert.equal(checkPage("Agents"), "presets");
-  assert.equal(checkPage("Runner"), "");
+  assert.deepEqual(checkLink("GitHub"), ["#/settings/github", "Open GitHub settings"]);
+  assert.deepEqual(checkLink("Projects"), ["#/settings/projects", "Open Projects settings"]);
+  assert.deepEqual(checkLink("Agents"), ["#/settings/presets", "Open Agents settings"]);
+  assert.deepEqual(checkLink("Runner"), ["#/runners", "Open Runners"], "runners have a page of their own");
+  assert.deepEqual(checkLink("Unknown"), ["", ""]);
 });
 
 test("the poll interval reads in minutes and seconds", () => {

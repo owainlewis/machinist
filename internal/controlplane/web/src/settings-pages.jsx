@@ -146,7 +146,9 @@ export function LinearPage({ onSignedOut }) {
       <section className="settings-section" aria-labelledby="teams-title">
         <h2 id="teams-title" className="chart-title">Teams</h2>
         <p className="page-note">An issue works in its team's repository. Issues from other teams are ignored.</p>
-        <ul className="list">{linear.teams.map(team => <li key={team.team} className="settings-row settings-map"><strong>{team.team}</strong><span aria-hidden="true">→</span><span>{team.repo}</span></li>)}</ul>
+        {linear.teams.length
+          ? <ul className="list">{linear.teams.map(team => <li key={team.team} className="settings-row settings-map"><strong>{team.team}</strong><span aria-hidden="true">→</span><span>{team.repo}</span></li>)}</ul>
+          : <p className="empty">No teams are mapped. Add <code>teams</code> to the <code>linear</code> section of config.yaml, with each team key and its repository.</p>}
       </section>
     </>}
   </>;

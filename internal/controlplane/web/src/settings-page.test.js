@@ -15,6 +15,7 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   }
   let projects = [];
   let runner = false;
+  let linear = false;
   let signedIn = true;
   const added = [];
   const revoked = [];
@@ -50,7 +51,9 @@ test("Settings: a new install opens on the overview, each page has a route, and 
         { repo: "owner/api", default_branch: "trunk", protected: false, admin: true, warnings: ["trunk has no branch protection, and auto-merge is on.", "The login is an admin here."] },
       ],
     });
-    if (url === "/api/v1/settings/linear") return reply(200, { enabled: false, allowed_users: [], teams: [], credential_env: ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"], renews: true, docs: "https://example.com/linear.md#set-it-up" });
+    if (url === "/api/v1/settings/linear") return reply(200, linear
+      ? { enabled: true, app_user_id: "app-1", allowed_users: ["alice@example.com"], preset: "default", teams: [], poll_seconds: 60, max_jobs_per_hour: 10, credential_env: ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"], renews: true, docs: "https://example.com/linear.md#set-it-up" }
+      : { enabled: false, allowed_users: [], teams: [], credential_env: ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"], renews: true, docs: "https://example.com/linear.md#set-it-up" });
     if (url === "/api/v1/tokens") return reply(200, { tokens });
     if (url.startsWith("/api/v1/tokens/") && options.method === "DELETE") {
       const name = decodeURIComponent(url.slice("/api/v1/tokens/".length));
@@ -98,6 +101,7 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   await eventually(() => assert.match(document.querySelector(".page-sub").textContent, /1 of 3 required steps/));
   assert.ok(document.querySelector('[aria-label="Settings need attention"]'));
   assert.ok(document.querySelector('a[aria-label="Open Projects settings"][href="#/settings/projects"]'));
+  assert.ok(document.querySelector('a[aria-label="Open Runners"][href="#/runners"]'), "the runner check links to the runners page");
 
   // A runner started elsewhere shows up when the window comes back into focus.
   runner = true;
@@ -148,6 +152,15 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   const guide = document.querySelector(".settings-howto a");
   assert.equal(guide.getAttribute("href"), "https://example.com/linear.md#set-it-up");
   assert.match(guide.textContent, /setup guide/);
+
+  // Linear on, with no teams mapped, says so rather than showing an empty list.
+  linear = true;
+  await go("#/settings/github");
+  await eventually(() => assert.equal(heading(), "GitHub"));
+  await go("#/settings/linear");
+  await eventually(() => assert.match(document.querySelector(".settings-facts")?.textContent || "", /app-1/));
+  assert.equal(document.querySelector('[aria-labelledby="teams-title"] .list'), null);
+  assert.match(document.querySelector('[aria-labelledby="teams-title"] .empty').textContent, /No teams are mapped/);
 
   // Presets and agents: read only.
   await go("#/settings/presets");
