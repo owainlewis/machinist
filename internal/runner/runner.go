@@ -264,14 +264,20 @@ func supervise(ctx context.Context, process *os.Process, processOwner string, ti
 		}
 		return waited
 	}
-	// stop asks the process group to exit with SIGTERM, gives it stopGrace,
-	// and then stops whatever is left as abort does.
+	// stop asks the process group to exit with SIGTERM, gives the whole group
+	// stopGrace, and then stops whatever is left as abort does. A shell can exit
+	// at once while its child is still cleaning up, so the grace lasts until the
+	// group is empty, not only until the shell exits.
 	stop := func() processWait {
 		if signalProcessGroup(process, syscall.SIGTERM) == nil {
+			deadline := time.Now().Add(stopGrace)
 			grace := time.NewTimer(stopGrace)
 			defer grace.Stop()
 			select {
 			case waited := <-processResult:
+				for time.Now().Before(deadline) && signalProcessGroup(process, 0) == nil {
+					time.Sleep(20 * time.Millisecond)
+				}
 				setOutputDeadline(time.Now(), outputWriters...)
 				cleanupErr := terminateProcessTree(process, processOwner)
 				closeInput()

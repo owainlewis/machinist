@@ -195,6 +195,19 @@ func TestAStoppedStepGetsSIGTERMFirstAndKeepsItsUsage(t *testing.T) {
 	}
 }
 
+// A shell step can exit on SIGTERM at once while the agent it started is
+// still cleaning up. The grace period covers the agent too.
+func TestTheGracePeriodCoversAStepsChildren(t *testing.T) {
+	step := Step{Name: "review", Run: `sh -c 'trap "sleep 1; printf \"{\\\"cost\\\":0.75}\" > \"$MACHINIST_DIR/usage.json\"; exit 143" TERM; echo start; while :; do sleep 0.05; done'`, IdleTimeoutMillis: 300}
+	result, _ := run(t, stepsRequest(step))
+	if result.State != StateTimedOut {
+		t.Fatalf("result = %+v", result)
+	}
+	if cost := result.Stages[0].Cost; cost == nil || *cost != 0.75 {
+		t.Fatalf("stage = %+v", result.Stages[0])
+	}
+}
+
 func TestControlFilesMustBeSmallRegularFiles(t *testing.T) {
 	result, _ := run(t, stepsRequest(Step{Name: "link", Run: `ln -s /etc/passwd "$MACHINIST_DIR/result.md"`}))
 	if result.State != StateFailed || !strings.Contains(result.Error, "not a regular file") {
