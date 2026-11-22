@@ -93,3 +93,25 @@ func nullable(value string) any {
 	}
 	return value
 }
+
+// RequestKey is the source key of the request that made a ticket, or empty when
+// it has none.
+func (s *Store) RequestKey(ctx context.Context, ticketID string) (string, error) {
+	var key string
+	err := s.db.QueryRowContext(ctx, `SELECT source_key FROM ticket_entries WHERE ticket_id=? AND kind=? AND source_key IS NOT NULL ORDER BY id LIMIT 1`, ticketID, EntryRequest).Scan(&key)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return key, err
+}
+
+// CurrentStep is the step a running run of the ticket is on, or empty when no
+// run is running or it has not started a step.
+func (s *Store) CurrentStep(ctx context.Context, ticketID string) (string, error) {
+	var step string
+	err := s.db.QueryRowContext(ctx, `SELECT p.step FROM runs r JOIN run_progress p ON p.run=r.id WHERE r.ticket_id=? AND r.status=? ORDER BY r.rowid DESC LIMIT 1`, ticketID, RunRunning).Scan(&step)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return step, err
+}
