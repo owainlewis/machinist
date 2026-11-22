@@ -50,7 +50,7 @@ test("Settings: a new install opens on the overview, each page has a route, and 
         { repo: "owner/api", default_branch: "trunk", protected: false, admin: true, warnings: ["trunk has no branch protection, and auto-merge is on.", "The login is an admin here."] },
       ],
     });
-    if (url === "/api/v1/settings/linear") return reply(200, { enabled: false, allowed_users: [], teams: [], token_env: "LINEAR_API_TOKEN", docs: "https://example.com/linear.md" });
+    if (url === "/api/v1/settings/linear") return reply(200, { enabled: false, allowed_users: [], teams: [], credential_env: ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"], renews: true, docs: "https://example.com/linear.md#set-it-up" });
     if (url === "/api/v1/tokens") return reply(200, { tokens });
     if (url.startsWith("/api/v1/tokens/") && options.method === "DELETE") {
       const name = decodeURIComponent(url.slice("/api/v1/tokens/".length));
@@ -144,7 +144,10 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   await go("#/settings/linear");
   await eventually(() => assert.equal(heading(), "Linear"));
   assert.equal(marked(), "Linear");
-  await eventually(() => assert.match(document.querySelector(".settings-howto")?.textContent || "", /LINEAR_API_TOKEN/));
+  await eventually(() => assert.match(document.querySelector(".settings-howto")?.textContent || "", /LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET/));
+  const guide = document.querySelector(".settings-howto a");
+  assert.equal(guide.getAttribute("href"), "https://example.com/linear.md#set-it-up");
+  assert.match(guide.textContent, /setup guide/);
 
   // Presets and agents: read only.
   await go("#/settings/presets");
