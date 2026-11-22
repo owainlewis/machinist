@@ -124,7 +124,7 @@ function App() {
       {route.view === "job" && <JobPage key={route.jobID} jobID={route.jobID} onSignedOut={signedOut} />}
       {route.view === "dashboard" && <DashboardPage onSignedOut={signedOut} />}
       {route.view === "settings" && <SettingsPage page={route.page} setup={setup} onSignedOut={signedOut} onSetupChange={setSetup} />}
-      {route.view === "runners" && <RunnersPage runners={status.runners} queue={status.queue} loaded={loaded} error={error} />}
+      {route.view === "runners" && <RunnersPage runners={status.runners} queue={status.queue} loaded={loaded} error={error} onChange={() => loader.current.refresh()} onSignedOut={signedOut} />}
     </main>
   </div>;
 }

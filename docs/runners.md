@@ -61,7 +61,9 @@ count.
 A Kubernetes runner takes any job, because its image decides which harnesses exist.
 
 The Runners page shows each runner's harnesses. When no online runner can run a preset,
-the Settings overview says which harness is missing.
+the Settings overview says which harness is missing. Queued jobs that wait for one are
+named on the Runners page and on the job's page, with the harnesses they wait for. A
+`machinist agent <name>` call in a shell comment does not count.
 
 ## Kubernetes runner
 
@@ -127,6 +129,11 @@ agent harnesses it has, how many of its slots are busy and the runs it holds. It
 runs are waiting for a free slot and how long the oldest has waited. A runner that has
 made no contact for 90 seconds shows as not responding. Revoking a runner's token removes
 it from the list.
+
+A runner taken out of service, such as an old laptop, stays listed as not responding. Remove
+it from the Runners page, or with `DELETE /api/v1/runners/{name}`, once it holds no running
+job. Removing a runner that is online or still holds a run answers `409 Conflict`. A removed
+runner that asks for work again comes back.
 
 ## When a runner is lost
 
