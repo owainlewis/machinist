@@ -242,6 +242,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "runners", "probed INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Reviewer runs are gone. Cancel any a database from before still queues.
 	// Jobs no longer wait for answers, so one left waiting has failed.
 	for _, statement := range []string{
@@ -848,35 +852,49 @@ func (s *Store) QueueRun(ctx context.Context, ticketID, harness string) (Run, er
 // firstAccepted returns the first run the query lists whose ticket accept
 // allows, or ErrNotFound.
 func firstAccepted(ctx context.Context, tx *sql.Tx, query string, arguments []any, accept func(Ticket) bool) (Run, error) {
+	// Page through the queue, so runs this runner cannot take never hide a
+	// run it can behind them.
+	for offset := 0; ; offset += claimPage {
+		runs, err := queryRuns(ctx, tx, query+fmt.Sprintf(" LIMIT %d OFFSET %d", claimPage, offset), arguments)
+		if err != nil {
+			return Run{}, err
+		}
+		for _, run := range runs {
+			if accept == nil {
+				return run, nil
+			}
+			ticket, err := loadTicket(ctx, tx, run.TicketID)
+			if err != nil {
+				return Run{}, err
+			}
+			if accept(ticket) {
+				return run, nil
+			}
+		}
+		if len(runs) < claimPage {
+			return Run{}, ErrNotFound
+		}
+	}
+}
+
+// claimPage is how many queued runs a claim reads at a time.
+var claimPage = 500
+
+func queryRuns(ctx context.Context, tx *sql.Tx, query string, arguments []any) ([]Run, error) {
 	rows, err := tx.QueryContext(ctx, query, arguments...)
 	if err != nil {
-		return Run{}, err
+		return nil, err
 	}
 	runs := []Run{}
 	for rows.Next() {
 		run, err := scanRun(rows)
 		if err != nil {
 			rows.Close()
-			return Run{}, err
+			return nil, err
 		}
 		runs = append(runs, run)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return Run{}, err
-	}
-	for _, run := range runs {
-		if accept == nil {
-			return run, nil
-		}
-		ticket, err := loadTicket(ctx, tx, run.TicketID)
-		if err != nil {
-			return Run{}, err
-		}
-		if accept(ticket) {
-			return run, nil
-		}
-	}
-	return Run{}, ErrNotFound
+	return runs, errors.Join(rows.Err(), rows.Close())
 }
 
 // ClaimRun gives the oldest queued run for these harnesses whose ticket accept
@@ -893,7 +911,7 @@ func (s *Store) ClaimRun(ctx context.Context, runner string, harnesses []string,
 	}
 	var claim *Claim
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		run, err := firstAccepted(ctx, tx, `SELECT `+runColumns+` FROM runs WHERE status=? AND kind='agent' AND harness IN (`+placeholders+`) ORDER BY rowid LIMIT 500`, arguments, accept)
+		run, err := firstAccepted(ctx, tx, `SELECT `+runColumns+` FROM runs WHERE status=? AND kind='agent' AND harness IN (`+placeholders+`) ORDER BY rowid`, arguments, accept)
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}

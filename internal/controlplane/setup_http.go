@@ -13,7 +13,6 @@ import (
 
 	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/githubapp"
-	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -251,7 +250,7 @@ func (s *Server) harnessCheck(runners []tickets.Runner) (SetupCheck, bool) {
 	for _, name := range names {
 		needs := s.factory.Needs(s.factory.Presets[name])
 		if !slices.ContainsFunc(online, func(runner tickets.Runner) bool {
-			return !reportsHarnesses(runner) || engine.HasAll(runner.Harnesses, needs)
+			return !runner.Probed || engine.HasAll(runner.Harnesses, needs)
 		}) {
 			stuck = append(stuck, fmt.Sprintf("%s needs %s", name, strings.Join(needs, " and ")))
 		}
@@ -263,10 +262,4 @@ func (s *Server) harnessCheck(runners []tickets.Runner) (SetupCheck, bool) {
 		check.Link = docs + "runners.md"
 	}
 	return check, true
-}
-
-// reportsHarnesses says whether a runner listed its agent harnesses, beyond
-// the steps every runner runs.
-func reportsHarnesses(runner tickets.Runner) bool {
-	return slices.ContainsFunc(runner.Harnesses, func(name string) bool { return name != protocol.StepsHarness })
 }

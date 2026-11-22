@@ -637,3 +637,26 @@ func TestRerunReopensAnEndedTicket(t *testing.T) {
 		t.Fatalf("missing: err = %v", err)
 	}
 }
+
+func TestAClaimLooksPastRunsTheRunnerCannotTake(t *testing.T) {
+	store := openStore(t)
+	previous := claimPage
+	claimPage = 2
+	t.Cleanup(func() { claimPage = previous })
+	var wanted Ticket
+	for index := range 5 {
+		ticket := createTicket(t, store, fmt.Sprintf("k%d", index))
+		if _, err := store.QueueRun(t.Context(), ticket.ID, "steps"); err != nil {
+			t.Fatal(err)
+		}
+		wanted = ticket
+	}
+	accept := func(ticket Ticket) bool { return ticket.ID == wanted.ID }
+	claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"steps"}, time.Now().Add(time.Minute), accept)
+	if err != nil || claim == nil || claim.Ticket.ID != wanted.ID {
+		t.Fatalf("claim = %+v, err = %v", claim, err)
+	}
+	if none, err := store.ClaimRun(t.Context(), "runner-1", []string{"steps"}, time.Now().Add(time.Minute), accept); err != nil || none != nil {
+		t.Fatalf("claim = %+v, err = %v", none, err)
+	}
+}

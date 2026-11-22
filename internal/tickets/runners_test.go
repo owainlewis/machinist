@@ -20,13 +20,13 @@ func fleet(t *testing.T, store *Store) ([]Runner, Queue) {
 
 func TestRecordRunnerKeepsTheLatestDescription(t *testing.T) {
 	store := openStore(t)
-	if err := store.RecordRunner(t.Context(), "mac-mini", "local", []string{"claude"}, 0); err != nil {
+	if err := store.RecordRunner(t.Context(), "mac-mini", "local", []string{"claude"}, 0, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRunner(t.Context(), "cluster", "kubernetes", []string{"claude", "codex"}, 8); err != nil {
+	if err := store.RecordRunner(t.Context(), "cluster", "kubernetes", []string{"claude", "codex"}, 8, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRunner(t.Context(), "mac-mini", "local", nil, 2); err != nil {
+	if err := store.RecordRunner(t.Context(), "mac-mini", "local", nil, 2, false); err != nil {
 		t.Fatal(err)
 	}
 	runners, queue := fleet(t, store)
@@ -47,7 +47,7 @@ func TestRecordRunnerKeepsTheLatestDescription(t *testing.T) {
 
 func TestRecordRunnerTreatsNoSlotsAsOne(t *testing.T) {
 	store := openStore(t)
-	if err := store.RecordRunner(t.Context(), "old-runner", "", []string{"claude"}, 0); err != nil {
+	if err := store.RecordRunner(t.Context(), "old-runner", "", []string{"claude"}, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	if runners, _ := fleet(t, store); runners[0].Slots != 1 {
@@ -59,7 +59,7 @@ func TestTouchRunnerMovesLastContact(t *testing.T) {
 	store := openStore(t)
 	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	store.SetClock(func() time.Time { return now })
-	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1); err != nil {
+	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Minute)
@@ -80,7 +80,7 @@ func TestFleetShowsRunningJobsAndTheQueue(t *testing.T) {
 	queued := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	now := queued
 	store.SetClock(func() time.Time { return now })
-	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 2); err != nil {
+	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 2, false); err != nil {
 		t.Fatal(err)
 	}
 	running := createTicket(t, store, "api:1")
@@ -113,7 +113,7 @@ func TestRevokingATokenRemovesItsRunner(t *testing.T) {
 	if _, err := store.CreateToken(t.Context(), "runner-1", RoleAll); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1); err != nil {
+	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RevokeToken(t.Context(), "runner-1"); err != nil {
@@ -126,7 +126,7 @@ func TestRevokingATokenRemovesItsRunner(t *testing.T) {
 
 func TestFleetShowsWhatARunningJobIsDoing(t *testing.T) {
 	store := openStore(t)
-	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1); err != nil {
+	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	claim := claimRun(t, store, createTicket(t, store, "api:1"))

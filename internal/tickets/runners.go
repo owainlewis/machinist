@@ -12,9 +12,12 @@ import (
 // Runner is one machine or cluster that asks for work, as it last described
 // itself, with the runs it holds now.
 type Runner struct {
-	Name        string      `json:"name"`
-	Kind        string      `json:"kind"`
-	Harnesses   []string    `json:"harnesses"`
+	Name      string   `json:"name"`
+	Kind      string   `json:"kind"`
+	Harnesses []string `json:"harnesses"`
+	// Probed is true when the runner looked up its harnesses, so a list with
+	// no agent harness means it has none, not that it did not say.
+	Probed      bool        `json:"probed"`
 	Slots       int         `json:"slots"`
 	LastContact time.Time   `json:"last_contact"`
 	Jobs        []RunnerJob `json:"jobs"`
@@ -45,13 +48,13 @@ type Queue struct {
 }
 
 // RecordRunner stores what a runner said about itself when it asked for work.
-func (s *Store) RecordRunner(ctx context.Context, name, kind string, harnesses []string, slots int) error {
+func (s *Store) RecordRunner(ctx context.Context, name, kind string, harnesses []string, slots int, probed bool) error {
 	if slots < 1 {
 		slots = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO runners(name,kind,harnesses,slots,last_contact) VALUES(?,?,?,?,?)
-  ON CONFLICT(name) DO UPDATE SET kind=excluded.kind,harnesses=excluded.harnesses,slots=excluded.slots,last_contact=excluded.last_contact`,
-		name, kind, strings.Join(harnesses, ","), slots, stamp(s.now()))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO runners(name,kind,harnesses,slots,last_contact,probed) VALUES(?,?,?,?,?,?)
+  ON CONFLICT(name) DO UPDATE SET kind=excluded.kind,harnesses=excluded.harnesses,slots=excluded.slots,last_contact=excluded.last_contact,probed=excluded.probed`,
+		name, kind, strings.Join(harnesses, ","), slots, stamp(s.now()), probed)
 	return err
 }
 
@@ -107,7 +110,7 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 }
 
 func (s *Store) listRunners(ctx context.Context) ([]Runner, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,kind,harnesses,slots,last_contact FROM runners ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name,kind,harnesses,slots,last_contact,probed FROM runners ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +120,7 @@ func (s *Store) listRunners(ctx context.Context) ([]Runner, error) {
 		runner := Runner{Harnesses: []string{}, Jobs: []RunnerJob{}}
 		var harnesses string
 		var contact sql.NullString
-		if err := rows.Scan(&runner.Name, &runner.Kind, &harnesses, &runner.Slots, &contact); err != nil {
+		if err := rows.Scan(&runner.Name, &runner.Kind, &harnesses, &runner.Slots, &contact, &runner.Probed); err != nil {
 			return nil, err
 		}
 		if harnesses != "" {
