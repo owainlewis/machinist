@@ -70,7 +70,7 @@ func TestTheClientCredentialsGetAToken(t *testing.T) {
 		"grant_type":    "client_credentials",
 		"client_id":     "client-id",
 		"client_secret": "client-secret",
-		"scope":         "read,write",
+		"scope":         "read,write,app:assignable,app:mentionable",
 	}
 	if got := tokens.forms[0]; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("form = %v", got)

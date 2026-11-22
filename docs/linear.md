@@ -1,7 +1,7 @@
 # Start jobs from Linear
 
-Machinist is a user in Linear. When an allowed person delegates an issue in a connected
-team to the Machinist app, Machinist starts a job in that team's repository. Linear records
+Machinist is a user in Linear. When an allowed person delegates an issue to the Machinist
+app, Machinist starts a job in the repository that the issue's project or team maps to. Linear records
 the app as the issue's delegate and keeps the person as its assignee. Assigning the issue to
 the app directly works too. The job's prompt is
 the issue's title, description and link. Each issue starts one job, ever, and the
@@ -73,7 +73,7 @@ token is:
 
 ```sh
 token=$(curl -s https://api.linear.app/oauth/token \
-  -d grant_type=client_credentials -d scope=read,write \
+  -d grant_type=client_credentials -d scope=read,write,app:assignable,app:mentionable \
   -d client_id="$LINEAR_CLIENT_ID" -d client_secret="$LINEAR_CLIENT_SECRET" \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
 curl -s https://api.linear.app/graphql \
@@ -82,6 +82,14 @@ curl -s https://api.linear.app/graphql \
 ```
 
 The `id` it returns is `app_user_id`.
+
+Ask for all four scopes. Without `app:assignable` and `app:mentionable`, Linear refuses to
+let anyone delegate or assign an issue to the app.
+
+Getting a token this way revokes the app's previous token. If a control plane is already
+running with these credentials, it gets a new one on its next poll, but a second control
+plane sharing the same client ID and secret will keep taking the token from the first. Give
+each control plane its own Linear app.
 
 **People's IDs.** Use the same token to list everyone in the workspace:
 
@@ -103,6 +111,9 @@ linear:
   app_user_id: <the app's user ID>
   allowed_users:
     - <your Linear user ID>
+  projects:
+    Machinist: owner/machinist
+    Airtime: owner/airtime
   teams:
     ENG: owner/name
 ```
@@ -112,13 +123,15 @@ linear:
 | `app_user_id` | The Machinist app's Linear user. Delegating or assigning an issue to it starts a job |
 | `allowed_users` | The Linear user IDs who may start jobs. A delegation or assignment by anyone else is ignored |
 | `preset` | The preset Linear jobs use. Defaults to `server.default_preset` |
-| `teams` | Linear team key to repository. Each repository must be in `github.repositories`. Issues from other teams are never read |
+| `projects` | Linear project, by name or ID, to repository. Names match in any case. Each repository must be in `github.repositories` |
+| `teams` | Linear team key to repository, for issues whose project is not in `projects`. Each repository must be in `github.repositories` |
 | `poll_interval` | Time between polls. Defaults to `60s`, and must be at least `10s` |
 | `max_jobs_per_hour` | The most jobs Linear can start in any hour. Defaults to 20 |
 
-Startup stops if only one of `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` is set, if no
-credentials are set, if `app_user_id` or `allowed_users` is empty, if a team's repository
-is not connected, or if the preset does not exist.
+Set `projects`, `teams` or both. Startup stops if only one of `LINEAR_CLIENT_ID` and
+`LINEAR_CLIENT_SECRET` is set, if no credentials are set, if `app_user_id` or
+`allowed_users` is empty, if a project's or team's repository is not connected, or if the
+preset does not exist.
 
 ### 5. Check that it works
 
@@ -145,6 +158,14 @@ new one once and sends the request again. Nothing is written to disk.
 starts with `lin_api_`, in place of the client ID and secret. Machinist uses it as it is and
 cannot renew it, so when it expires polling stops until you set a new one. If both are set,
 the client ID and secret win.
+
+## Which repository a job runs in
+
+1. The issue's project, if `projects` names it by ID or by name.
+2. Otherwise the issue's team, if `teams` names it.
+3. Otherwise no job starts. Machinist logs why and comments on the issue that its project
+   and team map to no repository. It comments once each time the issue is handed to it, not
+   on every edit.
 
 ## What Machinist does in Linear
 

@@ -16,9 +16,11 @@ import (
 // LinearTokenEndpoint is where Linear hands out OAuth access tokens.
 const LinearTokenEndpoint = "https://api.linear.app/oauth/token"
 
-// linearScope is what the Machinist app asks for: it reads issues, and writes
-// their states and comments.
-const linearScope = "read,write"
+// linearScope is what the Machinist app asks for: it reads issues and writes
+// their states and comments, and app:assignable and app:mentionable let people
+// delegate or assign issues to it. Without those two, Linear refuses to give
+// the app an issue.
+const linearScope = "read,write,app:assignable,app:mentionable"
 
 // maxRenewMargin is how long before a token expires Machinist gets a new one.
 // A short-lived token is renewed at half its life instead.

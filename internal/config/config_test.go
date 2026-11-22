@@ -173,7 +173,21 @@ func TestLinearIsOffUntilTeamsAreSet(t *testing.T) {
 		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
 	}
 	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "set teams") {
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "set projects or teams") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLinearProjectsTurnLinearOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv(LinearTokenEnv, "lin_oauth_token")
+	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n  allowed_users: [owain]\n  projects:\n    Machinist: owner/machinist\n    Airtime: owner/airtime\n")
+	loaded, err := LoadConfig(path)
+	if err != nil || !loaded.Linear.Enabled() || loaded.Linear.Projects["Airtime"] != "owner/airtime" || len(loaded.Linear.Teams) != 0 {
+		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
+	}
+	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n  allowed_users: [owain]\n  projects:\n    Airtime: \"\"\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "each project needs a name or ID and a repository") {
 		t.Fatalf("error = %v", err)
 	}
 }

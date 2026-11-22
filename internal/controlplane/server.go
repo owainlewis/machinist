@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"slices"
@@ -133,22 +134,26 @@ func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake
 	if _, ok := loaded.Preset(preset); !ok {
 		return nil, fmt.Errorf("linear.preset %q is not in the factory", preset)
 	}
-	teams := make([]string, 0, len(linear.Teams))
-	for team, repository := range linear.Teams {
-		if !slices.ContainsFunc(machinistConfig.GitHub.Repositories, func(connected string) bool { return strings.EqualFold(connected, repository) }) {
-			return nil, fmt.Errorf("linear.teams.%s: %s is not in github.repositories", team, repository)
+	for _, mapping := range []struct {
+		key   string
+		repos map[string]string
+	}{{"projects", linear.Projects}, {"teams", linear.Teams}} {
+		names := slices.Sorted(maps.Keys(mapping.repos))
+		for _, name := range names {
+			repository := mapping.repos[name]
+			if !slices.ContainsFunc(machinistConfig.GitHub.Repositories, func(connected string) bool { return strings.EqualFold(connected, repository) }) {
+				return nil, fmt.Errorf("linear.%s.%s: %s is not in github.repositories", mapping.key, name, repository)
+			}
 		}
-		teams = append(teams, team)
 	}
-	slices.Sort(teams)
-	tracker := &sources.Linear{Token: linear.Token, AppUserID: linear.AppUserID, Teams: teams}
+	tracker := &sources.Linear{Token: linear.Token, AppUserID: linear.AppUserID}
 	if linear.UsesClientCredentials() {
 		// The first poll, at startup, fetches the token.
 		tracker.Credentials = &sources.LinearCredentials{ClientID: linear.ClientID, ClientSecret: linear.ClientSecret}
 	}
 	return &sources.Poller{
 		Tracker:        tracker,
-		Rules:          sources.TrackerRules{AllowedUsers: linear.AllowedUsers, Preset: preset, Teams: linear.Teams},
+		Rules:          sources.TrackerRules{AllowedUsers: linear.AllowedUsers, Preset: preset, Projects: linear.Projects, Teams: linear.Teams},
 		Intake:         intake,
 		Store:          store,
 		Interval:       linear.Poll,

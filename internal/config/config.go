@@ -65,10 +65,10 @@ type GitHubApp struct {
 }
 
 // Linear starts jobs from issues assigned to the Machinist app, by asking
-// Linear's API for them on an interval. It is off until teams lists at least
-// one team. The app signs in with LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET, or
-// a fixed LINEAR_API_TOKEN, never with anything in this file, so the file can
-// live in git.
+// Linear's API for them on an interval. It is off until projects or teams
+// maps at least one repository. The app signs in with LINEAR_CLIENT_ID and
+// LINEAR_CLIENT_SECRET, or a fixed LINEAR_API_TOKEN, never with anything in
+// this file, so the file can live in git.
 type Linear struct {
 	// AppUserID is the Machinist app's Linear user. Assigning an issue to it
 	// starts a job.
@@ -78,8 +78,12 @@ type Linear struct {
 	AllowedUsers []string `yaml:"allowed_users"`
 	// Preset is the preset Linear jobs use. It defaults to server.default_preset.
 	Preset string `yaml:"preset"`
+	// Projects maps a Linear project, by name or ID, to the repository its
+	// jobs work in. It wins over the issue's team.
+	Projects map[string]string `yaml:"projects"`
 	// Teams maps a Linear team key, such as ENG, to the repository its jobs
-	// work in. Issues from any other team are ignored.
+	// work in, for issues whose project is not in Projects. An issue that
+	// matches neither is ignored, with a comment saying why.
 	Teams map[string]string `yaml:"teams"`
 	// MaxJobsPerHour caps the jobs Linear can start in any hour.
 	MaxJobsPerHour int `yaml:"max_jobs_per_hour"`
@@ -100,7 +104,7 @@ type Linear struct {
 func (l Linear) UsesClientCredentials() bool { return l.ClientID != "" }
 
 // Enabled reports whether Machinist takes work from Linear.
-func (l Linear) Enabled() bool { return len(l.Teams) > 0 }
+func (l Linear) Enabled() bool { return len(l.Projects) > 0 || len(l.Teams) > 0 }
 
 // The variables that hold the app's Linear credentials.
 const (
@@ -260,7 +264,7 @@ func applyServerDefaults(server Server) (Server, error) {
 func applyLinearDefaults(linear Linear, getenv func(string) string) (Linear, error) {
 	if !linear.Enabled() {
 		if linear.AppUserID != "" || linear.Preset != "" || len(linear.AllowedUsers) > 0 {
-			return Linear{}, errors.New("linear: set teams to take work from Linear, or remove the linear section")
+			return Linear{}, errors.New("linear: set projects or teams to take work from Linear, or remove the linear section")
 		}
 		return linear, nil
 	}
@@ -299,6 +303,11 @@ func applyLinearDefaults(linear Linear, getenv func(string) string) (Linear, err
 		return Linear{}, errors.New("linear: list the Linear user IDs allowed to assign work in allowed_users")
 	}
 	linear.AllowedUsers = allowed
+	for project, repository := range linear.Projects {
+		if strings.TrimSpace(project) == "" || strings.TrimSpace(repository) == "" {
+			return Linear{}, errors.New("linear: each project needs a name or ID and a repository")
+		}
+	}
 	for team, repository := range linear.Teams {
 		if strings.TrimSpace(team) == "" || strings.TrimSpace(repository) == "" {
 			return Linear{}, errors.New("linear: each team needs a key and a repository")
