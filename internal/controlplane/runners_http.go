@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"sort"
+	"strings"
 
 	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/protocol"
@@ -43,7 +46,116 @@ func (s *Server) listRunners(w http.ResponseWriter, r *http.Request, _ string) {
 			job.Agents = s.currentAgents(job.Preset, job.Step)
 		}
 	}
+	if queue.Waiting > 0 {
+		presets, err := s.store.QueuedPresets(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		queue.Blocked = s.blocked(runners, presets)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"runners": runners, "queue": queue})
+}
+
+// blocked groups the queued runs that no online runner can take by the
+// harnesses they wait for. presets counts the queued runs of each preset.
+func (s *Server) blocked(runners []tickets.Runner, presets map[string]int) []tickets.HarnessWait {
+	online := s.onlineRunners(runners)
+	byMissing := map[string]*tickets.HarnessWait{}
+	for name, count := range presets {
+		missing := s.waitingFor(online, name)
+		if len(missing) == 0 {
+			continue
+		}
+		key := strings.Join(missing, ",")
+		if byMissing[key] == nil {
+			byMissing[key] = &tickets.HarnessWait{Harnesses: missing}
+		}
+		byMissing[key].Waiting += count
+	}
+	keys := make([]string, 0, len(byMissing))
+	for key := range byMissing {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	waits := make([]tickets.HarnessWait, 0, len(keys))
+	for _, key := range keys {
+		waits = append(waits, *byMissing[key])
+	}
+	return waits
+}
+
+// onlineRunners keeps the runners that made contact recently.
+func (s *Server) onlineRunners(runners []tickets.Runner) []tickets.Runner {
+	var online []tickets.Runner
+	for _, runner := range runners {
+		if s.now().Sub(runner.LastContact) < runnerWindow {
+			online = append(online, runner)
+		}
+	}
+	return online
+}
+
+// waitingFor names the harnesses that keep every online runner from taking a
+// job of this preset. It is empty when an online runner can take one, when no
+// runner is online, or when the preset is gone, since such a job is claimed
+// only to fail.
+func (s *Server) waitingFor(online []tickets.Runner, presetName string) []string {
+	if s.factory == nil {
+		return nil
+	}
+	preset, ok := s.factory.Preset(presetName)
+	if !ok {
+		return nil
+	}
+	return missingHarnesses(online, s.factory.Needs(preset))
+}
+
+// missingHarnesses names the harnesses in needs that the closest online runner
+// lacks, the fewest any one runner is missing, so installing them there lets
+// it take the job. It is empty when an online runner has them all, or when no
+// runner is online. A runner that did not report its harnesses, such as a
+// Kubernetes runner, may have any of them.
+func missingHarnesses(online []tickets.Runner, needs []string) []string {
+	var fewest []string
+	for index, runner := range online {
+		if !runner.Probed {
+			return nil
+		}
+		var missing []string
+		for _, name := range needs {
+			if !slices.Contains(runner.Harnesses, name) {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		if index == 0 || len(missing) < len(fewest) {
+			fewest = missing
+		}
+	}
+	return fewest
+}
+
+// removeRunner forgets a runner that is offline and holds no running job, so
+// a machine taken out of service stops counting in the fleet.
+func (s *Server) removeRunner(w http.ResponseWriter, r *http.Request, tokenName string) {
+	name := r.PathValue("name")
+	err := s.store.RemoveRunner(r.Context(), name, s.now().Add(-runnerWindow))
+	switch {
+	case errors.Is(err, tickets.ErrNotFound):
+		writeError(w, http.StatusNotFound, fmt.Errorf("no runner is named %q", name))
+	case errors.Is(err, tickets.ErrRunnerBusy):
+		writeError(w, http.StatusConflict, fmt.Errorf("runner %q has running jobs, so it cannot be removed until they end", name))
+	case errors.Is(err, tickets.ErrRunnerOnline):
+		writeError(w, http.StatusConflict, fmt.Errorf("runner %q is online, so it cannot be removed; stop it first", name))
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, err)
+	default:
+		fmt.Fprintf(s.log, "machinist: %s removed runner %q\n", tokenName, name)
+		s.listRunners(w, r, tokenName)
+	}
 }
 
 // ownsRun checks that the run was given to this runner, so one runner cannot
