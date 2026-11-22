@@ -16,7 +16,7 @@ import (
 func ProbeNetwork(ctx context.Context) error {
 	api := net.JoinHostPort(os.Getenv("KUBERNETES_SERVICE_HOST"), "443")
 	if os.Getenv("KUBERNETES_SERVICE_HOST") == "" {
-		return fmt.Errorf("Kubernetes API address is unavailable for isolation verification")
+		return fmt.Errorf("kubernetes API address is unavailable for isolation verification")
 	}
 	for _, address := range []string{"169.254.169.254:80", api, "1.1.1.1:443"} {
 		connection, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", address)

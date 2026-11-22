@@ -58,6 +58,11 @@ local: build
 test:
     go test -race ./...
 
+staticcheck_version := "v0.8.2"
+
+staticcheck:
+    go run honnef.co/go/tools/cmd/staticcheck@{{staticcheck_version}} ./...
+
 format-check:
     files="$(gofmt -l cmd internal)"; test -z "$files" || { printf '%s\n' "$files"; exit 1; }
 
@@ -67,5 +72,6 @@ check:
     just format-check
     python3 -m unittest discover -s deploy/kubernetes -p 'test_*.py'
     go vet ./...
+    just staticcheck
     go test -race ./...
     go build ./...

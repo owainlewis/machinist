@@ -18,7 +18,6 @@ type fakeGH struct {
 	state      string
 	mergeState []string // mergeStateStatus on each pr view, the last repeats
 	checks     []string // stdout of each pr checks call, the last repeats
-	pending    bool     // pr checks exits non-zero, as gh does while pending
 	refuse     string   // pr merge fails with this text
 	repo       string   // stdout of gh api repos/{owner}/{repo}; "" allows merge commits
 	repoErr    string   // gh api fails with this text
