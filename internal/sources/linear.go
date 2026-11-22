@@ -68,10 +68,10 @@ type linearIssue struct {
 
 // linearChange is one entry in an issue's history.
 type linearChange struct {
-	CreatedAt    time.Time `json:"createdAt"`
-	ActorID      string    `json:"actorId"`
-	ToAssigneeID string    `json:"toAssigneeId"`
-	ToDelegateID string    `json:"toDelegateId"`
+	CreatedAt    time.Time   `json:"createdAt"`
+	ActorID      string      `json:"actorId"`
+	ToAssigneeID string      `json:"toAssigneeId"`
+	ToDelegate   *linearUser `json:"toDelegate"`
 }
 
 // givenToApp is the part of an issue filter that matches issues delegated or
@@ -86,7 +86,7 @@ func (l *Linear) Assignments(ctx context.Context, since time.Time) ([]Assignment
 	query := fmt.Sprintf(`query Assigned($after: String) {
   issues(first: %d, after: $after, orderBy: updatedAt, filter: {%s, team: {key: {in: %s}}, updatedAt: {gt: %s}}) {
     nodes { id identifier title description url updatedAt team { key }
-      history(first: %d) { nodes { createdAt actorId toAssigneeId toDelegateId } } }
+      history(first: %d) { nodes { createdAt actorId toAssigneeId toDelegate { id } } } }
     pageInfo { hasNextPage endCursor }
   }
 }`, linearPage, l.givenToApp(), quote(l.Teams), quote(since.UTC().Format(time.RFC3339Nano)), linearHistory)
@@ -124,7 +124,7 @@ func (l *Linear) assignment(issue linearIssue) Assignment {
 	var actor string
 	var at time.Time
 	for _, entry := range issue.History.Nodes {
-		given := entry.ToDelegateID == l.AppUserID || entry.ToAssigneeID == l.AppUserID
+		given := entry.ToDelegate.is(l.AppUserID) || entry.ToAssigneeID == l.AppUserID
 		if given && entry.ActorID != "" && !entry.CreatedAt.Before(at) {
 			actor, at = entry.ActorID, entry.CreatedAt
 		}

@@ -232,7 +232,7 @@ func (f *fakeLinear) delegate(id, team, actor string, at time.Time) {
 	f.add(id, team, actor, at, func(issue *fakeIssue, change *linearChange) {
 		issue.assignee = actor
 		issue.delegate = appUser
-		change.ToDelegateID = appUser
+		change.ToDelegate = &linearUser{ID: appUser}
 	})
 }
 
@@ -364,7 +364,7 @@ func TestADelegationStartsOneJob(t *testing.T) {
 			query = sent
 		}
 	}
-	for _, want := range []string{`delegate: {id: {eq: "app-user"}}`, `assignee: {id: {eq: "app-user"}}`, "toDelegateId"} {
+	for _, want := range []string{`delegate: {id: {eq: "app-user"}}`, `assignee: {id: {eq: "app-user"}}`, "toDelegate { id }"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("query lacks %s:\n%s", want, query)
 		}
