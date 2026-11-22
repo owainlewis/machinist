@@ -57,6 +57,9 @@ func TestStepAgentsIgnoresShellComments(t *testing.T) {
 	if got := names("echo issue#machinist agent codex\necho \\ #machinist agent implement"); !slices.Equal(got, []string{"codex", "implement"}) {
 		t.Fatalf("a # inside a word, or after an escaped space, is not a comment: agents = %v", got)
 	}
+	if got := names("machinist agent implement # then review.sh"); !slices.Equal(got, []string{"implement"}) {
+		t.Fatalf("a script named only in a comment is not read: agents = %v", got)
+	}
 	preset := Preset{Steps: []runner.Step{{Name: "review", Run: "review.sh"}, {Name: "later", Run: "# machinist agent codex"}}}
 	if got := factory.Needs(preset); !slices.Equal(got, []string{"agy", "claude"}) {
 		t.Fatalf("needs = %v", got)
