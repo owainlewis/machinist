@@ -36,6 +36,7 @@ steps:
     timeout: 5m
 
   - name: test
+    idle_timeout: 20m
     run: |
       go test ./...
 `
@@ -60,7 +61,7 @@ func TestLoadReadsPresetsAndAutomations(t *testing.T) {
 	if !ok || preset.Name != "default" || preset.Description != "Clone the repository and run the tests." || preset.Timeout != 30*time.Minute || len(preset.Steps) != 2 {
 		t.Fatalf("preset = %+v", preset)
 	}
-	if preset.Steps[0] != (runner.Step{Name: "checkout", Run: `gh repo clone "$MACHINIST_REPO" .`, TimeoutMillis: (5 * time.Minute).Milliseconds()}) || preset.Steps[1] != (runner.Step{Name: "test", Run: "go test ./...\n"}) {
+	if preset.Steps[0] != (runner.Step{Name: "checkout", Run: `gh repo clone "$MACHINIST_REPO" .`, TimeoutMillis: (5 * time.Minute).Milliseconds()}) || preset.Steps[1] != (runner.Step{Name: "test", Run: "go test ./...\n", IdleTimeoutMillis: (20 * time.Minute).Milliseconds()}) {
 		t.Fatalf("steps = %+v", preset.Steps)
 	}
 	if _, ok := factory.Preset("missing"); ok {

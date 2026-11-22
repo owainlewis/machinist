@@ -5,17 +5,25 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 // Step is one shell command of a preset. It runs with sh -c in the job's
 // workspace. TimeoutMillis of zero means the rest of the run's time.
+// IdleTimeoutMillis of zero means DefaultIdleTimeout.
 type Step struct {
-	Name          string `json:"name"`
-	Run           string `json:"run"`
-	TimeoutMillis int64  `json:"timeout_millis,omitempty"`
+	Name              string `json:"name"`
+	Run               string `json:"run"`
+	TimeoutMillis     int64  `json:"timeout_millis,omitempty"`
+	IdleTimeoutMillis int64  `json:"idle_timeout_millis,omitempty"`
 }
+
+// DefaultIdleTimeout stops a step that has printed nothing for this long. An
+// agent prints a line for every message and action, so only a hung one, or a
+// single tool call this long, stays quiet for it.
+const DefaultIdleTimeout = 15 * time.Minute
 
 // RunRequest is everything a runner needs to start one run. It carries no
 // secrets. The steps run in order in one empty workspace.

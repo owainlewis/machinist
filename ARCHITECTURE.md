@@ -57,7 +57,7 @@ passed. A missing or invalid `review.json` leaves the pull request open. See
 | `failed` | A step failed, the preset is gone, or the runner was lost three times |
 | `cancelled` | Someone cancelled it. Its pull request stays open |
 
-A run whose runner is lost is retried, at most three times in all. Each run has a deadline, the preset's `timeout` or `run_timeout`. Provider spend
+A run whose runner is lost is retried, at most three times in all. Each run has a deadline, the preset's `timeout` or `run_timeout`. A step that prints nothing for its `idle_timeout`, 15 minutes by default, is stopped, so a hung agent frees its slot. Provider spend
 limits cap total cost.
 
 The full state table is in the

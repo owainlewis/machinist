@@ -250,3 +250,21 @@ func TestMergeFailsOnAFailedCheckEvenWhenLeavingItOpen(t *testing.T) {
 		t.Fatalf("result = %q", got)
 	}
 }
+
+// A long wait prints each time the pending count changes, so the step's idle
+// timeout does not stop it, and stays quiet while nothing changes.
+func TestMergeSaysWhenThePendingChecksChange(t *testing.T) {
+	_, options := setup(t, `{"verdict":"accepted","summary":"Good.","findings":[]}`)
+	two := `[{"name":"a","bucket":"pending"},{"name":"b","bucket":"pending"}]`
+	one := `[{"name":"a","bucket":"pass"},{"name":"b","bucket":"pending"}]`
+	gh := &fakeGH{t: t, checks: []string{two, two, two, one, one, `[{"name":"a","bucket":"pass"},{"name":"b","bucket":"pass"}]`}}
+	options.GH = gh.run
+	var log strings.Builder
+	options.Log = &log
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(log.String(), "▸ Wait for"); got != 2 || !strings.Contains(log.String(), "Wait for 1 of 2") {
+		t.Fatalf("log:\n%s", log.String())
+	}
+}

@@ -305,6 +305,13 @@ func runStep(ctx context.Context, request RunRequest, step Step, workspace Works
 	if step.TimeoutMillis > 0 {
 		timeout = min(timeout, time.Duration(step.TimeoutMillis)*time.Millisecond)
 	}
+	idle := DefaultIdleTimeout
+	if step.IdleTimeoutMillis > 0 {
+		idle = time.Duration(step.IdleTimeoutMillis) * time.Millisecond
+	}
+	if idle >= timeout {
+		idle = 0
+	}
 	if err := log.append("step.started", "", "name="+step.Name); err != nil {
 		return Result{}, err
 	}
@@ -312,7 +319,7 @@ func runStep(ctx context.Context, request RunRequest, step Step, workspace Works
 		Environment:   workspace.Environment,
 		Prompt:        request.Prompt,
 		RunID:         request.RunID,
-		Command:       Command{Name: step.Name, Args: []string{"sh", "-e", "-c", step.Run}, Timeout: timeout},
+		Command:       Command{Name: step.Name, Args: []string{"sh", "-e", "-c", step.Run}, Timeout: timeout, IdleTimeout: idle},
 		Directory:     workspace.Directory,
 		DataDirectory: dataDirectory,
 		Stdout:        io.Discard,
