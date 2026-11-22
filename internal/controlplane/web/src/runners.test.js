@@ -90,6 +90,10 @@ test("Runners says which harness queued runs wait for, and offers to remove idle
   assert.match(html, /Install the harness on a runner/);
   assert.equal((html.match(/aria-label="Remove /g) || []).length, 1);
   assert.match(html, /aria-label="Remove old-laptop"/);
+  const two = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners, queue: { waiting: 1, blocked: [{ harnesses: ["agy", "codex"], waiting: 1 }] } }));
+  assert.match(two, /1 run is waiting for a runner with Antigravity and Codex\. No online runner has them\./);
+  const shared = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners, queue: { waiting: 3, blocked: [{ harnesses: ["codex"], waiting: 2 }, { harnesses: ["codex"], waiting: 1 }] } }));
+  assert.match(shared, /No online runner has it\./);
   const clear = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners, queue: { waiting: 1 } }));
   assert.doesNotMatch(clear, /waiting for a runner with/);
 });

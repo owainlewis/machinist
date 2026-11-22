@@ -41,6 +41,11 @@ export function harnessWaits(queue) {
   return (queue?.blocked || []).map(wait => `${wait.waiting === 1 ? "1 run is" : `${wait.waiting} runs are`} waiting for a runner with ${harnessList(wait.harnesses)}`);
 }
 
+// missingHarnesses lists, once each, the harnesses queued runs wait for.
+export function missingHarnesses(queue) {
+  return [...new Set((queue?.blocked || []).flatMap(wait => wait.harnesses))];
+}
+
 // A runner can be removed while it is out of contact and holds no job. One
 // that asks for work again comes back.
 export function removable(runner, now = Date.now()) {
@@ -148,7 +153,7 @@ export function RunnersPage({ runners = [], queue, loaded, error, onChange, onSi
     {loaded && !runners.length && <p className="empty">No runner has connected yet. Run <code>machinist runner start</code> on a machine or cluster.</p>}
     {stalled(runners, queue) && <p className="page-warning" role="status">No runner is online, so waiting runs cannot start.</p>}
     {waits.length > 0 && <div className="page-warning" role="status">
-      <p>{waits.join(". ")}. No online runner has {waits.length === 1 ? "it" : "them"}.</p>
+      <p>{waits.join(". ")}. No online runner has {missingHarnesses(queue).length === 1 ? "it" : "them"}.</p>
       <p>Install the harness on a runner and restart the runner, or change the presets' agents.</p>
     </div>}
     {runners.length > 0 && <ul className="list">{runners.map(runner => <Runner key={runner.name} runner={runner} onChange={onChange} onSignedOut={onSignedOut} />)}</ul>}
