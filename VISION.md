@@ -27,7 +27,7 @@ file in your repository. It runs Codex on your VM every weekday at 9, and anyone
 - **Headless runs.** A run never stops to ask a question. It does the work, lists its
   assumptions, and ends with a result a person reviews: a pull request, comments or a
   report.
-- **Narrow credentials.** Each run gets a GitHub token for its own repository that expires
+- **Narrow credentials.** Each run gets GitHub tokens for its own repository that expire
   after an hour. Model and tracker keys stay on runners.
 
 ## Design rules
@@ -58,11 +58,26 @@ Built and merged:
 - YAML configuration in the repository, created by `machinist init`.
 - One-off jobs with only the `default` preset, and the New job form.
 - The web app: a dashboard, jobs as a board or a list, each job drawn as a pipeline with
-  **Run again**, and runners.
-- Short-lived, one-repository tokens from a GitHub App.
-- Starting a job when a Linear issue is assigned to the Machinist app.
+  **Run again**, runners, and a Settings area with one page per topic, where repositories
+  can be added as projects.
+- Live runs. Each step's agent messages and actions stream to the job page as they happen.
+  The board shows the current step and elapsed time, and each step records its agent,
+  harness, model, tokens and cost. A failed job says why it failed.
+- Short-lived, one-repository tokens from a GitHub App. A local runner takes a new one
+  before each step.
+- Tokens with roles: an operator token runs and watches jobs, a runner token takes work and
+  reaches only its own runs. Each token can be revoked on its own.
 - Agent files: each step names an agent in `factory/agents/`, which picks its harness
-  (Claude Code, Codex or Pi), its model and its prompt.
+  (Claude Code, Codex, Pi or Antigravity), its model and its prompt.
+- Harness matching. Runners report which harnesses they have, and a job goes only to a
+  runner that has the agents it needs.
+- Jobs that ship themselves: a second agent reviews the change, then Machinist opens the
+  pull request, waits for its checks and merges it.
+- Linear. Assigning an issue to the Machinist app starts a job in the repository its project
+  or team maps to. Machinist moves the issue as the job goes, and stops the job when the
+  issue is unassigned or leaves In Progress.
+- Runs that stall stop. A step that prints nothing for its `idle_timeout` is stopped, and a
+  run whose runner is lost is retried, at most three times in all.
 
 Automations already hold a saved prompt, repository, preset and schedule, and can be run
 through the API. They become saved jobs.
@@ -71,20 +86,15 @@ through the API. They become saved jobs.
 
 In this order. Each ships on its own.
 
-1.  **See what a running job is doing.** Stream the agent's messages and actions to the job
-    page as they happen, show the current action and elapsed time on the board, and record
-    tokens and cost.
-2.  **Saved jobs in the web app.** Automations become saved jobs, listed on the Jobs page,
+1.  **Saved jobs in the web app.** Automations become saved jobs, listed on the Jobs page,
     each with **Run**, its schedule, its last result, and Run with an edited prompt.
-3.  **An MCP server.** A bot such as a team assistant lists, runs, watches and cancels jobs
-    through MCP, with a token of its own. Tokens get scopes, such as run-only and read-only,
-    and can be revoked one at a time.
-4.  **Pick the agent.** Runners report which harnesses they have, a job runs only where
-    its agents can, and an OpenCode harness.
-5.  **Pick the host.** Runner labels and `runs_on:` on a job. A job with no label runs on
+2.  **An MCP server.** A bot such as a team assistant lists, runs, watches and cancels jobs
+    through MCP, with a token of its own. Tokens get narrower scopes, such as run-only and
+    read-only.
+3.  **An OpenCode harness.**
+4.  **Pick the host.** Runner labels and `runs_on:` on a job. A job with no label runs on
     any runner.
-6.  **Runs that recover.** Spot a run that has stopped making progress, retry a failed run
-    with backoff, and stop a job when its Linear issue moves out of the state that started
-    it.
-7.  **Rerun from a step.** Save each step's workspace so a failed run can start again at
+5.  **Retry a failed run.** Retry a run that failed with backoff, not only one whose runner
+    was lost.
+6.  **Rerun from a step.** Save each step's workspace so a failed run can start again at
     the step that failed instead of from the clone.
