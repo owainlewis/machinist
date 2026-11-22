@@ -140,3 +140,55 @@ func TestFormatKeepsTheModelClaudeStartedWith(t *testing.T) {
 		t.Fatalf("usage = %+v, err = %v", usage, err)
 	}
 }
+
+// Claude Code reports its rate limit as it goes. Within the limit it says
+// nothing; near or over it, a short notice, never the raw JSON.
+func TestFormatTurnsRateLimitEventsIntoNotices(t *testing.T) {
+	var out bytes.Buffer
+	stream := `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1795400000,"rateLimitType":"five_hour"},"uuid":"u1","session_id":"s1"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1795400000,"rateLimitType":"seven_day","utilization":0.91},"uuid":"u2","session_id":"s1"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1795400000,"rateLimitType":"five_hour"},"uuid":"u3","session_id":"s1"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}
+{"type":"rate_limit_event"}
+`
+	if _, err := Format(strings.NewReader(stream), &out, ""); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"Near the seven-day rate limit (91% used)",
+		"Hit the five-hour rate limit, resets at 2026-11-23 02:13 UTC",
+		"Hit the rate limit",
+		"",
+	}, "\n")
+	if out.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
+// Agents link files they mention with file:// URLs to the runner's workspace,
+// which no one reading the log can open, so the log shows the path in the
+// repository instead.
+func TestFormatTurnsWorkspaceFileLinksIntoRepositoryPaths(t *testing.T) {
+	var out bytes.Buffer
+	line := `{"type":"assistant","message":{"content":[{"type":"text","text":"Fixed [upload.ts](file:///work/src/upload.ts#L12) and file:///work/README.md. See file:///work, https://example.com/file:///work/x, file:///workspace/other.go and file:///etc/hosts."}]}}`
+	if _, err := Format(strings.NewReader(line+"\n"), &out, "/work"); err != nil {
+		t.Fatal(err)
+	}
+	want := "Fixed [upload.ts](src/upload.ts#L12) and README.md. See ., https://example.com/file:///work/x, file:///workspace/other.go and file:///etc/hosts.\n"
+	if out.String() != want {
+		t.Fatalf("got  %q\nwant %q", out.String(), want)
+	}
+}
+
+func TestAgyFormatTurnsWorkspaceFileLinksIntoRepositoryPaths(t *testing.T) {
+	var out bytes.Buffer
+	stream := `{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"agent_response","text_delta":"Changed [retry.go](file:///work/internal/"}}
+{"event":"step_update","step_update":{"state":"DONE","step_type":"agent_response","text_delta":"retry.go)."}}
+`
+	if _, err := (Agy{}).Format(strings.NewReader(stream), &out, "/work/"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Changed [retry.go](internal/retry.go).\n"; out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+}

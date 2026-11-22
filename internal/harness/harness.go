@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -96,7 +97,8 @@ func Names() []string {
 
 // eachLine calls handle for each line of r, and copies a line it does not
 // handle to w. handle returns the lines to write and whether it knew the line.
-func eachLine(r io.Reader, w io.Writer, handle func(line string) ([]string, bool)) error {
+// Links to files in cwd, in the lines handle writes, become paths in cwd.
+func eachLine(r io.Reader, w io.Writer, cwd string, handle func(line string) ([]string, bool)) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64<<10), maxLine)
 	for scanner.Scan() {
@@ -104,6 +106,10 @@ func eachLine(r io.Reader, w io.Writer, handle func(line string) ([]string, bool
 		out, known := handle(line)
 		if !known {
 			out = []string{line}
+		} else {
+			for i, text := range out {
+				out[i] = unlinkFiles(cwd, text)
+			}
 		}
 		for _, text := range out {
 			if _, err := fmt.Fprintln(w, text); err != nil {
@@ -129,6 +135,51 @@ func relative(cwd, file string) string {
 		return rel
 	}
 	return file
+}
+
+// fileLink finds a file:// URL. It ends at a space or at a character that
+// closes a link in Markdown, HTML or quotes.
+var fileLink = regexp.MustCompile("file://[^\\s()<>\\[\\]\"'`]+")
+
+// unlinkFiles turns file:// links to files in cwd into paths in cwd, as an
+// agent's links point at the runner's workspace, which a reader of the log
+// cannot open. Other links, and file:// inside another URL, stay as they are.
+func unlinkFiles(cwd, text string) string {
+	cwd = filepath.Clean(cwd)
+	if cwd == "." || cwd == "/" || !strings.Contains(text, "file://") {
+		return text
+	}
+	var out strings.Builder
+	last := 0
+	for _, at := range fileLink.FindAllStringIndex(text, -1) {
+		start, end := at[0], at[1]
+		if start > 0 && !isLinkBoundary(text[start-1]) {
+			continue
+		}
+		// Punctuation that ends a sentence is not part of the path.
+		link := strings.TrimRight(text[start:end], ".,;:!?")
+		file := strings.TrimPrefix(link, "file://")
+		var path string
+		switch {
+		case file == cwd:
+			path = "."
+		case strings.HasPrefix(file, cwd+"/"):
+			path = strings.TrimPrefix(file, cwd+"/")
+		default:
+			continue
+		}
+		out.WriteString(text[last:start])
+		out.WriteString(path)
+		last = start + len(link)
+	}
+	out.WriteString(text[last:])
+	return out.String()
+}
+
+// isLinkBoundary says whether a link can start after b: a space or
+// punctuation that opens a link, not a letter or a slash of another URL.
+func isLinkBoundary(b byte) bool {
+	return strings.IndexByte(" \t\n([<\"'`*_", b) >= 0
 }
 
 // UsageFile is where Run leaves the usage, in the run's control directory.

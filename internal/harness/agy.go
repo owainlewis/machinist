@@ -72,7 +72,7 @@ func (Agy) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	var usage *Usage
 	var model string
 	var text strings.Builder
-	err := eachLine(r, w, func(line string) ([]string, bool) {
+	err := eachLine(r, w, cwd, func(line string) ([]string, bool) {
 		var e agyEvent
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || !agyEvents[e.Event] {
 			return nil, false
