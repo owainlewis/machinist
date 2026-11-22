@@ -264,6 +264,22 @@ func TestEachStepRecordsTheAgentsThatRanIt(t *testing.T) {
 	}
 }
 
+// A step whose agent reports tokens but no cost shows its cost as unknown,
+// not as free, and a step with some known cost keeps it as a part.
+func TestAStepWithNoReportedCostShowsItUnknown(t *testing.T) {
+	result, _ := run(t, stepsRequest(
+		Step{Name: "review", Run: `printf '{"tokens":40,"cost":0,"cost_unknown":true}' > "$MACHINIST_DIR/usage.json"`},
+		Step{Name: "revise", Run: `printf '{"tokens":60,"cost":0.2,"cost_unknown":true}' > "$MACHINIST_DIR/usage.json"`},
+	))
+	review, revise := result.Stages[0], result.Stages[1]
+	if review.Tokens == nil || *review.Tokens != 40 || review.Cost != nil || !review.CostUnknown {
+		t.Fatalf("review = %+v", review)
+	}
+	if revise.Cost == nil || *revise.Cost != 0.2 || !revise.CostUnknown {
+		t.Fatalf("revise = %+v", revise)
+	}
+}
+
 func TestStepsCanCallTheRunningMachinist(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {

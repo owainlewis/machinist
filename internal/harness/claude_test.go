@@ -125,3 +125,18 @@ func TestRunNeedsACommand(t *testing.T) {
 		t.Fatalf("code = %d, err = %v", code, err)
 	}
 }
+
+// Claude Code names its model when it starts, so a step that stops before
+// the result still says which model ran.
+func TestFormatKeepsTheModelClaudeStartedWith(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-5-5"}` + "\n"
+	usage, err := Format(strings.NewReader(stream), io.Discard, "/work")
+	if err != nil || usage == nil || usage.Model != "claude-opus-5-5" || usage.Tokens != 0 {
+		t.Fatalf("usage = %+v, err = %v", usage, err)
+	}
+	stream += `{"type":"result","subtype":"success","total_cost_usd":0.1,"usage":{"input_tokens":3}}` + "\n"
+	usage, err = Format(strings.NewReader(stream), io.Discard, "/work")
+	if err != nil || usage == nil || usage.Model != "claude-opus-5-5" || usage.Tokens != 3 || usage.Cost != 0.1 || usage.CostUnknown {
+		t.Fatalf("usage = %+v, err = %v", usage, err)
+	}
+}

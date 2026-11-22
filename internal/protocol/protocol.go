@@ -45,14 +45,17 @@ const StageSkipped = "skipped"
 // StageResult is what one stage of a run produced. State is a runner state or
 // StageSkipped. Outcome is the report outcome of an agent stage.
 type StageResult struct {
-	Name           string   `json:"name"`
-	Kind           string   `json:"kind"`
-	State          string   `json:"state"`
-	Outcome        string   `json:"outcome,omitempty"`
-	Tokens         *int64   `json:"tokens,omitempty"`
-	Cost           *float64 `json:"cost,omitempty"`
-	DurationMillis int64    `json:"duration_millis,omitempty"`
-	Error          string   `json:"error,omitempty"`
+	Name    string   `json:"name"`
+	Kind    string   `json:"kind"`
+	State   string   `json:"state"`
+	Outcome string   `json:"outcome,omitempty"`
+	Tokens  *int64   `json:"tokens,omitempty"`
+	Cost    *float64 `json:"cost,omitempty"`
+	// CostUnknown is true when an agent in the step reports no cost, so Cost,
+	// when set, is only part of what the step spent.
+	CostUnknown    bool   `json:"cost_unknown,omitempty"`
+	DurationMillis int64  `json:"duration_millis,omitempty"`
+	Error          string `json:"error,omitempty"`
 	// Agents are the factory agents the step ran, in order.
 	Agents []Agent `json:"agents,omitempty"`
 }

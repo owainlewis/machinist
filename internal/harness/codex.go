@@ -68,7 +68,7 @@ func (Codex) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 		case "turn.completed":
 			turns++
 			if usage == nil {
-				usage = &Usage{}
+				usage = &Usage{CostUnknown: true}
 			}
 			usage.Tokens += e.Usage.Input + e.Usage.Output
 			return []string{fmt.Sprintf("Finished turn %d", turns)}, true

@@ -242,6 +242,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "run_stages", "cost_unknown INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err = addColumns(db, "runners", "probed INTEGER NOT NULL DEFAULT 0"); err != nil {
 		db.Close()
 		return nil, err
@@ -405,7 +409,7 @@ func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	stages, err := s.db.QueryContext(ctx, `SELECT run,name,kind,state,outcome,tokens,cost,duration_millis,error,agents FROM run_stages
+	stages, err := s.db.QueryContext(ctx, `SELECT run,name,kind,state,outcome,tokens,cost,cost_unknown,duration_millis,error,agents FROM run_stages
 	  WHERE run IN (SELECT id FROM runs WHERE ticket_id=?) ORDER BY run,position`, ticketID)
 	if err != nil {
 		return nil, err
@@ -418,7 +422,7 @@ func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
 		var tokens sql.NullInt64
 		var cost sql.NullFloat64
 		var agents string
-		if err := stages.Scan(&run, &stage.Name, &stage.Kind, &stage.State, &stage.Outcome, &tokens, &cost, &stage.DurationMillis, &stage.Error, &agents); err != nil {
+		if err := stages.Scan(&run, &stage.Name, &stage.Kind, &stage.State, &stage.Outcome, &tokens, &cost, &stage.CostUnknown, &stage.DurationMillis, &stage.Error, &agents); err != nil {
 			return nil, err
 		}
 		if agents != "" {
@@ -1019,8 +1023,8 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 				}
 				agents = string(body)
 			}
-			if _, err = tx.ExecContext(ctx, `INSERT INTO run_stages(run,position,name,kind,state,outcome,tokens,cost,duration_millis,error,agents) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-				run.ID, position, stage.Name, stage.Kind, stage.State, stage.Outcome, stage.Tokens, stage.Cost, stage.DurationMillis, stage.Error, agents); err != nil {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO run_stages(run,position,name,kind,state,outcome,tokens,cost,cost_unknown,duration_millis,error,agents) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+				run.ID, position, stage.Name, stage.Kind, stage.State, stage.Outcome, stage.Tokens, stage.Cost, stage.CostUnknown, stage.DurationMillis, stage.Error, agents); err != nil {
 				return err
 			}
 		}

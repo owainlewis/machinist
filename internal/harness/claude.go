@@ -59,10 +59,14 @@ type block struct {
 // lines. cwd shortens file paths in actions.
 func Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	var usage *Usage
+	var model string
 	err := eachLine(r, w, func(line string) ([]string, bool) {
 		var parsed event
 		if json.Unmarshal([]byte(line), &parsed) != nil || !claudeEvents[parsed.Type] {
 			return nil, false
+		}
+		if parsed.Type == "system" && parsed.Subtype == "init" && parsed.Model != "" {
+			model = parsed.Model
 		}
 		if parsed.Type == "result" {
 			u := parsed.Usage
@@ -70,7 +74,7 @@ func Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 		}
 		return describe(parsed, cwd), true
 	})
-	return usage, err
+	return withModel(usage, model), err
 }
 
 func describe(e event, cwd string) []string {

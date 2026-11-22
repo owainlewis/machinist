@@ -188,7 +188,7 @@ func TestCompleteRunStoresStagesInOrder(t *testing.T) {
 	stages := []protocol.StageResult{
 		{Name: "build", Kind: "agent", State: "succeeded", Outcome: protocol.OutcomePRReady, Tokens: &tokens, Cost: &cost, DurationMillis: 1500},
 		{Name: "test", Kind: "script", State: "failed", DurationMillis: 20, Error: "command exited with status 1"},
-		{Name: "review", Kind: "agent", State: protocol.StageSkipped},
+		{Name: "review", Kind: "agent", State: protocol.StageSkipped, Tokens: &tokens, CostUnknown: true},
 	}
 	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed, Stages: stages}, completeTo(StateFailed)); err != nil {
 		t.Fatal(err)
@@ -204,7 +204,7 @@ func TestCompleteRunStoresStagesInOrder(t *testing.T) {
 	if test.Kind != "script" || test.State != "failed" || test.Tokens != nil || test.Cost != nil || test.Error != "command exited with status 1" {
 		t.Fatalf("test = %+v", test)
 	}
-	if review.State != protocol.StageSkipped {
+	if review.State != protocol.StageSkipped || review.Cost != nil || !review.CostUnknown || build.CostUnknown {
 		t.Fatalf("review = %+v", review)
 	}
 }

@@ -259,13 +259,30 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	if err != nil {
 		return err
 	}
-	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: report, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages}, func(ticket tickets.Ticket, status string) tickets.Transition {
+	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: reached(report, pr), Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages}, func(ticket tickets.Ticket, status string) tickets.Transition {
 		transition := decide(status, report, reason, pr)
 		if pr != nil && ticket.PRNumber == 0 {
 			transition.FirstPR = e.firstPR(ticket, pr.Number)
 		}
 		return transition
 	})
+}
+
+// reached labels a run's report with what its pull request reached when the
+// run ended. A step that opens or merges a pull request reports no change,
+// because only the control plane can see what became of it.
+func reached(report *protocol.Report, pr *PR) *protocol.Report {
+	if report == nil || report.Outcome != protocol.OutcomeNoChange || pr == nil {
+		return report
+	}
+	labelled := *report
+	switch {
+	case pr.Merged:
+		labelled.Outcome = protocol.OutcomeMerged
+	case !pr.Closed:
+		labelled.Outcome = protocol.OutcomePRReady
+	}
+	return &labelled
 }
 
 func (e *Engine) firstPR(ticket tickets.Ticket, number int) *tickets.FirstPR {

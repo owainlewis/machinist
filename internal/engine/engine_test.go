@@ -243,6 +243,12 @@ func TestReportIsLabelledWithWhatThePullRequestReached(t *testing.T) {
 		if report != test.want {
 			t.Fatalf("pr %+v: report = %q, want %q", test.pr, report, test.want)
 		}
+		// The run's own report carries the same outcome, so the job page and
+		// the API agree with the ticket.
+		runs, err := e.Store.Runs(t.Context(), ticket.ID)
+		if err != nil || len(runs) != 1 || runs[0].Report == nil || runs[0].Report.Outcome+": Done" != test.want {
+			t.Fatalf("pr %+v: runs = %+v, err = %v", test.pr, runs, err)
+		}
 	}
 }
 

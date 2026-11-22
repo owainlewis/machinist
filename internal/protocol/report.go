@@ -12,6 +12,9 @@ const (
 	OutcomePRReady  = "pr_ready"
 	OutcomeNoChange = "no_change"
 	OutcomeFailed   = "failed"
+	// OutcomeMerged is never reported by a runner. The control plane records
+	// it on a run whose pull request had merged by the time the run ended.
+	OutcomeMerged = "merged"
 )
 
 // Report is the one result of every run. A run never asks a person anything.
