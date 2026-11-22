@@ -116,11 +116,50 @@ func Merge(ctx context.Context, options MergeOptions) error {
 			return leaveOpen(options, pr, "GitHub could not update the branch: "+firstLine(stderr, err))
 		}
 	}
-	fmt.Fprintf(options.Log, "▸ Merge pull request #%d\n", pr.Number)
-	if _, stderr, err := options.GH(ctx, "pr", "merge", strconv.Itoa(pr.Number), "--merge", "--delete-branch"); err != nil {
+	method := mergeMethod(ctx, options)
+	fmt.Fprintf(options.Log, "▸ Merge pull request #%d with %s\n", pr.Number, method)
+	if _, stderr, err := options.GH(ctx, "pr", "merge", strconv.Itoa(pr.Number), "--"+method, "--delete-branch"); err != nil {
 		return leaveOpen(options, pr, "GitHub refused the merge: "+firstLine(stderr, err))
 	}
 	return writeResult(options.Control, "Merged: "+pr.URL)
+}
+
+// repository holds the merge methods a repository allows. A field is nil when
+// GitHub leaves it out of the response.
+type repository struct {
+	AllowMergeCommit *bool `json:"allow_merge_commit"`
+	AllowSquashMerge *bool `json:"allow_squash_merge"`
+	AllowRebaseMerge *bool `json:"allow_rebase_merge"`
+}
+
+// mergeMethod picks the first of merge, squash and rebase that the repository
+// allows, as the gh pr merge flag without its dashes. When the settings cannot
+// be read it picks merge, and GitHub's answer to the merge says what went wrong.
+func mergeMethod(ctx context.Context, options MergeOptions) string {
+	const fallback = "merge"
+	stdout, stderr, err := options.GH(ctx, "api", "repos/{owner}/{repo}")
+	if err != nil {
+		fmt.Fprintf(options.Log, "Could not read the repository's merge settings, so merge with a merge commit: %s\n", firstLine(stderr, err))
+		return fallback
+	}
+	var repo repository
+	if err := json.Unmarshal(stdout, &repo); err != nil {
+		fmt.Fprintf(options.Log, "Could not read the repository's merge settings, so merge with a merge commit: %v\n", err)
+		return fallback
+	}
+	for _, method := range []struct {
+		name    string
+		allowed *bool
+	}{
+		{"merge", repo.AllowMergeCommit},
+		{"squash", repo.AllowSquashMerge},
+		{"rebase", repo.AllowRebaseMerge},
+	} {
+		if method.allowed != nil && *method.allowed {
+			return method.name
+		}
+	}
+	return fallback
 }
 
 func withDefaults(options MergeOptions) MergeOptions {

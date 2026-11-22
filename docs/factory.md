@@ -121,6 +121,9 @@ and the job waits as `pr_ready` for a person:
   two and a half minutes, before it treats the repository as having none. A failed check
   fails the job, even when the pull request would have stayed open anyway.
 
+It merges with the first of a merge commit, a squash and a rebase that the repository
+allows, so squash-only and rebase-only repositories work without a setting.
+
 The reviser does not judge its own fixes. `scripts/review.sh` removes any `review.json`
 before the review runs, and fails the step if the review writes none. `scripts/revise.sh`
 keeps the first review as `first-review.json` and runs the review again on the fixed branch,
