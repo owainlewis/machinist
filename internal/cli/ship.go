@@ -42,6 +42,23 @@ func newMergeCommand(options *commandOptions) *cobra.Command {
 	return command
 }
 
+// newPushCommand pushes the job's branch. A push GitHub rejects fails the step
+// with GitHub's answer, so a job whose work never reached GitHub fails.
+func newPushCommand(options *commandOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "push",
+		Short: "Push the job's branch to origin, inside a step",
+		Long:  "Push HEAD to origin and track it. When the push fails, the step fails and says what GitHub answered.",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if _, err := controlDirectory("push"); err != nil {
+				return err
+			}
+			return ship.Push(command.Context(), ship.PushOptions{Git: runGit, Log: options.stdout})
+		},
+	}
+}
+
 // newVerdictCommand prints the review's verdict, so a script step can act on
 // it. It fails when review.json is missing or not valid.
 func newVerdictCommand(options *commandOptions) *cobra.Command {
@@ -70,6 +87,14 @@ func controlDirectory(command string) (string, error) {
 		return "", errors.New("machinist " + command + " runs inside a step, where MACHINIST_DIR is set")
 	}
 	return control, nil
+}
+
+func runGit(ctx context.Context, args ...string) (string, error) {
+	var stderr bytes.Buffer
+	command := exec.CommandContext(ctx, "git", args...)
+	command.Stderr = &stderr
+	err := command.Run()
+	return stderr.String(), err
 }
 
 func runGH(ctx context.Context, args ...string) ([]byte, string, error) {
