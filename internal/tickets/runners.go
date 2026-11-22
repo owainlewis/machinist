@@ -3,6 +3,7 @@ package tickets
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -45,6 +46,15 @@ type RunnerJob struct {
 type Queue struct {
 	Waiting int        `json:"waiting"`
 	Oldest  *time.Time `json:"oldest_queued_at,omitempty"`
+	// Blocked is the waiting runs no online runner can take, because none
+	// has the harnesses their agents run. The control plane fills it in.
+	Blocked []HarnessWait `json:"blocked,omitempty"`
+}
+
+// HarnessWait is how many queued runs wait for a runner with these harnesses.
+type HarnessWait struct {
+	Harnesses []string `json:"harnesses"`
+	Waiting   int      `json:"waiting"`
 }
 
 // RecordRunner stores what a runner said about itself when it asked for work.
@@ -63,6 +73,39 @@ func (s *Store) RecordRunner(ctx context.Context, name, kind string, harnesses [
 func (s *Store) TouchRunner(ctx context.Context, name string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE runners SET last_contact=? WHERE name=?`, stamp(s.now()), name)
 	return err
+}
+
+var (
+	// ErrRunnerBusy means a runner still holds running jobs.
+	ErrRunnerBusy = errors.New("the runner has running jobs")
+	// ErrRunnerOnline means a runner made contact too recently to remove.
+	ErrRunnerOnline = errors.New("the runner is online")
+)
+
+// RemoveRunner forgets a runner that has not made contact since onlineSince
+// and holds no running job, such as a machine that was taken out of service.
+// A runner that asks for work again comes back.
+func (s *Store) RemoveRunner(ctx context.Context, name string, onlineSince time.Time) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		var contact sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT last_contact FROM runners WHERE name=?`, name).Scan(&contact); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if at := parseTime(contact); at != nil && !at.Before(onlineSince) {
+			return ErrRunnerOnline
+		}
+		var running int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE runner=? AND status=?`, name, RunRunning).Scan(&running); err != nil {
+			return err
+		}
+		if running > 0 {
+			return ErrRunnerBusy
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM runners WHERE name=?`, name)
+		return err
+	})
 }
 
 // Fleet returns every runner by name with its running jobs, and the queue.
@@ -107,6 +150,26 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 	}
 	queue.Oldest = parseTime(oldest)
 	return runners, queue, nil
+}
+
+// QueuedPresets counts the agent runs no runner has taken yet by the preset
+// of their job.
+func (s *Store) QueuedPresets(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT t.agent,COUNT(*) FROM runs r JOIN tickets t ON t.id=r.ticket_id WHERE r.status=? AND r.kind=? GROUP BY t.agent`, RunQueued, RunKindAgent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	presets := map[string]int{}
+	for rows.Next() {
+		var preset string
+		var count int
+		if err := rows.Scan(&preset, &count); err != nil {
+			return nil, err
+		}
+		presets[preset] = count
+	}
+	return presets, rows.Err()
 }
 
 func (s *Store) listRunners(ctx context.Context) ([]Runner, error) {

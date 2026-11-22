@@ -79,7 +79,20 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 		writeTicketError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": s.presetSteps(ticket.Agent)})
+	detail := map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": s.presetSteps(ticket.Agent)}
+	if len(runs) > 0 && runs[len(runs)-1].Status == tickets.RunQueued {
+		runners, _, err := s.store.Fleet(r.Context())
+		if err != nil {
+			writeTicketError(w, err)
+			return
+		}
+		// waiting_for names the harnesses no online runner has, which keep
+		// the queued run from starting.
+		if missing := s.waitingFor(s.onlineRunners(runners), ticket.Agent); len(missing) > 0 {
+			detail["waiting_for"] = missing
+		}
+	}
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // presetSteps lists the steps of a preset, in order, with the agents each
