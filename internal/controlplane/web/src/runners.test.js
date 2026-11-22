@@ -68,3 +68,28 @@ test("Runners shows the agent harnesses each runner has", async context => {
   assert.match(html, /<span>Antigravity<\/span>.*<span>Claude Code<\/span>/);
   assert.equal((html.match(/runner-harnesses/g) || []).length, 1);
 });
+
+test("Runners says which harness queued runs wait for, and offers to remove idle offline runners", async context => {
+  const { RunnersPage, harnessWaits, removable } = await load(context);
+  assert.deepEqual(harnessWaits(undefined), []);
+  assert.deepEqual(harnessWaits({ waiting: 3, blocked: [{ harnesses: ["codex"], waiting: 2 }, { harnesses: ["agy", "claude"], waiting: 1 }] }), [
+    "2 runs are waiting for a runner with Codex",
+    "1 run is waiting for a runner with Antigravity and Claude Code",
+  ]);
+  const now = Date.parse("2026-11-10T09:01:00Z");
+  assert.equal(removable({ last_contact: "2026-11-01T09:00:00Z", jobs: [] }, now), true);
+  assert.equal(removable({ last_contact: "2026-11-01T09:00:00Z", jobs: [{ run_id: "r1" }] }, now), false, "a runner holding a job stays");
+  assert.equal(removable({ last_contact: "2026-11-10T09:00:30Z", jobs: [] }, now), false, "an online runner stays");
+
+  const runners = [
+    { name: "laptop", harnesses: ["steps", "claude"], probed: true, last_contact: ago(5), jobs: [] },
+    { name: "old-laptop", last_contact: "2026-01-01T00:00:00Z", jobs: [] },
+  ];
+  const html = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners, queue: { waiting: 1, blocked: [{ harnesses: ["codex"], waiting: 1 }] } }));
+  assert.match(html, /1 run is waiting for a runner with Codex\. No online runner has it\./);
+  assert.match(html, /Install the harness on a runner/);
+  assert.equal((html.match(/aria-label="Remove /g) || []).length, 1);
+  assert.match(html, /aria-label="Remove old-laptop"/);
+  const clear = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners, queue: { waiting: 1 } }));
+  assert.doesNotMatch(clear, /waiting for a runner with/);
+});

@@ -37,3 +37,17 @@ test("a run that saved its change as a patch links to it from the job page", asy
   assert.match(page(true), /Apply it with <code>git am<\/code>/);
   assert.doesNotMatch(page(undefined), /run-patch/, "a run with no patch links to none");
 });
+
+test("a queued job names the harness no online runner has", async context => {
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  context.after(() => server.close());
+  const { JobView } = await server.ssrLoadModule("/src/job-page.jsx");
+  const now = new Date().toISOString();
+  const ticket = { id: "t_1", title: "Review it", repo: "owner/repo", agent: "review", state: "working", created_at: now, updated_at: now };
+  const run = { id: "run_1", ticket_id: "t_1", status: "queued" };
+  const page = waiting_for => renderToStaticMarkup(React.createElement(JobView, { detail: { ticket, runs: [run], waiting_for } }));
+  assert.match(page(["codex"]), /Waiting for a runner with Codex/);
+  assert.match(page(["codex"]), /No online runner has Codex, which this job&#x27;s agents run, so it cannot start/);
+  assert.match(page(undefined), /Waiting for a runner</);
+  assert.doesNotMatch(page(undefined), /page-warning/);
+});
