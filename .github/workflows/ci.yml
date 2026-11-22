@@ -31,6 +31,8 @@ jobs:
         run: python3 -m unittest discover -s deploy/kubernetes -p 'test_*.py'
       - name: Test issue triage
         run: node --test .github/scripts/issue-triage.test.cjs
+      - name: Test release notes
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Confirm toolchain
         run: test "$(go env GOVERSION)" = "go1.26.6"
       - name: Install frontend dependencies
