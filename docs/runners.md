@@ -61,7 +61,7 @@ count.
 A Kubernetes runner takes any job, because its image decides which harnesses exist.
 
 The Runners page shows each runner's harnesses. When no online runner can run a preset,
-the Setup page says which harness is missing.
+the Settings overview says which harness is missing.
 
 ## Kubernetes runner
 

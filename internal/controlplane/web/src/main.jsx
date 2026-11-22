@@ -4,7 +4,7 @@ import "@fontsource-variable/inter";
 import { ChartColumn, LogOut, Rows3, Server, Settings2 } from "lucide-react";
 import { Brand } from "@/components/ui/brand";
 import { cn } from "@/lib/utils";
-import { routeFromHash } from "@/routes";
+import { redirectFor, routeFromHash, settingsHref } from "@/routes";
 import { createStatusLoader } from "@/status-loader";
 import { api, SignedOutError } from "./api.js";
 import { DashboardPage } from "./dashboard-page.jsx";
@@ -13,13 +13,21 @@ import { JobsPage } from "./jobs-page.jsx";
 import { NewJobPage } from "./new-job-page.jsx";
 import { RunnersPage } from "./runners.jsx";
 import { missingSteps, shouldOpenSetup } from "./setup.js";
-import { SetupPage } from "./setup-page.jsx";
+import { SettingsPage } from "./settings-page.jsx";
 import { SignIn } from "./sign-in.jsx";
 import "./styles.css";
 
 const pollMillis = 2000;
 const emptyStatus = { tickets: [], runners: [], queue: null };
-const navigation = [["dashboard", ChartColumn, "Dashboard"], ["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"], ["setup", Settings2, "Setup"]];
+const navigation = [["dashboard", ChartColumn, "Dashboard"], ["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"], ["settings", Settings2, "Settings"]];
+
+// followRedirect moves an old address, such as #/setup, to where it lives now,
+// in place, so Back does not return to it. It returns the hash to show.
+function followRedirect() {
+  const moved = redirectFor(window.location.hash);
+  if (moved) window.history.replaceState(null, "", moved);
+  return window.location.hash;
+}
 
 async function loadStatus() {
   const [tickets, runners] = await Promise.all([api("/api/v1/tickets"), api("/api/v1/runners")]);
@@ -31,7 +39,7 @@ function App() {
   const [status, setStatus] = useState(emptyStatus);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
-  const [route, setRoute] = useState(() => routeFromHash(window.location.hash));
+  const [route, setRoute] = useState(() => routeFromHash(followRedirect()));
   const [setup, setSetup] = useState(null);
   const signedOut = useCallback(() => {
     setSession({ checked: true, signedIn: false });
@@ -64,7 +72,7 @@ function App() {
 
   useEffect(() => {
     const update = () => {
-      setRoute(routeFromHash(window.location.hash));
+      setRoute(routeFromHash(followRedirect()));
       document.documentElement.scrollTop = 0;
     };
     window.addEventListener("hashchange", update);
@@ -88,7 +96,7 @@ function App() {
     if (!session.signedIn) return;
     api("/api/v1/setup").then(found => {
       setSetup(found);
-      if (shouldOpenSetup(found, window.location.hash)) window.location.hash = "#/setup";
+      if (shouldOpenSetup(found, window.location.hash)) window.location.hash = settingsHref("overview");
     }).catch(() => {});
   }, [session.signedIn]);
 
@@ -104,7 +112,7 @@ function App() {
     <aside className="app-sidebar">
       <Brand />
       <nav className="primary-nav" aria-label="Primary">
-        {navigation.map(([page, Icon, label]) => <a key={page} href={`#/${page}`} aria-current={active === page ? "page" : undefined} className={cn("nav-item", active === page && "nav-item-active")}><Icon aria-hidden="true" /><span>{label}</span>{page === "setup" && missingSteps(setup).length > 0 && <span className="nav-dot" aria-label="Setup needs attention" />}</a>)}
+        {navigation.map(([page, Icon, label]) => <a key={page} href={page === "settings" ? settingsHref("overview") : `#/${page}`} aria-current={active === page ? "page" : undefined} className={cn("nav-item", active === page && "nav-item-active")}><Icon aria-hidden="true" /><span>{label}</span>{page === "settings" && missingSteps(setup).length > 0 && <span className="nav-dot" aria-label="Settings need attention" />}</a>)}
       </nav>
       <div className="sidebar-foot">
         <button type="button" className="nav-item" onClick={signOut} aria-label="Sign out"><LogOut aria-hidden="true" /><span>Sign out</span></button>
@@ -115,7 +123,7 @@ function App() {
       {route.view === "new" && <NewJobPage onSignedOut={signedOut} />}
       {route.view === "job" && <JobPage key={route.jobID} jobID={route.jobID} onSignedOut={signedOut} />}
       {route.view === "dashboard" && <DashboardPage onSignedOut={signedOut} />}
-      {route.view === "setup" && <SetupPage onSignedOut={signedOut} onChange={setSetup} />}
+      {route.view === "settings" && <SettingsPage page={route.page} setup={setup} onSignedOut={signedOut} onSetupChange={setSetup} />}
       {route.view === "runners" && <RunnersPage runners={status.runners} queue={status.queue} loaded={loaded} error={error} />}
     </main>
   </div>;
