@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { settingsHref } from "./routes.js";
 import { settingsPages } from "./settings.js";
@@ -14,6 +14,11 @@ const pages = { overview: OverviewPage, projects: ProjectsPage, github: GitHubPa
 export function SettingsPage({ page, setup, onSignedOut, onSetupChange }) {
   const Page = pages[page] || OverviewPage;
   const missing = missingSteps(setup).length > 0;
+  // At phone width the side nav is a row of tabs that scrolls, so the open
+  // page's tab is scrolled into view.
+  useEffect(() => {
+    document.querySelector(".settings-nav-item-active")?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [page]);
   return <div className="page settings-page">
     <nav className="settings-nav" aria-label="Settings">
       <span className="label settings-nav-title">Settings</span>

@@ -102,7 +102,7 @@ code { font-size: .92em; }
   .app-sidebar nav .nav-item-active { background: none; box-shadow: none; color: var(--foreground); }
   .app-sidebar nav .nav-item-active svg { color: var(--primary); }
   .app-sidebar nav .nav-item-active::before { top: -.4rem; bottom: auto; left: 30%; right: 30%; width: auto; height: 2px; border-radius: 0 0 2px 2px; }
-  .app-sidebar nav   .app-sidebar nav .nav-dot { position: absolute; top: .45rem; left: calc(50% + 8px); margin: 0; }
+  .app-sidebar nav .nav-dot { position: absolute; top: .45rem; left: calc(50% + 8px); margin: 0; }
 }
 
 /* Every page is a left-aligned column of blocks with one gap between them. */
