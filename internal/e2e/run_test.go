@@ -107,8 +107,8 @@ func newRemote(t *testing.T) string {
 // fakeLaterSteps is what the fake claude does after the implement step: the
 // review writes the verdict in the output directory's verdict file, or
 // accepted, the revise step re-reviews when asked to, and publish opens the
-// pull request as agents/publish.md asks, with the fake gh. The merge step is
-// the real machinist merge.
+// pull request on the branch scripts/publish.sh pushed, with the fake gh. The
+// merge step is the real machinist merge.
 func fakeLaterSteps(output string) string {
 	return `case "$*" in
 *"Your step is to review the change"*)
@@ -126,8 +126,6 @@ func fakeLaterSteps(output string) string {
   exit 0;;
 *"Your step is to open the pull request"*)
   cat > /dev/null
-  if [ -z "$(git log --oneline origin/HEAD..HEAD)" ]; then echo "The work needed no change." > "$MACHINIST_DIR/result.md"; exit 0; fi
-  git push --quiet -u origin HEAD
   { echo "## Summary"; echo; echo "Uses Postgres."; echo; echo "## Assumptions"; echo; cat "$MACHINIST_DIR/assumptions.md"; } > "$MACHINIST_DIR/body.md"
   gh pr create --head "$MACHINIST_BRANCH" --title "Use Postgres" --body-file "$MACHINIST_DIR/body.md" > /dev/null
   gh pr view "$MACHINIST_BRANCH" > /dev/null
@@ -561,5 +559,61 @@ func TestAFailedCheckFailsTheJob(t *testing.T) {
 	runs, err := s.store.Runs(t.Context(), ticket.ID)
 	if err != nil || len(runs) != 1 || stepStates(runs[0]) != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=failed" {
 		t.Fatalf("runs = %+v, err = %v", runs, err)
+	}
+}
+
+// A push GitHub rejects fails the job and says why, and the merge step never
+// runs. Before, the publish agent said so in result.md and exited 0, so the
+// job was done.
+func TestARejectedPushFailsTheJob(t *testing.T) {
+	s := startWith(t, options{claude: claudeScript})
+	writeFile(t, filepath.Join(s.remote, "hooks", "pre-receive"), "#!/bin/sh\necho 'refusing to allow a GitHub App to create or update workflow without workflows permission' >&2\nexit 1\n", 0o700)
+	ticket := s.createTicket(t)
+	s.waitForState(t, ticket.ID, tickets.StateFailed)
+	if merged := s.github.Merged(); len(merged) != 0 {
+		t.Fatalf("merged = %v", merged)
+	}
+	runs, err := s.store.Runs(t.Context(), ticket.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %+v, err = %v", runs, err)
+	}
+	if got := stepStates(runs[0]); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=failed merge="+protocol.StageSkipped {
+		t.Fatalf("steps = %s", got)
+	}
+	entries, err := s.store.Entries(t.Context(), ticket.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := entries[len(entries)-1].Body
+	for _, want := range []string{"GitHub rejected the push", "refusing to allow a GitHub App", "pre-receive hook declined"} {
+		if !strings.Contains(last, want) {
+			t.Fatalf("the result does not say %q: %s", want, last)
+		}
+	}
+	if view := s.job(t, ticket.ID); view.PRNumber != 0 {
+		t.Fatalf("job = %+v", view)
+	}
+}
+
+// A job whose work needed no change pushes nothing and is done without a
+// pull request.
+func TestAJobThatNeedsNoChangeIsDoneWithoutAPullRequest(t *testing.T) {
+	s := startWith(t, options{claude: func(output string) string {
+		return "#!/bin/sh\n" + fakeLaterSteps(output) + "cat > /dev/null\n"
+	}})
+	ticket := s.createTicket(t)
+	s.waitForState(t, ticket.ID, tickets.StateDone)
+	runs, err := s.store.Runs(t.Context(), ticket.ID)
+	if err != nil || len(runs) != 1 || runs[0].Report == nil || runs[0].Report.Summary != "The work needed no change." {
+		t.Fatalf("runs = %+v, err = %v", runs, err)
+	}
+	if got := stepStates(runs[0]); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=succeeded" {
+		t.Fatalf("steps = %s", got)
+	}
+	if view := s.job(t, ticket.ID); view.PRNumber != 0 {
+		t.Fatalf("job = %+v", view)
+	}
+	if branches := git(t, s.remote, "branch", "--list", "machinist/*"); branches != "" {
+		t.Fatalf("pushed %q", branches)
 	}
 }

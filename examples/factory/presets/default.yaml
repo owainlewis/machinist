@@ -28,10 +28,11 @@ steps:
   - name: revise
     run: revise.sh
 
-  # Pushes and opens the pull request, as factory/agents/publish.md says.
+  # Pushes the branch, then runs agents/publish.md to open the pull request.
+  # A push GitHub rejects fails the job. A job with no commits pushes nothing.
   - name: publish
     timeout: 10m
-    agent: publish
+    run: publish.sh
 
   # Merges only when github.auto_merge is on, the review accepted the change
   # and every check passed. This is code, not an agent.
