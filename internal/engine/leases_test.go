@@ -29,7 +29,7 @@ func TestLostLeaseInterruptsRunAndQueuesANewOne(t *testing.T) {
 	if got := state(t, e, ticket.ID); got != tickets.StateWorking {
 		t.Fatalf("state = %s", got)
 	}
-	replacement, err := e.Assign(t.Context(), "runner-2", []string{"steps"})
+	replacement, err := e.Assign(t.Context(), "runner-2", []string{"steps"}, false)
 	if err != nil || replacement == nil || replacement.RunID == lost.RunID || replacement.Branch != lost.Branch {
 		t.Fatalf("replacement = %+v, err = %v", replacement, err)
 	}
@@ -72,7 +72,7 @@ func TestLeasesSurviveControlPlaneRestart(t *testing.T) {
 	if err = first.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	request, err := first.Assign(t.Context(), "runner-1", []string{"steps"})
+	request, err := first.Assign(t.Context(), "runner-1", []string{"steps"}, false)
 	if err != nil || request == nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}

@@ -92,8 +92,14 @@ them. A run has a 10-minute lease stored
 in the database and renewed by heartbeats. So runs outlive a control plane restart, and a
 lost runner's ticket continues on any other runner once its lease expires.
 
-Each poll also says what the runner is: local or Kubernetes, and its slots. Runs are queued
-for the `steps` harness, so a runner from before presets takes none of them.
+Each poll also says what the runner is: local or Kubernetes, its slots and its harnesses.
+Runs are queued for the `steps` harness, so a runner from before presets takes none of them.
+A local runner looks up `agy`, `claude`, `codex` and `pi` on its `PATH` when it starts and
+lists the ones it found. The control plane then gives it only runs whose preset's agents
+all use a harness it has (`Factory.Needs`, `engine.HasAll`), skipping past runs it cannot
+take. Agents with their own `program` and runs whose preset is gone are not matched. A
+Kubernetes runner does not look, because its image decides, so it takes any run. The Setup
+page flags a preset that no online runner can run.
 The control plane stores that with the time of last contact, and heartbeats keep the time
 current while every slot is busy. The Runners page reads it with the running runs and the
 queue, so it is the same after a control plane restart.

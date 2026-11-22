@@ -7,10 +7,14 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/githubapp"
+	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/tickets"
 )
 
 // githubApp is what the setup page asks of the GitHub App.
@@ -100,6 +104,9 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 		runnerCheck.Fix = "Start one with machinist runner start, and check it with machinist runner check."
 	}
 	setup.Checks = append(setup.Checks, runnerCheck)
+	if check, ok := s.harnessCheck(runners); ok {
+		setup.Checks = append(setup.Checks, check)
+	}
 
 	setup.Projects, err = s.projects(ctx)
 	if err != nil {
@@ -219,4 +226,47 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request, tokenName
 		return
 	}
 	s.getSetup(w, r, tokenName)
+}
+
+// harnessCheck says whether an online runner has the harnesses each preset's
+// agents need. A runner that did not report harnesses, such as a Kubernetes
+// runner, may have any of them. There is no check while no runner is online.
+func (s *Server) harnessCheck(runners []tickets.Runner) (SetupCheck, bool) {
+	var online []tickets.Runner
+	for _, runner := range runners {
+		if s.now().Sub(runner.LastContact) < runnerWindow {
+			online = append(online, runner)
+		}
+	}
+	if len(online) == 0 || s.factory == nil {
+		return SetupCheck{}, false
+	}
+	check := SetupCheck{Name: "Agents", OK: true, Detail: "Every preset can run on an online runner."}
+	names := make([]string, 0, len(s.factory.Presets))
+	for name := range s.factory.Presets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var stuck []string
+	for _, name := range names {
+		needs := s.factory.Needs(s.factory.Presets[name])
+		if !slices.ContainsFunc(online, func(runner tickets.Runner) bool {
+			return !reportsHarnesses(runner) || engine.HasAll(runner.Harnesses, needs)
+		}) {
+			stuck = append(stuck, fmt.Sprintf("%s needs %s", name, strings.Join(needs, " and ")))
+		}
+	}
+	if len(stuck) > 0 {
+		check.OK = false
+		check.Detail = "No online runner can run these presets, so their jobs wait: " + strings.Join(stuck, "; ") + "."
+		check.Fix = "Install the missing harness on a runner and restart it, or change the presets' agents."
+		check.Link = docs + "runners.md"
+	}
+	return check, true
+}
+
+// reportsHarnesses says whether a runner listed its agent harnesses, beyond
+// the steps every runner runs.
+func reportsHarnesses(runner tickets.Runner) bool {
+	return slices.ContainsFunc(runner.Harnesses, func(name string) bool { return name != protocol.StepsHarness })
 }

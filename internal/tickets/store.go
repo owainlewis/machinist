@@ -845,9 +845,44 @@ func (s *Store) QueueRun(ctx context.Context, ticketID, harness string) (Run, er
 	return run, err
 }
 
-// ClaimRun gives the oldest queued run for these harnesses to a runner and marks
-// waiting input as read by it. It returns nil when no run is queued.
-func (s *Store) ClaimRun(ctx context.Context, runner string, harnesses []string, leaseUntil time.Time) (*Claim, error) {
+// firstAccepted returns the first run the query lists whose ticket accept
+// allows, or ErrNotFound.
+func firstAccepted(ctx context.Context, tx *sql.Tx, query string, arguments []any, accept func(Ticket) bool) (Run, error) {
+	rows, err := tx.QueryContext(ctx, query, arguments...)
+	if err != nil {
+		return Run{}, err
+	}
+	runs := []Run{}
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			rows.Close()
+			return Run{}, err
+		}
+		runs = append(runs, run)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return Run{}, err
+	}
+	for _, run := range runs {
+		if accept == nil {
+			return run, nil
+		}
+		ticket, err := loadTicket(ctx, tx, run.TicketID)
+		if err != nil {
+			return Run{}, err
+		}
+		if accept(ticket) {
+			return run, nil
+		}
+	}
+	return Run{}, ErrNotFound
+}
+
+// ClaimRun gives the oldest queued run for these harnesses whose ticket accept
+// allows to a runner, and marks waiting input as read by it. A nil accept
+// allows every ticket. It returns nil when no such run is queued.
+func (s *Store) ClaimRun(ctx context.Context, runner string, harnesses []string, leaseUntil time.Time, accept func(Ticket) bool) (*Claim, error) {
 	if len(harnesses) == 0 {
 		return nil, nil
 	}
@@ -858,7 +893,7 @@ func (s *Store) ClaimRun(ctx context.Context, runner string, harnesses []string,
 	}
 	var claim *Claim
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		run, err := scanRun(tx.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE status=? AND kind='agent' AND harness IN (`+placeholders+`) ORDER BY rowid LIMIT 1`, arguments...))
+		run, err := firstAccepted(ctx, tx, `SELECT `+runColumns+` FROM runs WHERE status=? AND kind='agent' AND harness IN (`+placeholders+`) ORDER BY rowid LIMIT 500`, arguments, accept)
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}

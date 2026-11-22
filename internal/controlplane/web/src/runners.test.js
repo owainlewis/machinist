@@ -59,3 +59,12 @@ test("the slot meter lights one segment per busy slot", async context => {
   assert.match(large, /slot-meter-bar/, "a large runner gets one bar, not 32 segments");
   assert.match(large, /width:25%/);
 });
+
+test("Runners shows the agent harnesses each runner has", async context => {
+  const { RunnersPage, runnerHarnesses } = await load(context);
+  assert.deepEqual(runnerHarnesses({ harnesses: ["steps", "agy", "claude"] }), ["agy", "claude"]);
+  assert.deepEqual(runnerHarnesses({ harnesses: ["steps"] }), []);
+  const html = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners: [{ name: "vm", harnesses: ["steps", "agy", "claude"], last_contact: new Date().toISOString() }, { name: "old", harnesses: ["steps"], last_contact: new Date().toISOString() }] }));
+  assert.match(html, /<span>Antigravity<\/span>.*<span>Claude Code<\/span>/);
+  assert.equal((html.match(/runner-harnesses/g) || []).length, 1);
+});

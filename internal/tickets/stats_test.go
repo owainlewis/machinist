@@ -13,7 +13,7 @@ func timedRun(t *testing.T, store *Store, at *time.Time, ticket Ticket, status, 
 		t.Fatal(err)
 	}
 	*at = at.Add(time.Duration(waitMinutes) * time.Minute)
-	claim, err := store.ClaimRun(t.Context(), "runner", []string{"claude"}, at.Add(time.Hour))
+	claim, err := store.ClaimRun(t.Context(), "runner", []string{"claude"}, at.Add(time.Hour), nil)
 	if err != nil || claim == nil {
 		t.Fatalf("claim = %v, err = %v", claim, err)
 	}

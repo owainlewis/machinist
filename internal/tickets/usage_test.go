@@ -11,7 +11,7 @@ func endRun(t *testing.T, store *Store, sourceKey, status string, tokens int64, 
 	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := store.ClaimRun(t.Context(), "runner", []string{"claude"}, time.Now().Add(time.Hour))
+	claim, err := store.ClaimRun(t.Context(), "runner", []string{"claude"}, time.Now().Add(time.Hour), nil)
 	if err != nil || claim == nil {
 		t.Fatalf("claim = %v, err = %v", claim, err)
 	}

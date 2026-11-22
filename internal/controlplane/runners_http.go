@@ -19,7 +19,7 @@ func (s *Server) poll(w http.ResponseWriter, r *http.Request, tokenName string) 
 		writeRunError(w, err)
 		return
 	}
-	run, err := s.engine.Assign(r.Context(), tokenName, request.Harnesses)
+	run, err := s.engine.Assign(r.Context(), tokenName, request.Harnesses, request.Probed)
 	if err != nil {
 		writeRunError(w, err)
 		return

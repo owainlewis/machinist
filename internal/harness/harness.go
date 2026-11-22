@@ -66,6 +66,18 @@ func Find(name string) (Harness, bool) {
 	return found, ok
 }
 
+// Installed lists the harnesses whose program lookPath finds, sorted. Each
+// harness's program has the harness's name.
+func Installed(lookPath func(string) (string, error)) []string {
+	installed := []string{}
+	for _, name := range Names() {
+		if _, err := lookPath(name); err == nil {
+			installed = append(installed, name)
+		}
+	}
+	return installed
+}
+
 // Names lists the harnesses Machinist knows, sorted.
 func Names() []string {
 	names := make([]string, 0, len(harnesses))

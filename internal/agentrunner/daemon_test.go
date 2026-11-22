@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -297,5 +298,26 @@ func TestDaemonLetsARunRefreshItsGitHubToken(t *testing.T) {
 	waitDone(t, plane)
 	if got := plane.completion(fixtureRun); got.Report == nil || got.Report.Summary != "fresh-for-"+fixtureRun {
 		t.Fatalf("completion = %+v", got)
+	}
+}
+
+func TestOnlyALocalRunnerProbesItsHarnesses(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("runner-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	local, err := NewDaemon(config.Runner{ControlPlane: "http://127.0.0.1:1", TokenFile: tokenFile}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.installed == nil {
+		t.Fatal("a local runner did not probe")
+	}
+	kube, err := NewDaemon(config.Runner{ControlPlane: "http://127.0.0.1:1", TokenFile: tokenFile, Kubernetes: &config.Kubernetes{}}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kube.installed != nil {
+		t.Fatalf("a Kubernetes runner reported %v from its own PATH", kube.installed)
 	}
 }

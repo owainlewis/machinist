@@ -41,7 +41,7 @@ func claimRun(t *testing.T, store *Store, ticket Ticket) *Claim {
 	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now().Add(time.Minute))
+	claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now().Add(time.Minute), nil)
 	if err != nil || claim == nil {
 		t.Fatalf("claim = %v, err = %v", claim, err)
 	}
@@ -137,17 +137,17 @@ func TestClaimRunGivesOldestMatchingHarnessAndConsumesInput(t *testing.T) {
 	if _, err := store.QueueRun(t.Context(), second.ID, "claude"); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now().Add(time.Minute))
+	claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now().Add(time.Minute), nil)
 	if err != nil || claim == nil || claim.Ticket.ID != second.ID || claim.Run.Runner != "runner-1" || claim.Run.Status != RunRunning {
 		t.Fatalf("claim = %+v, err = %v", claim, err)
 	}
 	if claim.Entries[0].ConsumedByRun != claim.Run.ID {
 		t.Fatalf("input not consumed: %+v", claim.Entries[0])
 	}
-	if none, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now()); err != nil || none != nil {
+	if none, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now(), nil); err != nil || none != nil {
 		t.Fatalf("none = %v, err = %v", none, err)
 	}
-	if none, err := store.ClaimRun(t.Context(), "runner-1", nil, time.Now()); err != nil || none != nil {
+	if none, err := store.ClaimRun(t.Context(), "runner-1", nil, time.Now(), nil); err != nil || none != nil {
 		t.Fatalf("empty harness list: %v, %v", none, err)
 	}
 }
@@ -371,7 +371,7 @@ func TestCancelStopsQueuedRun(t *testing.T) {
 	if got, _ := store.Run(t.Context(), run.ID); got.Status != RunCancelled {
 		t.Fatalf("status = %s", got.Status)
 	}
-	if claim, _ := store.ClaimRun(context.Background(), "r", []string{"claude"}, time.Now()); claim != nil {
+	if claim, _ := store.ClaimRun(context.Background(), "r", []string{"claude"}, time.Now(), nil); claim != nil {
 		t.Fatal("cancelled run was claimed")
 	}
 }
@@ -385,7 +385,7 @@ func TestQueueRunRefusesATicketThatIsNotWorking(t *testing.T) {
 	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); !errors.Is(err, ErrNotWorking) {
 		t.Fatalf("err = %v", err)
 	}
-	if claim, _ := store.ClaimRun(t.Context(), "r", []string{"claude"}, time.Now()); claim != nil {
+	if claim, _ := store.ClaimRun(t.Context(), "r", []string{"claude"}, time.Now(), nil); claim != nil {
 		t.Fatal("a cancelled ticket got a run")
 	}
 }
@@ -596,7 +596,7 @@ func TestOpenCancelsQueuedReviewerRunsFromBefore(t *testing.T) {
 	if _, err := store.db.Exec(`UPDATE runs SET kind='reviewer' WHERE id=?`, run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now().Add(time.Minute)); err != nil || claim != nil {
+	if claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, time.Now().Add(time.Minute), nil); err != nil || claim != nil {
 		t.Fatalf("a runner claimed a reviewer run: %+v, %v", claim, err)
 	}
 	if err := store.Close(); err != nil {
