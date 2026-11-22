@@ -65,6 +65,8 @@ type fakeLinear struct {
 	auth        string
 	// replies are comments people left, as Linear would list them.
 	replies []fakeReply
+	// brokenComments are issues whose comments Linear rejects.
+	brokenComments map[string]bool
 	// endlessReplies makes a replies query with no upper time bound page on
 	// for ever, as a huge backlog would.
 	endlessReplies bool
@@ -164,6 +166,10 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(request.Query, "commentCreate") {
 		issue, _ := request.Variables["issue"].(string)
 		body, _ := request.Variables["body"].(string)
+		if f.brokenComments[issue] {
+			_, _ = w.Write([]byte(`{"errors":[{"message":"issue is archived"}]}`))
+			return
+		}
 		f.comments[issue] = append(f.comments[issue], body)
 		_, _ = w.Write([]byte(`{"data":{"commentCreate":{"success":true}}}`))
 		return
@@ -427,6 +433,32 @@ func TestOnlyAllowedUsersInConnectedTeamsStartJobs(t *testing.T) {
 		t.Fatalf("comments = %q", comments)
 	}
 	if comments := p.linear.comments["stranger"]; len(comments) != 0 {
+		t.Fatalf("comments = %q", comments)
+	}
+}
+
+func TestARejectedNoRepositoryCommentDoesNotStopThePoll(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.brokenComments = map[string]bool{"archived": true}
+	p.linear.assign("archived", "OPS", "owain", p.now)
+	p.linear.assign("a1", "ENG", "owain", p.now.Add(time.Second))
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 || listed[0].Title != "Fix a1" {
+		t.Fatalf("tickets = %+v", listed)
+	}
+	if want := "issue OPS-archived: comment failed"; !strings.Contains(p.log.String(), want) {
+		t.Fatalf("log lacks %q:\n%s", want, p.log)
+	}
+	// Once Linear takes comments again, the next handover is told why.
+	p.now = p.now.Add(time.Minute)
+	p.linear.mu.Lock()
+	p.linear.brokenComments = nil
+	p.linear.mu.Unlock()
+	p.linear.assign("archived", "OPS", "owain", p.now)
+	p.poll(t)
+	if comments := p.linear.comments["archived"]; len(comments) != 1 {
 		t.Fatalf("comments = %q", comments)
 	}
 }

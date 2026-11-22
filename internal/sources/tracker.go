@@ -435,7 +435,10 @@ func (p *Poller) handle(ctx context.Context, assignment Assignment) (handled, er
 const unroutedCursor = "#unrouted:"
 
 // unrouted comments on an issue that maps to no repository, once each time it
-// is handed to Machinist, so later edits to the issue do not repeat it.
+// is handed to Machinist, so later edits to the issue do not repeat it. The
+// comment is only an explanation, so a tracker that refuses it is logged and
+// does not stop the poll; the comment is tried again the next time the issue
+// is handed over.
 func (p *Poller) unrouted(ctx context.Context, assignment Assignment, reason string) error {
 	name := p.Tracker.Name()
 	told, found, err := p.Store.Cursor(ctx, name, unroutedCursor+assignment.Issue)
@@ -448,7 +451,8 @@ func (p *Poller) unrouted(ctx context.Context, assignment Assignment, reason str
 	comment := "Machinist cannot start a job for this issue: its " + reason + " to a repository.\n\n" +
 		"Map the project in `linear.projects` or the team in `linear.teams` in Machinist's config, then hand the issue to Machinist again."
 	if err := p.Tracker.Comment(ctx, assignment.Issue, comment); err != nil {
-		return fmt.Errorf("comment on unrouted issue %s: %w", assignment.Identifier, err)
+		fmt.Fprintf(p.log(), "machinist: %s issue %s: comment failed: %v\n", name, assignment.Identifier, err)
+		return nil
 	}
 	return p.Store.SetCursor(ctx, name, unroutedCursor+assignment.Issue, assignment.GivenAt)
 }
