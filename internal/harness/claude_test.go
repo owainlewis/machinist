@@ -170,11 +170,11 @@ func TestFormatTurnsRateLimitEventsIntoNotices(t *testing.T) {
 // repository instead.
 func TestFormatTurnsWorkspaceFileLinksIntoRepositoryPaths(t *testing.T) {
 	var out bytes.Buffer
-	line := `{"type":"assistant","message":{"content":[{"type":"text","text":"Fixed [upload.ts](file:///work/src/upload.ts#L12) and file:///work/README.md. See file:///work, https://example.com/file:///work/x, file:///workspace/other.go and file:///etc/hosts."}]}}`
+	line := `{"type":"assistant","message":{"content":[{"type":"text","text":"Fixed [upload.ts](file:///work/src/upload.ts#L12) and file:///work/README.md. See file:///work, [repo](file:///work/), file:///work/, https://example.com/file:///work/x, file:///workspace/other.go and file:///etc/hosts."}]}}`
 	if _, err := Format(strings.NewReader(line+"\n"), &out, "/work"); err != nil {
 		t.Fatal(err)
 	}
-	want := "Fixed [upload.ts](src/upload.ts#L12) and README.md. See ., https://example.com/file:///work/x, file:///workspace/other.go and file:///etc/hosts.\n"
+	want := "Fixed [upload.ts](src/upload.ts#L12) and README.md. See ., [repo](.), ., https://example.com/file:///work/x, file:///workspace/other.go and file:///etc/hosts.\n"
 	if out.String() != want {
 		t.Fatalf("got  %q\nwant %q", out.String(), want)
 	}
@@ -189,6 +189,19 @@ func TestAgyFormatTurnsWorkspaceFileLinksIntoRepositoryPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := "Changed [retry.go](internal/retry.go).\n"; out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+}
+
+// A run cut off mid-answer still has its links turned into paths.
+func TestAgyFormatTurnsFileLinksIntoPathsInACutOffAnswer(t *testing.T) {
+	var out bytes.Buffer
+	stream := `{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"agent_response","text_delta":"Changing [retry.go](file:///work/internal/retry.go)"}}
+`
+	if _, err := (Agy{}).Format(strings.NewReader(stream), &out, "/work"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Changing [retry.go](internal/retry.go)\n"; out.String() != want {
 		t.Fatalf("got %q, want %q", out.String(), want)
 	}
 }

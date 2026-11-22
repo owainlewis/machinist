@@ -126,7 +126,7 @@ func (Agy) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	})
 	// A run cut off mid-answer still shows what the agent had said.
 	if said := strings.TrimSpace(text.String()); err == nil && said != "" {
-		_, err = fmt.Fprintln(w, said)
+		_, err = fmt.Fprintln(w, unlinkFiles(cwd, said))
 	}
 	return withModel(usage, model), err
 }

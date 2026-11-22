@@ -164,7 +164,10 @@ func unlinkFiles(cwd, text string) string {
 		case file == cwd:
 			path = "."
 		case strings.HasPrefix(file, cwd+"/"):
-			path = strings.TrimPrefix(file, cwd+"/")
+			// A link to the workspace itself may end with slashes.
+			if path = strings.TrimLeft(strings.TrimPrefix(file, cwd+"/"), "/"); path == "" {
+				path = "."
+			}
 		default:
 			continue
 		}
