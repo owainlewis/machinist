@@ -23,7 +23,15 @@ type fakeIssue struct {
 	linearIssue
 	actor    string
 	assignee string
+	delegate string
 	state    string
+}
+
+// givenToApp is whether a query's filter matches the issue as Linear would.
+// The issue is the app's if the app is its assignee, or its delegate when the
+// query asks for the delegate too.
+func (issue *fakeIssue) givenToApp(query string) bool {
+	return issue.assignee == appUser || (issue.delegate == appUser && strings.Contains(query, `delegate: {id: {eq: "app-user"}}`))
 }
 
 // fakeStates is every fake team's board. In Review is a second started state.
@@ -119,6 +127,9 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if issue.assignee != "" {
 					node["assignee"] = map[string]any{"id": issue.assignee}
 				}
+				if issue.delegate != "" && strings.Contains(request.Query, "delegate { id }") {
+					node["delegate"] = map[string]any{"id": issue.delegate}
+				}
 				nodes = append(nodes, node)
 			}
 		}
@@ -138,7 +149,7 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Linear lists the newest first.
 		for index := len(f.replies) - 1; index >= 0; index-- {
 			reply := f.replies[index]
-			if issue := f.issue(reply.issue); issue == nil || issue.assignee != appUser || !reply.at.After(since) || (!until.IsZero() && reply.at.After(until)) || reply.user == appUser {
+			if issue := f.issue(reply.issue); issue == nil || !issue.givenToApp(request.Query) || !reply.at.After(since) || (!until.IsZero() && reply.at.After(until)) || reply.user == appUser {
 				continue
 			}
 			node := map[string]any{"id": fmt.Sprintf("c%d", index), "body": reply.body, "createdAt": reply.at, "issue": map[string]any{"id": reply.issue}}
@@ -160,7 +171,7 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	since, _ := time.Parse(time.RFC3339Nano, sinceInQuery.FindStringSubmatch(request.Query)[1])
 	nodes := []linearIssue{}
 	for _, issue := range f.issues {
-		if issue.assignee == appUser && issue.UpdatedAt.After(since) {
+		if issue.givenToApp(request.Query) && issue.UpdatedAt.After(since) {
 			nodes = append(nodes, issue.linearIssue)
 		}
 	}
@@ -206,24 +217,41 @@ func (f *fakeLinear) stateOf(id string) string {
 	return f.issue(id).state
 }
 
-// assign adds an issue that actor assigned to the app at the given time.
+// assign adds an issue that actor assigned to the app at the given time, as
+// workspaces that assign apps directly do.
 func (f *fakeLinear) assign(id, team, actor string, at time.Time) {
+	f.add(id, team, actor, at, func(issue *fakeIssue, change *linearChange) {
+		issue.assignee = appUser
+		change.ToAssigneeID = appUser
+	})
+}
+
+// delegate adds an issue that actor delegated to the app at the given time.
+// The actor stays its assignee, as in Linear.
+func (f *fakeLinear) delegate(id, team, actor string, at time.Time) {
+	f.add(id, team, actor, at, func(issue *fakeIssue, change *linearChange) {
+		issue.assignee = actor
+		issue.delegate = appUser
+		change.ToDelegateID = appUser
+	})
+}
+
+// add adds an issue that actor gave to the app at the given time. Someone
+// earlier gave it to the app first. give sets how it was given.
+func (f *fakeLinear) add(id, team, actor string, at time.Time, give func(*fakeIssue, *linearChange)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	issue := linearIssue{ID: id, Identifier: strings.ToUpper(team) + "-" + id, Title: "Fix " + id, Description: "The details of " + id, URL: "https://linear.app/x/issue/" + id, UpdatedAt: at}
+	issue := fakeIssue{actor: actor, state: "s-todo"}
+	issue.linearIssue = linearIssue{ID: id, Identifier: strings.ToUpper(team) + "-" + id, Title: "Fix " + id, Description: "The details of " + id, URL: "https://linear.app/x/issue/" + id, UpdatedAt: at}
 	issue.Team.Key = team
+	earlier := linearChange{CreatedAt: at.Add(-time.Hour), ActorID: "someone-earlier"}
+	latest := linearChange{CreatedAt: at, ActorID: actor}
+	give(&issue, &earlier)
+	give(&issue, &latest)
 	if actor != "" {
-		issue.History.Nodes = append(issue.History.Nodes, struct {
-			CreatedAt    time.Time `json:"createdAt"`
-			ActorID      string    `json:"actorId"`
-			ToAssigneeID string    `json:"toAssigneeId"`
-		}{CreatedAt: at.Add(-time.Hour), ActorID: "someone-earlier", ToAssigneeID: appUser}, struct {
-			CreatedAt    time.Time `json:"createdAt"`
-			ActorID      string    `json:"actorId"`
-			ToAssigneeID string    `json:"toAssigneeId"`
-		}{CreatedAt: at, ActorID: actor, ToAssigneeID: appUser})
+		issue.History.Nodes = append(issue.History.Nodes, earlier, latest)
 	}
-	f.issues = append(f.issues, fakeIssue{linearIssue: issue, actor: actor, assignee: appUser, state: "s-todo"})
+	f.issues = append(f.issues, issue)
 }
 
 type polling struct {
@@ -318,6 +346,50 @@ func TestAnAssignmentStartsOneJob(t *testing.T) {
 	}
 	if listed := p.tickets(t); len(listed) != 1 {
 		t.Fatalf("tickets = %+v", listed)
+	}
+}
+
+func TestADelegationStartsOneJob(t *testing.T) {
+	p := newPolling(t)
+	job := p.delegated(t)
+	if job.Source != "linear" || job.Title != "Fix a1" {
+		t.Fatalf("job = %+v", job)
+	}
+	if got := p.linear.stateOf("a1"); got != "s-progress" {
+		t.Fatalf("issue state = %q", got)
+	}
+	var query string
+	for _, sent := range p.linear.queries {
+		if strings.Contains(sent, "query Assigned") {
+			query = sent
+		}
+	}
+	for _, want := range []string{`delegate: {id: {eq: "app-user"}}`, `assignee: {id: {eq: "app-user"}}`, "toDelegateId"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("query lacks %s:\n%s", want, query)
+		}
+	}
+	// Later polls and edits to the issue start nothing more.
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.set("a1", func(issue *fakeIssue) { issue.UpdatedAt = p.now })
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 {
+		t.Fatalf("tickets = %+v", listed)
+	}
+}
+
+func TestOnlyAllowedUsersStartJobsByDelegating(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.delegate("stranger", "ENG", "mallory", p.now)
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 0 {
+		t.Fatalf("tickets = %+v", listed)
+	}
+	if want := `user "mallory" may not start jobs`; !strings.Contains(p.log.String(), want) {
+		t.Fatalf("log lacks %q:\n%s", want, p.log)
 	}
 }
 
@@ -439,12 +511,25 @@ func TestAPersonalAPIKeyIsSentAsItIs(t *testing.T) {
 	}
 }
 
-// started polls until one job is going on issue a1, and returns it.
+// started polls until one job is going on issue a1, which owain assigned to
+// the app, and returns it.
 func (p *polling) started(t *testing.T) tickets.Ticket {
+	t.Helper()
+	return p.startedBy(t, p.linear.assign)
+}
+
+// delegated polls until one job is going on issue a1, which owain delegated
+// to the app, and returns it.
+func (p *polling) delegated(t *testing.T) tickets.Ticket {
+	t.Helper()
+	return p.startedBy(t, p.linear.delegate)
+}
+
+func (p *polling) startedBy(t *testing.T, give func(id, team, actor string, at time.Time)) tickets.Ticket {
 	t.Helper()
 	p.poll(t)
 	p.now = p.now.Add(time.Minute)
-	p.linear.assign("a1", "ENG", "owain", p.now)
+	give("a1", "ENG", "owain", p.now)
 	p.poll(t)
 	listed := p.tickets(t)
 	if len(listed) != 1 {
@@ -531,6 +616,28 @@ func TestAReplyRunsTheJobAgainWithTheComment(t *testing.T) {
 	}
 }
 
+func TestAReplyOnADelegatedIssueRunsTheJobAgain(t *testing.T) {
+	p := newPolling(t)
+	job := p.delegated(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.reply("a1", "owain", "The checkout page.", p.now)
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("job state = %q", got)
+	}
+	entries, err := p.store.Entries(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if log := tickets.RenderLog(entries); !strings.Contains(log, "The checkout page.") {
+		t.Fatalf("log:\n%s", log)
+	}
+}
+
 func TestAReplyWhileTheJobRunsWaitsForTheRunToEnd(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
@@ -589,6 +696,38 @@ func TestMovingOrUnassigningAnIssueCancelsItsJob(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			p := newPolling(t)
 			job := p.started(t)
+			p.poll(t)
+			if got := p.state(t, job.ID); got != tickets.StateWorking {
+				t.Fatalf("state before the change = %q", got)
+			}
+			p.linear.set("a1", test.change)
+			p.poll(t)
+			want := tickets.StateWorking
+			if test.cancel {
+				want = tickets.StateCancelled
+			}
+			if got := p.state(t, job.ID); got != want {
+				t.Fatalf("state = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRemovingTheDelegateCancelsItsJob(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*fakeIssue)
+		cancel bool
+	}{
+		{"delegate removed", func(issue *fakeIssue) { issue.delegate = "" }, true},
+		{"delegated to another agent", func(issue *fakeIssue) { issue.delegate = "other-agent" }, true},
+		{"assigned to another person", func(issue *fakeIssue) { issue.assignee = "someone-else" }, false},
+		{"unassigned, still delegated", func(issue *fakeIssue) { issue.assignee = "" }, false},
+		{"moved to Done", func(issue *fakeIssue) { issue.state = "s-done" }, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newPolling(t)
+			job := p.delegated(t)
 			p.poll(t)
 			if got := p.state(t, job.ID); got != tickets.StateWorking {
 				t.Fatalf("state before the change = %q", got)
