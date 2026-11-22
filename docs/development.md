@@ -46,7 +46,7 @@ just check
 ```
 
 This installs the locked frontend dependencies, runs frontend tests, rebuilds the embedded
-assets, checks and vets the Go code, runs Go tests with the race detector, and builds all
+assets, checks, vets and runs staticcheck on the Go code, runs Go tests with the race detector, and builds all
 Go packages.
 
 Focused commands are also available:
