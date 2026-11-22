@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -54,7 +55,8 @@ func TestStartReportsListeningAfterBindAndStopsOnCancellation(t *testing.T) {
 	defer cancel()
 	stderr := &cancelOnListen{cancel: cancel}
 	exitCode := Execute(ctx, []string{"start", "--config=" + writeStartConfig(t)}, strings.NewReader(""), &bytes.Buffer{}, stderr, "test")
-	if exitCode != 0 || !strings.Contains(stderr.body.String(), "control plane listening on 127.0.0.1:") {
+	listening := regexp.MustCompile(`(?m)^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z machinist: control plane listening on 127\.0\.0\.1:\d+$`)
+	if exitCode != 0 || !listening.MatchString(stderr.body.String()) {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.body.String())
 	}
 }

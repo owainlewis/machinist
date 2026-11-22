@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/owainlewis/machinist/internal/agentrunner"
 	"github.com/owainlewis/machinist/internal/config"
@@ -35,12 +36,13 @@ func newStartCommand(options *commandOptions) *cobra.Command {
 				return err
 			}
 			defer store.Close()
-			server, err := controlplane.New(machinistConfig, store, loaded, options.version, options.stderr)
+			log := newTimestampWriter(options.stderr, time.Now)
+			server, err := controlplane.New(machinistConfig, store, loaded, options.version, log)
 			if err != nil {
 				return err
 			}
 			return server.Serve(command.Context(), func(address net.Addr) {
-				fmt.Fprintf(options.stderr, "machinist: control plane listening on %s\n", address)
+				fmt.Fprintf(log, "machinist: control plane listening on %s\n", address)
 			})
 		},
 	}
