@@ -19,6 +19,8 @@ type fakeGH struct {
 	checks     []string // stdout of each pr checks call, the last repeats
 	pending    bool     // pr checks exits non-zero, as gh does while pending
 	refuse     string   // pr merge fails with this text
+	repo       string   // stdout of gh api repos/{owner}/{repo}; "" allows merge commits
+	repoErr    string   // gh api fails with this text
 	calls      []string
 	views      int
 	looks      int
@@ -59,14 +61,24 @@ func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, string, error) 
 		return nil, "", nil
 	case strings.HasPrefix(call, "pr update-branch"):
 		return nil, "", nil
+	case call == "api repos/{owner}/{repo}":
+		if f.repoErr != "" {
+			return nil, f.repoErr, errors.New("exit status 1")
+		}
+		if f.repo == "" {
+			return []byte(`{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}`), "", nil
+		}
+		return []byte(f.repo), "", nil
 	}
 	f.t.Fatalf("unexpected gh call: %s", call)
 	return nil, "", nil
 }
 
-func (f *fakeGH) merged() bool {
+func (f *fakeGH) merged() bool { return f.mergedWith("merge") }
+
+func (f *fakeGH) mergedWith(method string) bool {
 	for _, call := range f.calls {
-		if strings.HasPrefix(call, "pr merge 7 --merge --delete-branch") {
+		if call == "pr merge 7 --"+method+" --delete-branch" {
 			return true
 		}
 	}
@@ -112,6 +124,38 @@ func TestMergeMergesAnAcceptedChangeOnceChecksPass(t *testing.T) {
 	}
 	if got := result(t, control); got != "Merged: https://github.com/o/r/pull/7" {
 		t.Fatalf("result = %q", got)
+	}
+}
+
+// The merge uses the first of merge, squash and rebase that the repository
+// allows, so squash-only and rebase-only repositories merge too.
+func TestMergeUsesAMethodTheRepositoryAllows(t *testing.T) {
+	for _, test := range []struct {
+		name, repo, repoErr, want string
+	}{
+		{"all allowed", `{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}`, "", "merge"},
+		{"squash and rebase", `{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true}`, "", "squash"},
+		{"squash only", `{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":false}`, "", "squash"},
+		{"rebase only", `{"allow_merge_commit":false,"allow_squash_merge":false,"allow_rebase_merge":true}`, "", "rebase"},
+		// Without the settings, merge as before and let GitHub's answer say why.
+		{"settings left out", `{"name":"r"}`, "", "merge"},
+		{"settings unreadable", "", "HTTP 404: Not Found", "merge"},
+		{"not json", `{"allow_`, "", "merge"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			control, options := setup(t, `{"verdict":"accepted"}`)
+			gh := &fakeGH{t: t, checks: []string{passed}, repo: test.repo, repoErr: test.repoErr}
+			options.GH = gh.run
+			if err := Merge(t.Context(), options); err != nil {
+				t.Fatal(err)
+			}
+			if !gh.mergedWith(test.want) {
+				t.Fatalf("did not merge with --%s; calls %v", test.want, gh.calls)
+			}
+			if got := result(t, control); got != "Merged: https://github.com/o/r/pull/7" {
+				t.Fatalf("result = %q", got)
+			}
+		})
 	}
 }
 
