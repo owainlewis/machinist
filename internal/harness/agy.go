@@ -70,6 +70,7 @@ var agyExit = regexp.MustCompile(`exited with code (-?\d+)`)
 // when the step is done.
 func (Agy) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	var usage *Usage
+	var model string
 	var text strings.Builder
 	err := eachLine(r, w, func(line string) ([]string, bool) {
 		var e agyEvent
@@ -78,6 +79,7 @@ func (Agy) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 		}
 		switch e.Event {
 		case "init":
+			model = e.Init.Model
 			if e.Init.Model != "" {
 				return []string{"Antigravity started with " + e.Init.Model}, true
 			}
@@ -113,7 +115,7 @@ func (Agy) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 			return nil, true
 		case "result":
 			if e.Result.Usage != nil {
-				usage = &Usage{Tokens: e.Result.Usage.TotalTokens + e.Result.Usage.CacheReadTokens}
+				usage = &Usage{Tokens: e.Result.Usage.TotalTokens + e.Result.Usage.CacheReadTokens, CostUnknown: true}
 			}
 			if e.Result.Status != "SUCCESS" {
 				return []string{"Stopped: " + firstLine(agyError(e), 200)}, true
@@ -126,7 +128,7 @@ func (Agy) Format(r io.Reader, w io.Writer, cwd string) (*Usage, error) {
 	if said := strings.TrimSpace(text.String()); err == nil && said != "" {
 		_, err = fmt.Fprintln(w, said)
 	}
-	return usage, err
+	return withModel(usage, model), err
 }
 
 // agyError finds the words of a failed result, which may be a string or an

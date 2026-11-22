@@ -33,6 +33,12 @@ const maxLine = 16 << 20
 type Usage struct {
 	Tokens int64   `json:"tokens"`
 	Cost   float64 `json:"cost"`
+	// CostUnknown is true when an agent spent tokens but its harness reports
+	// no cost, so Cost leaves part of the spend out.
+	CostUnknown bool `json:"cost_unknown,omitempty"`
+	// Model is the model the harness said it started with. It fills in the
+	// model of an agent that left the choice to its harness.
+	Model string `json:"-"`
 	// Agents are the agents the step ran, in order.
 	Agents []protocol.Agent `json:"agents,omitempty"`
 }
@@ -135,6 +141,10 @@ func addUsage(path string, usage Usage) {
 	earlier := readUsage(path)
 	earlier.Tokens += usage.Tokens
 	earlier.Cost += usage.Cost
+	earlier.CostUnknown = earlier.CostUnknown || usage.CostUnknown
+	if last := len(earlier.Agents) - 1; usage.Model != "" && last >= 0 && earlier.Agents[last].Model == "" {
+		earlier.Agents[last].Model = usage.Model
+	}
 	writeUsage(path, earlier)
 }
 
@@ -145,6 +155,19 @@ func RecordAgent(path string, agent protocol.Agent) {
 	usage := readUsage(path)
 	usage.Agents = append(usage.Agents, agent)
 	writeUsage(path, usage)
+}
+
+// withModel notes the model a harness started with on its usage, making the
+// usage when the agent stopped before reporting any.
+func withModel(usage *Usage, model string) *Usage {
+	if model == "" {
+		return usage
+	}
+	if usage == nil {
+		usage = &Usage{}
+	}
+	usage.Model = model
+	return usage
 }
 
 func readUsage(path string) Usage {

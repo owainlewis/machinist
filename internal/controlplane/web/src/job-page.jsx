@@ -4,7 +4,7 @@ import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { State, relativeTime, useNow } from "./display.jsx";
 import { formatDuration, isFinished, jobState, prLink, prState } from "./jobs.js";
-import { latestAction, pipeline, pollEvents, stepTime, steps } from "./step-log.js";
+import { latestAction, pipeline, pollEvents, runSpend, spend, spendTitle, stepTime, steps } from "./step-log.js";
 import { Button } from "@/components/ui/button";
 
 const pollMillis = 2000;
@@ -118,6 +118,7 @@ function Step({ step, chosen, now }) {
       <Icon className={`size-4 shrink-0 ${tone}`} aria-hidden="true" />
       <span className="step-name">{step.name}</span>
       <span className="step-error">{step.error}</span>
+      <span className="step-spend" title={spendTitle(step.cost_unknown)}>{spend(step)}</span>
       <span className="step-time">{step.state === "skipped" ? "Skipped" : stepTime(step, now)}</span>
       <ChevronRight className="step-chevron size-4" aria-hidden="true" />
     </button>
@@ -139,6 +140,7 @@ function Run({ run, number, presetSteps }) {
       <h2>Attempt {number}</h2>
       <span>{run.status === "queued" ? "Waiting for a runner" : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
       {run.started_at && <span>{formatDuration((run.ended_at ? Date.parse(run.ended_at) : now) - Date.parse(run.started_at))}</span>}
+      {runSpend(run.stages) && <span title={spendTitle((run.stages || []).some(stage => stage.cost_unknown))}>{runSpend(run.stages)}</span>}
     </div>
     {current && <p className="run-now" aria-live="polite"><span className="run-now-step">{current.name}</span>{action || "Working"}</p>}
     {error && <p className="form-error" role="alert">{error}</p>}

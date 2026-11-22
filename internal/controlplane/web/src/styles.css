@@ -224,13 +224,14 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .run-head h2 { color: var(--foreground); font-size: 16px; font-weight: 600; }
 .steps { overflow: hidden; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); list-style: none; }
 .step + .step { border-top: 1px solid var(--border); }
-.step-row { display: grid; width: 100%; grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 11px 14px; font-size: 14px; text-align: left; }
+.step-row { display: grid; width: 100%; grid-template-columns: auto auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 12px; padding: 11px 14px; font-size: 14px; text-align: left; }
 .step-row:not(:disabled):hover { background: var(--muted); }
 .step-row:disabled { cursor: default; }
 .step-name { font-weight: 500; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .step[data-state="skipped"] .step-name { color: var(--faint); font-weight: 400; }
 .step-error { overflow: hidden; color: var(--danger); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .step-time { color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; }
+.step-spend { color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .step-chevron { color: var(--faint); transition: transform .15s ease; }
 .step-row[aria-expanded="true"] .step-chevron { transform: rotate(90deg); }
 .step-row:disabled .step-chevron { visibility: hidden; }
@@ -365,7 +366,7 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
   .job-head h1 { font-size: 19px; }
   .job-facts { gap: 8px 20px; }
   .step-row { grid-template-columns: auto minmax(0, 1fr) auto auto; }
-  .step-error { display: none; }
+  .step-error, .step-spend { display: none; }
   .group-table th:nth-child(3), .group-table td:nth-child(3), .group-table th:nth-child(4), .group-table td:nth-child(4) { display: none; }
   .rate-track { display: none; }
 }

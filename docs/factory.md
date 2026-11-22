@@ -154,7 +154,9 @@ Finished after 12 turns in 3m10s, $0.42
 
 Lines that start with `▸` are actions. The job page shows the latest one as what a running
 job is doing. `machinist agent` also records the tokens and cost the agent reports, so the
-dashboard can count them. Codex reports tokens but no cost. To run some other command from
+job page and the dashboard can count them. Codex and agy report tokens but no cost, so their
+steps show the cost as not reported, and a total that leaves them out ends in `+`. An agent
+with no `model:` shows the model its harness said it started with. To run some other command from
 a `run` step with the same live lines, wrap it: `machinist agent-log -- <command>`. Output
 that is not Claude Code's stream passes through unchanged.
 

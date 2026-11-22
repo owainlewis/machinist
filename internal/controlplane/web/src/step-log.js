@@ -1,3 +1,4 @@
+import { formatTokens } from "./dashboard.js";
 import { formatDuration } from "./jobs.js";
 
 // A step keeps the end of its output, which is where a failure shows.
@@ -41,7 +42,7 @@ export function steps(events = [], stages = [], runStatus = "") {
     const step = started.get(stage.name) || { name: stage.name, output: "" };
     let state = stage.state;
     if (!state) state = going && index === named.length - 1 ? "running" : going ? "succeeded" : "unknown";
-    const result = { ...step, state, duration_millis: stage.duration_millis, error: stage.error || "" };
+    const result = { ...step, state, duration_millis: stage.duration_millis, error: stage.error || "", tokens: stage.tokens, cost: stage.cost, cost_unknown: !!stage.cost_unknown };
     // Only a recorded result of a step that ran says which agents ran. A state
     // inferred while the run goes, or a skip, leaves agents unset, so the
     // pipeline shows the planned ones.
@@ -90,4 +91,31 @@ export function pipeline(presetSteps = [], ran = [], runStatus = "") {
 export function stepTime(step, now = Date.now()) {
   if (step.state === "running" && step.started_at) return formatDuration(now - Date.parse(step.started_at));
   return step.duration_millis != null ? formatDuration(step.duration_millis) : "";
+}
+
+// spend says what a step or a run spent: its tokens and cost. A harness that
+// reports no cost leaves it unknown, so a known part is marked with a plus and
+// no cost at all says so, instead of reading as free.
+export function spend({ tokens, cost, cost_unknown: unknown } = {}) {
+  const parts = [];
+  if (tokens) parts.push(`${formatTokens(tokens)} tokens`);
+  if (cost != null) parts.push(`$${cost.toFixed(2)}${unknown ? "+" : ""}`);
+  else if (unknown) parts.push("cost not reported");
+  return parts.join(" · ");
+}
+
+// runSpend adds up the spend of a run's steps.
+export function runSpend(stages = []) {
+  let tokens = 0, cost = null, unknown = false;
+  for (const stage of stages) {
+    tokens += stage.tokens || 0;
+    if (stage.cost != null) cost = (cost || 0) + stage.cost;
+    unknown ||= !!stage.cost_unknown;
+  }
+  return spend({ tokens, cost, cost_unknown: unknown });
+}
+
+// spendTitle explains a cost that leaves part of the spend out.
+export function spendTitle(unknown) {
+  return unknown ? "An agent here reports no cost, so its spend is not counted" : undefined;
 }

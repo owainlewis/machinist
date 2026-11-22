@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { latestAction, outputLimit, pipeline, pollEvents, stepTime, steps } from "./step-log.js";
+import { latestAction, outputLimit, pipeline, pollEvents, runSpend, spend, stepTime, steps } from "./step-log.js";
 
 const output = (text, stream = "stdout") => ({ type: "process.output", stream, encoding: "base64", data: Buffer.from(text).toString("base64") });
 const started = name => ({ type: "step.started", message: `name=${name}`, time: "2026-11-17T21:24:57Z" });
@@ -79,4 +79,18 @@ test("pipeline names each step's agents, from the run once it ran and the preset
   assert.deepEqual(pipeline(preset, going, "running").map(step => step.agents), [[], [implement], [review]]);
   // A step that ran and called no agent, such as one that skipped a branch, shows none.
   assert.deepEqual(pipeline(preset, [{ name: "checkout", state: "succeeded" }, { name: "implement", state: "succeeded", agents: [] }, { name: "review", state: "failed", agents: [] }], "failed").map(step => step.agents), [[], [], []]);
+});
+
+test("spend never shows an unreported cost as free", () => {
+  assert.equal(spend({ tokens: 394651, cost: 0.42 }), "395k tokens · $0.42");
+  assert.equal(spend({ tokens: 524789, cost_unknown: true }), "525k tokens · cost not reported");
+  assert.equal(spend({ tokens: 60000, cost: 0.2, cost_unknown: true }), "60k tokens · $0.20+");
+  assert.equal(spend({}), "");
+  const stages = [{ name: "checkout" }, { name: "implement", tokens: 394651, cost: 0.42 }, { name: "review", tokens: 524789, cost_unknown: true }, { name: "publish", tokens: 159671, cost: 0.26 }];
+  assert.equal(runSpend(stages), "1.1M tokens · $0.68+");
+  assert.equal(runSpend([{ name: "review", tokens: 10, cost_unknown: true }]), "10 tokens · cost not reported");
+  assert.equal(runSpend([]), "");
+  const [review] = steps([], [{ name: "review", state: "succeeded", tokens: 10, cost_unknown: true }], "succeeded");
+  assert.equal(review.cost_unknown, true);
+  assert.equal(review.tokens, 10);
 });

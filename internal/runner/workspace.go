@@ -233,7 +233,11 @@ func stepUsage(control string, entry *protocol.StageResult) {
 	if usage.Tokens < 0 || usage.Cost < 0 || (usage.Tokens == 0 && usage.Cost == 0) {
 		return
 	}
-	entry.Tokens, entry.Cost = &usage.Tokens, &usage.Cost
+	entry.Tokens, entry.CostUnknown = &usage.Tokens, usage.CostUnknown
+	// A harness that reports no cost leaves it unknown, not free.
+	if usage.Cost > 0 || !usage.CostUnknown {
+		entry.Cost = &usage.Cost
+	}
 }
 
 // finalReport is the run's result: result.md, or a plain summary.

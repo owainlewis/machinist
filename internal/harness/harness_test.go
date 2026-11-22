@@ -170,7 +170,7 @@ func TestAgyFormatTurnsEventsIntoLines(t *testing.T) {
 	if out.String() != want {
 		t.Fatalf("output =\n%s\nwant\n%s", out.String(), want)
 	}
-	if usage == nil || usage.Tokens != 10933+6579 || usage.Cost != 0 {
+	if usage == nil || usage.Tokens != 10933+6579 || usage.Cost != 0 || !usage.CostUnknown || usage.Model != "gemini-4-neon-high" {
 		t.Fatalf("usage = %+v", usage)
 	}
 }
@@ -219,5 +219,20 @@ func TestInstalledListsTheHarnessesOnPath(t *testing.T) {
 	}
 	if got := Installed(lookPath); strings.Join(got, ",") != "agy,claude" {
 		t.Fatalf("installed = %v", got)
+	}
+}
+
+// An agent that left its model to the harness shows the model the harness
+// started with, and a harness with no cost marks the step's cost unknown.
+func TestAStepShowsTheModelItsHarnessChoseAndAnUnknownCost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), UsageFile)
+	RecordAgent(path, protocol.Agent{Name: "implement", Harness: "claude"})
+	addUsage(path, Usage{Tokens: 10, Cost: 0.5, Model: "claude-opus-5-5"})
+	RecordAgent(path, protocol.Agent{Name: "review", Harness: "agy", Model: "gemini-4-neon-high"})
+	addUsage(path, Usage{Tokens: 5, CostUnknown: true, Model: "gemini-4-neon"})
+	usage := readUsage(path)
+	want := []protocol.Agent{{Name: "implement", Harness: "claude", Model: "claude-opus-5-5"}, {Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}}
+	if !slices.Equal(usage.Agents, want) || usage.Tokens != 15 || usage.Cost != 0.5 || !usage.CostUnknown {
+		t.Fatalf("usage = %+v", usage)
 	}
 }
