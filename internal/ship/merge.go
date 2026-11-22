@@ -77,7 +77,8 @@ type check struct {
 // Merge waits for the checks on the job's pull request, and merges it when
 // auto-merge is on, the review accepted the change and every check passed.
 // Otherwise it leaves the pull request open and says why in result.md, which is
-// not an error. A failed check is an error, and result.md names the check.
+// not an error. A failed check is an error, and result.md names the check. A
+// pull request that a person merged or closed meanwhile is not an error either.
 func Merge(ctx context.Context, options MergeOptions) error {
 	options = withDefaults(options)
 	pr, found, err := findPR(ctx, options)
@@ -89,6 +90,9 @@ func Merge(ctx context.Context, options MergeOptions) error {
 		fmt.Fprintln(options.Log, "No pull request to merge")
 		return nil
 	}
+	if settled, err := recordSettled(options, pr); settled {
+		return err
+	}
 	// A failed check fails the job whether or not the change may merge, so a
 	// pull request left for a person never hides one.
 	reason := blocker(options)
@@ -96,11 +100,12 @@ func Merge(ctx context.Context, options MergeOptions) error {
 	// checks take a while to register, so each one must come back before the
 	// pull request may merge, or a round that sees none would merge without CI.
 	var seen []string
-	// The head commit whose checks the last round saw. The merge names it, so
-	// GitHub refuses to merge any other commit.
-	var head string
+	// The merge method, read from the repository before the first merge.
+	var method string
 	for updates := 0; ; updates++ {
-		head = pr.HeadRefOid
+		// The head commit whose checks this round sees. The merge names it, so
+		// GitHub refuses to merge any other commit.
+		head := pr.HeadRefOid
 		names, err := awaitChecks(ctx, options, pr, seen)
 		if err != nil {
 			var failed *CheckFailedError
@@ -117,12 +122,35 @@ func Merge(ctx context.Context, options MergeOptions) error {
 		if reason != "" {
 			return leaveOpen(options, pr, reason)
 		}
-		pr, _, err = findPR(ctx, options)
-		if err != nil {
+		if pr, err = refreshPR(ctx, options); err != nil {
+			return err
+		}
+		if settled, err := recordSettled(options, pr); settled {
 			return err
 		}
 		if pr.MergeStateStatus != "BEHIND" {
-			break
+			if method == "" {
+				method = mergeMethod(ctx, options)
+			}
+			fmt.Fprintf(options.Log, "▸ Merge pull request #%d with %s\n", pr.Number, method)
+			_, stderr, err := options.GH(ctx, "pr", "merge", strconv.Itoa(pr.Number), "--"+method, "--delete-branch", "--match-head-commit", head)
+			if err == nil {
+				return writeResult(options.Control, "Merged: "+pr.URL)
+			}
+			refused := "GitHub refused the merge: " + firstLine(stderr, err)
+			// Another pull request can land between the look above and the
+			// merge, which leaves this branch behind. Look again, and update
+			// the branch if that is why GitHub refused.
+			if pr, err = refreshPR(ctx, options); err != nil {
+				return err
+			}
+			if settled, err := recordSettled(options, pr); settled {
+				return err
+			}
+			if pr.MergeStateStatus != "BEHIND" {
+				return leaveOpen(options, pr, refused)
+			}
+			fmt.Fprintf(options.Log, "%s, because the branch fell behind\n", refused)
 		}
 		if updates == maxBranchUpdates {
 			return leaveOpen(options, pr, "the branch fell behind the default branch three times")
@@ -137,17 +165,39 @@ func Merge(ctx context.Context, options MergeOptions) error {
 		if err != nil {
 			return err
 		}
+		if settled, err := recordSettled(options, moved); settled {
+			return err
+		}
 		if !ok {
 			return leaveOpen(options, pr, "the pull request did not move to the updated branch")
 		}
 		pr = moved
 	}
-	method := mergeMethod(ctx, options)
-	fmt.Fprintf(options.Log, "▸ Merge pull request #%d with %s\n", pr.Number, method)
-	if _, stderr, err := options.GH(ctx, "pr", "merge", strconv.Itoa(pr.Number), "--"+method, "--delete-branch", "--match-head-commit", head); err != nil {
-		return leaveOpen(options, pr, "GitHub refused the merge: "+firstLine(stderr, err))
+}
+
+// recordSettled reports whether a person already merged or closed the pull
+// request, and if so writes that to result.md. Neither fails the step: a merged
+// pull request is the job done, and a closed one was a person's decision.
+func recordSettled(options MergeOptions, pr pullRequest) (bool, error) {
+	switch pr.State {
+	case "MERGED":
+		fmt.Fprintf(options.Log, "Pull request #%d is already merged\n", pr.Number)
+		return true, writeResult(options.Control, "Merged: "+pr.URL)
+	case "CLOSED":
+		fmt.Fprintf(options.Log, "Pull request #%d was closed without merging\n", pr.Number)
+		return true, writeResult(options.Control, "Closed without merging: "+pr.URL)
 	}
-	return writeResult(options.Control, "Merged: "+pr.URL)
+	return false, nil
+}
+
+// refreshPR looks at the pull request again. It was there before, so finding
+// none now is an error.
+func refreshPR(ctx context.Context, options MergeOptions) (pullRequest, error) {
+	pr, found, err := findPR(ctx, options)
+	if err == nil && !found {
+		err = fmt.Errorf("find the pull request: the pull request on %s is gone", options.Branch)
+	}
+	return pr, err
 }
 
 // repository holds the merge methods a repository allows. A field is nil when
@@ -227,7 +277,7 @@ func leaveOpen(options MergeOptions, pr pullRequest, reason string) error {
 	return writeResult(options.Control, fmt.Sprintf("Left open: %s. %s", strings.TrimRight(reason, ". "), pr.URL))
 }
 
-// findPR finds the open pull request on the job's branch.
+// findPR finds the pull request on the job's branch, in whatever state.
 func findPR(ctx context.Context, options MergeOptions) (pullRequest, bool, error) {
 	var pr pullRequest
 	stdout, stderr, err := options.GH(ctx, "pr", "view", options.Branch, "--json", "number,url,state,mergeStateStatus,headRefOid")
@@ -240,22 +290,19 @@ func findPR(ctx context.Context, options MergeOptions) (pullRequest, bool, error
 	if err := json.Unmarshal(stdout, &pr); err != nil {
 		return pr, false, fmt.Errorf("read the pull request: %w", err)
 	}
-	if pr.State != "OPEN" {
-		return pr, false, fmt.Errorf("pull request #%d is %s, not open", pr.Number, strings.ToLower(pr.State))
-	}
 	return pr, true, nil
 }
 
 // awaitNewHead waits until the pull request's head commit is no longer the one
-// in pr, and returns the pull request as it now is. It reports false when the
-// head has not moved after StartTries waits.
+// in pr, or it is no longer open, and returns the pull request as it now is. It
+// reports false when the head has not moved after StartTries waits.
 func awaitNewHead(ctx context.Context, options MergeOptions, pr pullRequest) (pullRequest, bool, error) {
 	for tries := 0; ; tries++ {
-		now, _, err := findPR(ctx, options)
+		now, err := refreshPR(ctx, options)
 		if err != nil {
 			return pr, false, err
 		}
-		if now.HeadRefOid != "" && now.HeadRefOid != pr.HeadRefOid {
+		if now.State != "OPEN" || (now.HeadRefOid != "" && now.HeadRefOid != pr.HeadRefOid) {
 			return now, true, nil
 		}
 		if tries == options.StartTries {
