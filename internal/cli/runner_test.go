@@ -117,11 +117,15 @@ func (w *cancelOnConnect) Write(body []byte) (int, error) {
 }
 
 func TestRunnerTokenScopeWarning(t *testing.T) {
+	const noWorkflowWarning = "machinist: warning: the GitHub token has no workflow scope, so jobs cannot push changes to .github/workflows/; run gh auth refresh -s workflow\n"
 	for _, command := range []string{"check", "start"} {
 		for _, test := range []struct{ name, scopes, want string }{
-			{"wide", "repo, delete_repo, admin:public_key", "machinist: warning: the GitHub token has extra scopes: delete_repo, admin:public_key; use a token limited to the repositories the bot works on\n"},
-			{"narrow", "repo", ""},
-			{"public", "public_repo", ""},
+			{"wide", "repo, workflow, delete_repo, admin:public_key", "machinist: warning: the GitHub token has extra scopes: delete_repo, admin:public_key; use a token limited to the repositories the bot works on\n"},
+			{"narrow", "repo, workflow", ""},
+			{"public", "public_repo, workflow", ""},
+			{"no-workflow", "repo", noWorkflowWarning},
+			{"wide-no-workflow", "repo, delete_repo", "machinist: warning: the GitHub token has extra scopes: delete_repo; use a token limited to the repositories the bot works on\n" + noWorkflowWarning},
+			// GitHub App and fine-grained tokens report no scopes.
 			{"fine-grained", "", ""},
 			{"lookup-failure", "", ""},
 		} {
