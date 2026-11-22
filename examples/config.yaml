@@ -22,8 +22,9 @@ github:
   #   id: 123456
   #   private_key_file: .machinist/github-app.pem
 
-# Start jobs from Linear. Off until teams is set. The app's token is read
-# from LINEAR_API_TOKEN. Machinist polls every poll_interval. See docs/linear.md.
+# Start jobs from Linear. Off until teams is set. The app signs in with
+# LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET from the environment, never this
+# file. Machinist polls every poll_interval. See docs/linear.md.
 # linear:
 #   app_user_id: <the Machinist app's Linear user ID>
 #   allowed_users: [<your Linear user ID>]
