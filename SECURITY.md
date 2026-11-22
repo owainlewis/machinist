@@ -48,9 +48,10 @@ nothing stops an operator exposing the address publicly. Keep it on a private ne
 set `tls_cert` and `tls_key`.
 
 **Linear is read by polling.** Machinist calls Linear; Linear never calls Machinist, so
-nothing about Linear needs a public route. `LINEAR_API_TOKEN` stays in the control plane's
-environment, and the agent never gets it or any other way to write to Linear. Only the Linear
-users in `linear.allowed_users` can start a job, and the issue's text becomes its prompt.
+nothing about Linear needs a public route. The Linear app's client secret and its token stay
+in the control plane's environment and memory, and the agent never gets them or any other way
+to write to Linear. Only the Linear users in `linear.allowed_users` can start a job, and the
+issue's text becomes its prompt.
 See [Linear](docs/linear.md).
 
 **Local runners.** Concurrent runs under one OS user can read each other's files and

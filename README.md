@@ -103,6 +103,10 @@ The pull request comes from whoever owns `GH_TOKEN`. For a team, use a
 [GitHub App](docs/github-app.md) instead: each run gets a token for its own repository that
 lasts an hour, and no runner holds a GitHub token.
 
+To start jobs by assigning Linear issues to Machinist, follow the
+[Linear setup guide](docs/linear.md#set-it-up). It makes a Linear app with client
+credentials, so Machinist gets and renews its own Linear token.
+
 The production UI is committed, so this build does not need Node.
 
 ## Using it
@@ -132,11 +136,11 @@ needs different steps.
 
 ### Start jobs from Linear
 
-1. In Linear, create an app called Machinist and install it with `actor=app`.
-2. Put its access token in `LINEAR_API_TOKEN`. In the `linear` section of `config.yaml`, set `app_user_id` (the app's user ID), `teams` (Linear team key to repository) and a non-empty `allowed_users`. Then restart the control plane.
+1. In Linear, create an app called Machinist with client credentials on.
+2. Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` where the control plane runs. In the `linear` section of `config.yaml`, set `app_user_id` (the app's user ID), `projects` or `teams` (Linear project or team to repository) and a non-empty `allowed_users`. Then restart the control plane.
 3. Delegate an issue to the Machinist app. Machinist starts a job for it within a minute.
 
-See [Linear](docs/linear.md) for the details.
+See the [Linear setup guide](docs/linear.md#set-it-up) for each step.
 
 ## Testing Machinist itself
 

@@ -146,8 +146,13 @@ func linearPoller(machinistConfig config.Config, loaded *factory.Factory, intake
 			}
 		}
 	}
+	tracker := &sources.Linear{Token: linear.Token, AppUserID: linear.AppUserID}
+	if linear.UsesClientCredentials() {
+		// The first poll, at startup, fetches the token.
+		tracker.Credentials = &sources.LinearCredentials{ClientID: linear.ClientID, ClientSecret: linear.ClientSecret}
+	}
 	return &sources.Poller{
-		Tracker:        &sources.Linear{Token: linear.Token, AppUserID: linear.AppUserID},
+		Tracker:        tracker,
 		Rules:          sources.TrackerRules{AllowedUsers: linear.AllowedUsers, Preset: preset, Projects: linear.Projects, Teams: linear.Teams},
 		Intake:         intake,
 		Store:          store,

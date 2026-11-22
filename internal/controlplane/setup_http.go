@@ -137,8 +137,8 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 		linear.Detail = "On. Issues assigned to the Machinist app start jobs."
 	} else {
 		linear.Detail = "Off. This is optional."
-		linear.Fix = "Set linear.teams in config.yaml and LINEAR_API_TOKEN to start jobs from Linear."
-		linear.Link = docs + "linear.md"
+		linear.Fix = "Set linear.teams in config.yaml, and the Linear app's LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET, to start jobs from Linear."
+		linear.Link = docs + "linear.md#set-it-up"
 	}
 	setup.Checks = append(setup.Checks, linear)
 

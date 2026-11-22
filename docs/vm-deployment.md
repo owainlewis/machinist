@@ -76,7 +76,7 @@ Neither needs a GitHub token when a GitHub App is set.
 
 | File | Holds |
 | --- | --- |
-| `/etc/machinist/control-plane.env` | `GH_TOKEN` for the bot, only without a GitHub App. `LINEAR_API_TOKEN`, to [start jobs from Linear](linear.md) |
+| `/etc/machinist/control-plane.env` | `GH_TOKEN` for the bot, only without a GitHub App. `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET`, to [start jobs from Linear](linear.md#set-it-up) |
 | `/etc/machinist/runner.env` | The variables listed in `env` in `runner.yaml`, such as `ANTHROPIC_API_KEY`. `GH_TOKEN` only without a GitHub App |
 
 See [Credentials](credentials.md).

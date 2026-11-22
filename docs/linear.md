@@ -13,15 +13,98 @@ outside, so the control plane needs no public address.
 
 ## Set it up
 
-1. In Linear, open **Settings → API → Applications** and create an app called Machinist.
-   Install it in the workspace with `actor=app`, so it appears as a user you can assign.
-   It needs read and write access to issues and comments. It needs no webhook.
-2. Find the user IDs. With the app's access token, the GraphQL query `{ viewer { id } }`
-   against `https://api.linear.app/graphql` returns the app's ID. With your own API key,
-   `{ users { nodes { id name } } }` lists everyone else's.
-3. Put the app's access token in `LINEAR_API_TOKEN` in the control plane's environment,
-   next to `GH_TOKEN`. Never put it in `config.yaml`.
-4. Add a `linear` section to `config.yaml` and restart the control plane:
+This takes about ten minutes. You need to be a Linear workspace admin, and able to restart
+the control plane.
+
+Machinist signs in to Linear as its own app, with the app's client ID and secret. It gets an
+access token with them when it starts, and gets a new one before that token expires, so
+nobody has to renew anything by hand. Linear's tokens last 30 days.
+
+### 1. Make the Linear app
+
+In Linear, open **Settings → API → Applications** and choose **New application**. Fill in
+the form:
+
+| Field | Value |
+| --- | --- |
+| Application name | `Machinist`. People see this name when they assign it an issue |
+| Developer name | Your name or your team's |
+| Developer URL | Any page about your Machinist, such as your repository's URL |
+| Redirect URIs | Leave blank. Machinist does not use the OAuth redirect flow |
+| Public | Off. Only your workspace uses the app |
+| Client credentials | On. This is how Machinist gets its own tokens |
+| Webhooks | Off. Machinist polls Linear, so nothing calls it from outside |
+
+Save the app. Linear shows its **Client ID** and **Client secret**. Copy both now.
+
+### 2. Give the control plane the client ID and secret
+
+Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` where the control plane runs. They never
+go in `config.yaml`, which can live in git; startup fails if you put them there.
+
+- **On a VM**, add them to `/etc/machinist/control-plane.env`, next to `GH_TOKEN`. The
+  systemd unit reads that file. See [VM deployment](vm-deployment.md).
+
+  ```sh
+  LINEAR_CLIENT_ID=<the client ID>
+  LINEAR_CLIENT_SECRET=<the client secret>
+  ```
+
+- **On your own machine**, put the same two lines in a `.env` file in the directory you run
+  `machinist start` from. Add `.env` to that directory's `.gitignore` before you write the
+  secret into it. Machinist does not read `.env` itself, so load it into the shell first:
+
+  ```sh
+  echo .env >> .gitignore
+  set -a; . ./.env; set +a
+  machinist start
+  ```
+
+Treat the secret like a password. Anyone with it can act as Machinist in your Linear
+workspace.
+
+### 3. Find the user IDs
+
+Machinist needs two kinds of Linear user ID: the app's own, and the IDs of the people
+allowed to send it work.
+
+**The app's ID.** Ask Linear for a token with the client credentials, then ask who that
+token is:
+
+```sh
+token=$(curl -s https://api.linear.app/oauth/token \
+  -d grant_type=client_credentials -d scope=read,write,app:assignable,app:mentionable \
+  -d client_id="$LINEAR_CLIENT_ID" -d client_secret="$LINEAR_CLIENT_SECRET" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
+curl -s https://api.linear.app/graphql \
+  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -d '{"query": "{ viewer { id name } }"}'
+```
+
+The `id` it returns is `app_user_id`.
+
+Ask for all four scopes. Without `app:assignable` and `app:mentionable`, Linear refuses to
+let anyone delegate or assign an issue to the app.
+
+Getting a token this way revokes the app's previous token. If a control plane is already
+running with these credentials, it gets a new one on its next poll, but a second control
+plane sharing the same client ID and secret will keep taking the token from the first. Give
+each control plane its own Linear app.
+
+**People's IDs.** Use the same token to list everyone in the workspace:
+
+```sh
+curl -s https://api.linear.app/graphql \
+  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -d '{"query": "{ users { nodes { id name email } } }"}'
+```
+
+Pick out the `id` of each person who may send Machinist work. These go in `allowed_users`.
+
+### 4. Add the `linear` section
+
+Add a `linear` section to `config.yaml`. Each team's repository must also be in
+`github.repositories`.
 
 ```yaml
 linear:
@@ -45,9 +128,36 @@ linear:
 | `poll_interval` | Time between polls. Defaults to `60s`, and must be at least `10s` |
 | `max_jobs_per_hour` | The most jobs Linear can start in any hour. Defaults to 20 |
 
-Set `projects`, `teams` or both. Startup stops if `LINEAR_API_TOKEN` is missing,
-`app_user_id` or `allowed_users` is empty, a project's or team's repository is not
-connected, or the preset does not exist.
+Set `projects`, `teams` or both. Startup stops if only one of `LINEAR_CLIENT_ID` and
+`LINEAR_CLIENT_SECRET` is set, if no credentials are set, if `app_user_id` or
+`allowed_users` is empty, if a project's or team's repository is not connected, or if the
+preset does not exist.
+
+### 5. Check that it works
+
+1. Restart the control plane. Open **Settings → Linear** in the web app. It should say
+   **On** and list your teams.
+2. In Linear, make a small test issue in a connected team, such as "Add a sentence to the
+   README saying hello". Delegate or assign it to Machinist.
+3. Within a minute, the issue moves to **In Progress** and Machinist comments that it is
+   working on it. The job shows on the web app's Jobs page.
+
+If nothing happens, read the control plane's log. A wrong client ID or secret shows as
+`linear: get an access token from the client credentials: ...` on each poll. An issue
+assigned by someone outside `allowed_users` is logged and ignored.
+
+### Renewing the token
+
+Machinist keeps the token in memory, and gets a new one an hour before it expires and each
+time it restarts. If Linear turns a token down before then, with a 401, Machinist gets a
+new one once and sends the request again. Nothing is written to disk.
+
+### Using a fixed token instead
+
+`LINEAR_API_TOKEN` still works. Set it to an access token, or to a personal API key that
+starts with `lin_api_`, in place of the client ID and secret. Machinist uses it as it is and
+cannot renew it, so when it expires polling stops until you set a new one. If both are set,
+the client ID and secret win.
 
 ## Which repository a job runs in
 

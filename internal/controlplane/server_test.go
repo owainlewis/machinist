@@ -19,6 +19,7 @@ import (
 	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
+	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -221,5 +222,28 @@ func TestRunnersListNamesTheCurrentStepsAgents(t *testing.T) {
 	job := fleet.Runners[0].Jobs[0]
 	if job.Step != "work" || job.Preset != "default" || len(job.Agents) != 1 || job.Agents[0] != (protocol.Agent{Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}) {
 		t.Fatalf("job = %+v", job)
+	}
+}
+
+func TestLinearSignsInWithTheCredentialsItWasGiven(t *testing.T) {
+	machinistConfig := testConfig()
+	machinistConfig.GitHub.Repositories = []string{"owner/repo"}
+	machinistConfig.Linear = config.Linear{AppUserID: "app-user", AllowedUsers: []string{"owain"}, Teams: map[string]string{"ENG": "owner/repo"}, Token: "lin_api_key"}
+	poller, err := linearPoller(machinistConfig, testFactory(), &sources.Intake{}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracker := poller.Tracker.(*sources.Linear); tracker.Token != "lin_api_key" || tracker.Credentials != nil {
+		t.Fatalf("a fixed token: tracker = %+v", tracker)
+	}
+	machinistConfig.Linear.Token = ""
+	machinistConfig.Linear.ClientID, machinistConfig.Linear.ClientSecret = "client-id", "client-secret"
+	poller, err = linearPoller(machinistConfig, testFactory(), &sources.Intake{}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := poller.Tracker.(*sources.Linear)
+	if tracker.Credentials == nil || tracker.Credentials.ClientID != "client-id" || tracker.Credentials.ClientSecret != "client-secret" {
+		t.Fatalf("client credentials: tracker = %+v", tracker)
 	}
 }

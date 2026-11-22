@@ -196,7 +196,9 @@ func TestLinearNeedsATokenAndATrigger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n  allowed_users: [owain]\n  teams:\n    ENG: owner/repo\n")
 	t.Setenv(LinearTokenEnv, "")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), LinearTokenEnv) {
+	t.Setenv(LinearClientIDEnv, "")
+	t.Setenv(LinearClientSecretEnv, "")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), LinearTokenEnv) || !strings.Contains(err.Error(), LinearClientIDEnv) {
 		t.Fatalf("no token: error = %v", err)
 	}
 	t.Setenv(LinearTokenEnv, " lin_oauth_token ")
@@ -225,5 +227,31 @@ func TestLinearNeedsATokenAndATrigger(t *testing.T) {
 	writeTestFile(t, path, "linear:\n  token: in-the-file\n  teams:\n    ENG: owner/repo\n")
 	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown key token") {
 		t.Fatalf("token in the file: error = %v", err)
+	}
+}
+
+func TestLinearClientCredentialsComeFromTheEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, path, "linear:\n  app_user_id: app-user\n  allowed_users: [owain]\n  teams:\n    ENG: owner/repo\n")
+	t.Setenv(LinearTokenEnv, "")
+	t.Setenv(LinearClientIDEnv, " client-id ")
+	t.Setenv(LinearClientSecretEnv, "")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "set both") {
+		t.Fatalf("no secret: error = %v", err)
+	}
+	t.Setenv(LinearClientSecretEnv, " client-secret ")
+	loaded, err := LoadConfig(path)
+	if err != nil || loaded.Linear.ClientID != "client-id" || loaded.Linear.ClientSecret != "client-secret" || !loaded.Linear.UsesClientCredentials() {
+		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
+	}
+	// The client credentials renew themselves, so they win over a fixed token.
+	t.Setenv(LinearTokenEnv, "lin_oauth_token")
+	loaded, err = LoadConfig(path)
+	if err != nil || !loaded.Linear.UsesClientCredentials() || loaded.Linear.Token != "" {
+		t.Fatalf("both set: linear = %+v, err = %v", loaded.Linear, err)
+	}
+	writeTestFile(t, path, "linear:\n  client_secret: in-the-file\n  teams:\n    ENG: owner/repo\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown key client_secret") {
+		t.Fatalf("secret in the file: error = %v", err)
 	}
 }

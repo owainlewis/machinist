@@ -106,7 +106,8 @@ func (s *Server) repositoryAccess(r *http.Request, repository string, autoMerge 
 	return view
 }
 
-// LinearSettings is the Linear page. The access token is never shown.
+// LinearSettings is the Linear page. The client secret and the access token
+// are never shown.
 type LinearSettings struct {
 	Enabled      bool         `json:"enabled"`
 	AppUserID    string       `json:"app_user_id,omitempty"`
@@ -114,10 +115,14 @@ type LinearSettings struct {
 	Preset       string       `json:"preset,omitempty"`
 	Teams        []LinearTeam `json:"teams"`
 	// PollSeconds is how often Machinist asks Linear for new assignments.
-	PollSeconds    int64  `json:"poll_seconds,omitempty"`
-	MaxJobsPerHour int    `json:"max_jobs_per_hour,omitempty"`
-	TokenEnv       string `json:"token_env"`
-	Docs           string `json:"docs"`
+	PollSeconds    int64 `json:"poll_seconds,omitempty"`
+	MaxJobsPerHour int   `json:"max_jobs_per_hour,omitempty"`
+	// CredentialEnv names the variables the app signs in with. While Linear is
+	// off, they are the ones the setup guide asks for.
+	CredentialEnv []string `json:"credential_env"`
+	// Renews is true when Machinist gets and renews its own access token.
+	Renews bool   `json:"renews,omitempty"`
+	Docs   string `json:"docs"`
 }
 
 // LinearTeam is one Linear team and the repository its issues work in.
@@ -128,7 +133,18 @@ type LinearTeam struct {
 
 func (s *Server) linearSettings(w http.ResponseWriter, _ *http.Request, _ string) {
 	linear := s.config.Linear
-	settings := LinearSettings{Enabled: s.linear != nil, AllowedUsers: []string{}, Teams: []LinearTeam{}, TokenEnv: config.LinearTokenEnv, Docs: docs + "linear.md"}
+	settings := LinearSettings{
+		Enabled:       s.linear != nil,
+		AllowedUsers:  []string{},
+		Teams:         []LinearTeam{},
+		CredentialEnv: []string{config.LinearClientIDEnv, config.LinearClientSecretEnv},
+		Renews:        true,
+		Docs:          docs + "linear.md#set-it-up",
+	}
+	if settings.Enabled && !linear.UsesClientCredentials() {
+		settings.CredentialEnv = []string{config.LinearTokenEnv}
+		settings.Renews = false
+	}
 	if settings.Enabled {
 		settings.AppUserID = linear.AppUserID
 		settings.AllowedUsers = append(settings.AllowedUsers, linear.AllowedUsers...)

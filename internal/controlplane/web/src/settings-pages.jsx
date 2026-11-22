@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useState } from "react";
 import { CircleAlert, ExternalLink, ShieldCheck, ShieldOff, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
@@ -125,12 +125,12 @@ export function LinearPage({ onSignedOut }) {
     {linear && !linear.enabled && <section className="panel settings-howto" aria-labelledby="linear-howto">
       <h2 id="linear-howto" className="chart-title">Turn on Linear</h2>
       <ol>
-        <li>Make a Linear app for Machinist, and note its user ID.</li>
+        <li>Make a Linear app for Machinist with client credentials on, and note its user ID.</li>
+        <li>Set <EnvNames names={linear.credential_env} /> where the control plane runs. Machinist gets and renews its own access token. They never go in config.yaml.</li>
         <li>In config.yaml, add a <code>linear</code> section with <code>app_user_id</code>, <code>allowed_users</code> and <code>teams</code>, which maps each team key to a repository.</li>
-        <li>Set <code>{linear.token_env}</code> to the app's access token where the control plane runs. It never goes in a file.</li>
-        <li>Restart the control plane.</li>
+        <li>Restart the control plane, and assign a test issue to the app.</li>
       </ol>
-      <DocsLink href={linear.docs}>Read how</DocsLink>
+      <DocsLink href={linear.docs}>Read the setup guide</DocsLink>
     </section>}
     {linear?.enabled && <>
       <Facts label="Linear settings">
@@ -141,7 +141,7 @@ export function LinearPage({ onSignedOut }) {
         <Fact name="Preset"><code>{linear.preset}</code></Fact>
         <Fact name="Poll interval">{pollLabel(linear.poll_seconds)}</Fact>
         <Fact name="Limit">{linear.max_jobs_per_hour} jobs an hour</Fact>
-        <Fact name="Access token" hint="Read from the environment. It is never shown."><code>{linear.token_env}</code></Fact>
+        <Fact name="Sign-in" hint={linear.renews ? "Machinist gets and renews its own access token. The secret is never shown." : "A fixed access token, read from the environment. It is never shown."}><EnvNames names={linear.credential_env} /></Fact>
       </Facts>
       <section className="settings-section" aria-labelledby="teams-title">
         <h2 id="teams-title" className="chart-title">Teams</h2>
@@ -150,6 +150,10 @@ export function LinearPage({ onSignedOut }) {
       </section>
     </>}
   </>;
+}
+
+function EnvNames({ names }) {
+  return names.map((name, index) => <Fragment key={name}>{index > 0 && " and "}<code>{name}</code></Fragment>);
 }
 
 export function TokensPage({ onSignedOut }) {
