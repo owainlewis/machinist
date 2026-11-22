@@ -25,6 +25,19 @@ test("a failed job says why at the top, and a result's links can be clicked", { 
   assert.ok(failed.indexOf("job-failure") < failed.indexOf("Attempt 1"), "the reason comes before the attempts");
   assert.doesNotMatch(failed, /class="pipeline"/, "a run with no steps draws no empty pipeline");
 
+  const reported = page({
+    ticket: { ...ticket, state: "failed" },
+    entries: [{ id: 1, kind: "message", author: "machinist", body: "The tests would not pass.", created_at: now }],
+    runs: [
+      { id: "run_1", status: "succeeded", started_at: now, ended_at: now, report: { summary: "An older result." } },
+      { id: "run_2", status: "failed", started_at: now, ended_at: now, report: { summary: "The tests would not pass." } },
+    ],
+  });
+  assert.match(reported, /class="panel job-failure"/, reported);
+  assert.equal(reported.split("The tests would not pass.").length - 1, 2, "the reason shows once in the panel and once in History");
+  assert.doesNotMatch(reported, /id="job-result"/, "a failed job shows no Result beside its reason");
+  assert.doesNotMatch(reported, /An older result\./, "an earlier attempt's result does not show under the reason");
+
   const done = page({
     ticket: { ...ticket, state: "done" },
     runs: [{ id: "run_1", status: "succeeded", started_at: now, ended_at: now, report: { summary: "Merged: https://github.com/owner/repo/pull/642" } }],
