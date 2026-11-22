@@ -8,7 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/githubapp"
+	"github.com/owainlewis/machinist/internal/harness"
+	"github.com/owainlewis/machinist/internal/runner"
 )
 
 type fakeApp struct {
@@ -63,7 +66,7 @@ func TestSetupListsWhatIsMissingUntilEveryRequiredCheckPasses(t *testing.T) {
 	if setup.InstallURL != "https://github.com/apps/machinistagent/installations/new" || !strings.Contains(check(setup, "GitHub").Detail, "machinistagent[bot]") {
 		t.Fatalf("setup = %+v", setup)
 	}
-	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if status, setup := f.setup(t, http.MethodPost, "/api/v1/projects", map[string]string{"repo": "https://github.com/owner/repo/"}); status != http.StatusOK || !setup.Ready || len(setup.Projects) != 1 || setup.Projects[0] != (ProjectView{Repo: "owner/repo", Source: "app", AddedBy: "runner-1"}) {
@@ -116,5 +119,43 @@ func TestSetupSaysWhenTheAppIsBrokenOrMissing(t *testing.T) {
 	f.server.app = nil
 	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); !check(setup, "GitHub").OK || !strings.Contains(check(setup, "GitHub").Detail, "GH_TOKEN") {
 		t.Fatalf("setup = %+v", setup)
+	}
+}
+
+func TestSetupFlagsAPresetNoOnlineRunnerCanRun(t *testing.T) {
+	f := newFixture(t)
+	f.server.factory = &factory.Factory{
+		Presets: map[string]factory.Preset{"default": {Name: "default", Steps: []runner.Step{{Name: "implement", Run: "machinist agent implement"}, {Name: "review", Run: "machinist agent review"}}}},
+		Agents:  map[string]harness.Agent{"implement": {Name: "implement", Harness: "claude"}, "review": {Name: "review", Harness: "agy"}},
+	}
+	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); check(setup, "Agents").Name != "" {
+		t.Fatalf("an agents check with no runner online: %+v", check(setup, "Agents"))
+	}
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps", "claude"}, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	_, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil)
+	if agents := check(setup, "Agents"); agents.OK || agents.Required || !strings.Contains(agents.Detail, "default needs agy and claude") {
+		t.Fatalf("agents = %+v", agents)
+	}
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps", "agy", "claude"}, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); !check(setup, "Agents").OK {
+		t.Fatalf("agents = %+v", check(setup, "Agents"))
+	}
+	// A runner that looked and found no agents can run none of them.
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); check(setup, "Agents").OK {
+		t.Fatalf("a probed runner with no agents passed: %+v", check(setup, "Agents"))
+	}
+	// One that never looked, from an older Machinist, is taken to run anything.
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); !check(setup, "Agents").OK {
+		t.Fatalf("agents = %+v", check(setup, "Agents"))
 	}
 }

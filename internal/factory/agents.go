@@ -2,10 +2,31 @@ package factory
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/owainlewis/machinist/internal/protocol"
 )
+
+// Needs lists the harnesses a preset's agents run, sorted, so the control
+// plane sends its jobs only to a runner that has them. An agent that names its
+// own program is left out: a runner cannot tell whether it has that program.
+func (f *Factory) Needs(preset Preset) []string {
+	seen := map[string]bool{}
+	for _, step := range preset.Steps {
+		for _, agent := range f.StepAgents(step.Run) {
+			if file, ok := f.Agents[agent.Name]; ok && file.Program == "" {
+				seen[agent.Harness] = true
+			}
+		}
+	}
+	needs := make([]string, 0, len(seen))
+	for name := range seen {
+		needs = append(needs, name)
+	}
+	sort.Strings(needs)
+	return needs
+}
 
 var agentCall = regexp.MustCompile(`machinist\s+agent\s+([A-Za-z0-9][A-Za-z0-9_-]*)`)
 

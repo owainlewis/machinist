@@ -13,7 +13,7 @@ func finishRun(t *testing.T, store *Store, ticketID string, report *protocol.Rep
 	if _, err := store.QueueRun(t.Context(), ticketID, "claude"); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := store.ClaimRun(t.Context(), "runner", []string{"claude"}, time.Now().Add(time.Hour))
+	claim, err := store.ClaimRun(t.Context(), "runner", []string{"claude"}, time.Now().Add(time.Hour), nil)
 	if err != nil || claim == nil {
 		t.Fatalf("claim = %v, err = %v", claim, err)
 	}

@@ -272,7 +272,9 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .slot-meter-bar > span { display: block; width: auto; height: 100%; border-radius: 3px; background: var(--info); box-shadow: none; }
 .live-dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
 .live-dot[data-live] { animation: live-pulse 2s ease-in-out infinite; }
-.runner-name { display: flex; min-width: 0; align-items: baseline; gap: 10px; }
+.runner-name { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.runner-harnesses { display: flex; flex-wrap: wrap; gap: 6px; }
+.runner-harness { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-foreground); font-size: 12px; }
 .runner-name strong { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .runner-jobs { margin: 0; padding: 0 16px 12px; list-style: none; }
 .runner-jobs li { display: flex; align-items: center; gap: 16px; border-left: 2px solid var(--border); padding: 4px 0 4px 14px; font-size: 14px; }
@@ -350,6 +352,8 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
   .runner-row { display: flex; flex-wrap: wrap; gap: 4px 16px; }
   .runner-name { flex-basis: 100%; }
   .runner-row > :last-child { margin-left: auto; }
+  .runner-jobs li { flex-wrap: wrap; gap: 4px 12px; }
+  .runner-jobs a { flex-basis: 100%; }
   .jobs .job-detail, .jobs thead { display: none; }
 }
 

@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 )
@@ -27,6 +29,9 @@ type Daemon struct {
 	heartbeatInterval time.Duration
 	eventInterval     time.Duration
 	retryInterval     time.Duration
+	// installed is the harnesses a local runner found on PATH at start, or
+	// nil when it did not look.
+	installed []string
 }
 
 func NewDaemon(runnerConfig config.Runner, executor Executor, log io.Writer) (*Daemon, error) {
@@ -34,7 +39,7 @@ func NewDaemon(runnerConfig config.Runner, executor Executor, log io.Writer) (*D
 	if err != nil {
 		return nil, err
 	}
-	return &Daemon{
+	daemon := &Daemon{
 		config:            runnerConfig,
 		client:            NewClient(runnerConfig.ControlPlane, token),
 		executor:          executor,
@@ -43,7 +48,13 @@ func NewDaemon(runnerConfig config.Runner, executor Executor, log io.Writer) (*D
 		heartbeatInterval: 30 * time.Second,
 		eventInterval:     time.Second,
 		retryInterval:     2 * time.Second,
-	}, nil
+	}
+	// Steps on a local runner run the harnesses found on this PATH. A
+	// Kubernetes runner's steps run in its image, which it cannot see.
+	if runnerConfig.Kind() == "local" {
+		daemon.installed = harness.Installed(exec.LookPath)
+	}
+	return daemon, nil
 }
 
 // Run serves every slot until ctx ends. A slot polls only when it is free, so
@@ -60,7 +71,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 func (d *Daemon) serveSlot(ctx context.Context) {
 	for ctx.Err() == nil {
 		var request runner.RunRequest
-		err := d.client.Post(ctx, "/api/v1/runners/poll", protocol.PollRequest{Harnesses: d.config.Harnesses(), Kind: d.config.Kind(), Slots: d.config.Slots}, &request)
+		poll := protocol.PollRequest{Harnesses: append(d.config.Harnesses(), d.installed...), Probed: d.installed != nil, Kind: d.config.Kind(), Slots: d.config.Slots}
+		err := d.client.Post(ctx, "/api/v1/runners/poll", poll, &request)
 		if err != nil && ctx.Err() == nil {
 			fmt.Fprintf(d.log, "machinist: runner poll: %v\n", err)
 		}

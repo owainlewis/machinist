@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -206,5 +207,17 @@ func TestRecordAgentListsEveryAgentInAStep(t *testing.T) {
 	want := []protocol.Agent{{Name: "revise", Harness: "claude"}, {Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}}
 	if !slices.Equal(usage.Agents, want) || usage.Tokens != 15 || usage.Cost != 0.5 {
 		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestInstalledListsTheHarnessesOnPath(t *testing.T) {
+	lookPath := func(name string) (string, error) {
+		if name == "claude" || name == "agy" {
+			return "/usr/local/bin/" + name, nil
+		}
+		return "", errors.New("not found")
+	}
+	if got := Installed(lookPath); strings.Join(got, ",") != "agy,claude" {
+		t.Fatalf("installed = %v", got)
 	}
 }

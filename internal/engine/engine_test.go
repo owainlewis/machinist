@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -43,7 +44,7 @@ func assignRun(t *testing.T, e *Engine) *runner.RunRequest {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	request, err := e.Assign(t.Context(), "runner-1", []string{"steps"})
+	request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false)
 	if err != nil || request == nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
@@ -146,7 +147,7 @@ func TestAssignFailsTheJobWhenTheAppsAccountIsUnknown(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false); err != nil || request != nil {
 		t.Fatalf("request = %+v, err = %v", request, err)
 	}
 	if message := lastMessage(t, e, ticket.ID); state(t, e, ticket.ID) != tickets.StateFailed || !strings.Contains(message, "bot account") {
@@ -163,7 +164,7 @@ func TestAssignFailsTheJobWhenNoTokenCanBeMade(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false); err != nil || request != nil {
 		t.Fatalf("request = %+v, err = %v", request, err)
 	}
 	if got := state(t, e, ticket.ID); got != tickets.StateFailed {
@@ -191,7 +192,7 @@ func TestAssignReturnsNothingWithoutMatchingWork(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"claude"}); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"claude"}, false); err != nil || request != nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
 }
@@ -436,7 +437,7 @@ func TestPresetRemovedAfterQueueingFailsTheJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(e.Factory.Presets, "default")
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false); err != nil || request != nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
 	if got := state(t, e, ticket.ID); got != tickets.StateFailed {
@@ -475,5 +476,36 @@ func TestRunStopsAtContextEnd(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("engine did not stop")
+	}
+}
+
+// A runner that said which harnesses it has gets a job only when it has every
+// harness the preset's agents need. A runner that did not say gets any job.
+func TestAJobGoesOnlyToARunnerWithItsHarnesses(t *testing.T) {
+	e := newEngine(t)
+	e.Factory = &factory.Factory{
+		Presets: map[string]factory.Preset{"default": {Name: "default", Steps: []runner.Step{{Name: "implement", Run: "machinist agent implement"}, {Name: "review", Run: "machinist agent review"}}}},
+		Agents: map[string]harness.Agent{
+			"implement": {Name: "implement", Harness: "claude"},
+			"review":    {Name: "review", Harness: "agy"},
+		},
+	}
+	newTicket(t, e, "web")
+	if err := e.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if request, err := e.Assign(t.Context(), "claude-only", []string{"steps", "claude"}, true); err != nil || request != nil {
+		t.Fatalf("a runner without agy got %v, err %v", request, err)
+	}
+	if request, err := e.Assign(t.Context(), "both", []string{"steps", "agy", "claude"}, true); err != nil || request == nil {
+		t.Fatalf("a runner with both got %v, err %v", request, err)
+	}
+
+	newTicket(t, e, "api")
+	if err := e.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if request, err := e.Assign(t.Context(), "older", []string{"steps"}, false); err != nil || request == nil {
+		t.Fatalf("a runner that did not probe got %v, err %v", request, err)
 	}
 }

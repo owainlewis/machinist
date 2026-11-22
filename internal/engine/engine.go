@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"time"
 
@@ -148,8 +149,19 @@ func missingPresetMessage(preset string) string {
 
 // Assign gives the oldest queued run for these harnesses to a runner. It
 // returns nil when there is no work.
-func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []string) (*runner.RunRequest, error) {
-	claim, err := e.Store.ClaimRun(ctx, runnerName, harnesses, e.now().Add(LeaseDuration))
+//
+// A probed runner, one that said which harnesses it has, gets only jobs whose
+// preset's agents it can run. The others wait for a runner that can.
+func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []string, probed bool) (*runner.RunRequest, error) {
+	var accept func(tickets.Ticket) bool
+	if probed {
+		accept = func(ticket tickets.Ticket) bool {
+			preset, ok := e.Factory.Preset(ticket.Agent)
+			// A job whose preset is gone is claimed so that it fails.
+			return !ok || HasAll(harnesses, e.Factory.Needs(preset))
+		}
+	}
+	claim, err := e.Store.ClaimRun(ctx, runnerName, harnesses, e.now().Add(LeaseDuration), accept)
 	if err != nil || claim == nil {
 		return nil, err
 	}
@@ -334,4 +346,14 @@ func decide(status string, report *protocol.Report, reason string, pr *PR) ticke
 		transition.State, transition.Message = tickets.StateFailed, report.Summary
 	}
 	return transition
+}
+
+// HasAll says whether have holds every name in want.
+func HasAll(have, want []string) bool {
+	for _, name := range want {
+		if !slices.Contains(have, name) {
+			return false
+		}
+	}
+	return true
 }

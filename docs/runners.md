@@ -50,6 +50,19 @@ start when a variable in `env` is unset.
 the OS user's own `HOME`, `USER` and `LOGNAME` instead, so a tool such as Claude Code can use
 a login made on that machine. See [Credentials](credentials.md).
 
+### Which jobs a runner takes
+
+When a local runner starts, it looks for `agy`, `claude`, `codex` and `pi` on its `PATH`.
+It takes only jobs whose preset's agents all use a harness it found, so a job that needs
+Antigravity waits for a runner that has it instead of failing on one that doesn't. An agent
+with its own `program` is not checked. Install a harness and restart the runner for it to
+count.
+
+A Kubernetes runner takes any job, because its image decides which harnesses exist.
+
+The Runners page shows each runner's harnesses. When no online runner can run a preset,
+the Setup page says which harness is missing.
+
 ## Kubernetes runner
 
 The runner is a process in the cluster that starts one gVisor Job per job run. Activity
@@ -109,8 +122,8 @@ the control plane image. Before first use, apply the overlay and create these Se
 
 ## Watching the fleet
 
-The Runners page lists every runner that has asked for work, with where it runs, how
-many of its slots are busy and the runs it holds. It also says how many
+The Runners page lists every runner that has asked for work, with where it runs, the
+agent harnesses it has, how many of its slots are busy and the runs it holds. It also says how many
 runs are waiting for a free slot and how long the oldest has waited. A runner that has
 made no contact for 90 seconds shows as not responding. Revoking a runner's token removes
 it from the list.

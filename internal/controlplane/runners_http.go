@@ -15,11 +15,11 @@ func (s *Server) poll(w http.ResponseWriter, r *http.Request, tokenName string) 
 	if !decodeJSON(w, r, maxRequestBytes, &request) {
 		return
 	}
-	if err := s.store.RecordRunner(r.Context(), tokenName, request.Kind, request.Harnesses, request.Slots); err != nil {
+	if err := s.store.RecordRunner(r.Context(), tokenName, request.Kind, request.Harnesses, request.Slots, request.Probed); err != nil {
 		writeRunError(w, err)
 		return
 	}
-	run, err := s.engine.Assign(r.Context(), tokenName, request.Harnesses)
+	run, err := s.engine.Assign(r.Context(), tokenName, request.Harnesses, request.Probed)
 	if err != nil {
 		writeRunError(w, err)
 		return
