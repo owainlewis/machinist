@@ -58,11 +58,11 @@ github:
 | `run_timeout` | The deadline for one run, when its preset sets none |
 | `tls_cert`, `tls_key` | Serve HTTPS, and mark the sign-in cookie Secure |
 | `github.handle` | The bot's login. Use a dedicated account. With a GitHub App, runs commit as the app's bot account instead |
-| `github.repositories` | Repositories Machinist works on. You can also add them on the Setup page, with no restart. Automations and `linear.teams` can only name repositories listed here |
+| `github.repositories` | Repositories Machinist works on. You can also add them on the Setup page, with no restart. Automations, `linear.projects` and `linear.teams` can only name repositories listed here |
 | `github.auto_merge` | Whether jobs merge their own pull requests once the checks pass and the review accepted the change. On unless set to `false`; when off, every pull request stays open for a person. Steps see it as `MACHINIST_AUTO_MERGE` |
 | `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
 | `github.app.private_key_file` | The app's private key file. Keep it out of git |
-| `linear.*` | Start jobs from Linear issues. Off unless `linear.teams` is set. See [Linear](linear.md) |
+| `linear.*` | Start jobs from Linear issues. Off unless `linear.projects` or `linear.teams` is set. See [Linear](linear.md) |
 
 ## Runner: runner.yaml
 

@@ -1,7 +1,7 @@
 # Start jobs from Linear
 
-Machinist is a user in Linear. When an allowed person delegates an issue in a connected
-team to the Machinist app, Machinist starts a job in that team's repository. Linear records
+Machinist is a user in Linear. When an allowed person delegates an issue to the Machinist
+app, Machinist starts a job in the repository that the issue's project or team maps to. Linear records
 the app as the issue's delegate and keeps the person as its assignee. Assigning the issue to
 the app directly works too. The job's prompt is
 the issue's title, description and link. Each issue starts one job, ever, and the
@@ -28,6 +28,9 @@ linear:
   app_user_id: <the app's user ID>
   allowed_users:
     - <your Linear user ID>
+  projects:
+    Machinist: owner/machinist
+    Airtime: owner/airtime
   teams:
     ENG: owner/name
 ```
@@ -37,12 +40,22 @@ linear:
 | `app_user_id` | The Machinist app's Linear user. Delegating or assigning an issue to it starts a job |
 | `allowed_users` | The Linear user IDs who may start jobs. A delegation or assignment by anyone else is ignored |
 | `preset` | The preset Linear jobs use. Defaults to `server.default_preset` |
-| `teams` | Linear team key to repository. Each repository must be in `github.repositories`. Issues from other teams are never read |
+| `projects` | Linear project, by name or ID, to repository. Names match in any case. Each repository must be in `github.repositories` |
+| `teams` | Linear team key to repository, for issues whose project is not in `projects`. Each repository must be in `github.repositories` |
 | `poll_interval` | Time between polls. Defaults to `60s`, and must be at least `10s` |
 | `max_jobs_per_hour` | The most jobs Linear can start in any hour. Defaults to 20 |
 
-Startup stops if `LINEAR_API_TOKEN` is missing, `app_user_id` or `allowed_users` is empty,
-a team's repository is not connected, or the preset does not exist.
+Set `projects`, `teams` or both. Startup stops if `LINEAR_API_TOKEN` is missing,
+`app_user_id` or `allowed_users` is empty, a project's or team's repository is not
+connected, or the preset does not exist.
+
+## Which repository a job runs in
+
+1. The issue's project, if `projects` names it by ID or by name.
+2. Otherwise the issue's team, if `teams` names it.
+3. Otherwise no job starts. Machinist logs why and comments on the issue that its project
+   and team map to no repository. It comments once each time the issue is handed to it, not
+   on every edit.
 
 ## What Machinist does in Linear
 
