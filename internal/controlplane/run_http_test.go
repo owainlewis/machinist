@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -134,4 +137,58 @@ func TestJobRoutesGetListAndCancel(t *testing.T) {
 	if cancelled := decodeJob(t, body); response.StatusCode != http.StatusOK || cancelled.State != JobCancelled {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
+}
+
+// A job shows the caller's key, the step it is on, and what its runs used.
+// Starting to run counts as an update.
+func TestJobShowsKeyProgressTokensAndCost(t *testing.T) {
+	f := newFixture(t)
+	start := time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)
+	f.store.SetClock(func() time.Time { return start })
+	created := f.run(t, "linear:ENG-148")
+	if created.Key != "linear:ENG-148" || created.CurrentStep != "" || created.Tokens != 0 || created.CostUSD != nil {
+		t.Fatalf("created = %+v", created)
+	}
+	if err := f.server.engine.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	claimed := start.Add(time.Minute)
+	f.store.SetClock(func() time.Time { return claimed })
+	response, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}})
+	var run runner.RunRequest
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &run) != nil {
+		t.Fatalf("poll = %d: %s", response.StatusCode, body)
+	}
+	event := json.RawMessage(`{"sequence":1,"time":"2026-01-02T03:01:00Z","type":"step.started","message":"name=work"}`)
+	if response, body := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/events", f.token, protocol.RunEventBatch{Events: []json.RawMessage{event}}); response.StatusCode != http.StatusOK {
+		t.Fatalf("events = %d: %s", response.StatusCode, body)
+	}
+
+	running := f.getJob(t, created.ID)
+	if running.State != JobRunning || running.CurrentStep != "work" || !running.UpdatedAt.Equal(claimed) {
+		t.Fatalf("running = %+v", running)
+	}
+
+	tokens, cost := int64(1200), 0.42
+	completion := protocol.Completion{State: tickets.RunSucceeded, Tokens: &tokens, Cost: &cost, Report: &protocol.Report{Outcome: "no_change", Summary: "Done"}}
+	if response, body := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/complete", f.token, completion); response.StatusCode != http.StatusNoContent {
+		t.Fatalf("complete = %d: %s", response.StatusCode, body)
+	}
+	done := f.getJob(t, created.ID)
+	if done.State != JobDone || done.CurrentStep != "" || done.Tokens != 1200 || done.CostUSD == nil || *done.CostUSD != 0.42 {
+		t.Fatalf("done = %+v", done)
+	}
+	response, body = f.call(t, http.MethodGet, "/machinist/jobs", f.token, nil)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"key":"linear:ENG-148"`) || !strings.Contains(string(body), `"tokens":1200`) || !strings.Contains(string(body), `"cost_usd":0.42`) {
+		t.Fatalf("list = %d: %s", response.StatusCode, body)
+	}
+}
+
+func (f *fixture) getJob(t *testing.T, id string) job {
+	t.Helper()
+	response, body := f.call(t, http.MethodGet, "/machinist/jobs/"+id, f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	return decodeJob(t, body)
 }

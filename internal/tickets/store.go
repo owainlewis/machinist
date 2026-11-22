@@ -926,6 +926,10 @@ func (s *Store) ClaimRun(ctx context.Context, runner string, harnesses []string,
 		if _, err = tx.ExecContext(ctx, `UPDATE runs SET status=?,runner=?,lease_expires_at=?,started_at=? WHERE id=?`, RunRunning, runner, stamp(leaseUntil), stamp(now), run.ID); err != nil {
 			return err
 		}
+		// The ticket moves from queued to running, so it has changed.
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET updated_at=? WHERE id=?`, stamp(now), run.TicketID); err != nil {
+			return err
+		}
 		if run.Kind == RunKindAgent {
 			if _, err = tx.ExecContext(ctx, `UPDATE ticket_entries SET consumed_by_run=? WHERE ticket_id=? AND consumed_by_run IS NULL AND kind IN (?,?,?,?)`, run.ID, run.TicketID, EntryRequest, EntryComment, EntryReview, EntryCI); err != nil {
 				return err
