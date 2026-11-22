@@ -268,3 +268,50 @@ func TestMergeSaysWhenThePendingChecksChange(t *testing.T) {
 		t.Fatalf("log:\n%s", log.String())
 	}
 }
+
+// After an update the new head commit's checks take a while to register. A
+// pull request that had checks never merges on a round that sees none.
+func TestMergeWaitsForChecksOnTheUpdatedBranch(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	options.StartTries = 3
+	gh := &fakeGH{t: t, checks: []string{passed, "none"}, mergeState: []string{"CLEAN", "BEHIND", "CLEAN"}}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if gh.merged() {
+		t.Fatalf("merged with no checks on the updated branch; calls %v", gh.calls)
+	}
+	if got := result(t, control); got != `Left open: the checks "test" did not start on the updated branch. https://github.com/o/r/pull/7` {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+// Each check from the first round must come back, so one fast check does not
+// stand in for a slow one that has not registered yet.
+func TestMergeWaitsForEveryCheckToComeBackAfterAnUpdate(t *testing.T) {
+	_, options := setup(t, `{"verdict":"accepted"}`)
+	both := `[{"name":"lint","bucket":"pass"},{"name":"test","bucket":"pass"}]`
+	gh := &fakeGH{t: t, checks: []string{both, "none", `[{"name":"lint","bucket":"pass"}]`, both}, mergeState: []string{"CLEAN", "BEHIND", "CLEAN"}}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil || !gh.merged() {
+		t.Fatalf("err = %v, merged = %v", err, gh.merged())
+	}
+	if gh.looks != 4 {
+		t.Fatalf("looks = %d, want 4", gh.looks)
+	}
+}
+
+func TestMergeLeavesItOpenWhenACheckDoesNotComeBackAfterAnUpdate(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	options.StartTries = 2
+	both := `[{"name":"lint","bucket":"pass"},{"name":"test","bucket":"pass"}]`
+	gh := &fakeGH{t: t, checks: []string{both, `[{"name":"lint","bucket":"pass"}]`}, mergeState: []string{"CLEAN", "BEHIND", "CLEAN"}}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil || gh.merged() {
+		t.Fatalf("err = %v, merged = %v", err, gh.merged())
+	}
+	if got := result(t, control); got != `Left open: the checks "test" did not start on the updated branch. https://github.com/o/r/pull/7` {
+		t.Fatalf("result = %q", got)
+	}
+}
