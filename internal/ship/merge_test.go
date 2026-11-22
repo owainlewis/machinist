@@ -15,12 +15,14 @@ import (
 type fakeGH struct {
 	t          *testing.T
 	noPR       bool
-	state      string
+	states     []string // state on each pr view, the last repeats; none is OPEN
 	mergeState []string // mergeStateStatus on each pr view, the last repeats
 	checks     []string // stdout of each pr checks call, the last repeats
 	refuse     string   // pr merge fails with this text
-	repo       string   // stdout of gh api repos/{owner}/{repo}; "" allows merge commits
-	repoErr    string   // gh api fails with this text
+	// refusals is how many pr merge calls fail with refuse; 0 means every one.
+	refusals int
+	repo     string // stdout of gh api repos/{owner}/{repo}; "" allows merge commits
+	repoErr  string // gh api fails with this text
 	// headLag is how many pr views after an update still report the old head
 	// commit; -1 means the head never moves.
 	headLag int
@@ -29,6 +31,7 @@ type fakeGH struct {
 	calls   []string
 	views   int
 	looks   int
+	merges  int
 }
 
 func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, string, error) {
@@ -39,9 +42,9 @@ func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, string, error) 
 		if f.noPR {
 			return nil, "no pull requests found for branch \"machinist/t_1\"", errors.New("exit status 1")
 		}
-		state := f.state
-		if state == "" {
-			state = "OPEN"
+		state := "OPEN"
+		if len(f.states) > 0 {
+			state = f.states[min(f.views, len(f.states)-1)]
 		}
 		merge := "CLEAN"
 		if len(f.mergeState) > 0 {
@@ -60,9 +63,11 @@ func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, string, error) 
 		}
 		return []byte(out), "", nil
 	case strings.HasPrefix(call, "pr merge"):
-		if f.refuse != "" {
+		if f.refuse != "" && (f.refusals == 0 || f.merges < f.refusals) {
+			f.merges++
 			return nil, f.refuse, errors.New("exit status 1")
 		}
+		f.merges++
 		if want := args[len(args)-1]; want != f.head() {
 			return nil, "Head branch was modified. Review and try the merge again.", errors.New("exit status 1")
 		}
@@ -430,6 +435,118 @@ func TestMergeNamesTheCheckedHeadCommit(t *testing.T) {
 		t.Fatalf("calls = %v", gh.calls)
 	}
 	if got := result(t, control); !strings.HasPrefix(got, "Left open: GitHub refused the merge: Head branch was modified") {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+// A person can merge the pull request while the step waits on its checks. The
+// job did what it set out to do, so the step succeeds.
+func TestMergeSucceedsWhenAPersonMergedThePullRequestDuringTheWait(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	gh := &fakeGH{t: t, checks: []string{`[{"name":"test","bucket":"pending"}]`, passed}, states: []string{"OPEN", "MERGED"}}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if gh.merged() {
+		t.Fatalf("merged an already merged pull request; calls %v", gh.calls)
+	}
+	if got := result(t, control); got != "Merged: https://github.com/o/r/pull/7" {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+func TestMergeSucceedsWhenThePullRequestWasAlreadyMerged(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	gh := &fakeGH{t: t, states: []string{"MERGED"}}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if gh.merged() || gh.looks != 0 {
+		t.Fatalf("calls %v", gh.calls)
+	}
+	if got := result(t, control); got != "Merged: https://github.com/o/r/pull/7" {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+// A pull request a person closed stays closed, and the step does not fail.
+func TestMergeRecordsAPullRequestClosedDuringTheWait(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	gh := &fakeGH{t: t, checks: []string{passed}, states: []string{"OPEN", "CLOSED"}}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if gh.merged() {
+		t.Fatalf("merged a closed pull request; calls %v", gh.calls)
+	}
+	if got := result(t, control); got != "Closed without merging: https://github.com/o/r/pull/7" {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+// When two jobs finish together, the other pull request can land between the
+// look at this one and its merge. GitHub refuses the merge because the branch
+// is now behind, so the step updates the branch, waits for its checks and
+// merges the new head.
+func TestMergeUpdatesTheBranchWhenAnotherMergeLandsFirst(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	gh := &fakeGH{
+		t:          t,
+		checks:     []string{passed},
+		mergeState: []string{"CLEAN", "CLEAN", "BEHIND", "CLEAN"},
+		refuse:     "Pull request #7 is not mergeable: the head branch is not up to date with the base branch.",
+		refusals:   1,
+	}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Join(gh.calls, "\n")
+	if !strings.Contains(calls, "pr update-branch 7") || gh.looks != 2 || gh.merges != 2 {
+		t.Fatalf("looks = %d, merges = %d; calls %v", gh.looks, gh.merges, gh.calls)
+	}
+	if last := gh.calls[len(gh.calls)-1]; last != "pr merge 7 --merge --delete-branch --match-head-commit sha1" {
+		t.Fatalf("merge call = %q", last)
+	}
+	if got := result(t, control); got != "Merged: https://github.com/o/r/pull/7" {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+// The updates after a refused merge count towards the same limit as the
+// others, so a busy default branch cannot keep the step going for ever.
+func TestMergeGivesUpWhenTheBranchKeepsFallingBehindAtTheMerge(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	gh := &fakeGH{
+		t:          t,
+		checks:     []string{passed},
+		mergeState: []string{"CLEAN", "CLEAN", "BEHIND", "CLEAN", "BEHIND"},
+		refuse:     "Pull request #7 is not mergeable: the head branch is not up to date with the base branch.",
+	}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(strings.Join(gh.calls, "\n"), "pr update-branch 7"); got != maxBranchUpdates {
+		t.Fatalf("updates = %d, want %d; calls %v", got, maxBranchUpdates, gh.calls)
+	}
+	if got := result(t, control); got != "Left open: the branch fell behind the default branch three times. https://github.com/o/r/pull/7" {
+		t.Fatalf("result = %q", got)
+	}
+}
+
+// A person can merge the pull request in the moment before the step does.
+func TestMergeSucceedsWhenAPersonMergedItJustBeforeTheStep(t *testing.T) {
+	control, options := setup(t, `{"verdict":"accepted"}`)
+	gh := &fakeGH{t: t, checks: []string{passed}, states: []string{"OPEN", "OPEN", "MERGED"}, refuse: "Pull request #7 was already merged"}
+	options.GH = gh.run
+	if err := Merge(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if got := result(t, control); got != "Merged: https://github.com/o/r/pull/7" {
 		t.Fatalf("result = %q", got)
 	}
 }
