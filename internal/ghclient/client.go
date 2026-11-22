@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -281,4 +282,52 @@ func (c *Client) TokenScopes(ctx context.Context) ([]string, error) {
 		}
 	}
 	return scopes, nil
+}
+
+// Access is what a login may do on a repository and whether its default
+// branch is protected.
+type Access struct {
+	DefaultBranch string
+	Protected     bool
+	// Admin is true when the login can change settings, and so get around
+	// branch protection.
+	Admin bool
+}
+
+// RepositoryAccess reads a repository's default branch, whether that branch
+// is protected and whether the login is an admin there.
+func (c *Client) RepositoryAccess(ctx context.Context, repository string) (Access, error) {
+	var access Access
+	if err := validRepository(repository); err != nil {
+		return access, err
+	}
+	output, err := c.run(ctx, repository, "read repository", nil, "api", "--method", "GET", "repos/"+repository)
+	if err != nil {
+		return access, err
+	}
+	var found struct {
+		DefaultBranch string `json:"default_branch"`
+		Permissions   struct {
+			Admin bool `json:"admin"`
+		} `json:"permissions"`
+	}
+	if err := decode("read repository", output, &found); err != nil {
+		return access, err
+	}
+	access.DefaultBranch, access.Admin = found.DefaultBranch, found.Permissions.Admin
+	if access.DefaultBranch == "" {
+		return access, &Error{Kind: ErrorMalformed, Operation: "read repository", Detail: "no default branch"}
+	}
+	output, err = c.run(ctx, repository, "read branch", nil, "api", "--method", "GET", "repos/"+repository+"/branches/"+url.PathEscape(access.DefaultBranch))
+	if err != nil {
+		return access, err
+	}
+	var branch struct {
+		Protected bool `json:"protected"`
+	}
+	if err := decode("read branch", output, &branch); err != nil {
+		return access, err
+	}
+	access.Protected = branch.Protected
+	return access, nil
 }

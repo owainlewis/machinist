@@ -419,6 +419,7 @@ func TestOnlyAllowedUsersInConnectedTeamsStartJobs(t *testing.T) {
 	p.linear.assign("stranger", "ENG", "mallory", p.now)
 	p.linear.assign("unknown", "ENG", "", p.now)
 	p.linear.assign("elsewhere", "OPS", "owain", p.now)
+	p.linear.assign("outsider", "OPS", "mallory", p.now)
 	p.poll(t)
 	if listed := p.tickets(t); len(listed) != 0 {
 		t.Fatalf("tickets = %+v", listed)
@@ -432,8 +433,11 @@ func TestOnlyAllowedUsersInConnectedTeamsStartJobs(t *testing.T) {
 	if comments := p.linear.comments["elsewhere"]; len(comments) != 1 || !strings.Contains(comments[0], `its team "OPS" is not connected to a repository`) {
 		t.Fatalf("comments = %q", comments)
 	}
-	if comments := p.linear.comments["stranger"]; len(comments) != 0 {
-		t.Fatalf("comments = %q", comments)
+	// Someone not allowed hears nothing, even about an unconnected team.
+	for _, issue := range []string{"stranger", "outsider"} {
+		if comments := p.linear.comments[issue]; len(comments) != 0 {
+			t.Fatalf("%s comments = %q", issue, comments)
+		}
 	}
 }
 

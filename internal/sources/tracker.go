@@ -399,7 +399,9 @@ const (
 // reached and the assignment waits for a later poll.
 func (p *Poller) handle(ctx context.Context, assignment Assignment) (handled, error) {
 	name := p.Tracker.Name()
-	if _, reason := p.Rules.Route(assignment); reason != "" {
+	// Only an allowed person hears that an issue maps to no repository, so
+	// anyone else who can hand Machinist an issue learns nothing of its config.
+	if _, reason := p.Rules.Route(assignment); reason != "" && slices.Contains(p.Rules.AllowedUsers, assignment.Actor) {
 		fmt.Fprintf(p.log(), "machinist: %s issue %s ignored: %s\n", name, assignment.Identifier, reason)
 		return handledSkipped, p.unrouted(ctx, assignment, reason)
 	}

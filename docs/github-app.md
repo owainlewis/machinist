@@ -120,9 +120,10 @@ plane.
 
 ### 5. Check it works
 
-Open the **Setup** page in the web app. It shows the app's bot account and flags any
-project the app is not installed on. Add more projects there, with no restart. Each one
-needs the app installed on it first.
+Open **Settings** in the web app. **GitHub** shows the app's bot account and warns about
+default branches with no protection. **Projects** flags any project the app is not
+installed on. Add more projects there, with no restart. Each one needs the app installed
+on it first.
 
 Then start a job on one of the repositories, from the web app's **New job** form or the
 [run API](run-api.md). If the checkout step succeeds, the app works. If the job fails before

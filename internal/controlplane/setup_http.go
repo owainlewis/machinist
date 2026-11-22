@@ -121,7 +121,7 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 	switch {
 	case len(setup.Projects) == 0:
 		projects.Detail = "No repository is connected yet."
-		projects.Fix = "Add one below."
+		projects.Fix = "Add one on the Projects page."
 	case broken > 0:
 		projects.OK = false
 		projects.Detail = fmt.Sprintf("The GitHub App cannot reach %d of %d repositories.", broken, len(setup.Projects))
