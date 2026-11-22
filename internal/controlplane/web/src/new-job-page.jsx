@@ -63,7 +63,7 @@ export function NewJobPage({ onSignedOut }) {
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
     <header className="page-head"><h1>New job</h1></header>
     {!options && !error && <p className="page-note" role="status">Loading presets</p>}
-    {options && !options.repositories.length && <p className="page-warning" role="alert">No repositories are connected. Add one on the <a href="#/setup">Setup</a> page.</p>}
+    {options && !options.repositories.length && <p className="page-warning" role="alert">No repositories are connected. Add one on the <a href="#/settings/projects">Projects</a> page.</p>}
     {options && <form className="new-job" onSubmit={submit}>
       <div>
         <label className="field-label" htmlFor="new-job-repo">Repository</label>

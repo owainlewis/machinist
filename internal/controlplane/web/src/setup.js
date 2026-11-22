@@ -21,7 +21,7 @@ export function repoName(text) {
 }
 
 // shouldOpenSetup is true when someone opens the app at its start page and a
-// required step is missing, so a new install starts on the checklist.
+// required step is missing, so a new install starts on the Settings overview.
 export function shouldOpenSetup(setup, hash) {
   return missingSteps(setup).length > 0 && ["", "#", "#/", "#/dashboard"].includes(hash);
 }
