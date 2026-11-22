@@ -9,13 +9,15 @@ import (
 
 // Figures is what one ticket cost and how much help it needed.
 type Figures struct {
-	TicketID       string        `json:"ticket_id"`
-	FeedbackRounds int           `json:"feedback_rounds"`
-	HumanCommits   *int          `json:"human_commits,omitempty"`
-	Tokens         int64         `json:"tokens"`
-	Cost           *float64      `json:"cost,omitempty"`
-	Elapsed        time.Duration `json:"elapsed"`
-	Merged         bool          `json:"merged"`
+	TicketID       string   `json:"ticket_id"`
+	FeedbackRounds int      `json:"feedback_rounds"`
+	HumanCommits   *int     `json:"human_commits,omitempty"`
+	Tokens         int64    `json:"tokens"`
+	Cost           *float64 `json:"cost,omitempty"`
+	// Elapsed is how long the ticket's runs ran, added up. Time queued, and
+	// time between runs, is not in it. A run still going counts up to now.
+	Elapsed time.Duration `json:"elapsed"`
+	Merged  bool          `json:"merged"`
 }
 
 // Ledger is the average per merged PR, for tickets not started by a schedule.
@@ -27,7 +29,7 @@ type Ledger struct {
 	Cost           *float64 `json:"cost,omitempty"`
 }
 
-const figuresQuery = `SELECT t.id,t.human_commits,t.merged_at,t.created_at,t.updated_at,
+const figuresQuery = `SELECT t.id,t.human_commits,t.merged_at,
   (SELECT COUNT(DISTINCT e.consumed_by_run) FROM ticket_entries e WHERE e.ticket_id=t.id AND e.kind IN ('comment','review') AND e.consumed_by_run IS NOT NULL),
   (SELECT COALESCE(SUM(r.tokens),0) FROM runs r WHERE r.ticket_id=t.id),
   (SELECT SUM(r.cost) FROM runs r WHERE r.ticket_id=t.id)
@@ -44,9 +46,8 @@ func (s *Store) figures(ctx context.Context, where string, arguments ...any) ([]
 		var figures Figures
 		var commits sql.NullInt64
 		var merged sql.NullString
-		var created, updated string
 		var cost sql.NullFloat64
-		if err := rows.Scan(&figures.TicketID, &commits, &merged, &created, &updated, &figures.FeedbackRounds, &figures.Tokens, &cost); err != nil {
+		if err := rows.Scan(&figures.TicketID, &commits, &merged, &figures.FeedbackRounds, &figures.Tokens, &cost); err != nil {
 			return nil, err
 		}
 		if commits.Valid {
@@ -57,10 +58,46 @@ func (s *Store) figures(ctx context.Context, where string, arguments ...any) ([]
 			figures.Cost = &cost.Float64
 		}
 		figures.Merged = merged.Valid
-		figures.Elapsed = parseTime(sql.NullString{String: updated, Valid: true}).Sub(*parseTime(sql.NullString{String: created, Valid: true}))
 		result = append(result, figures)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	elapsed, err := s.elapsed(ctx, where, arguments...)
+	if err != nil {
+		return nil, err
+	}
+	for index := range result {
+		result[index].Elapsed = elapsed[result[index].TicketID]
+	}
+	return result, nil
+}
+
+// elapsed adds up how long each ticket's started runs ran, by ticket ID.
+func (s *Store) elapsed(ctx context.Context, where string, arguments ...any) (map[string]time.Duration, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT r.ticket_id,r.started_at,r.ended_at FROM runs r JOIN tickets t ON t.id=r.ticket_id
+	  WHERE r.started_at IS NOT NULL AND `+where, arguments...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := s.now()
+	elapsed := map[string]time.Duration{}
+	for rows.Next() {
+		var ticketID string
+		var started, ended sql.NullString
+		if err := rows.Scan(&ticketID, &started, &ended); err != nil {
+			return nil, err
+		}
+		end := now
+		if ended.Valid {
+			end = *parseTime(ended)
+		}
+		if ran := end.Sub(*parseTime(started)); ran > 0 {
+			elapsed[ticketID] += ran
+		}
+	}
+	return elapsed, rows.Err()
 }
 
 // TicketFigures returns the figures for one ticket.

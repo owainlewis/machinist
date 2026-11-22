@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardOf, formatDuration, jobState, newestFirst, prLink, prState, prSummary, runningJobs, runningTickets } from "./jobs.js";
+import { boardOf, formatDuration, jobState, newestFirst, noPullRequest, prLink, prState, prSummary, runningJobs, runningTickets } from "./jobs.js";
 
 test("ticket states read as the run API's job states", () => {
   assert.equal(jobState({ state: "working" }), "queued");
@@ -60,4 +60,12 @@ test("a job's pull request says whether it is open, merged or closed", () => {
   assert.equal(prSummary({ pr_number: 4, pr_state: "merged" }), "#4 · Merged");
   assert.equal(prSummary({ pr_number: 4 }), "#4");
   assert.equal(prSummary({}), "");
+});
+
+test("a job that ended without a pull request has none, not none yet", () => {
+  assert.equal(noPullRequest("queued"), "None yet");
+  assert.equal(noPullRequest("running"), "None yet");
+  assert.equal(noPullRequest("done"), "None");
+  assert.equal(noPullRequest("failed"), "None");
+  assert.equal(noPullRequest("cancelled"), "None");
 });

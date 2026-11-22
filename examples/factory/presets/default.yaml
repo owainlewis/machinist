@@ -1,12 +1,12 @@
 # A one-off job: clone the repository, have an agent make the change, have
-# another review it and fix what the review found, then open a pull request
-# and merge it once its checks pass. Every job uses this preset unless it
-# names another.
+# another review it and fix what the review found, then open a pull request.
+# When github.auto_merge is on, the pull request merges once its checks pass.
+# Every job uses this preset unless it names another.
 #
 # A step either runs shell (run:) or one of the agents in factory/agents
 # (agent:). Steps run in order in one workspace, and the first that fails
 # ends the job. Scripts in factory/scripts are on PATH.
-description: Clone the repository, have an agent make the change, review it and fix what the review found, then open a pull request and merge it once its checks pass.
+description: Clone the repository, have an agent make the change, review it and fix what the review found, then open a pull request. It merges once its checks pass when github.auto_merge is on.
 timeout: 60m
 
 steps:
