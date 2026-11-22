@@ -152,7 +152,7 @@ func (d *Daemon) report(ctx context.Context, runID string, result runner.RunResu
 	if err := d.retry(ctx, func(call context.Context) error { return d.flushRunEvents(call, runID) }); err != nil {
 		fmt.Fprintf(d.log, "machinist: send events for run %s: %v\n", runID, err)
 	}
-	completion := protocol.Completion{State: string(result.State), Report: result.Report, Error: result.Error, Stages: result.Stages}
+	completion := protocol.Completion{State: string(result.State), Report: result.Report, Error: result.Error, Stages: result.Stages, Patch: result.Patch}
 	completion.Tokens, completion.Cost = protocol.Totals(result.Stages)
 	if err := d.retry(ctx, func(call context.Context) error {
 		return d.client.Post(call, "/api/v1/runs/"+runID+"/complete", completion, nil)

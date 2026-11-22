@@ -221,6 +221,10 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .run-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; color: var(--muted-foreground); font-size: 13px; }
 .run-now { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin: 0; color: var(--muted-foreground); font-family: var(--font-mono, ui-monospace, monospace); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-now-step { flex: none; font-family: var(--font-sans, inherit); color: var(--info, var(--primary)); font-weight: 500; }
+.run-patch { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0; padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--muted-foreground); font-size: 13px; }
+.run-patch a { display: inline-flex; align-items: center; gap: 6px; color: var(--foreground); font-weight: 500; }
+.run-patch a:hover { text-decoration: underline; }
+.run-patch code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .run-head h2 { color: var(--foreground); font-size: 16px; font-weight: 600; }
 .steps { overflow: hidden; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); list-style: none; }
 .step + .step { border-top: 1px solid var(--border); }

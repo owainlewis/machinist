@@ -57,6 +57,9 @@ type RunResult struct {
 	Report *protocol.Report
 	Error  string
 	Stages []protocol.StageResult
+	// Patch is the change a step saved in protocol.PatchFile, because it
+	// could not push it.
+	Patch []byte `json:",omitempty"`
 }
 
 // ValidRunID reports whether value has the form run_ and 24 hex characters.
