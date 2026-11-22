@@ -184,6 +184,62 @@ func TestJobShowsKeyProgressTokensAndCost(t *testing.T) {
 	}
 }
 
+// A job's cost_usd is the cost in its ticket's figures, across runs that did
+// and did not report one. The self-test saw it null while the figures had one.
+func TestJobCostMatchesTicketFigures(t *testing.T) {
+	f := newFixture(t)
+	created := f.run(t, "linear:ENG-149")
+	finish := func(cost *float64) {
+		t.Helper()
+		if err := f.server.engine.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		response, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}})
+		var run runner.RunRequest
+		if response.StatusCode != http.StatusOK || json.Unmarshal(body, &run) != nil {
+			t.Fatalf("poll = %d: %s", response.StatusCode, body)
+		}
+		tokens := int64(100)
+		completion := protocol.Completion{State: tickets.RunSucceeded, Tokens: &tokens, Cost: cost, Report: &protocol.Report{Outcome: "no_change", Summary: "Done"}}
+		if response, body := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/complete", f.token, completion); response.StatusCode != http.StatusNoContent {
+			t.Fatalf("complete = %d: %s", response.StatusCode, body)
+		}
+	}
+	rerun := func() {
+		t.Helper()
+		if response, body := f.call(t, http.MethodPost, "/machinist/jobs/"+created.ID+"/rerun", f.token, nil); response.StatusCode != http.StatusOK {
+			t.Fatalf("rerun = %d: %s", response.StatusCode, body)
+		}
+	}
+	figures := func() *float64 {
+		t.Helper()
+		response, body := f.call(t, http.MethodGet, "/api/v1/tickets/"+created.ID, f.token, nil)
+		var detail struct {
+			Figures tickets.Figures `json:"figures"`
+		}
+		if response.StatusCode != http.StatusOK || json.Unmarshal(body, &detail) != nil {
+			t.Fatalf("ticket = %d: %s", response.StatusCode, body)
+		}
+		return detail.Figures.Cost
+	}
+
+	finish(nil)
+	if job, cost := f.getJob(t, created.ID), figures(); job.CostUSD != nil || cost != nil {
+		t.Fatalf("no cost reported: cost_usd = %v, figures = %v", job.CostUSD, cost)
+	}
+	first, second := 0.42, 0.1
+	rerun()
+	finish(&first)
+	rerun()
+	finish(nil)
+	rerun()
+	finish(&second)
+	job, cost := f.getJob(t, created.ID), figures()
+	if job.CostUSD == nil || cost == nil || *job.CostUSD != *cost || *cost != first+second || job.Tokens != 400 {
+		t.Fatalf("cost_usd = %v, figures = %v, job = %+v", job.CostUSD, cost, job)
+	}
+}
+
 func (f *fixture) getJob(t *testing.T, id string) job {
 	t.Helper()
 	response, body := f.call(t, http.MethodGet, "/machinist/jobs/"+id, f.token, nil)

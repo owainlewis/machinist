@@ -38,6 +38,12 @@ export function prSummary(ticket) {
   return state ? `#${ticket.pr_number} · ${state}` : `#${ticket.pr_number}`;
 }
 
+// noPullRequest is what a job without a pull request shows in its place. One
+// still going may open one yet; one that ended never will.
+export function noPullRequest(state) {
+  return isFinished(state) ? "None" : "None yet";
+}
+
 export function prLink(ticket) {
   return ticket?.pr_number ? `https://github.com/${ticket.repo}/pull/${ticket.pr_number}` : "";
 }

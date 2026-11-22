@@ -3,7 +3,7 @@ import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleDashed, Download, Lo
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { State, relativeTime, useNow } from "./display.jsx";
-import { formatDuration, isFinished, jobState, prLink, prState } from "./jobs.js";
+import { formatDuration, isFinished, jobState, noPullRequest, prLink, prState } from "./jobs.js";
 import { latestAction, pipeline, pollEvents, runSpend, spend, spendTitle, stepTime, steps } from "./step-log.js";
 import { Button } from "@/components/ui/button";
 
@@ -206,7 +206,7 @@ export function JobView({ detail, onChange }) {
     <dl className="job-facts">
       <div><dt>Repository</dt><dd>{ticket.repo}</dd></div>
       <div><dt>Preset</dt><dd>{ticket.agent}</dd></div>
-      <div><dt>Pull request</dt><dd>{pr ? <PullRequest ticket={ticket} link={pr} /> : "None yet"}</dd></div>
+      <div><dt>Pull request</dt><dd>{pr ? <PullRequest ticket={ticket} link={pr} /> : noPullRequest(state)}</dd></div>
       <div><dt>Started by</dt><dd>{ticket.created_by}</dd></div>
       <div><dt>Created</dt><dd><time dateTime={ticket.created_at}>{relativeTime(ticket.created_at)}</time></dd></div>
     </dl>

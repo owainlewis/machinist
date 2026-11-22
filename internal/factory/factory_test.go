@@ -225,3 +225,19 @@ func TestValidateChecksConfigurationReferences(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+// The default preset merges only when github.auto_merge is on, so its
+// description must not promise a merge.
+func TestShippedDefaultPresetSaysMergingNeedsAutoMerge(t *testing.T) {
+	factory, err := Load(filepath.Join("..", "..", "examples", "factory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	preset, ok := factory.Preset("default")
+	if !ok {
+		t.Fatal("no default preset")
+	}
+	if !strings.Contains(preset.Description, "when github.auto_merge is on") {
+		t.Fatalf("description = %q", preset.Description)
+	}
+}
