@@ -155,3 +155,22 @@ func TestWithTokenGivesEachCommandATokenForItsRepository(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestRepositoryAccessReadsProtectionAndAdmin(t *testing.T) {
+	github := fakegh.Install(t, "bot")
+	client := New()
+	if access, err := client.RepositoryAccess(t.Context(), "owner/repo"); err != nil || access != (Access{DefaultBranch: "main", Protected: true}) {
+		t.Fatalf("access = %+v, err = %v", access, err)
+	}
+	github.SetAccess(false, true)
+	if access, err := client.RepositoryAccess(t.Context(), "owner/repo"); err != nil || access != (Access{DefaultBranch: "main", Admin: true}) {
+		t.Fatalf("access = %+v, err = %v", access, err)
+	}
+	if _, err := client.RepositoryAccess(t.Context(), "../repo"); err == nil {
+		t.Fatal("an invalid repository was read")
+	}
+	github.Fail("gh: Not Found (HTTP 404)")
+	if _, err := client.RepositoryAccess(t.Context(), "owner/repo"); !IsNotFound(err) {
+		t.Fatalf("err = %v", err)
+	}
+}

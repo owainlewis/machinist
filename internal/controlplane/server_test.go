@@ -27,10 +27,11 @@ type fixture struct {
 	store  *tickets.Store
 	http   *httptest.Server
 	token  string
+	github *fakegh.GitHub
 }
 
 func newFixture(t *testing.T) *fixture {
-	fakegh.Install(t, testConfig().GitHub.Handle)
+	github := fakegh.Install(t, testConfig().GitHub.Handle)
 	t.Helper()
 	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
 	if err != nil {
@@ -47,7 +48,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	web := httptest.NewServer(server.Handler())
 	t.Cleanup(web.Close)
-	return &fixture{server: server, store: store, http: web, token: token}
+	return &fixture{server: server, store: store, http: web, token: token, github: github}
 }
 
 func testConfig() config.Config {
