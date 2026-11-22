@@ -71,6 +71,11 @@ type linearIssue struct {
 	} `json:"project"`
 	History struct {
 		Nodes []linearChange `json:"nodes"`
+		// PageInfo says whether Linear left out older history: the
+		// query reads at most linearHistory entries.
+		PageInfo struct {
+			HasNextPage bool `json:"hasNextPage"`
+		} `json:"pageInfo"`
 	} `json:"history"`
 }
 
@@ -95,7 +100,7 @@ func (l *Linear) Assignments(ctx context.Context, since time.Time) ([]Assignment
 	query := fmt.Sprintf(`query Assigned($after: String) {
   issues(first: %d, after: $after, orderBy: updatedAt, filter: {%s, updatedAt: {gt: %s}}) {
     nodes { id identifier title description url createdAt updatedAt creator { id } team { key } project { id name }
-      history(first: %d) { nodes { createdAt actorId toAssigneeId toDelegate { id } } } }
+      history(first: %d) { nodes { createdAt actorId toAssigneeId toDelegate { id } } pageInfo { hasNextPage } } }
     pageInfo { hasNextPage endCursor }
   }
 }`, linearPage, l.givenToApp(), quote(since.UTC().Format(time.RFC3339Nano)), linearHistory)
@@ -130,7 +135,10 @@ func (l *Linear) Assignments(ctx context.Context, since time.Time) ([]Assignment
 // assignment finds who gave the issue to the app: the actor of the latest
 // history entry that delegated or assigned it to the app. An issue given to
 // the app as it was created often has no such entry, as Linear folds the
-// delegation into the creation, so then it is whoever created the issue.
+// delegation into the creation, so then it is whoever created the issue. If
+// Linear left out some of the history, the entry that gave the issue to the
+// app may be among those left out, so the issue's creator is not trusted and
+// who gave it stays unknown.
 func (l *Linear) assignment(issue linearIssue) Assignment {
 	var actor string
 	var at time.Time
@@ -140,7 +148,7 @@ func (l *Linear) assignment(issue linearIssue) Assignment {
 			actor, at = entry.ActorID, entry.CreatedAt
 		}
 	}
-	if actor == "" && issue.Creator != nil {
+	if actor == "" && issue.Creator != nil && !issue.History.PageInfo.HasNextPage {
 		actor, at = issue.Creator.ID, issue.CreatedAt
 	}
 	assignment := Assignment{

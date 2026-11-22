@@ -189,6 +189,13 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !strings.Contains(request.Query, "creator { id }") {
 				node.Creator = nil
 			}
+			// Linear lists the newest history first and leaves out the rest.
+			history := node.History.Nodes
+			node.History.Nodes = nil
+			for index := len(history) - 1; index >= 0 && len(node.History.Nodes) < linearHistory; index-- {
+				node.History.Nodes = append(node.History.Nodes, history[index])
+			}
+			node.History.PageInfo.HasNextPage = len(history) > linearHistory && strings.Contains(request.Query, "pageInfo { hasNextPage } } }")
 			nodes = append(nodes, node)
 		}
 	}
@@ -511,6 +518,28 @@ func TestAnIssueDelegatedAsItIsCreatedIsGivenByItsCreator(t *testing.T) {
 		t.Fatalf("tickets = %v", titles)
 	}
 	if want := `user "mallory" may not start jobs`; !strings.Contains(p.log.String(), want) {
+		t.Fatalf("log lacks %q:\n%s", want, p.log)
+	}
+}
+
+func TestAnIssueWithTruncatedHistoryIsNotGivenByItsCreator(t *testing.T) {
+	p := newPolling(t)
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	// owain created it, mallory delegated it, then mallory's edits pushed the
+	// delegation out of the history Linear returns.
+	p.linear.delegate("buried", "ENG", "mallory", p.now)
+	p.linear.set("buried", func(issue *fakeIssue) {
+		issue.Creator = &linearUser{ID: "owain"}
+		for index := 0; index < linearHistory; index++ {
+			issue.History.Nodes = append(issue.History.Nodes, linearChange{CreatedAt: p.now.Add(time.Duration(index+1) * time.Second), ActorID: "mallory"})
+		}
+	})
+	p.poll(t)
+	if tickets := p.tickets(t); len(tickets) != 0 {
+		t.Fatalf("tickets = %v", tickets)
+	}
+	if want := "who assigned it is not known"; !strings.Contains(p.log.String(), want) {
 		t.Fatalf("log lacks %q:\n%s", want, p.log)
 	}
 }
