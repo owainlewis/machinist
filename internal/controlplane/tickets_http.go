@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
@@ -131,6 +132,40 @@ func (s *Server) runEvents(w http.ResponseWriter, r *http.Request, _ string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+// runPatch downloads the change a run saved as a patch because it could not
+// push it, for git am.
+func (s *Server) runPatch(w http.ResponseWriter, r *http.Request, _ string) {
+	run, err := s.store.Run(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	body, err := s.store.RunPatch(r.Context(), run.ID)
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/x-diff; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+patchName(run.TicketID)+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// patchName names a job's patch file after the job, keeping only characters
+// that are safe in a header and a file name.
+func patchName(ticketID string) string {
+	safe := strings.Map(func(r rune) rune {
+		if r == '_' || r == '-' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, ticketID)
+	if safe == "" {
+		safe = "change"
+	}
+	return safe + ".patch"
 }
 
 func (s *Server) ledger(w http.ResponseWriter, r *http.Request, _ string) {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
@@ -248,6 +249,9 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	default:
 		return fmt.Errorf("%w: unknown state %q", ErrInvalidCompletion, completion.State)
 	}
+	if len(completion.Patch) > protocol.MaxPatchBytes {
+		return fmt.Errorf("%w: the patch is larger than %d bytes", ErrInvalidCompletion, protocol.MaxPatchBytes)
+	}
 	reason := completion.Error
 	report := completion.Report
 	if report != nil {
@@ -259,13 +263,29 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	if err != nil {
 		return err
 	}
-	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: reached(report, pr), Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages}, func(ticket tickets.Ticket, status string) tickets.Transition {
+	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: reached(report, pr), Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages, Patch: completion.Patch}, func(ticket tickets.Ticket, status string) tickets.Transition {
 		transition := decide(status, report, reason, pr)
+		if transition.State == tickets.StateFailed && len(completion.Patch) > 0 {
+			transition.Message = sentence(transition.Message) + " " + PatchSaved
+		}
 		if pr != nil && ticket.PRNumber == 0 {
 			transition.FirstPR = e.firstPR(ticket, pr.Number)
 		}
 		return transition
 	})
+}
+
+// PatchSaved is what a failed job whose change was saved as a patch tells the
+// person, so they can recover the work without paying for the agent again.
+const PatchSaved = "The change is saved as a patch: download it from the job page and apply it with git am."
+
+// sentence ends text with a full stop, unless it has one, so another can follow.
+func sentence(text string) string {
+	text = strings.TrimSpace(text)
+	if strings.HasSuffix(text, ".") || strings.HasSuffix(text, "…") {
+		return text
+	}
+	return text + "."
 }
 
 // reached labels a run's report with what its pull request reached when the
