@@ -53,7 +53,8 @@ func newPushCommand(options *commandOptions) *cobra.Command {
 		Short: "Push the job's branch to origin, inside a step",
 		Long: "Push HEAD to origin and track it. When the push fails, the step fails and says what GitHub answered, " +
 			"and the commits beyond origin/HEAD are saved as " + protocol.PatchFile + " in the control directory, " +
-			"which the job page links to.",
+			"which the job page links to, for git am. A branch with merge commits is saved as one commit of " +
+			"everything it changed, so a merge's conflict resolution is kept.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			control, err := controlDirectory("push")

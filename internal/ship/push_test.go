@@ -18,13 +18,17 @@ func fakeGit(stderr string, err error, calls *[]string) Git {
 	}
 }
 
-// patchGit rejects the push and answers format-patch with patch, or with
-// formatErr.
+// patchGit rejects the push, finds no merge commits and answers format-patch
+// with patch, or with formatErr.
 func patchGit(patch string, formatErr error, calls *[]string) Git {
 	return func(_ context.Context, stdout io.Writer, args ...string) (string, error) {
 		*calls = append(*calls, strings.Join(args, " "))
 		if args[0] == "push" {
 			return " ! [remote rejected] HEAD -> machinist/t_1 (no workflows)\n", errors.New("exit status 1")
+		}
+		if args[0] == "rev-list" {
+			io.WriteString(stdout, "0\n")
+			return "", nil
 		}
 		io.WriteString(stdout, patch)
 		if formatErr != nil {
@@ -100,7 +104,7 @@ func TestARejectedPushSavesTheChangeAsAPatch(t *testing.T) {
 	if !errors.As(err, &rejected) {
 		t.Fatalf("err = %v", err)
 	}
-	if strings.Join(calls, "; ") != "push -u origin HEAD; format-patch --stdout origin/HEAD..HEAD" {
+	if strings.Join(calls, "; ") != "push -u origin HEAD; rev-list --merges --count origin/HEAD..HEAD; format-patch --stdout origin/HEAD..HEAD" {
 		t.Fatalf("calls = %v", calls)
 	}
 	if body, err := os.ReadFile(path); err != nil || string(body) != patch {
