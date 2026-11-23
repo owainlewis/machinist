@@ -352,10 +352,12 @@ func (s *Store) pullRequestStats(ctx context.Context, stats *Stats, first time.T
 	return nil
 }
 
-// stepStats counts the steps that ran, by the day their run ended.
+// stepStats counts the agent steps that ran, by the day their run ended. A
+// step that ran no agent, such as a shell checkout or a revise that had
+// nothing to do, records no agents and is left out.
 func (s *Store) stepStats(ctx context.Context, stats *Stats, first time.Time, index map[string]int) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT substr(r.ended_at,1,10),s.name,COUNT(*) FROM run_stages s JOIN runs r ON r.id=s.run
-  WHERE r.ended_at>=? AND s.state<>? GROUP BY 1,2`, stamp(first), protocol.StageSkipped)
+  WHERE r.ended_at>=? AND s.state<>? AND s.agents<>'' GROUP BY 1,2`, stamp(first), protocol.StageSkipped)
 	if err != nil {
 		return err
 	}

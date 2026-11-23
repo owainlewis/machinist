@@ -111,19 +111,24 @@ func TestStatsMeasureTheWayToMergeAndThePeopleItNeeded(t *testing.T) {
 	// The merged job: started at 9:00, its pull request opened at 9:30, a
 	// person asked for a change, someone reviewed it at 11:00 and it merged
 	// at 12:00.
+	// Steps that ran an agent record it; shell steps such as checkout and
+	// merge, and a revise with nothing to revise, record none.
+	agent := []protocol.Agent{{Name: "coder", Harness: "claude"}}
 	merged := createTicket(t, store, "api:merged")
 	opened := clock(9, 30)
 	at = clock(9, 40)
 	runTo(t, store, merged, Transition{State: StatePRReady, PRNumber: 7, PROpenedAt: &opened},
-		protocol.StageResult{Name: "implement", State: RunSucceeded},
-		protocol.StageResult{Name: "review", State: RunSucceeded},
-		protocol.StageResult{Name: "publish", State: protocol.StageSkipped})
+		protocol.StageResult{Name: "checkout", State: RunSucceeded},
+		protocol.StageResult{Name: "implement", State: RunSucceeded, Agents: agent},
+		protocol.StageResult{Name: "review", State: RunSucceeded, Agents: agent},
+		protocol.StageResult{Name: "revise", State: RunSucceeded},
+		protocol.StageResult{Name: "publish", State: protocol.StageSkipped, Agents: agent})
 	at = clock(10, 0)
 	if _, err := store.Reply(ctx, merged.ID, "linear", []Comment{{Body: "Use the other name."}}); err != nil {
 		t.Fatal(err)
 	}
 	at = clock(10, 20)
-	runTo(t, store, merged, Transition{State: StatePRReady, PRNumber: 7}, protocol.StageResult{Name: "revise", State: RunSucceeded})
+	runTo(t, store, merged, Transition{State: StatePRReady, PRNumber: 7}, protocol.StageResult{Name: "revise", State: RunSucceeded, Agents: agent})
 	listed, err := store.TicketsWithOpenPRs(ctx)
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("listed = %+v, err = %v", listed, err)
@@ -143,7 +148,9 @@ func TestStatsMeasureTheWayToMergeAndThePeopleItNeeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	at = clock(14, 0)
-	runTo(t, store, open, Transition{State: StatePRReady, PRNumber: 8}, protocol.StageResult{Name: "implement", State: RunSucceeded})
+	runTo(t, store, open, Transition{State: StatePRReady, PRNumber: 8},
+		protocol.StageResult{Name: "implement", State: RunSucceeded, Agents: agent},
+		protocol.StageResult{Name: "merge", State: RunSucceeded})
 	createTicket(t, store, "api:no-pr")
 
 	stats, err := store.Stats(ctx, 7)
@@ -164,8 +171,9 @@ func TestStatsMeasureTheWayToMergeAndThePeopleItNeeded(t *testing.T) {
 	if day.Day != "2026-05-09" || day.Opened != 2 || day.Merged != 1 {
 		t.Fatalf("day = %+v", day)
 	}
-	if day.Steps["implement"] != 2 || day.Steps["review"] != 1 || day.Steps["revise"] != 1 || day.Steps["publish"] != 0 {
-		t.Fatalf("steps = %+v, a skipped step did not run", day.Steps)
+	if day.Steps["implement"] != 2 || day.Steps["review"] != 1 || day.Steps["revise"] != 1 || day.Steps["publish"] != 0 ||
+		day.Steps["checkout"] != 0 || day.Steps["merge"] != 0 {
+		t.Fatalf("steps = %+v, only agent steps that ran count", day.Steps)
 	}
 	if want := []string{"implement", "review", "revise"}; !slices.Equal(stats.Steps, want) {
 		t.Fatalf("steps = %v, want %v", stats.Steps, want)
