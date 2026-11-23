@@ -50,6 +50,9 @@ type Factory struct {
 	// Files are agents/*.md, prompts/*.md and scripts/*, by path. Every run
 	// carries them into its control directory, where steps read them.
 	Files map[string]string
+	// Updates lists shipped factory files that are out of date, edited against
+	// an older shipped version, or missing from the factory directory.
+	Updates []FileUpdate
 }
 
 // Every run carries the factory's files, so they share one size limit.
@@ -99,6 +102,11 @@ func Load(directory string) (*Factory, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("automation: %w", err)
 	}
+	updates, err := Check(directory)
+	if err != nil {
+		return nil, fmt.Errorf("manifest: %w", err)
+	}
+	factory.Updates = updates
 	return factory, nil
 }
 
