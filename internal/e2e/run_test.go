@@ -109,7 +109,8 @@ func newRemote(t *testing.T) string {
 // review writes the verdict in the output directory's verdict file, or
 // accepted, the revise step re-reviews when asked to, and publish opens the
 // pull request on the branch scripts/publish.sh pushed, with the fake gh. The
-// merge step is the real machinist merge.
+// merge step is the real machinist merge, which hands the pull request to the
+// control plane.
 func fakeLaterSteps(output string) string {
 	return `case "$*" in
 *"Your step is to review the change"*)
@@ -225,6 +226,7 @@ func startWith(t *testing.T, chosen options) *system {
 		t.Fatal(err)
 	}
 	server.SetPollInterval(20 * time.Millisecond)
+	server.SetPRInterval(20 * time.Millisecond)
 	ctx, cancel := context.WithCancel(t.Context())
 	listening := make(chan net.Addr, 1)
 	serverDone := make(chan error, 1)
@@ -285,6 +287,7 @@ func startWith(t *testing.T, chosen options) *system {
 			t.Fatal(err)
 		}
 		next.SetPollInterval(20 * time.Millisecond)
+		next.SetPRInterval(20 * time.Millisecond)
 		serverContext, stopServer = context.WithCancel(ctx)
 		go func() { serverDone <- next.Serve(serverContext, nil) }()
 	}
@@ -534,7 +537,7 @@ func TestARevisedChangeMergesOnlyAfterAFreshReview(t *testing.T) {
 }
 
 // A clean review runs no revise agent, and a failed check fails the job
-// without merging.
+// without merging. The control plane sees the failure after the run ended.
 func TestAFailedCheckFailsTheJob(t *testing.T) {
 	s := startWith(t, options{claude: claudeScript})
 	s.github.SetChecks([]map[string]string{{"name": "test", "bucket": "fail", "link": "https://ci.example.test/2"}})
@@ -547,8 +550,48 @@ func TestAFailedCheckFailsTheJob(t *testing.T) {
 		t.Fatalf("merged = %v", merged)
 	}
 	runs, err := s.store.Runs(t.Context(), ticket.ID)
-	if err != nil || len(runs) != 1 || stepStates(runs[0]) != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=failed" {
+	if err != nil || len(runs) != 1 || stepStates(runs[0]) != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=succeeded" {
 		t.Fatalf("runs = %+v, err = %v", runs, err)
+	}
+	if message, err := s.store.LatestMessage(t.Context(), ticket.ID); err != nil || message != `Left open: check "test" failed: https://ci.example.test/2. https://github.com/owner/repo/pull/7` {
+		t.Fatalf("message = %q, err = %v", message, err)
+	}
+}
+
+// The run ends as soon as the pull request is open and reviewed, so its
+// runner slot is free while CI runs. The control plane merges the pull
+// request once its checks pass.
+func TestTheRunnerIsFreeWhileChecksRun(t *testing.T) {
+	s := startWith(t, options{claude: claudeScript})
+	s.github.SetChecks([]map[string]string{{"name": "test", "bucket": "pending", "link": "https://ci.example.test/1"}})
+	ticket := s.createTicket(t)
+	s.waitForState(t, ticket.ID, tickets.StatePRReady)
+	runs, err := s.store.Runs(t.Context(), ticket.ID)
+	if err != nil || len(runs) != 1 || runs[0].Status != tickets.RunSucceeded || runs[0].Report.Summary != "Merges once its checks pass: https://github.com/owner/repo/pull/7" {
+		t.Fatalf("runs = %+v, err = %v", runs, err)
+	}
+	// The runner takes the next job while the first one's checks run.
+	next, _, err := s.store.CreateTicket(t.Context(), tickets.NewTicket{Source: "api", Repo: "owner/repo", Title: "Another", Body: "MORE", Agent: "default", CreatedBy: "alice", SourceKey: "api:2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the next job to start", func() bool {
+		runs, err := s.store.Runs(t.Context(), next.ID)
+		return err == nil && len(runs) > 0 && runs[0].StartedAt != nil
+	})
+	if merged := s.github.Merged(); len(merged) != 0 {
+		t.Fatalf("merged while a check ran: %v", merged)
+	}
+	if got, err := s.store.Ticket(t.Context(), ticket.ID); err != nil || got.State != tickets.StatePRReady {
+		t.Fatalf("ticket = %+v, err = %v", got, err)
+	}
+	s.github.SetChecks([]map[string]string{{"name": "test", "bucket": "pass", "link": "https://ci.example.test/1"}})
+	s.waitForState(t, ticket.ID, tickets.StateDone)
+	if merged := s.github.Merged(); len(merged) == 0 || merged[0] != "7" {
+		t.Fatalf("merged = %v", merged)
+	}
+	if message, err := s.store.LatestMessage(t.Context(), ticket.ID); err != nil || message != "Merged: https://github.com/owner/repo/pull/7" {
+		t.Fatalf("message = %q, err = %v", message, err)
 	}
 }
 

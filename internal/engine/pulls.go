@@ -2,9 +2,12 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/ship"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -88,7 +91,63 @@ func (e *Engine) CheckPRs(ctx context.Context) error {
 		}
 		if state != tickets.PROpen {
 			fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d %s\n", ticket.ID, pr.Number, state)
+			continue
+		}
+		if ticket.Shipping != "" {
+			if err := e.lookAt(ctx, ticket, pr.Number); err != nil {
+				return fmt.Errorf("job %s: pull request #%d: %w", ticket.ID, pr.Number, err)
+			}
 		}
 	}
 	return nil
+}
+
+// startWatch is what a job keeps while the control plane waits for the
+// checks of the pull request its run handed over. The run is over, so no
+// runner waits on CI.
+func (e *Engine) startWatch(request protocol.Ship) string {
+	// A Watch is strings, a time and numbers, so it always encodes.
+	body, _ := json.Marshal(ship.NewWatch(e.AutoMerge, request, e.now()))
+	return string(body)
+}
+
+// lookAt takes one look at the checks of a job's open pull request. It merges
+// the pull request once every check passed, when the watch allows it, and
+// fails the job when a check failed. A check still running waits for the
+// next look.
+func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) error {
+	if e.PullRequests == nil {
+		return nil
+	}
+	var watch ship.Watch
+	if err := json.Unmarshal([]byte(ticket.Shipping), &watch); err != nil {
+		// What an older Machinist kept cannot be read, so leave the pull
+		// request for a person rather than guess.
+		fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d: stopped waiting for checks: %v\n", ticket.ID, number, err)
+		return e.Store.SetShipping(ctx, ticket, tickets.Shipped{})
+	}
+	look, err := ship.LookOnce(ctx, e.PullRequests(ticket.Repo, number), watch, e.now())
+	if err != nil {
+		return err
+	}
+	if look.Log != "" {
+		fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d: %s\n", ticket.ID, number, look.Log)
+	}
+	shipped := tickets.Shipped{Message: look.Message, At: e.now()}
+	switch look.Outcome {
+	case ship.Settled:
+		// A person merged or closed it, which the next look records.
+		return nil
+	case ship.Waiting:
+		body, err := json.Marshal(look.Watch)
+		if err != nil {
+			return err
+		}
+		shipped.Shipping = string(body)
+	case ship.Merged:
+		shipped.Merged = true
+	case ship.CheckFailed:
+		shipped.Failed = true
+	}
+	return e.Store.SetShipping(ctx, ticket, shipped)
 }

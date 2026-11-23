@@ -64,3 +64,70 @@ func TestAPRResultFromBeforeARerunIsIgnored(t *testing.T) {
 		t.Fatalf("ticket = %+v, err = %v", got, err)
 	}
 }
+
+func TestALookAtChecksFromBeforeARerunIsIgnored(t *testing.T) {
+	store := openStore(t)
+	now := time.Date(2026, 11, 23, 9, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
+	ticket := createTicket(t, store, "k1")
+	ctx := context.Background()
+	if err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{"since":"x"}`}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.TicketsWithOpenPRs(ctx)
+	if err != nil || len(listed) != 1 || listed[0].Shipping != `{"since":"x"}` {
+		t.Fatalf("listed = %+v, err = %v", listed, err)
+	}
+	// While the checks are read, the job runs again and opens #8, with
+	// nothing handed over.
+	now = now.Add(time.Minute)
+	if _, err := store.Rerun(ctx, ticket.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 8}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetShipping(ctx, listed[0], Shipped{Merged: true, At: now, Message: "Merged"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Ticket(ctx, ticket.ID)
+	if err != nil || got.State != StatePRReady || got.PRNumber != 8 || got.MergedAt != nil || got.Shipping != "" {
+		t.Fatalf("ticket = %+v, err = %v", got, err)
+	}
+}
+
+func TestSetShippingKeepsTheWatchOrEndsTheJob(t *testing.T) {
+	ctx := context.Background()
+	for name, test := range map[string]struct {
+		shipped Shipped
+		state   string
+		keep    string
+	}{
+		"waiting": {Shipped{Shipping: `{"updates":1}`}, StatePRReady, `{"updates":1}`},
+		"left":    {Shipped{Message: "Left open"}, StatePRReady, ""},
+		"merged":  {Shipped{Merged: true, At: time.Now(), Message: "Merged"}, StateDone, ""},
+		"failed":  {Shipped{Failed: true, Message: "Failed"}, StateFailed, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := openStore(t)
+			ticket := createTicket(t, store, "k1")
+			if err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{}`}); err != nil {
+				t.Fatal(err)
+			}
+			listed, err := store.TicketsWithOpenPRs(ctx)
+			if err != nil || len(listed) != 1 {
+				t.Fatalf("listed = %+v, err = %v", listed, err)
+			}
+			if err := store.SetShipping(ctx, listed[0], test.shipped); err != nil {
+				t.Fatal(err)
+			}
+			got, err := store.Ticket(ctx, ticket.ID)
+			if err != nil || got.State != test.state || got.Shipping != test.keep || (test.shipped.Merged != (got.MergedAt != nil)) {
+				t.Fatalf("ticket = %+v, err = %v", got, err)
+			}
+			if message, _ := store.LatestMessage(ctx, ticket.ID); message != test.shipped.Message {
+				t.Fatalf("message = %q", message)
+			}
+		})
+	}
+}

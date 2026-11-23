@@ -14,6 +14,7 @@ import (
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
+	"github.com/owainlewis/machinist/internal/ship"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -42,6 +43,9 @@ func BotEmail(handle string) string { return handle + "@users.noreply.github.com
 // PRFinder finds the pull request for a branch, or nil if there is none.
 type PRFinder func(ctx context.Context, repository, branch string) (*PR, error)
 
+// PullRequests returns what watching one pull request needs.
+type PullRequests func(repository string, number int) ship.GitHub
+
 // TokenMinter returns a short-lived GitHub token for one repository.
 type TokenMinter func(ctx context.Context, repository string) (string, error)
 
@@ -54,10 +58,13 @@ type Options struct {
 	RunTimeout time.Duration
 	Handle     string
 	// AutoMerge reaches every step as MACHINIST_AUTO_MERGE, true or false.
-	// The publish agent merges only when it is true.
+	// A pull request merges only when it is true, whatever a step says.
 	AutoMerge bool
 	FindPR    PRFinder
-	Post      Poster
+	// PullRequests reaches one pull request on GitHub, to wait for its checks
+	// and merge it. Without it, a pull request a run hands over stays open.
+	PullRequests PullRequests
+	Post         Poster
 	// GitHubToken, when set, gives each run its own token for its repository.
 	// Without it, a runner uses its own GH_TOKEN.
 	GitHubToken TokenMinter
@@ -270,6 +277,9 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 		}
 		if pr != nil && ticket.PRNumber == 0 {
 			transition.FirstPR = e.firstPR(ticket, pr.Number)
+		}
+		if transition.State == tickets.StatePRReady && completion.Ship != nil {
+			transition.Shipping = e.startWatch(*completion.Ship)
 		}
 		return transition
 	})

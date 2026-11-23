@@ -30,8 +30,15 @@ case "$1 $2" in
   if [ "$1" = -- ]; then shift; fi
   exec git clone "$@" "$(cat "$dir/remote")" "$target";;
 "pr view")
-  file="$dir/prlist-$(printf %%s "$3" | tr / _)"
-  number=$(sed -n 's/.*"number":\([0-9]*\).*/\1/p' "$file" 2>/dev/null)
+  # A step names the branch, and the control plane names the number.
+  case "$3" in
+  *[!0-9]*)
+    file="$dir/prlist-$(printf %%s "$3" | tr / _)"
+    number=$(sed -n 's/.*"number":\([0-9]*\).*/\1/p' "$file" 2>/dev/null);;
+  *)
+    file=$(grep -l "\"number\":$3," "$dir"/prlist-* 2>/dev/null | head -n 1)
+    number=; [ -n "$file" ] && number=$3;;
+  esac
   if [ -z "$number" ]; then echo "no pull requests found for branch \"$3\"" >&2; exit 1; fi
   case "$*" in
   *--json*)
@@ -55,7 +62,10 @@ case "$1 $2" in
   echo "https://github.com/owner/repo/pull/$number"
   exit 0;;
 "pr checks")
+  if [ "$(cat "$dir/checks" 2>/dev/null)" = none ]; then echo "no checks reported on the 'machinist/t_1' branch" >&2; exit 1; fi
   show "$dir/checks" '[{"name":"test","bucket":"pass","link":"https://ci.example.test/1"}]'
+  # gh exits 8 while checks are pending.
+  if grep -q '"pending"' "$dir/checks" 2>/dev/null; then exit 8; fi
   exit 0;;
 "pr update-branch")
   exit 0;;
@@ -307,6 +317,13 @@ func (g *GitHub) SetAccess(protected, admin bool) {
 	g.write("repository", map[string]any{"default_branch": "main", "permissions": map[string]bool{"admin": admin}})
 }
 
+// SetRepository sets what the repository's API answer holds, such as its
+// merge settings.
+func (g *GitHub) SetRepository(fields map[string]any) {
+	g.t.Helper()
+	g.write("repository", fields)
+}
+
 // Fail makes every gh call fail with this error text.
 func (g *GitHub) Fail(message string) {
 	g.t.Helper()
@@ -371,7 +388,13 @@ func (g *GitHub) SetChecks(checks []map[string]string) {
 	g.write("checks", checks)
 }
 
-// Merged returns the PRs that agents merged.
+// SetNoChecks makes gh pr checks say no checks were reported.
+func (g *GitHub) SetNoChecks() {
+	g.t.Helper()
+	g.writeText("checks", "none")
+}
+
+// Merged returns the PRs that were merged.
 func (g *GitHub) Merged() []string { return lines(g.read("merged")) }
 
 // PRComments returns the comments agents posted with gh pr comment.

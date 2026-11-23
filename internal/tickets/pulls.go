@@ -48,9 +48,53 @@ func (s *Store) SetPRState(ctx context.Context, listed Ticket, number int, state
 		if state == PRMerged {
 			merged = stamp(at)
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=?,pr_state=?,pr_state_at=?,merged_at=COALESCE(?,merged_at),updated_at=? WHERE id=?`,
+		_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=?,pr_state=?,pr_state_at=?,merged_at=COALESCE(?,merged_at),shipping=NULL,updated_at=? WHERE id=?`,
 			StateDone, number, state, stamp(at), merged, stamp(s.now()), ticketID)
 		return err
+	})
+}
+
+// Shipped is what one look at a job's waiting pull request changed.
+type Shipped struct {
+	// Shipping is what to keep for the next look, or empty when the wait is
+	// over.
+	Shipping string
+	// Merged ends the job done, with its pull request merged at At.
+	Merged bool
+	// Failed ends the job failed, because a check failed.
+	Failed bool
+	At     time.Time
+	// Message, when set, tells the person what happened.
+	Message string
+}
+
+// SetShipping records a look at the pull request of a job that waits for its
+// checks. listed is the job as TicketsWithOpenPRs returned it. A job that has
+// changed since, such as one that ran again meanwhile, is left alone, as in
+// SetPRState.
+func (s *Store) SetShipping(ctx context.Context, listed Ticket, shipped Shipped) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		ticket, err := loadTicket(ctx, tx, listed.ID)
+		if err != nil || ticket.State != StatePRReady || ticket.Shipping == "" || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
+			return err
+		}
+		now := s.now()
+		switch {
+		case shipped.Merged:
+			_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=?,pr_state_at=?,merged_at=COALESCE(merged_at,?),shipping=NULL,updated_at=? WHERE id=?`,
+				StateDone, PRMerged, stamp(shipped.At), stamp(shipped.At), stamp(now), ticket.ID)
+		case shipped.Failed:
+			_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,updated_at=? WHERE id=?`, StateFailed, stamp(now), ticket.ID)
+		default:
+			if shipped.Shipping == ticket.Shipping {
+				return nil
+			}
+			_, err = tx.ExecContext(ctx, `UPDATE tickets SET shipping=?,updated_at=? WHERE id=?`, nullableString(shipped.Shipping), stamp(now), ticket.ID)
+		}
+		if err != nil || shipped.Message == "" {
+			return err
+		}
+		return insertMessage(ctx, tx, ticket, ticket.PRNumber, shipped.Message, nil, now)
 	})
 }
 

@@ -363,3 +363,21 @@ func TestARunWithoutAPatchOrWithOneTooLargeCarriesNone(t *testing.T) {
 		}
 	}
 }
+
+// The merge step hands the pull request to the control plane in ship.json, so
+// the run ends without waiting on CI.
+func TestARunCarriesThePullRequestTheMergeStepHandedOver(t *testing.T) {
+	result, _ := run(t, stepsRequest(Step{Name: "merge", Run: `printf '{"verdict":"accepted"}' > "$MACHINIST_DIR/ship.json"`}))
+	if result.State != StateSucceeded || result.Ship == nil || *result.Ship != (protocol.Ship{Verdict: "accepted"}) {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, script := range []string{
+		"true",
+		`printf 'not json' > "$MACHINIST_DIR/ship.json"`,
+		`printf '{"verdict":"accepted"}' > "$MACHINIST_DIR/ship.json"; exit 1`,
+	} {
+		if result, _ := run(t, stepsRequest(Step{Name: "merge", Run: script})); result.Ship != nil {
+			t.Fatalf("%s: ship = %+v", script, result.Ship)
+		}
+	}
+}

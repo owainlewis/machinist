@@ -60,6 +60,9 @@ type RunResult struct {
 	// Patch is the change a step saved in protocol.PatchFile, because it
 	// could not push it.
 	Patch []byte `json:",omitempty"`
+	// Ship is what the merge step left in protocol.ShipFile, for the control
+	// plane to see the pull request through its checks.
+	Ship *protocol.Ship `json:",omitempty"`
 }
 
 // ValidRunID reports whether value has the form run_ and 24 hex characters.
