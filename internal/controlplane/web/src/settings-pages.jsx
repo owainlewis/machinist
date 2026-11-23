@@ -6,7 +6,7 @@ import { AgentBadges } from "./agent-badge.jsx";
 import { agentSummary, harnessLabel } from "./agents.js";
 import { relativeTime } from "./display.jsx";
 import { HarnessMark } from "./harness-mark.jsx";
-import { dayLabel, githubLine, pollLabel, roleLabel, tokenLine } from "./settings.js";
+import { dayLabel, factoryUpdateLine, githubLine, pollLabel, roleLabel, tokenLine } from "./settings.js";
 import { sentence } from "./setup-page.jsx";
 
 // useResource loads what a page shows from one or more API routes.
@@ -221,9 +221,20 @@ function TokenRow({ token, busy, confirming, onAsk, onCancel, onRevoke }) {
 export function PresetsPage({ onSignedOut }) {
   const { data, error } = useResource(["/api/v1/presets", "/api/v1/agents"], onSignedOut);
   const [presets, agents] = data || [];
+  const updates = presets?.updates || [];
   return <>
     <Head title="Presets and agents" sub={data && `${presets.presets.length} ${presets.presets.length === 1 ? "preset" : "presets"} and ${agents.agents.length} ${agents.agents.length === 1 ? "agent" : "agents"}.`} />
     <p className="page-note">These come from <code>factory/presets</code> and <code>factory/agents</code>. Change them in git and restart the control plane.</p>
+    {updates.length > 0 && <div className="page-warning factory-warning" role="status">
+      <p><strong>{factoryUpdateLine(updates)}</strong> Run <code>machinist factory upgrade</code> and restart the control plane.</p>
+      <ul className="factory-warning-files">
+        {updates.map(file => <li key={file.path}>
+          <code>{file.path}</code>
+          {file.status === "edited" && " (edited locally)"}
+          {file.status === "missing" && " (missing)"}
+        </li>)}
+      </ul>
+    </div>}
     <Status data={data} error={error} label="Loading presets" />
     {data && <>
       <section className="settings-section" aria-labelledby="presets-title">

@@ -284,3 +284,26 @@ func TestHumanReviewsLeaveOutBotsAndStartAtTheFirstPerson(t *testing.T) {
 		t.Fatalf("no reviews: %+v, err = %v", reviews, err)
 	}
 }
+
+func TestNewLogsFactoryWarningWhenOutdated(t *testing.T) {
+	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	loaded := testFactory()
+	loaded.Updates = []factory.FileUpdate{
+		{Path: "presets/default.yaml", Status: factory.FileOutdated},
+		{Path: "scripts/publish.sh", Status: factory.FileEdited},
+	}
+	var log bytes.Buffer
+	if _, err := New(testConfig(), store, loaded, "v1.2.3", &log); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"machinist: warning:", "presets/default.yaml", "scripts/publish.sh (edited)", "machinist factory upgrade"} {
+		if !strings.Contains(log.String(), want) {
+			t.Fatalf("log missing %q: %q", want, log.String())
+		}
+	}
+}

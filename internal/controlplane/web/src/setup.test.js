@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { missingSteps, repoName, setupLine, shouldOpenSetup } from "./setup.js";
+import { factoryUpdates, missingSteps, repoName, settingsNeedAttention, setupLine, shouldOpenSetup } from "./setup.js";
 
 const checks = (...states) => ({ checks: states.map(([name, ok, required = true]) => ({ name, ok, required })) });
 
@@ -24,4 +24,12 @@ test("a new install opens on setup, but a deep link stays where it points", () =
   assert.equal(shouldOpenSetup(unready, "#/dashboard"), true);
   assert.equal(shouldOpenSetup(unready, "#/jobs/t_1"), false);
   assert.equal(shouldOpenSetup(checks(["Runner", true]), ""), false);
+});
+
+test("out-of-date factory files mark Settings as needing attention without hijacking the start page", () => {
+  const ready = { ...checks(["Runner", true]), factory_updates: [{ path: "scripts/publish.sh", status: "outdated" }] };
+  assert.equal(factoryUpdates(ready).length, 1);
+  assert.equal(settingsNeedAttention(ready), true);
+  assert.equal(shouldOpenSetup(ready, "#/dashboard"), false);
+  assert.equal(settingsNeedAttention(checks(["Runner", true])), false);
 });

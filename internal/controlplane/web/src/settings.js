@@ -17,6 +17,7 @@ const checkLinks = {
   Projects: ["#/settings/projects", "Open Projects settings"],
   Linear: ["#/settings/linear", "Open Linear settings"],
   Agents: ["#/settings/presets", "Open Agents settings"],
+  Factory: ["#/settings/presets", "Open Presets and agents"],
   Runner: ["#/runners", "Open Runners"],
 };
 export function checkLink(name) {
@@ -69,4 +70,12 @@ export function githubLine(settings) {
   const count = githubWarnings(settings);
   if (!count) return how;
   return `${how} ${count} ${count === 1 ? "repository needs" : "repositories need"} a look.`;
+}
+
+// factoryUpdateLine says how many shipped factory files are out of date.
+export function factoryUpdateLine(updates = []) {
+  if (!updates.length) return "";
+  return updates.length === 1
+    ? "1 factory file is out of date."
+    : `${updates.length} factory files are out of date.`;
 }
