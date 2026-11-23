@@ -128,6 +128,22 @@ func TestAHandedOverPullRequestStaysOpenWhenAutoMergeIsOff(t *testing.T) {
 	}
 }
 
+// Turning github.auto_merge off and restarting stops an in-flight pull request
+// from merging once its checks pass.
+func TestTurningAutoMergeOffStopsAnInFlightPullRequestFromMerging(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted})
+	e.AutoMerge = false
+	pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+	checkPRs(t, e)
+	got := ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StatePRReady || got.Shipping != "" || len(pull.merged) != 0 {
+		t.Fatalf("ticket = %+v, merged %v", got, pull.merged)
+	}
+	if message := lastMessage(t, e, ticket.ID); message != "Left open: auto-merge is off. https://github.com/owner/repo/pull/42" {
+		t.Fatalf("message = %q", message)
+	}
+}
+
 func TestAPullRequestNotHandedOverIsOnlyWatched(t *testing.T) {
 	e, pull, ticket := handedOver(t, true, nil)
 	pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}

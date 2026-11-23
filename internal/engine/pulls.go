@@ -134,7 +134,15 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d: stopped waiting for checks: %v\n", ticket.ID, number, err)
 		return e.Store.SetShipping(ctx, ticket, tickets.Shipped{})
 	}
-	look, err := ship.LookOnce(ctx, e.PullRequests(ticket.Repo, number), watch, e.now())
+	watchForLook := watch
+	autoMergeTurnedOff := !e.AutoMerge && watchForLook.Hold == ""
+	if autoMergeTurnedOff {
+		// Re-check github.auto_merge on every look so turning it off and
+		// restarting the control plane stops in-flight pull requests from
+		// merging, while still failing the job if a check fails.
+		watchForLook.Hold = "auto-merge is off"
+	}
+	look, err := ship.LookOnce(ctx, e.PullRequests(ticket.Repo, number), watchForLook, e.now())
 	if err != nil {
 		return err
 	}
@@ -147,11 +155,18 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		// A person merged or closed it, which the next look records.
 		return nil
 	case ship.Waiting:
+		if autoMergeTurnedOff {
+			look.Watch.Hold = watch.Hold
+		}
 		body, err := json.Marshal(look.Watch)
 		if err != nil {
 			return err
 		}
 		shipped.Shipping = string(body)
+	case ship.LeftOpen:
+		if autoMergeTurnedOff && shipped.Message == "" {
+			shipped.Message = fmt.Sprintf("Left open: auto-merge is off. https://github.com/%s/pull/%d", ticket.Repo, number)
+		}
 	case ship.Merged:
 		shipped.Merged = true
 	case ship.CheckFailed:
