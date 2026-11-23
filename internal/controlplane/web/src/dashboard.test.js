@@ -261,6 +261,7 @@ test("Dashboard tabs show Overview, Models (with By step & cost_unknown), Spendi
   // Toggle "By step" and filter to "review".
   await act(async () => [...document.querySelectorAll(".dashboard-toggle button")].find(b => b.textContent === "By step").click());
   await eventually(() => assert.equal(document.querySelectorAll("#panel-models tbody tr").length, 3));
+  assert.ok(document.querySelector("#panel-models thead th.model-name-col")?.textContent === "Harness & model");
   await act(async () => [...document.querySelectorAll(".model-step-filters button")].find(b => b.textContent === "review").click());
   await eventually(() => assert.equal(document.querySelectorAll("#panel-models tbody tr").length, 1));
   assert.match(document.querySelector("#panel-models tbody tr").textContent, /review.*gemini-4-neon-high/);
@@ -274,8 +275,8 @@ test("Dashboard tabs show Overview, Models (with By step & cost_unknown), Spendi
   assert.match(spendText, /Cost per merged PR.*\$2\.00\+/);
   assert.ok(document.querySelector('[aria-labelledby="spend-chart"]'));
   assert.ok(document.querySelector('[aria-labelledby="spend-models-table"]'));
-  assert.ok(document.querySelector('[aria-labelledby="spend-repos-table"]'));
-  assert.ok(document.querySelector('[aria-labelledby="spend-presets-table"]'));
+  assert.ok(document.querySelector('[aria-labelledby="spend-repos-table"]')?.classList.contains("spend-group-table"));
+  assert.ok(document.querySelector('[aria-labelledby="spend-presets-table"]')?.classList.contains("spend-group-table"));
 
   // Hovering the last column of Daily spend shows reported spend + unreported runs.
   const spendCols = document.querySelectorAll('[aria-labelledby="spend-chart"] .chart-column');

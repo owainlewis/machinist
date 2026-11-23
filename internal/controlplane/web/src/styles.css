@@ -370,7 +370,7 @@ a.source:hover span { text-decoration: underline; }
 .table-scroll { overflow-x: auto; }
 .model-table table { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
 .model-table th, .model-table td { padding: 9px 10px; text-align: right; white-space: nowrap; vertical-align: middle; }
-.model-table th:first-child, .model-table td.model-step-cell, .model-table tbody th { text-align: left; }
+.model-table th:first-child, .model-table th.model-name-col, .model-table td.model-step-cell, .model-table tbody th { text-align: left; }
 .model-table th:first-child, .model-table td:first-child { padding-left: 0; }
 .model-table thead th { color: var(--faint); font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--border); }
 .model-table tbody tr + tr > * { border-top: 1px solid var(--border); }
@@ -464,7 +464,7 @@ a.source:hover span { text-decoration: underline; }
   .job-facts { gap: 8px 20px; }
   .step-row { grid-template-columns: auto minmax(0, 1fr) auto auto; }
   .step-error, .step-spend { display: none; }
-  .group-table th:nth-child(3), .group-table td:nth-child(3), .group-table th:nth-child(4), .group-table td:nth-child(4) { display: none; }
+  .group-table:not(.spend-group-table) th:nth-child(3), .group-table:not(.spend-group-table) td:nth-child(3), .group-table:not(.spend-group-table) th:nth-child(4), .group-table:not(.spend-group-table) td:nth-child(4) { display: none; }
   .rate-track { display: none; }
   /* The last date label is centred on a narrow column, so it needs room past the plot's edge. */
   .chart-body, .chart-dates { padding-right: 20px; }

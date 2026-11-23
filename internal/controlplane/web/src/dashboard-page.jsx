@@ -274,7 +274,7 @@ function ModelsTab({ current }) {
         <thead>
           <tr>
             {byStep && <th scope="col">Step</th>}
-            <th scope="col">Harness &amp; model</th>
+            <th scope="col" className="model-name-col">Harness &amp; model</th>
             <th scope="col">Runs / steps</th>
             <th scope="col">Pass rate</th>
             <th scope="col">Merge rate</th>
@@ -312,7 +312,7 @@ function ModelsTab({ current }) {
 
 function SpendGroupTable({ id, title, groups = [] }) {
   const sorted = sortBySpend(groups);
-  return <section className="panel group-table" aria-labelledby={id}>
+  return <section className="panel group-table spend-group-table" aria-labelledby={id}>
     <h2 id={id} className="chart-title">{title}</h2>
     {sorted.length ? <div className="table-scroll">
       <table>
