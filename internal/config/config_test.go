@@ -198,11 +198,20 @@ func TestLinearNeedsATokenAndATrigger(t *testing.T) {
 	t.Setenv(LinearTokenEnv, "")
 	t.Setenv(LinearClientIDEnv, "")
 	t.Setenv(LinearClientSecretEnv, "")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), LinearTokenEnv) || !strings.Contains(err.Error(), LinearClientIDEnv) {
+	// Only the control plane signs in to Linear, so loading the file does not
+	// need the credentials; CheckCredentials asks for them.
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("no token: error = %v", err)
+	}
+	if err := loaded.Linear.CheckCredentials(); err == nil || !strings.Contains(err.Error(), LinearTokenEnv) || !strings.Contains(err.Error(), LinearClientIDEnv) {
 		t.Fatalf("no token: error = %v", err)
 	}
 	t.Setenv(LinearTokenEnv, " lin_oauth_token ")
-	loaded, err := LoadConfig(path)
+	loaded, err = LoadConfig(path)
+	if err == nil {
+		err = loaded.Linear.CheckCredentials()
+	}
 	if err != nil || loaded.Linear.Token != "lin_oauth_token" || loaded.Linear.MaxJobsPerHour != 20 || loaded.Linear.Poll != time.Minute {
 		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
 	}
@@ -236,11 +245,30 @@ func TestLinearClientCredentialsComeFromTheEnvironment(t *testing.T) {
 	t.Setenv(LinearTokenEnv, "")
 	t.Setenv(LinearClientIDEnv, " client-id ")
 	t.Setenv(LinearClientSecretEnv, "")
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "set both") {
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Linear.CheckCredentials(); err == nil || !strings.Contains(err.Error(), "set both") {
 		t.Fatalf("no secret: error = %v", err)
 	}
+	// A secret without an ID is as incomplete, even with a fixed token set.
+	t.Setenv(LinearClientIDEnv, "")
+	t.Setenv(LinearClientSecretEnv, "client-secret")
+	t.Setenv(LinearTokenEnv, "lin_oauth_token")
+	if loaded, err = LoadConfig(path); err == nil {
+		err = loaded.Linear.CheckCredentials()
+	}
+	if err == nil || !strings.Contains(err.Error(), "set both") {
+		t.Fatalf("no ID: error = %v", err)
+	}
+	t.Setenv(LinearTokenEnv, "")
+	t.Setenv(LinearClientIDEnv, " client-id ")
 	t.Setenv(LinearClientSecretEnv, " client-secret ")
-	loaded, err := LoadConfig(path)
+	loaded, err = LoadConfig(path)
+	if err == nil {
+		err = loaded.Linear.CheckCredentials()
+	}
 	if err != nil || loaded.Linear.ClientID != "client-id" || loaded.Linear.ClientSecret != "client-secret" || !loaded.Linear.UsesClientCredentials() {
 		t.Fatalf("linear = %+v, err = %v", loaded.Linear, err)
 	}
