@@ -815,9 +815,6 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 				return err
 			}
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO human_touches(ticket_id,kind,author,at) VALUES(?,?,?,?)`, ticketID, kind, by, stamp(now)); err != nil {
-			return err
-		}
 		// The new run's pull request is followed afresh, and its tracker is told
 		// again that it started and how it ends. A pull request that merged or
 		// closed is finished with, so the new run opens and counts its own. An
@@ -829,11 +826,19 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=NULL,merged_at=NULL,pr_opened_at=NULL,first_review_at=NULL,human_reviews=NULL WHERE id=?`, ticketID); err != nil {
 				return err
 			}
+			// Drop touches from the finished pull request so the next pull
+			// request starts with its own count, just like reviews.
+			if _, err = tx.ExecContext(ctx, `DELETE FROM human_touches WHERE ticket_id=?`, ticketID); err != nil {
+				return err
+			}
 			// The tracker was told about the old pull request; it is told about
 			// the new one too.
 			if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind=?`, ticketID, ReportPR); err != nil {
 				return err
 			}
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO human_touches(ticket_id,kind,author,at) VALUES(?,?,?,?)`, ticketID, kind, by, stamp(now)); err != nil {
+			return err
 		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed, ReportFinished); err != nil {
 			return err

@@ -180,13 +180,35 @@ func TestStatsMeasureTheWayToMergeAndThePeopleItNeeded(t *testing.T) {
 	}
 
 	// Running the merged job again starts a new pull request, so the old one's
-	// times no longer count.
+	// times and touches no longer count.
 	at = clock(15, 0)
 	if _, err := store.Rerun(ctx, merged.ID, "alice"); err != nil {
 		t.Fatal(err)
 	}
 	if stats, err = store.Stats(ctx, 7); err != nil || stats.PRs.Opened != 1 || stats.Cycle.Merged != 0 || stats.Touches.PerPR != nil || stats.Cycle.ToMerge.Median != nil {
 		t.Fatalf("stats = %+v, err = %v", stats, err)
+	}
+	// When the rerun's new pull request merges, only the new generation's
+	// touches count — the previous PR's reply is not inherited.
+	opened2 := clock(15, 10)
+	at = clock(15, 15)
+	runTo(t, store, merged, Transition{State: StatePRReady, PRNumber: 9, PROpenedAt: &opened2})
+	listed, err = store.TicketsWithOpenPRs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rerunTicket Ticket
+	for _, item := range listed {
+		if item.ID == merged.ID {
+			rerunTicket = item
+		}
+	}
+	at = clock(16, 0)
+	if err := store.SetPRState(ctx, rerunTicket, PRUpdate{Number: 9, State: PRMerged, At: clock(16, 0), OpenedAt: opened2, Reviews: &Reviews{}}); err != nil {
+		t.Fatal(err)
+	}
+	if stats, err = store.Stats(ctx, 7); err != nil || stats.Touches.Replies != 0 || stats.Touches.Reruns != 1 || stats.Touches.Reviews != 0 || stats.Touches.PerPR == nil || *stats.Touches.PerPR != 1 {
+		t.Fatalf("touches after rerun merge = %+v, err = %v", stats.Touches, err)
 	}
 }
 
