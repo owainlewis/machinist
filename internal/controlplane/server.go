@@ -122,6 +122,9 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if app != nil {
 		server.app = app
 	}
+	if warning := factory.WarningLine(loaded.Updates); warning != "" {
+		fmt.Fprintf(log, "machinist: warning: %s\n", warning)
+	}
 	return server, nil
 }
 

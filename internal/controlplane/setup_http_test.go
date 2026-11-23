@@ -159,3 +159,54 @@ func TestSetupFlagsAPresetNoOnlineRunnerCanRun(t *testing.T) {
 		t.Fatalf("agents = %+v", check(setup, "Agents"))
 	}
 }
+
+func TestSetupAndPresetsReportOutdatedFactoryFiles(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	// Up-to-date factory reports no Factory check and no updates.
+	_, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil)
+	if !setup.Ready || check(setup, "Factory").Name != "" || len(setup.FactoryUpdates) != 0 {
+		t.Fatalf("setup = %+v", setup)
+	}
+	_, presetsRaw := f.call(t, http.MethodGet, "/api/v1/presets", f.token, nil)
+	if strings.Contains(string(presetsRaw), "updates") {
+		t.Fatalf("unexpected updates in presets: %s", presetsRaw)
+	}
+
+	// Outdated, edited and missing files warn without marking setup unready.
+	f.server.factory.Updates = []factory.FileUpdate{
+		{Path: "agents/publish.md", Status: factory.FileEdited},
+		{Path: "scripts/publish.sh", Status: factory.FileOutdated},
+		{Path: "scripts/revise.sh", Status: factory.FileMissing},
+	}
+	_, setup = f.setup(t, http.MethodGet, "/api/v1/setup", nil)
+	factoryCheck := check(setup, "Factory")
+	if !setup.Ready || factoryCheck.OK || factoryCheck.Required || !factoryCheck.Warning {
+		t.Fatalf("setup = %+v, factoryCheck = %+v", setup, factoryCheck)
+	}
+	for _, want := range []string{"3 factory files are out of date", "agents/publish.md (edited)", "scripts/publish.sh", "scripts/revise.sh (missing)"} {
+		if !strings.Contains(factoryCheck.Detail, want) {
+			t.Fatalf("detail = %q, want %q", factoryCheck.Detail, want)
+		}
+	}
+	if !strings.Contains(factoryCheck.Fix, "machinist factory upgrade") {
+		t.Fatalf("fix = %q", factoryCheck.Fix)
+	}
+	if len(setup.FactoryUpdates) != 3 {
+		t.Fatalf("factory_updates = %+v", setup.FactoryUpdates)
+	}
+
+	_, presetsRaw = f.call(t, http.MethodGet, "/api/v1/presets", f.token, nil)
+	var presetsBody struct {
+		Updates []factory.FileUpdate `json:"updates"`
+	}
+	if err := json.Unmarshal(presetsRaw, &presetsBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(presetsBody.Updates) != 3 || presetsBody.Updates[0].Path != "agents/publish.md" || presetsBody.Updates[1].Path != "scripts/publish.sh" || presetsBody.Updates[2].Path != "scripts/revise.sh" {
+		t.Fatalf("presets updates = %+v", presetsBody.Updates)
+	}
+}

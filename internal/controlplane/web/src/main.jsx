@@ -12,7 +12,7 @@ import { JobPage } from "./job-page.jsx";
 import { JobsPage } from "./jobs-page.jsx";
 import { NewJobPage } from "./new-job-page.jsx";
 import { RunnersPage } from "./runners.jsx";
-import { missingSteps, shouldOpenSetup } from "./setup.js";
+import { settingsNeedAttention, shouldOpenSetup } from "./setup.js";
 import { SettingsPage } from "./settings-page.jsx";
 import { SignIn } from "./sign-in.jsx";
 import "./styles.css";
@@ -112,7 +112,7 @@ function App() {
     <aside className="app-sidebar">
       <Brand />
       <nav className="primary-nav" aria-label="Primary">
-        {navigation.map(([page, Icon, label]) => <a key={page} href={page === "settings" ? settingsHref("overview") : `#/${page}`} aria-current={active === page ? "page" : undefined} className={cn("nav-item", active === page && "nav-item-active")}><Icon aria-hidden="true" /><span>{label}</span>{page === "settings" && missingSteps(setup).length > 0 && <span className="nav-dot" aria-label="Settings need attention" />}</a>)}
+        {navigation.map(([page, Icon, label]) => <a key={page} href={page === "settings" ? settingsHref("overview") : `#/${page}`} aria-current={active === page ? "page" : undefined} className={cn("nav-item", active === page && "nav-item-active")}><Icon aria-hidden="true" /><span>{label}</span>{page === "settings" && settingsNeedAttention(setup) && <span className="nav-dot" aria-label="Settings need attention" />}</a>)}
       </nav>
       <div className="sidebar-foot">
         <button type="button" className="nav-item" onClick={signOut} aria-label="Sign out"><LogOut aria-hidden="true" /><span>Sign out</span></button>

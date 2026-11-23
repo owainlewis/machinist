@@ -299,5 +299,9 @@ func presetViews(loaded *factory.Factory) []presetView {
 }
 
 func (s *Server) listPresets(w http.ResponseWriter, _ *http.Request, _ string) {
-	writeJSON(w, http.StatusOK, map[string]any{"presets": s.presets, "default": s.config.Server.DefaultPreset})
+	body := map[string]any{"presets": s.presets, "default": s.config.Server.DefaultPreset}
+	if s.factory != nil && len(s.factory.Updates) > 0 {
+		body["updates"] = s.factory.Updates
+	}
+	writeJSON(w, http.StatusOK, body)
 }

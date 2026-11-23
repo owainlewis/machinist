@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkLink, dayLabel, githubLine, githubWarnings, pollLabel, roleLabel, settingsPages, tokenLine } from "./settings.js";
+import { checkLink, dayLabel, factoryUpdateLine, githubLine, githubWarnings, pollLabel, roleLabel, settingsPages, tokenLine } from "./settings.js";
 
 test("the side nav lists one page per topic, overview first", () => {
   assert.deepEqual(settingsPages.map(([page]) => page), ["overview", "projects", "github", "linear", "tokens", "presets"]);
@@ -10,6 +10,7 @@ test("a setup check links to the page that holds more about it", () => {
   assert.deepEqual(checkLink("GitHub"), ["#/settings/github", "Open GitHub settings"]);
   assert.deepEqual(checkLink("Projects"), ["#/settings/projects", "Open Projects settings"]);
   assert.deepEqual(checkLink("Agents"), ["#/settings/presets", "Open Agents settings"]);
+  assert.deepEqual(checkLink("Factory"), ["#/settings/presets", "Open Presets and agents"]);
   assert.deepEqual(checkLink("Runner"), ["#/runners", "Open Runners"], "runners have a page of their own");
   assert.deepEqual(checkLink("Unknown"), ["", ""]);
 });
@@ -39,4 +40,10 @@ test("a repository with a warning or a problem counts once", () => {
 test("the GitHub page says how runs reach GitHub", () => {
   assert.equal(githubLine({ repositories: [] }), "Runs use each runner's own GH_TOKEN.");
   assert.equal(githubLine({ app: { id: 1 }, repositories: [{ warnings: ["x"] }] }), "Runs use short-lived tokens from the GitHub App. 1 repository needs a look.");
+});
+
+test("factory updates read as a sentence", () => {
+  assert.equal(factoryUpdateLine([]), "");
+  assert.equal(factoryUpdateLine([{ path: "scripts/publish.sh", status: "outdated" }]), "1 factory file is out of date.");
+  assert.equal(factoryUpdateLine([{ path: "a", status: "outdated" }, { path: "b", status: "missing" }]), "2 factory files are out of date.");
 });

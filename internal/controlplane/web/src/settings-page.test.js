@@ -17,13 +17,28 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   let runner = false;
   let linear = false;
   let signedIn = true;
+  let factoryUpdates = [];
   const added = [];
   const revoked = [];
   const setup = () => ({
     ready: projects.length > 0,
-    checks: [check("GitHub", true), check("Runner", runner), check("Projects", projects.length > 0), check("Linear", false, false)],
+    checks: [
+      check("GitHub", true),
+      check("Runner", runner),
+      check("Projects", projects.length > 0),
+      check("Linear", false, false),
+      ...(factoryUpdates.length ? [{
+        name: "Factory",
+        ok: false,
+        required: false,
+        warning: true,
+        detail: `${factoryUpdates.length} factory files are out of date: ${factoryUpdates.map(file => file.path).join(", ")}.`,
+        fix: "Run machinist factory upgrade and restart the control plane.",
+      }] : []),
+    ],
     projects,
     install_url: "https://github.com/apps/machinistagent/installations/new",
+    ...(factoryUpdates.length ? { factory_updates: factoryUpdates } : {}),
   });
   const now = new Date().toISOString();
   let tokens = [
@@ -62,7 +77,7 @@ test("Settings: a new install opens on the overview, each page has a route, and 
       tokens = tokens.map(token => token.name === name ? { ...token, revoked_at: now } : token);
       return reply(200, { tokens });
     }
-    if (url === "/api/v1/presets") return reply(200, { default: "default", presets: [{ name: "default", description: "Implement and open a pull request.", steps: [{ name: "checkout", agents: [] }, { name: "implement", agents: [{ name: "implement", harness: "claude", model: "opus" }] }] }] });
+    if (url === "/api/v1/presets") return reply(200, { default: "default", presets: [{ name: "default", description: "Implement and open a pull request.", steps: [{ name: "checkout", agents: [] }, { name: "implement", agents: [{ name: "implement", harness: "claude", model: "opus" }] }] }], ...(factoryUpdates.length ? { updates: factoryUpdates } : {}) });
     if (url === "/api/v1/agents") return reply(200, { agents: [{ name: "implement", harness: "claude", model: "opus", presets: ["default"] }, { name: "review", harness: "codex", presets: [] }] });
     if (url === "/api/v1/tickets") return reply(200, { tickets: [] });
     if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
@@ -162,7 +177,7 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   assert.equal(document.querySelector('[aria-labelledby="teams-title"] .list'), null);
   assert.match(document.querySelector('[aria-labelledby="teams-title"] .empty').textContent, /No teams are mapped/);
 
-  // Presets and agents: read only.
+  // Presets and agents: read only, and shows out-of-date factory warnings when present.
   await go("#/settings/presets");
   await eventually(() => assert.equal(heading(), "Presets and agents"));
   assert.equal(marked(), "Presets and agents");
@@ -170,6 +185,30 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   assert.match(document.querySelector(".agent-row").textContent, /Claude Code.*opus.*default/);
   assert.match(document.querySelectorAll(".agent-row")[1].textContent, /Codex default.*No preset/);
   assert.equal(document.querySelector(".settings-body button"), null, "nothing here changes the factory");
+  assert.equal(document.querySelector(".factory-warning"), null, "no factory warning when up to date");
+
+  // Outdated factory files warn on Settings overview and on Presets and agents.
+  factoryUpdates = [
+    { path: "agents/publish.md", status: "edited" },
+    { path: "scripts/publish.sh", status: "outdated" },
+    { path: "scripts/revise.sh", status: "missing" },
+  ];
+  await go("#/settings/overview");
+  await eventually(() => assert.equal(heading(), "Overview"));
+  await eventually(() => assert.match(document.querySelector(".setup-checks")?.textContent || "", /Out of dateFactory/));
+  assert.match(document.querySelector(".setup-checks").textContent, /machinist factory upgrade/);
+  assert.ok(document.querySelector('a[aria-label="Open Presets and agents"][href="#/settings/presets"]'));
+  assert.ok(document.querySelector('[aria-label="Factory files are out of date"]'));
+  await go("#/settings/presets");
+  await eventually(() => assert.equal(heading(), "Presets and agents"));
+  await eventually(() => assert.ok(document.querySelector(".factory-warning")));
+  const warningText = document.querySelector(".factory-warning").textContent;
+  assert.match(warningText, /3 factory files are out of date/);
+  assert.match(warningText, /machinist factory upgrade/);
+  assert.match(warningText, /agents\/publish\.md \(edited locally\)/);
+  assert.match(warningText, /scripts\/publish\.sh/);
+  assert.match(warningText, /scripts\/revise\.sh \(missing\)/);
+  factoryUpdates = [];
 
   // Tokens: list, then revoke one, and revoking your own signs you out.
   await go("#/settings/tokens");

@@ -12,6 +12,7 @@ import (
 
 	machinistexamples "github.com/owainlewis/machinist/examples"
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/tickets"
 	"github.com/spf13/cobra"
 )
@@ -107,9 +108,10 @@ func ignoreStateDirectory(directory string, output io.Writer) error {
 	return nil
 }
 
-// installFactory copies the starter factory without replacing the team's files.
+// installFactory copies the starter factory without replacing the team's files
+// and records the shipped file hashes in factory/manifest.yaml.
 func installFactory(directory string, output io.Writer) error {
-	return fs.WalkDir(machinistexamples.Files, starterFactory, func(path string, entry fs.DirEntry, err error) error {
+	if err := fs.WalkDir(machinistexamples.Files, starterFactory, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -128,7 +130,17 @@ func installFactory(directory string, output io.Writer) error {
 			return os.Chmod(filepath.Join(directory, filepath.FromSlash(path)), 0o700)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	written, err := factory.InitManifest(filepath.Join(directory, starterFactory))
+	if err != nil {
+		return err
+	}
+	if written {
+		fmt.Fprintf(output, "created %s/%s\n", starterFactory, factory.ManifestName)
+	}
+	return nil
 }
 
 // installRunnerToken makes the token the local runner starts with. A token named

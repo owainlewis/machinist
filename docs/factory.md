@@ -11,10 +11,26 @@ factory/
   prompts/<name>.md         text every agent shares, such as rules.md
   scripts/<name>            shell scripts that steps run
   automations/<name>.md     YAML front matter and a prompt
+  manifest.yaml             hashes of the shipped files as last installed
 ```
 
 Keep what an agent is told in `agents/`, shell in `scripts/`, and presets to a short list
 of steps that call them.
+
+## Upgrading shipped factory files
+
+`machinist init` records the SHA-256 hash of each shipped file in `factory/manifest.yaml`.
+When a newer Machinist binary ships updated factory files, the control plane warns at
+startup and on the Settings page which files are out of date.
+
+Run `machinist factory upgrade` from the configuration directory to apply them:
+
+- Unedited files that match an older shipped hash are updated in place.
+- Missing shipped files are created.
+- Files your team has edited are never overwritten; Machinist prints a diff against the
+  shipped version instead. Pass `--force` to overwrite edited files with the shipped copies.
+
+Commit the updated files and `factory/manifest.yaml`, then restart the control plane.
 
 ## Presets
 

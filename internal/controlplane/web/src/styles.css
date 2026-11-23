@@ -119,6 +119,8 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .page-warning { border-radius: 10px; background: var(--warning-soft); padding: 10px 14px; color: var(--warning); font-size: 14px; }
 .page-warning a { color: inherit; }
 .page-warning p + p { margin-top: 4px; }
+.page-warning code { border-radius: 5px; background: color-mix(in srgb, var(--warning) 16%, transparent); padding: 1px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.factory-warning-files { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; }
 .label { color: var(--faint); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .ticket-meta { color: var(--muted-foreground); font-size: 13px; }
 .icon-button { display: grid; width: 34px; height: 34px; flex: none; place-items: center; border-radius: 8px; color: var(--muted-foreground); }

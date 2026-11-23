@@ -11,11 +11,12 @@ const refreshMillis = 10_000;
 export const sentence = text => text.charAt(0).toUpperCase() + text.slice(1).replace(/([^.])$/, "$1.");
 
 function CheckRow({ check }) {
-  const tone = check.ok ? "pill-success" : check.required ? "pill-warning" : "";
+  const tone = check.ok ? "pill-success" : (check.required || check.warning) ? "pill-warning" : "";
   const Icon = check.ok ? Check : CircleAlert;
   const [href, label] = checkLink(check.name);
+  const badge = check.ok ? "Done" : check.required ? "Needed" : check.warning ? "Out of date" : "Optional";
   return <li className="setup-check">
-    <span className={`pill ${tone}`}><Icon className="size-3.5" aria-hidden="true" />{check.ok ? "Done" : check.required ? "Needed" : "Optional"}</span>
+    <span className={`pill ${tone}`}><Icon className="size-3.5" aria-hidden="true" />{badge}</span>
     <div>
       <strong>{check.name}</strong>
       <p className="ticket-meta">{check.detail}</p>

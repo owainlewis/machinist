@@ -25,3 +25,14 @@ export function repoName(text) {
 export function shouldOpenSetup(setup, hash) {
   return missingSteps(setup).length > 0 && ["", "#", "#/", "#/dashboard"].includes(hash);
 }
+
+// factoryUpdates lists shipped factory files that are out of date or missing.
+export function factoryUpdates(setup) {
+  return setup?.factory_updates || [];
+}
+
+// settingsNeedAttention is true when a required setup step is missing or
+// shipped factory files are out of date.
+export function settingsNeedAttention(setup) {
+  return missingSteps(setup).length > 0 || factoryUpdates(setup).length > 0;
+}
