@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/ship"
@@ -96,6 +97,25 @@ func TestAHandedOverPullRequestMergesOnceItsChecksPass(t *testing.T) {
 	}
 	if message := lastMessage(t, e, ticket.ID); message != "Merged: https://github.com/owner/repo/pull/42" {
 		t.Fatalf("message = %q", message)
+	}
+}
+
+// When the control plane auto-merges a PR, any human reviews submitted before
+// the merge are recorded for the dashboard.
+func TestAControlPlaneAutoMergeRecordsHumanReviews(t *testing.T) {
+	e, pull, _ := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted})
+	reviewed := time.Now().UTC().Add(-10 * time.Minute)
+	e.Reviews = func(context.Context, string, int, time.Time) (tickets.Reviews, error) {
+		return tickets.Reviews{Count: 1, First: &reviewed}, nil
+	}
+	pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+	checkPRs(t, e)
+	stats, err := e.Store.Stats(t.Context(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Cycle.Merged != 1 || stats.Cycle.Reviewed != 1 || stats.Touches.Reviews != 1 {
+		t.Fatalf("stats = %+v", stats)
 	}
 }
 

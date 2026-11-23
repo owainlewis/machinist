@@ -109,6 +109,8 @@ type Shipped struct {
 	At     time.Time
 	// Message, when set, tells the person what happened.
 	Message string
+	// Reviews, when set, are the people's reviews of a pull request that merged.
+	Reviews *Reviews
 }
 
 // SetShipping records a look at the pull request of a job that waits for its
@@ -126,6 +128,9 @@ func (s *Store) SetShipping(ctx context.Context, listed Ticket, shipped Shipped)
 		case shipped.Merged:
 			_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=?,pr_state_at=?,merged_at=COALESCE(merged_at,?),shipping=NULL,updated_at=? WHERE id=?`,
 				StateDone, PRMerged, stamp(shipped.At), stamp(shipped.At), stamp(now), ticket.ID)
+			if err == nil {
+				err = setReviews(ctx, tx, ticket.ID, shipped.Reviews)
+			}
 		case shipped.Failed:
 			_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,updated_at=? WHERE id=?`, StateFailed, stamp(now), ticket.ID)
 		default:

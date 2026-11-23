@@ -234,6 +234,13 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		}
 	case ship.Merged:
 		shipped.Merged = true
+		if e.Reviews != nil {
+			if reviews, err := e.Reviews(ctx, ticket.Repo, number, shipped.At); err != nil {
+				fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d: reviews: %v\n", ticket.ID, number, err)
+			} else {
+				shipped.Reviews = &reviews
+			}
+		}
 	case ship.CheckFailed:
 		shipped.Failed = true
 	}
