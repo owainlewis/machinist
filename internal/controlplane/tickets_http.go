@@ -225,7 +225,8 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request, _ string) {
 		}
 		days = parsed
 	}
-	stats, err := s.store.Stats(r.Context(), days)
+	repo := strings.TrimSpace(r.URL.Query().Get("repo"))
+	stats, err := s.store.Stats(r.Context(), days, repo)
 	if err != nil {
 		writeTicketError(w, err)
 		return

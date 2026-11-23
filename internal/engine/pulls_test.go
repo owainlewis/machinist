@@ -159,7 +159,7 @@ func TestAMergedPRRecordsWhenItOpenedAndWhoReviewedIt(t *testing.T) {
 	if len(asked) != 1 || asked[0] != "owner/repo#42" {
 		t.Fatalf("reviews read for %v", asked)
 	}
-	stats, err := e.Store.Stats(t.Context(), 7)
+	stats, err := e.Store.Stats(t.Context(), 7, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestAPRMergedByTheRunRecordsItsReviews(t *testing.T) {
 	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Merged")); err != nil {
 		t.Fatal(err)
 	}
-	stats, err := e.Store.Stats(t.Context(), 7)
+	stats, err := e.Store.Stats(t.Context(), 7, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -306,7 +306,7 @@ func TestStatsRoute(t *testing.T) {
 		t.Fatalf("stats = %+v", stats)
 	}
 	// The dashboard reads these even when nothing has merged yet.
-	for _, field := range []string{`"cycle":{"merged":0,`, `"touches":{"replies":0,`, `"prs":{"opened":0,`, `"steps":[]`, `"steps":{}`} {
+	for _, field := range []string{`"cycle":{"merged":0,`, `"touches":{"replies":0,`, `"prs":{"opened":0,`, `"steps":[]`, `"steps":{}`, `"models":[]`, `"model_steps":[]`, `"month_spend":{`, `"repositories":["owner/repo"]`} {
 		if !strings.Contains(string(body), field) {
 			t.Fatalf("stats lack %s: %s", field, body)
 		}
@@ -318,6 +318,82 @@ func TestStatsRoute(t *testing.T) {
 	}
 	if response, _ := f.call(t, http.MethodGet, "/api/v1/stats", "", nil); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d", response.StatusCode)
+	}
+}
+
+func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
+	f := newFixture(t)
+	f.server.intake.Repositories = []string{"owner/app", "owner/api"}
+	ctx := t.Context()
+
+	assignRepo := func(id, repo string) tickets.Ticket {
+		t.Helper()
+		response, body := f.call(t, http.MethodPost, "/api/v1/tickets", f.token, sources.AssignRequest{RequestID: id, Repo: repo, Title: "T " + id, Body: "Do it"})
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d: %s", response.StatusCode, body)
+		}
+		return decodeTicket(t, body)
+	}
+	complete := func(ticket tickets.Ticket, merged bool, stages ...protocol.StageResult) {
+		t.Helper()
+		if _, err := f.store.QueueRun(ctx, ticket.ID, protocol.StepsHarness); err != nil {
+			t.Fatal(err)
+		}
+		claim, err := f.store.ClaimRun(ctx, "runner-1", []string{protocol.StepsHarness}, time.Now().Add(time.Hour), func(cand tickets.Ticket) bool { return cand.ID == ticket.ID })
+		if err != nil || claim == nil {
+			t.Fatalf("claim = %v, err = %v", claim, err)
+		}
+		tokens, cost := protocol.Totals(stages)
+		now := time.Now().UTC()
+		transition := tickets.Transition{State: tickets.StatePRReady, PRNumber: 1, PROpenedAt: &now}
+		if merged {
+			transition.State = tickets.StateDone
+			transition.MergedAt = &now
+		}
+		if err := f.store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunSucceeded, Tokens: tokens, Cost: cost, Stages: stages}, func(tickets.Ticket, string) tickets.Transition {
+			return transition
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	appTicket := assignRepo("r-app", "owner/app")
+	apiTicket := assignRepo("r-api", "owner/api")
+	tok1, cost1 := int64(10_000), 1.25
+	tok2 := int64(25_000)
+	complete(appTicket, true,
+		protocol.StageResult{Name: "implement", State: tickets.RunSucceeded, DurationMillis: 40_000, Tokens: &tok1, Cost: &cost1, Agents: []protocol.Agent{{Name: "coder", Harness: "claude", Model: "claude-opus-5-5"}}},
+		protocol.StageResult{Name: "review", State: tickets.RunSucceeded, DurationMillis: 20_000, Tokens: &tok2, CostUnknown: true, Agents: []protocol.Agent{{Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}}})
+	tok3, cost3 := int64(5_000), 0.50
+	complete(apiTicket, false,
+		protocol.StageResult{Name: "implement", State: tickets.RunSucceeded, DurationMillis: 15_000, Tokens: &tok3, Cost: &cost3, Agents: []protocol.Agent{{Name: "coder", Harness: "claude", Model: "claude-opus-5-5"}}})
+
+	getStats := func(query string) tickets.Stats {
+		t.Helper()
+		response, body := f.call(t, http.MethodGet, "/api/v1/stats"+query, f.token, nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d: %s", query, response.StatusCode, body)
+		}
+		var stats tickets.Stats
+		if err := json.Unmarshal(body, &stats); err != nil {
+			t.Fatal(err)
+		}
+		return stats
+	}
+
+	all := getStats("?days=7")
+	if all.Jobs.Total != 2 || len(all.Repositories) != 2 || len(all.Models) != 2 || len(all.ModelSteps) != 2 || all.Cost != 1.75 || all.CostUnknown != 1 || all.MonthSpend.Cost != 1.75 || all.CostPerMergedPR == nil || *all.CostPerMergedPR != 1.75 {
+		t.Fatalf("all = %+v", all)
+	}
+
+	app := getStats("?days=7&repo=owner/app")
+	if app.Repo != "owner/app" || len(app.Repositories) != 2 || app.Jobs.Total != 1 || app.Cost != 1.25 || app.CostUnknown != 1 || app.MonthSpend.Cost != 1.25 || app.CostPerMergedPR == nil || *app.CostPerMergedPR != 1.25 || len(app.Models) != 2 {
+		t.Fatalf("app = %+v", app)
+	}
+
+	api := getStats("?days=7&repo=owner/api")
+	if api.Repo != "owner/api" || api.Jobs.Total != 1 || api.Cost != 0.50 || api.CostUnknown != 0 || api.CostPerMergedPR != nil || len(api.Models) != 1 || api.Models[0].Harness != "claude" {
+		t.Fatalf("api = %+v", api)
 	}
 }
 

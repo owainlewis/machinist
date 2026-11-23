@@ -110,7 +110,7 @@ func TestAControlPlaneAutoMergeRecordsHumanReviews(t *testing.T) {
 	}
 	pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
 	checkPRs(t, e)
-	stats, err := e.Store.Stats(t.Context(), 7)
+	stats, err := e.Store.Stats(t.Context(), 7, "")
 	if err != nil {
 		t.Fatal(err)
 	}
