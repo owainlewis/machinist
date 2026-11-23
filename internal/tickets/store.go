@@ -755,6 +755,11 @@ func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comme
 			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=NULL,merged_at=NULL WHERE id=?`, ticketID); err != nil {
 				return err
 			}
+			// The tracker was told about the old pull request; it is told about
+			// the new one too.
+			if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind=?`, ticketID, ReportPR); err != nil {
+				return err
+			}
 		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed, ReportFinished); err != nil {
 			return err
