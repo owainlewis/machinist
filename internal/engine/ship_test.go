@@ -12,22 +12,32 @@ import (
 
 // fakePull is one pull request on GitHub, as the control plane watches it.
 type fakePull struct {
-	pr     ship.PullRequest
-	checks []ship.Check
-	merged []string
-	looks  int
+	pr       ship.PullRequest
+	checks   []ship.Check
+	merged   []string
+	updated  int
+	looks    int
+	onChecks func()
 }
 
 func (f *fakePull) PullRequest(context.Context) (ship.PullRequest, error) {
 	f.looks++
 	return f.pr, nil
 }
-func (f *fakePull) Checks(context.Context) ([]ship.Check, error) { return f.checks, nil }
+func (f *fakePull) Checks(context.Context) ([]ship.Check, error) {
+	if f.onChecks != nil {
+		f.onChecks()
+	}
+	return f.checks, nil
+}
 func (f *fakePull) Merge(_ context.Context, head string) error {
 	f.merged = append(f.merged, head)
 	return nil
 }
-func (f *fakePull) UpdateBranch(context.Context) error { return nil }
+func (f *fakePull) UpdateBranch(context.Context) error {
+	f.updated++
+	return nil
+}
 
 // handedOver runs a ticket whose run hands its pull request, #42, to the
 // control plane, as machinist merge does.
@@ -208,5 +218,61 @@ func TestALookAfterANewPullRequestResultIsKept(t *testing.T) {
 	got := ticketOf(t, e, ticket.ID)
 	if got.PRNumber != 43 || !strings.Contains(got.Shipping, `"old_head":"sha1"`) || !strings.Contains(got.Shipping, `"updates":1`) {
 		t.Fatalf("ticket = %+v", got)
+	}
+}
+
+// A job cancelled or run again while LookOnce is fetching its checks must not
+// merge or update the branch on GitHub.
+func TestAJobStoppedWhileChecksAreFetchedIsNotMergedOrUpdated(t *testing.T) {
+	cases := []struct {
+		name      string
+		mergeStat string
+		stop      func(*Engine, string) error
+		wantState string
+	}{
+		{
+			name:      "cancelled before merge",
+			mergeStat: "CLEAN",
+			stop: func(e *Engine, id string) error {
+				_, err := e.Store.Cancel(context.Background(), id, "alice")
+				return err
+			},
+			wantState: tickets.StateCancelled,
+		},
+		{
+			name:      "rerun before merge",
+			mergeStat: "CLEAN",
+			stop: func(e *Engine, id string) error {
+				_, err := e.Store.Rerun(context.Background(), id, "alice")
+				return err
+			},
+			wantState: tickets.StateWorking,
+		},
+		{
+			name:      "cancelled before update branch",
+			mergeStat: "BEHIND",
+			stop: func(e *Engine, id string) error {
+				_, err := e.Store.Cancel(context.Background(), id, "alice")
+				return err
+			},
+			wantState: tickets.StateCancelled,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+			pull.pr.MergeStateStatus = tc.mergeStat
+			pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+			pull.onChecks = func() {
+				if err := tc.stop(e, ticket.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			checkPRs(t, e)
+			got := ticketOf(t, e, ticket.ID)
+			if got.State != tc.wantState || len(pull.merged) != 0 || pull.updated != 0 {
+				t.Fatalf("ticket = %+v, merged=%v, updated=%d", got, pull.merged, pull.updated)
+			}
+		})
 	}
 }

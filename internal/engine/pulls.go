@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,57 @@ import (
 	"github.com/owainlewis/machinist/internal/ship"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
+
+var errShippingStopped = errors.New("job is no longer shipping")
+
+// guardedPull wraps ship.GitHub so Merge and UpdateBranch re-verify that the
+// job is still waiting to ship on the same generation before mutating GitHub.
+type guardedPull struct {
+	inner   ship.GitHub
+	store   *tickets.Store
+	ticket  tickets.Ticket
+	stopped bool
+}
+
+func (g *guardedPull) PullRequest(ctx context.Context) (ship.PullRequest, error) {
+	if g.stopped {
+		return ship.PullRequest{}, errShippingStopped
+	}
+	return g.inner.PullRequest(ctx)
+}
+
+func (g *guardedPull) Checks(ctx context.Context) ([]ship.Check, error) {
+	if g.stopped {
+		return nil, errShippingStopped
+	}
+	return g.inner.Checks(ctx)
+}
+
+func (g *guardedPull) checkStillShipping(ctx context.Context) error {
+	ok, err := g.store.StillShipping(ctx, g.ticket)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		g.stopped = true
+		return errShippingStopped
+	}
+	return nil
+}
+
+func (g *guardedPull) Merge(ctx context.Context, head string) error {
+	if err := g.checkStillShipping(ctx); err != nil {
+		return err
+	}
+	return g.inner.Merge(ctx, head)
+}
+
+func (g *guardedPull) UpdateBranch(ctx context.Context) error {
+	if err := g.checkStillShipping(ctx); err != nil {
+		return err
+	}
+	return g.inner.UpdateBranch(ctx)
+}
 
 const (
 	defaultPRInterval = time.Minute
@@ -142,7 +194,11 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		// merging, while still failing the job if a check fails.
 		watchForLook.Hold = "auto-merge is off"
 	}
-	look, err := ship.LookOnce(ctx, e.PullRequests(ticket.Repo, number), watchForLook, e.now())
+	guarded := &guardedPull{inner: e.PullRequests(ticket.Repo, number), store: e.Store, ticket: ticket}
+	look, err := ship.LookOnce(ctx, guarded, watchForLook, e.now())
+	if guarded.stopped || errors.Is(err, errShippingStopped) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package tickets
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -115,6 +116,26 @@ func (s *Store) SetShipping(ctx context.Context, listed Ticket, shipped Shipped)
 		}
 		return insertMessage(ctx, tx, ticket, ticket.PRNumber, shipped.Message, nil, now)
 	})
+}
+
+// StillShipping reports whether listed is still waiting to ship on the same
+// pull request generation. It lets the control plane re-check right before a
+// GitHub merge or branch update, so a job cancelled or rerun while checks were
+// fetched is not mutated on GitHub.
+func (s *Store) StillShipping(ctx context.Context, listed Ticket) (bool, error) {
+	var ok bool
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		ticket, err := loadTicket(ctx, tx, listed.ID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		ok = ticket.State == StatePRReady && ticket.Shipping != "" && sameTime(ticket.PRStateAt, listed.PRStateAt)
+		return nil
+	})
+	return ok, err
 }
 
 func sameTime(a, b *time.Time) bool {
