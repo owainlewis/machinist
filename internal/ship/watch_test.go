@@ -126,8 +126,8 @@ func TestLookUpdatesABranchThatFellBehindAndMergesItsNewHead(t *testing.T) {
 		checks: [][]Check{passed, {{Name: "lint", Bucket: "pass"}}, running, passed},
 	}
 	now := start
-	got := look(t, github, Watch{Since: start}, now)
-	if got.Outcome != Waiting || github.updates != 1 || got.Watch.OldHead != "sha1" || got.Watch.Updates != 1 || !slices.Equal(got.Watch.Seen, []string{"test", "lint"}) {
+	got := look(t, github, Watch{Since: start, Head: "sha1"}, now)
+	if got.Outcome != Waiting || github.updates != 1 || got.Watch.OldHead != "sha1" || got.Watch.Head != "sha1" || got.Watch.Updates != 1 || !slices.Equal(got.Watch.Seen, []string{"test", "lint"}) {
 		t.Fatalf("first look = %+v, updates %d", got, github.updates)
 	}
 	// GitHub still reports the old head, whose checks passed: no merge.
@@ -141,6 +141,9 @@ func TestLookUpdatesABranchThatFellBehindAndMergesItsNewHead(t *testing.T) {
 		if got = look(t, github, got.Watch, now); got.Outcome != Waiting || len(github.merged) != 0 {
 			t.Fatalf("look at the new head = %+v", got)
 		}
+	}
+	if got.Watch.Head != "sha2" {
+		t.Fatalf("the updated head was not kept: %+v", got.Watch)
 	}
 	now = now.Add(time.Minute)
 	if got = look(t, github, got.Watch, now); got.Outcome != Merged || !slices.Equal(github.merged, []string{"sha2"}) {
@@ -217,5 +220,28 @@ func TestLookReturnsAReadErrorSoTheWatcherBacksOff(t *testing.T) {
 	github := &fakeGitHub{readErr: errors.New("rate limit")}
 	if _, err := LookOnce(t.Context(), github, Watch{Since: start}, start); err == nil {
 		t.Fatal("no error")
+	}
+}
+
+// A commit pushed after the review never merges, even once its checks pass.
+func TestLookLeavesItOpenWhenACommitIsPushedAfterTheReview(t *testing.T) {
+	github := &fakeGitHub{views: []PullRequest{open("sha1", "CLEAN"), open("sha9", "CLEAN")}, checks: [][]Check{running, passed}}
+	first := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+	if first.Outcome != Waiting {
+		t.Fatalf("first look = %+v", first)
+	}
+	got := look(t, github, first.Watch, start.Add(time.Minute))
+	if got.Outcome != LeftOpen || got.Message != "Left open: the branch has commits pushed after the review. https://github.com/o/r/pull/7" || len(github.merged) != 0 {
+		t.Fatalf("look = %+v, merged %v", got, github.merged)
+	}
+}
+
+// A commit pushed while GitHub refuses the merge is not brought up to date
+// and merged later.
+func TestLookDoesNotUpdateABranchWithACommitPushedAfterTheReview(t *testing.T) {
+	github := &fakeGitHub{views: []PullRequest{open("sha1", "CLEAN"), open("sha9", "BEHIND")}, checks: [][]Check{passed}, refuse: []string{"Head branch was modified"}}
+	got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+	if got.Outcome != LeftOpen || !strings.Contains(got.Message, "commits pushed after the review") || github.updates != 0 || !slices.Equal(github.merged, []string{"sha1"}) {
+		t.Fatalf("look = %+v, updates %d, merged %v", got, github.updates, github.merged)
 	}
 }

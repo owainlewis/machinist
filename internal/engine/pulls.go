@@ -66,11 +66,11 @@ func (e *Engine) CheckPRs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, ticket := range open {
-		pr, err := e.FindPR(ctx, ticket.Repo, ticket.Branch())
+	for _, listed := range open {
+		pr, err := e.FindPR(ctx, listed.Repo, listed.Branch())
 		if err != nil {
 			// Stop at the first failure, so a rate limit is not made worse.
-			return fmt.Errorf("job %s: %w", ticket.ID, err)
+			return fmt.Errorf("job %s: %w", listed.ID, err)
 		}
 		if pr == nil {
 			continue
@@ -86,13 +86,21 @@ func (e *Engine) CheckPRs(ctx context.Context) error {
 		if at.IsZero() {
 			at = e.now()
 		}
-		if err := e.Store.SetPRState(ctx, ticket, pr.Number, state, at); err != nil {
-			return fmt.Errorf("job %s: %w", ticket.ID, err)
+		ticket, same, err := e.Store.SetPRState(ctx, listed, pr.Number, state, at)
+		if err != nil {
+			return fmt.Errorf("job %s: %w", listed.ID, err)
+		}
+		if !same {
+			// The job was cancelled or run again while GitHub was asked, so
+			// what was asked about it is out of date.
+			continue
 		}
 		if state != tickets.PROpen {
 			fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d %s\n", ticket.ID, pr.Number, state)
 			continue
 		}
+		// The job as it now stands, so a cancel or rerun is seen and a look
+		// is recorded against its newest pull request result.
 		if ticket.Shipping != "" {
 			if err := e.lookAt(ctx, ticket, pr.Number); err != nil {
 				return fmt.Errorf("job %s: pull request #%d: %w", ticket.ID, pr.Number, err)

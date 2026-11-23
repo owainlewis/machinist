@@ -124,6 +124,10 @@ open for a person:
   to start, up to two and a half minutes, before it treats the repository as having none. A
   failed check fails the job, even when the pull request would have stayed open anyway.
 
+- The pull request's head is still the commit the merge step saw after the review, or the one
+  the control plane's own branch update made from it. A commit pushed after the review
+  leaves the pull request open for a person.
+
 The merge names the head commit whose checks passed, so GitHub refuses any other. A branch
 that fell behind its base is updated, up to three times, and every check must pass again on
 the new head. It merges with the first of a merge commit, a squash and a rebase that the

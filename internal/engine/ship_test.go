@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/owainlewis/machinist/internal/protocol"
@@ -146,5 +147,50 @@ func TestRunningAJobAgainEndsTheWaitForItsChecks(t *testing.T) {
 	checkPRs(t, e)
 	if got := ticketOf(t, e, ticket.ID); got.State != tickets.StateWorking || got.Shipping != "" || len(pull.merged) != 0 {
 		t.Fatalf("ticket = %+v, merged %v", got, pull.merged)
+	}
+}
+
+// A job cancelled or run again while GitHub is asked about its pull request
+// is not looked at, so nothing merges on GitHub that the job no longer wants.
+func TestAJobStoppedWhileItsPullRequestIsFoundIsNotMerged(t *testing.T) {
+	for name, stop := range map[string]func(*Engine, string) error{
+		"cancelled": func(e *Engine, id string) error {
+			_, err := e.Store.Cancel(context.Background(), id, "alice")
+			return err
+		},
+		"run again": func(e *Engine, id string) error {
+			_, err := e.Store.Rerun(context.Background(), id, "alice")
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted})
+			pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+			e.FindPR = func(context.Context, string, string) (*PR, error) {
+				if err := stop(e, ticket.ID); err != nil {
+					t.Fatal(err)
+				}
+				return &PR{Number: 42}, nil
+			}
+			checkPRs(t, e)
+			if pull.looks != 0 || len(pull.merged) != 0 {
+				t.Fatalf("looked %d times, merged %v", pull.looks, pull.merged)
+			}
+		})
+	}
+}
+
+// When GitHub reports a new pull request on the branch, the look that follows
+// is still recorded, so the wait goes on from where it got to.
+func TestALookAfterANewPullRequestResultIsKept(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+	e.FindPR = func(context.Context, string, string) (*PR, error) { return &PR{Number: 43}, nil }
+	e.PullRequests = func(string, int) ship.GitHub { return pull }
+	pull.pr.Number, pull.pr.MergeStateStatus = 43, "BEHIND"
+	pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+	checkPRs(t, e)
+	got := ticketOf(t, e, ticket.ID)
+	if got.PRNumber != 43 || !strings.Contains(got.Shipping, `"old_head":"sha1"`) || !strings.Contains(got.Shipping, `"updates":1`) {
+		t.Fatalf("ticket = %+v", got)
 	}
 }

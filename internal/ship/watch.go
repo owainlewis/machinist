@@ -64,12 +64,17 @@ type Watch struct {
 	OldHead string `json:"old_head,omitempty"`
 	// Updates counts the branch updates so far.
 	Updates int `json:"updates,omitempty"`
+	// Head is the only head commit that may merge: the one the review saw,
+	// or the one the last branch update made. A commit pushed after that
+	// leaves the pull request for a person. It is empty for a watch an older
+	// Machinist started.
+	Head string `json:"head,omitempty"`
 }
 
 // NewWatch starts watching a pull request a run handed over. autoMerge is
 // the control plane's github.auto_merge.
 func NewWatch(autoMerge bool, request protocol.Ship, now time.Time) Watch {
-	return Watch{Hold: Blocker(autoMerge, request), Since: now}
+	return Watch{Hold: Blocker(autoMerge, request), Since: now, Head: request.Head}
 }
 
 // The outcomes of one look.
@@ -104,8 +109,11 @@ type Look struct {
 // looks again later. A failed check is CheckFailed whether or not the pull
 // request may merge, so a pull request left for a person never hides one. A
 // passing pull request merges when the watch has no hold, naming the head
-// commit whose checks passed, so GitHub refuses any other. A branch behind
-// its base is updated, and its new head's checks must pass in turn.
+// commit whose checks passed, so GitHub refuses any other. Only the head the
+// review saw, or the one Machinist's own branch update made from it, may
+// merge: a commit pushed after that leaves the pull request for a person. A
+// branch behind its base is updated, and its new head's checks must pass in
+// turn.
 func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (Look, error) {
 	pr, err := github.PullRequest(ctx)
 	if err != nil {
@@ -121,7 +129,10 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 			}
 			return waiting(watch), nil
 		}
-		watch.OldHead, watch.Since = "", now
+		watch.OldHead, watch.Since, watch.Head = "", now, pr.HeadRefOid
+	}
+	if watch.Head != "" && pr.HeadRefOid != watch.Head {
+		return leaveOpen(pr, "the branch has commits pushed after the review"), nil
 	}
 	checks, err := github.Checks(ctx)
 	if err != nil {
@@ -156,8 +167,11 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 		// The run's result already said why it stays open.
 		return Look{Outcome: LeftOpen, Log: "checks passed; left open: " + watch.Hold}, nil
 	}
+	if watch.Head == "" {
+		watch.Head = pr.HeadRefOid
+	}
 	if pr.MergeStateStatus != "BEHIND" {
-		err := github.Merge(ctx, pr.HeadRefOid)
+		err := github.Merge(ctx, watch.Head)
 		if err == nil {
 			return Look{Outcome: Merged, Message: "Merged: " + pr.URL, Log: "merged"}, nil
 		}
@@ -171,6 +185,9 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 		if pr.State != "OPEN" {
 			return Look{Outcome: Settled}, nil
 		}
+		if pr.HeadRefOid != watch.Head {
+			return leaveOpen(pr, "the branch has commits pushed after the review"), nil
+		}
 		if pr.MergeStateStatus != "BEHIND" {
 			return leaveOpen(pr, refused), nil
 		}
@@ -181,7 +198,7 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 	if err := github.UpdateBranch(ctx); err != nil {
 		return leaveOpen(pr, "GitHub could not update the branch: "+err.Error()), nil
 	}
-	next := Watch{Hold: watch.Hold, Since: now, Seen: names, OldHead: pr.HeadRefOid, Updates: watch.Updates + 1}
+	next := Watch{Hold: watch.Hold, Since: now, Seen: names, OldHead: pr.HeadRefOid, Updates: watch.Updates + 1, Head: watch.Head}
 	return Look{Outcome: Waiting, Watch: next, Log: "updated the branch"}, nil
 }
 

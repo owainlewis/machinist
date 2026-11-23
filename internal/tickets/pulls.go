@@ -30,28 +30,47 @@ func (s *Store) TicketsWithOpenPRs(ctx context.Context) ([]Ticket, error) {
 // ends the job as done. A job that has changed since it was listed, such as
 // one run again that opened a new pull request meanwhile, is left alone:
 // every new pull request result sets pr_state_at, so it marks the generation.
-func (s *Store) SetPRState(ctx context.Context, listed Ticket, number int, state string, at time.Time) error {
+//
+// It returns the job as it now stands, and false when the job had changed,
+// so the caller acts on nothing it listed. The job returned carries any new
+// pr_state_at, so a later SetShipping matches it.
+func (s *Store) SetPRState(ctx context.Context, listed Ticket, number int, state string, at time.Time) (Ticket, bool, error) {
 	ticketID := listed.ID
-	return s.inTx(ctx, func(tx *sql.Tx) error {
+	var current Ticket
+	var same bool
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		ticket, err := loadTicket(ctx, tx, ticketID)
-		if err != nil || ticket.State != StatePRReady || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
+		if err != nil {
 			return err
+		}
+		current = ticket
+		if ticket.State != StatePRReady || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
+			return nil
+		}
+		same = true
+		if state == PROpen && number == ticket.PRNumber && ticket.PRState == PROpen {
+			return nil
 		}
 		if state == PROpen {
-			if number == ticket.PRNumber && ticket.PRState == PROpen {
-				return nil
-			}
 			_, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=?,pr_state=?,pr_state_at=?,updated_at=? WHERE id=?`, number, PROpen, stamp(at), stamp(s.now()), ticketID)
+		} else {
+			var merged any
+			if state == PRMerged {
+				merged = stamp(at)
+			}
+			_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=?,pr_state=?,pr_state_at=?,merged_at=COALESCE(?,merged_at),shipping=NULL,updated_at=? WHERE id=?`,
+				StateDone, number, state, stamp(at), merged, stamp(s.now()), ticketID)
+		}
+		if err != nil {
 			return err
 		}
-		var merged any
-		if state == PRMerged {
-			merged = stamp(at)
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=?,pr_state=?,pr_state_at=?,merged_at=COALESCE(?,merged_at),shipping=NULL,updated_at=? WHERE id=?`,
-			StateDone, number, state, stamp(at), merged, stamp(s.now()), ticketID)
+		current, err = loadTicket(ctx, tx, ticketID)
 		return err
 	})
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	return current, same, nil
 }
 
 // Shipped is what one look at a job's waiting pull request changed.

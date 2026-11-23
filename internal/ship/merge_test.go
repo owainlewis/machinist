@@ -23,7 +23,7 @@ func (f *stepGH) run(_ context.Context, args ...string) ([]byte, string, error) 
 	if f.state == "" {
 		return nil, "no pull requests found for branch \"machinist/t_1\"", errors.New("exit status 1")
 	}
-	return []byte(`{"number":7,"url":"https://github.com/o/r/pull/7","state":"` + f.state + `"}`), "", nil
+	return []byte(`{"number":7,"url":"https://github.com/o/r/pull/7","state":"` + f.state + `","headRefOid":"sha1"}`), "", nil
 }
 
 func control(t *testing.T, review string) string {
@@ -67,7 +67,7 @@ func TestMergeHandsAnAcceptedChangeToTheControlPlaneAndEnds(t *testing.T) {
 	if err := Merge(t.Context(), MergeOptions{Control: directory, Branch: "machinist/t_1", AutoMerge: true, GH: gh.run}); err != nil {
 		t.Fatal(err)
 	}
-	if request := handedOver(t, directory); request == nil || *request != (protocol.Ship{Verdict: Accepted}) {
+	if request := handedOver(t, directory); request == nil || *request != (protocol.Ship{Verdict: Accepted, Head: "sha1"}) {
 		t.Fatalf("ship.json = %+v", request)
 	}
 	if result := readFile(t, directory, "result.md"); result != "Merges once its checks pass: https://github.com/o/r/pull/7" {
@@ -99,6 +99,7 @@ func TestMergeSaysWhyAPullRequestStaysOpenAndStillHandsItOver(t *testing.T) {
 				t.Fatal(err)
 			}
 			// The control plane still watches its checks, so a failed one fails the job.
+			test.want.Head = "sha1"
 			if request := handedOver(t, directory); request == nil || *request != test.want {
 				t.Fatalf("ship.json = %+v, want %+v", request, test.want)
 			}
@@ -116,7 +117,7 @@ func TestMergeWithoutReviewNeedsTheFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := handedOver(t, directory)
-	if request == nil || *request != (protocol.Ship{WithoutReview: true}) || Blocker(true, *request) != "" {
+	if request == nil || *request != (protocol.Ship{WithoutReview: true, Head: "sha1"}) || Blocker(true, *request) != "" {
 		t.Fatalf("ship.json = %+v", request)
 	}
 }

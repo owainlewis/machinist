@@ -55,6 +55,10 @@ type Ship struct {
 	// Hold says why the pull request must stay open, such as an invalid
 	// review.json. Its checks are still watched, so a failed one fails the job.
 	Hold string `json:"hold,omitempty"`
+	// Head is the pull request's head commit when the step ran, after the
+	// review. Only that commit, or one the control plane's own branch update
+	// made from it, may merge.
+	Head string `json:"head,omitempty"`
 }
 
 const (

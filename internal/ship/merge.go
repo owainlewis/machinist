@@ -63,6 +63,7 @@ func Merge(ctx context.Context, options MergeOptions) error {
 		return writeResult(options.Control, "Closed without merging: "+pr.URL)
 	}
 	request := shipRequest(options)
+	request.Head = pr.HeadRefOid
 	body, err := json.Marshal(request)
 	if err != nil {
 		return err
@@ -123,15 +124,16 @@ func Blocker(autoMerge bool, request protocol.Ship) string {
 }
 
 type pullRequest struct {
-	Number int    `json:"number"`
-	URL    string `json:"url"`
-	State  string `json:"state"`
+	Number     int    `json:"number"`
+	URL        string `json:"url"`
+	State      string `json:"state"`
+	HeadRefOid string `json:"headRefOid"`
 }
 
 // findPR finds the pull request on the job's branch, in whatever state.
 func findPR(ctx context.Context, options MergeOptions) (pullRequest, bool, error) {
 	var pr pullRequest
-	stdout, stderr, err := options.GH(ctx, "pr", "view", options.Branch, "--json", "number,url,state")
+	stdout, stderr, err := options.GH(ctx, "pr", "view", options.Branch, "--json", "number,url,state,headRefOid")
 	if err != nil {
 		if strings.Contains(stderr, "no pull requests found") {
 			return pr, false, nil

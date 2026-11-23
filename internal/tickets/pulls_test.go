@@ -56,8 +56,8 @@ func TestAPRResultFromBeforeARerunIsIgnored(t *testing.T) {
 	if err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 8}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetPRState(ctx, listed[0], 7, PRMerged, now); err != nil {
-		t.Fatal(err)
+	if _, same, err := store.SetPRState(ctx, listed[0], 7, PRMerged, now); err != nil || same {
+		t.Fatalf("same = %v, err = %v", same, err)
 	}
 	got, err := store.Ticket(ctx, ticket.ID)
 	if err != nil || got.State != StatePRReady || got.PRNumber != 8 || got.PRState != PROpen {
@@ -129,5 +129,33 @@ func TestSetShippingKeepsTheWatchOrEndsTheJob(t *testing.T) {
 				t.Fatalf("message = %q", message)
 			}
 		})
+	}
+}
+
+// The job SetPRState returns carries the new pr_state_at, so a look at the
+// checks right after it is still recorded.
+func TestSetPRStateReturnsTheJobAsItNowStands(t *testing.T) {
+	store := openStore(t)
+	now := time.Date(2026, 11, 23, 9, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
+	ticket := createTicket(t, store, "k1")
+	ctx := context.Background()
+	if err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.TicketsWithOpenPRs(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("listed = %+v, err = %v", listed, err)
+	}
+	// GitHub now reports #8 on the branch.
+	current, same, err := store.SetPRState(ctx, listed[0], 8, PROpen, now.Add(time.Minute))
+	if err != nil || !same || current.PRNumber != 8 || current.PRStateAt == nil || !current.PRStateAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("current = %+v, same = %v, err = %v", current, same, err)
+	}
+	if err := store.SetShipping(ctx, current, Shipped{Shipping: `{"updates":1}`}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.Ticket(ctx, ticket.ID); err != nil || got.Shipping != `{"updates":1}` {
+		t.Fatalf("ticket = %+v, err = %v", got, err)
 	}
 }
