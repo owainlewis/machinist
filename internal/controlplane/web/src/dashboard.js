@@ -1,7 +1,14 @@
 // Helpers for the dashboard. They take the /api/v1/stats reply.
+import { harnessLabel } from "./agents.js";
 import { formatDuration } from "./jobs.js";
 
 export const ranges = [7, 14, 30];
+
+export const tabs = [
+  ["overview", "Overview"],
+  ["models", "Models"],
+  ["spending", "Spending"],
+];
 
 export function formatPercent(rate) {
   return Number.isFinite(rate) ? `${Math.round(rate * 100)}%` : "None yet";
@@ -23,13 +30,111 @@ export function formatTokens(value) {
   return `${(count / 1_000_000).toFixed(1)}M`;
 }
 
+// formatUSD formats a reported dollar amount: $0.004, $0.42, $12.50, $1,234.50.
+export function formatUSD(value) {
+  if (!Number.isFinite(value)) return "None yet";
+  if (value >= 1000) {
+    return `$${new Intl.NumberFormat("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)}`;
+  }
+  if (value > 0 && value < 0.01) return `$${value.toFixed(3)}`;
+  return `$${value.toFixed(2)}`;
+}
+
+// formatSpend displays reported USD spend while never presenting unmetered or
+// unknown-cost runs as $0.00.
+export function formatSpend({ cost = 0, has_cost: hasCost = false, cost_unknown: unknown = 0, tokens = 0 } = {}) {
+  const reported = hasCost || cost > 0;
+  if (reported && cost > 0) return `${formatUSD(cost)}${unknown > 0 ? "+" : ""}`;
+  if (reported && !unknown) return "$0.00";
+  if (unknown > 0 || tokens > 0) return "Not reported";
+  return "None yet";
+}
+
+// formatMedianCost displays median per-step cost, or "Not reported" when a
+// harness does not report USD cost.
+export function formatMedianCost({ median_cost: medianCost, has_cost: hasCost = false, cost_unknown: unknown = 0 } = {}) {
+  if (Number.isFinite(medianCost) && (hasCost || medianCost > 0)) {
+    return `${formatUSD(medianCost)}${unknown > 0 ? "+" : ""}`;
+  }
+  if (unknown > 0) return "Not reported";
+  return "None yet";
+}
+
+// formatCostPerPR formats cost per merged PR without claiming $0.00 when runs
+// had unreported cost.
+export function formatCostPerPR(value, { mergedPRs = 0, costUnknown = 0 } = {}) {
+  if (Number.isFinite(value)) return `${formatUSD(value)}${costUnknown > 0 ? "+" : ""}`;
+  if (mergedPRs > 0 && costUnknown > 0) return "Not reported";
+  return "None yet";
+}
+
+export function unreportedNote(count, unit = "run") {
+  if (!(count > 0)) return "";
+  return `${plural(count, unit)} unreported`;
+}
+
+// monthLabel formats a UTC YYYY-MM string as "Nov 2026".
+export function monthLabel(month) {
+  if (!month) return "This month";
+  const date = new Date(`${month}-01T00:00:00Z`);
+  return Number.isNaN(date.getTime()) ? month : date.toLocaleDateString("en", { month: "short", year: "numeric", timeZone: "UTC" });
+}
+
+// modelLabel names a model, or "<Harness> default" when the agent uses the
+// harness's default model.
+export function modelLabel(entry) {
+  return entry?.model || `${harnessLabel(entry?.harness || "")} default`;
+}
+
+// monthSpendOf reads month_spend from /api/v1/stats, falling back to range
+// fields when an older mock omits month_spend.
+export function monthSpendOf(stats) {
+  if (stats?.month_spend) return stats.month_spend;
+  const cost = stats?.cost || 0;
+  return {
+    month: "",
+    cost,
+    has_cost: Boolean(stats?.has_cost || cost > 0),
+    tokens: stats?.tokens || 0,
+    runs: stats?.runs?.total || 0,
+    cost_unknown: stats?.cost_unknown || 0,
+    merged_prs: stats?.prs?.merged || 0,
+    cost_per_merged_pr: stats?.cost_per_merged_pr ?? null,
+  };
+}
+
+export function spendShare(part, total) {
+  return total > 0 && Number.isFinite(part) ? part / total : NaN;
+}
+
+export function sortBySpend(rows = []) {
+  return [...rows].sort((a, b) => (b.cost || 0) - (a.cost || 0) || (b.tokens || 0) - (a.tokens || 0) || (a.name || "").localeCompare(b.name || ""));
+}
+
+export function dailyTouchTrend(daily = []) {
+  return daily.map(day => (day.merged > 0 ? (day.touches || 0) / day.merged : 0));
+}
+
+export function statsPath(days, repo = "") {
+  return repo ? `/api/v1/stats?days=${days}&repo=${encodeURIComponent(repo)}` : `/api/v1/stats?days=${days}`;
+}
+
+export function availableRepos(stats, selectedRepo = "") {
+  const names = new Set(stats?.repositories?.length ? stats.repositories : (stats?.repos || []).map(group => group.name));
+  if (selectedRepo) names.add(selectedRepo);
+  return [...names].filter(Boolean).sort((a, b) => a.localeCompare(b));
+}
+
 // niceMax rounds a chart's top up to 1, 2 or 5 times a power of ten, so the
 // gridlines land on round numbers.
 export function niceMax(value) {
   if (!(value > 0)) return 1;
   const power = 10 ** Math.floor(Math.log10(value));
-  for (const step of [1, 2, 5, 10]) if (step * power >= value) return step * power;
-  return 10 * power;
+  for (const step of [1, 2, 5, 10]) {
+    const candidate = Math.round(step * power * 1e6) / 1e6;
+    if (candidate >= value) return candidate;
+  }
+  return Math.round(10 * power * 1e6) / 1e6;
 }
 
 export const outcomes = [
