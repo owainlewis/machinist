@@ -225,6 +225,20 @@ func TestRunnersListNamesTheCurrentStepsAgents(t *testing.T) {
 	}
 }
 
+func TestLinearNeedsCredentialsToStart(t *testing.T) {
+	machinistConfig := testConfig()
+	machinistConfig.GitHub.Repositories = []string{"owner/repo"}
+	machinistConfig.Linear = config.Linear{AppUserID: "app-user", AllowedUsers: []string{"owain"}, Teams: map[string]string{"ENG": "owner/repo"}}
+	intake := linearIntake(t, machinistConfig.GitHub.Repositories...)
+	if _, err := linearPoller(t.Context(), machinistConfig, testFactory(), intake, intake.Store, io.Discard); err == nil || !strings.Contains(err.Error(), config.LinearClientIDEnv) {
+		t.Fatalf("no credentials: error = %v", err)
+	}
+	machinistConfig.Linear.ClientID = "client-id"
+	if _, err := linearPoller(t.Context(), machinistConfig, testFactory(), intake, intake.Store, io.Discard); err == nil || !strings.Contains(err.Error(), "set both") {
+		t.Fatalf("no secret: error = %v", err)
+	}
+}
+
 func TestLinearSignsInWithTheCredentialsItWasGiven(t *testing.T) {
 	machinistConfig := testConfig()
 	machinistConfig.GitHub.Repositories = []string{"owner/repo"}

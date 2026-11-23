@@ -27,7 +27,7 @@ func linearConfig(projects, teams map[string]string) config.Config {
 	var loaded config.Config
 	loaded.Server.DefaultPreset = "default"
 	loaded.GitHub.Repositories = []string{"owner/machinist", "owner/airtime"}
-	loaded.Linear = config.Linear{AppUserID: "app-user", AllowedUsers: []string{"owain"}, Projects: projects, Teams: teams}
+	loaded.Linear = config.Linear{AppUserID: "app-user", AllowedUsers: []string{"owain"}, Projects: projects, Teams: teams, Token: "lin_api_key"}
 	return loaded
 }
 
