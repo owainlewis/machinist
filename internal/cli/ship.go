@@ -15,16 +15,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newMergeCommand merges the job's pull request when the rules allow it. The
-// rules are code, so no agent decides whether a change merges.
+// newMergeCommand hands the job's pull request to the control plane, which
+// merges it when the rules allow. The rules are code, so no agent decides
+// whether a change merges.
 func newMergeCommand(options *commandOptions) *cobra.Command {
 	var withoutReview bool
 	command := &cobra.Command{
 		Use:   "merge",
-		Short: "Merge the job's pull request once its checks pass, inside a step",
-		Long: "Merge the open pull request on $MACHINIST_BRANCH when MACHINIST_AUTO_MERGE is true, review.json in the control " +
-			"directory says accepted, and every check passed. Otherwise leave it open and write why to result.md. " +
-			"A failed check fails the step.",
+		Short: "Have the control plane merge the job's pull request once its checks pass, inside a step",
+		Long: "Hand the open pull request on $MACHINIST_BRANCH to the control plane, with the verdict in review.json, and end " +
+			"at once, so the runner does not wait on CI. The control plane merges it when github.auto_merge is on, the " +
+			"review accepted the change and every check passed, and fails the job when a check fails. result.md says " +
+			"whether it will merge or stays open, and why.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			control, err := controlDirectory("merge")

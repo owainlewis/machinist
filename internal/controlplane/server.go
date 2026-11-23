@@ -21,6 +21,7 @@ import (
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/ghclient"
 	"github.com/owainlewis/machinist/internal/githubapp"
+	"github.com/owainlewis/machinist/internal/ship"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -75,12 +76,15 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		}
 	}
 	ticketEngine := engine.New(engine.Options{
-		Store:       store,
-		Factory:     loaded,
-		RunTimeout:  machinistConfig.Server.RunDeadline(),
-		Handle:      machinistConfig.GitHub.Handle,
-		AutoMerge:   machinistConfig.GitHub.AutoMerges(),
-		FindPR:      findPR(client),
+		Store:      store,
+		Factory:    loaded,
+		RunTimeout: machinistConfig.Server.RunDeadline(),
+		Handle:     machinistConfig.GitHub.Handle,
+		AutoMerge:  machinistConfig.GitHub.AutoMerges(),
+		FindPR:     findPR(client),
+		PullRequests: func(repository string, number int) ship.GitHub {
+			return pullRequest{client: client, repository: repository, number: number}
+		},
 		Post:        client.PostComment,
 		GitHubToken: tokens,
 		Identity:    identity,
@@ -223,6 +227,50 @@ func findPR(client *ghclient.Client) engine.PRFinder {
 		}
 		return pr, nil
 	}
+}
+
+// pullRequest is one pull request the engine watches until its checks pass.
+type pullRequest struct {
+	client     *ghclient.Client
+	repository string
+	number     int
+}
+
+func (p pullRequest) PullRequest(ctx context.Context) (ship.PullRequest, error) {
+	found, err := p.client.PullRequest(ctx, p.repository, p.number)
+	return ship.PullRequest(found), err
+}
+
+func (p pullRequest) Checks(ctx context.Context) ([]ship.Check, error) {
+	found, err := p.client.Checks(ctx, p.repository, p.number)
+	checks := make([]ship.Check, len(found))
+	for i, check := range found {
+		checks[i] = ship.Check(check)
+	}
+	return checks, err
+}
+
+func (p pullRequest) Merge(ctx context.Context, head string) error {
+	return githubAnswer(p.client.MergePR(ctx, p.repository, p.number, head))
+}
+
+func (p pullRequest) UpdateBranch(ctx context.Context) error {
+	return githubAnswer(p.client.UpdateBranch(ctx, p.repository, p.number))
+}
+
+// githubAnswer is what GitHub said, which the person reads in why their pull
+// request stays open.
+func githubAnswer(err error) error {
+	var failure *ghclient.Error
+	if errors.As(err, &failure) && failure.Detail != "" {
+		return errors.New(failure.Detail)
+	}
+	return err
+}
+
+// SetPRInterval changes how often open pull requests are checked. Tests use it.
+func (s *Server) SetPRInterval(interval time.Duration) {
+	s.engine.PRInterval = interval
 }
 
 // SetPollInterval changes how often schedules are checked. Tests use it.

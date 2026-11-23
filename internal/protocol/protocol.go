@@ -33,6 +33,32 @@ type Completion struct {
 	Error  string        `json:"error,omitempty"`
 	Stages []StageResult `json:"stages,omitempty"`
 	Patch  []byte        `json:"patch,omitempty"`
+	// Ship asks the control plane to see the job's pull request through its
+	// checks, and to merge it when Ship allows. The runner is free once the
+	// run ends, so no runner waits on CI.
+	Ship *Ship `json:"ship,omitempty"`
+}
+
+// ShipFile is where machinist merge leaves the Ship for the control plane, in
+// the control directory.
+const ShipFile = "ship.json"
+
+// Ship is what the merge step found, which decides whether the control plane
+// may merge the pull request once its checks pass. The control plane also
+// requires github.auto_merge, whatever a step says.
+type Ship struct {
+	// Verdict is the verdict in review.json, or empty when there was none.
+	Verdict string `json:"verdict,omitempty"`
+	// WithoutReview means the preset has no review step, so no verdict is
+	// needed.
+	WithoutReview bool `json:"without_review,omitempty"`
+	// Hold says why the pull request must stay open, such as an invalid
+	// review.json. Its checks are still watched, so a failed one fails the job.
+	Hold string `json:"hold,omitempty"`
+	// Head is the pull request's head commit when the step ran, after the
+	// review. Only that commit, or one the control plane's own branch update
+	// made from it, may merge.
+	Head string `json:"head,omitempty"`
 }
 
 const (

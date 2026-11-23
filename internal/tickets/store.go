@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
   state TEXT NOT NULL, agent TEXT NOT NULL, pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
-  origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '');
+  origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
   WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
 CREATE TABLE IF NOT EXISTS ticket_entries (
@@ -127,6 +127,10 @@ type Ticket struct {
 	PRStateAt *time.Time `json:"pr_state_at,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+	// Shipping is what the control plane keeps while it waits for the pull
+	// request's checks, to merge it or report a failed one. It is empty when
+	// nothing waits. The engine owns its contents.
+	Shipping string `json:"-"`
 }
 
 // Branch is the one branch every run of this ticket works on.
@@ -213,6 +217,9 @@ type Transition struct {
 	// MergedAt is set when the run merged its own pull request, so the job
 	// counts as merged without waiting for the pull request watcher.
 	MergedAt *time.Time
+	// Shipping, on a move to pr_ready, starts the wait for the pull request's
+	// checks. Every other move ends any wait.
+	Shipping string
 }
 
 // RunCompletion is what a runner reported when a run ended.
@@ -261,7 +268,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if err = addColumns(db, "tickets", "pr_state TEXT", "pr_state_at TEXT"); err != nil {
+	if err = addColumns(db, "tickets", "pr_state TEXT", "pr_state_at TEXT", "shipping TEXT"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -356,7 +363,7 @@ func nullableString(value string) any {
 	return value
 }
 
-const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at`
+const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,'')`
 
 type scanner interface{ Scan(...any) error }
 
@@ -365,7 +372,7 @@ func scanTicket(row scanner) (Ticket, error) {
 	var issue, pr, commits sql.NullInt64
 	var merged, prStateAt sql.NullString
 	var created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt); err != nil {
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
@@ -639,7 +646,7 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 		if ticket.State == StatePRReady {
 			next = StateWorking
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,updated_at=? WHERE id=?`, next, stamp(now), ticketID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,updated_at=? WHERE id=?`, next, stamp(now), ticketID); err != nil {
 			return err
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)
@@ -783,7 +790,7 @@ func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comme
 		// again that it started and how it ends. A pull request that merged or
 		// closed is finished with, so the new run opens and counts its own. An
 		// open one stays, so the new run keeps working on it.
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
 			return err
 		}
 		if ticket.MergedAt != nil || ticket.PRState == PRMerged || ticket.PRState == PRClosed {
@@ -821,7 +828,11 @@ func queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness 
 }
 
 func applyTransition(ctx context.Context, q querier, ticket Ticket, transition Transition, now time.Time) error {
-	if _, err := q.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=COALESCE(?,pr_number),updated_at=? WHERE id=?`, transition.State, nullableInt(transition.PRNumber), stamp(now), ticket.ID); err != nil {
+	var shipping any
+	if transition.State == StatePRReady {
+		shipping = nullableString(transition.Shipping)
+	}
+	if _, err := q.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=COALESCE(?,pr_number),shipping=?,updated_at=? WHERE id=?`, transition.State, nullableInt(transition.PRNumber), shipping, stamp(now), ticket.ID); err != nil {
 		return err
 	}
 	// A job that ends with an open pull request is watched until it merges or

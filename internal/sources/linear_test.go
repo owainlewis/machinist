@@ -957,7 +957,8 @@ func (p *polling) setPR(t *testing.T, id, state string) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return p.store.SetPRState(t.Context(), listed, 7, state, p.now)
+	_, _, err = p.store.SetPRState(t.Context(), listed, 7, state, p.now)
+	return err
 }
 
 func TestRunningAMergedJobAgainMovesItsIssueBackToInProgress(t *testing.T) {

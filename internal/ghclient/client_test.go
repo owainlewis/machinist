@@ -174,3 +174,61 @@ func TestRepositoryAccessReadsProtectionAndAdmin(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestWatchingAPullRequest(t *testing.T) {
+	github := fakegh.Install(t, "bot")
+	github.SetBranchPR("machinist/t_1", 7, "OPEN", false)
+	client := New()
+	ctx := t.Context()
+	pr, err := client.PullRequest(ctx, "owner/repo", 7)
+	if err != nil || pr.Number != 7 || pr.State != StateOpen || pr.URL != "https://github.com/owner/repo/pull/7" || pr.MergeStateStatus != "CLEAN" || pr.HeadRefOid == "" {
+		t.Fatalf("pr = %+v, err = %v", pr, err)
+	}
+	// gh exits 8 while checks are pending, and still prints them.
+	github.SetChecks([]map[string]string{{"name": "test", "bucket": "pending", "link": "https://ci/1"}})
+	checks, err := client.Checks(ctx, "owner/repo", 7)
+	if err != nil || len(checks) != 1 || checks[0] != (Check{Name: "test", Bucket: "pending", Link: "https://ci/1"}) {
+		t.Fatalf("checks = %+v, err = %v", checks, err)
+	}
+	github.SetNoChecks()
+	if checks, err := client.Checks(ctx, "owner/repo", 7); err != nil || len(checks) != 0 {
+		t.Fatalf("checks = %+v, err = %v", checks, err)
+	}
+	if err := client.UpdateBranch(ctx, "owner/repo", 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.MergePR(ctx, "owner/repo", 7, "sha1"); err != nil {
+		t.Fatal(err)
+	}
+	if merged := github.Merged(); len(merged) != 1 || merged[0] != "7" {
+		t.Fatalf("merged = %v", merged)
+	}
+	want := []string{
+		"pr view 7 --repo owner/repo --json number,url,state,mergeStateStatus,headRefOid",
+		"pr checks 7 --repo owner/repo --json name,bucket,link",
+		"pr checks 7 --repo owner/repo --json name,bucket,link",
+		"pr update-branch 7 --repo owner/repo",
+		"api --method GET repos/owner/repo",
+		"pr merge 7 --repo owner/repo --merge --delete-branch --match-head-commit sha1",
+	}
+	if calls := github.Calls(); strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls:\n%s", strings.Join(calls, "\n"))
+	}
+	github.Fail("gh: Server Error (HTTP 502)")
+	if _, err := client.Checks(ctx, "owner/repo", 7); err == nil || !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestMergePRUsesAMethodTheRepositoryAllows(t *testing.T) {
+	github := fakegh.Install(t, "bot")
+	github.SetBranchPR("machinist/t_1", 7, "OPEN", false)
+	github.SetRepository(map[string]any{"allow_merge_commit": false, "allow_squash_merge": true, "allow_rebase_merge": true})
+	if err := New().MergePR(t.Context(), "owner/repo", 7, "sha1"); err != nil {
+		t.Fatal(err)
+	}
+	calls := github.Calls()
+	if last := calls[len(calls)-1]; !strings.Contains(last, "pr merge 7 --repo owner/repo --squash ") {
+		t.Fatalf("merge = %s", last)
+	}
+}

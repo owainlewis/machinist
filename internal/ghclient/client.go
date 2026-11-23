@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -130,7 +131,9 @@ func (c *Client) run(ctx context.Context, repository, operation string, input []
 	if detail == "" {
 		detail = sanitize([]byte(err.Error()))
 	}
-	return nil, &Error{Kind: classify(ctx, stderr.Bytes(), err), Operation: operation, Detail: detail, Err: err}
+	// Some commands print their answer and still exit non-zero, such as gh pr
+	// checks while checks are pending, so stdout comes back with the error.
+	return stdout.Bytes(), &Error{Kind: classify(ctx, stderr.Bytes(), err), Operation: operation, Detail: detail, Err: err}
 }
 
 func classify(ctx context.Context, stderr []byte, err error) ErrorKind {
@@ -259,6 +262,109 @@ func (c *Client) FindPR(ctx context.Context, repository, branch string) (*PRRef,
 		}
 	}
 	return found, nil
+}
+
+// PullRequest is one pull request as gh pr view reports it.
+type PullRequest struct {
+	Number           int    `json:"number"`
+	URL              string `json:"url"`
+	State            string `json:"state"`
+	MergeStateStatus string `json:"mergeStateStatus"`
+	HeadRefOid       string `json:"headRefOid"`
+}
+
+// PullRequest reads a pull request's state, whether its branch is behind and
+// its head commit.
+func (c *Client) PullRequest(ctx context.Context, repository string, number int) (PullRequest, error) {
+	var pr PullRequest
+	if err := validRepository(repository); err != nil {
+		return pr, err
+	}
+	output, err := c.run(ctx, repository, "read pull request", nil, "pr", "view", strconv.Itoa(number), "--repo", repository, "--json", "number,url,state,mergeStateStatus,headRefOid")
+	if err != nil {
+		return pr, err
+	}
+	return pr, decode("read pull request", output, &pr)
+}
+
+// Check is one check on a pull request's head commit. Bucket is pass, fail,
+// pending, skipping or cancel.
+type Check struct {
+	Name   string `json:"name"`
+	Bucket string `json:"bucket"`
+	Link   string `json:"link"`
+}
+
+// Checks lists the checks on a pull request's head commit. A pull request
+// with none has an empty list.
+func (c *Client) Checks(ctx context.Context, repository string, number int) ([]Check, error) {
+	if err := validRepository(repository); err != nil {
+		return nil, err
+	}
+	output, err := c.run(ctx, repository, "read checks", nil, "pr", "checks", strconv.Itoa(number), "--repo", repository, "--json", "name,bucket,link")
+	var checks []Check
+	if json.Unmarshal(output, &checks) == nil {
+		// gh exits 8 while checks are pending, with the list on stdout.
+		return checks, nil
+	}
+	var failure *Error
+	if errors.As(err, &failure) && strings.Contains(failure.Detail, "no checks reported") {
+		return nil, nil
+	}
+	if err == nil {
+		err = &Error{Kind: ErrorMalformed, Operation: "read checks", Detail: "gh printed no checks"}
+	}
+	return nil, err
+}
+
+// MergePR merges a pull request and deletes its branch, only if its head is
+// still head. It uses the first of a merge commit, a squash and a rebase that
+// the repository allows, or a merge commit when the settings cannot be read,
+// so GitHub's answer says what is wrong.
+func (c *Client) MergePR(ctx context.Context, repository string, number int, head string) error {
+	if err := validRepository(repository); err != nil {
+		return err
+	}
+	_, err := c.run(ctx, repository, "merge pull request", nil, "pr", "merge", strconv.Itoa(number), "--repo", repository, "--"+c.mergeMethod(ctx, repository), "--delete-branch", "--match-head-commit", head)
+	return err
+}
+
+func (c *Client) mergeMethod(ctx context.Context, repository string) string {
+	const fallback = "merge"
+	output, err := c.run(ctx, repository, "read merge settings", nil, "api", "--method", "GET", "repos/"+repository)
+	if err != nil {
+		return fallback
+	}
+	var settings struct {
+		AllowMergeCommit *bool `json:"allow_merge_commit"`
+		AllowSquashMerge *bool `json:"allow_squash_merge"`
+		AllowRebaseMerge *bool `json:"allow_rebase_merge"`
+	}
+	if json.Unmarshal(output, &settings) != nil {
+		return fallback
+	}
+	for _, method := range []struct {
+		name    string
+		allowed *bool
+	}{
+		{"merge", settings.AllowMergeCommit},
+		{"squash", settings.AllowSquashMerge},
+		{"rebase", settings.AllowRebaseMerge},
+	} {
+		if method.allowed != nil && *method.allowed {
+			return method.name
+		}
+	}
+	return fallback
+}
+
+// UpdateBranch brings a pull request's branch up to date with its base.
+func (c *Client) UpdateBranch(ctx context.Context, repository string, number int) error {
+	if err := validRepository(repository); err != nil {
+		return err
+	}
+	_, err := c.run(ctx, repository, "update branch", nil, "pr", "update-branch", strconv.Itoa(number), "--repo", repository)
+	return err
 }
 
 // TokenScopes returns the classic token scopes reported by GitHub. Fine-grained

@@ -219,7 +219,25 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 	}
 	output.Stages = results
 	output.Patch = savedPatch(workspace.Control)
+	if output.State == StateSucceeded {
+		output.Ship = handedOver(workspace.Control)
+	}
 	return output
+}
+
+// handedOver is the pull request a step handed to the control plane in
+// protocol.ShipFile, or nil. A file that is not valid hands over nothing, so
+// the pull request stays open for a person.
+func handedOver(control string) *protocol.Ship {
+	body, err := readControlFile(control, protocol.ShipFile)
+	if err != nil || body == "" {
+		return nil
+	}
+	var request protocol.Ship
+	if json.Unmarshal([]byte(body), &request) != nil {
+		return nil
+	}
+	return &request
 }
 
 // savedPatch is the change a step saved in the control directory because it
