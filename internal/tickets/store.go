@@ -95,7 +95,9 @@ CREATE TABLE IF NOT EXISTS run_stages (
   tokens INTEGER, cost REAL, duration_millis INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', agents TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(run, position));
 CREATE TABLE IF NOT EXISTS projects (repo TEXT PRIMARY KEY COLLATE NOCASE, added_by TEXT NOT NULL, added_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS run_patches (run TEXT PRIMARY KEY, body BLOB NOT NULL);`
+CREATE TABLE IF NOT EXISTS run_patches (run TEXT PRIMARY KEY, body BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS human_touches (ticket_id TEXT NOT NULL, kind TEXT NOT NULL, author TEXT NOT NULL, at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS human_touches_ticket ON human_touches(ticket_id, at);`
 
 type Store struct {
 	db  *sql.DB
@@ -220,7 +222,25 @@ type Transition struct {
 	// Shipping, on a move to pr_ready, starts the wait for the pull request's
 	// checks. Every other move ends any wait.
 	Shipping string
+	// PROpenedAt is when GitHub says the pull request was opened. It is kept
+	// from the first time the job has a pull request.
+	PROpenedAt *time.Time
+	// Reviews, when set, are the people's reviews of a pull request that merged.
+	Reviews *Reviews
 }
+
+// Reviews are the reviews people submitted on a pull request. Bots' reviews
+// are left out.
+type Reviews struct {
+	Count int
+	First *time.Time
+}
+
+// A human touch is a time a person had to step in on a job.
+const (
+	TouchReply = "reply"
+	TouchRerun = "rerun"
+)
 
 // RunCompletion is what a runner reported when a run ended.
 type RunCompletion struct {
@@ -279,6 +299,10 @@ func Open(path string) (*Store, error) {
 	if err = backfillOrigins(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("record where existing jobs came from: %w", err)
+	}
+	if err = addColumns(db, "tickets", "pr_opened_at TEXT", "first_review_at TEXT", "human_reviews INTEGER"); err != nil {
+		db.Close()
+		return nil, err
 	}
 	if err = addColumns(db, "run_stages", "cost_unknown INTEGER NOT NULL DEFAULT 0"); err != nil {
 		db.Close()
@@ -746,7 +770,7 @@ var ErrStillWorking = errors.New("the job is still running")
 // as running. The request is logged as a comment from by, so the
 // next run sees it and the lost-runner count starts again.
 func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) {
-	return s.Reply(ctx, ticketID, by, []Comment{{Body: "Run the job again."}})
+	return s.reply(ctx, ticketID, by, TouchRerun, []Comment{{Body: "Run the job again."}})
 }
 
 // Comment is one comment to add to a ticket's log. Key, when set, is unique:
@@ -760,6 +784,11 @@ type Comment struct {
 // branch. The new run's prompt is the whole log, so it sees them. It returns
 // ErrStillWorking while any run of the ticket is queued or running.
 func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comment) (Ticket, error) {
+	return s.reply(ctx, ticketID, by, TouchReply, comments)
+}
+
+// reply runs a ticket again and records it as one human touch of kind.
+func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments []Comment) (Ticket, error) {
 	var ticket Ticket
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -794,7 +823,12 @@ func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comme
 			return err
 		}
 		if ticket.MergedAt != nil || ticket.PRState == PRMerged || ticket.PRState == PRClosed {
-			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=NULL,merged_at=NULL WHERE id=?`, ticketID); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=NULL,merged_at=NULL,pr_opened_at=NULL,first_review_at=NULL,human_reviews=NULL WHERE id=?`, ticketID); err != nil {
+				return err
+			}
+			// Drop touches from the finished pull request so the next pull
+			// request starts with its own count, just like reviews.
+			if _, err = tx.ExecContext(ctx, `DELETE FROM human_touches WHERE ticket_id=?`, ticketID); err != nil {
 				return err
 			}
 			// The tracker was told about the old pull request; it is told about
@@ -802,6 +836,9 @@ func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comme
 			if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind=?`, ticketID, ReportPR); err != nil {
 				return err
 			}
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO human_touches(ticket_id,kind,author,at) VALUES(?,?,?,?)`, ticketID, kind, by, stamp(now)); err != nil {
+			return err
 		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed, ReportFinished); err != nil {
 			return err
@@ -842,10 +879,22 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 			return err
 		}
 	}
+	if transition.PRNumber != 0 {
+		opened := now
+		if transition.PROpenedAt != nil {
+			opened = *transition.PROpenedAt
+		}
+		if _, err := q.ExecContext(ctx, `UPDATE tickets SET pr_opened_at=COALESCE(pr_opened_at,?) WHERE id=?`, stamp(opened), ticket.ID); err != nil {
+			return err
+		}
+	}
 	if transition.MergedAt != nil {
 		if _, err := q.ExecContext(ctx, `UPDATE tickets SET pr_state=?,pr_state_at=?,merged_at=COALESCE(merged_at,?) WHERE id=?`, PRMerged, stamp(now), stamp(*transition.MergedAt), ticket.ID); err != nil {
 			return err
 		}
+	}
+	if err := setReviews(ctx, q, ticket.ID, transition.Reviews); err != nil {
+		return err
 	}
 	if transition.Report != "" {
 		if err := insertEntry(ctx, q, ticket.ID, EntryReport, ticket.Agent, transition.Report, nil, now); err != nil {

@@ -65,3 +65,69 @@ export function sparkPoints(values, width, height) {
     Math.round((height - (value / top) * height) * 100) / 100,
   ]);
 }
+
+// A ratio such as touches per pull request: 0, 1.5, 12.
+export function formatRatio(value) {
+  if (!Number.isFinite(value)) return "None yet";
+  return value >= 10 || Number.isInteger(value) ? String(Math.round(value)) : value.toFixed(1);
+}
+
+export function plural(count, one, many = `${one}s`) {
+  return `${formatCount(count)} ${count === 1 ? one : many}`;
+}
+
+// The kinds of human touch, in the order the dashboard names them.
+export function touchParts(touches) {
+  return [
+    plural(touches?.replies || 0, "reply", "replies"),
+    plural(touches?.reruns || 0, "rerun"),
+    plural(touches?.reviews || 0, "review"),
+  ].join(", ");
+}
+
+// The steps a factory's presets name. Each keeps its color whatever the range,
+// so a step never changes color when another is run more.
+const knownSteps = ["implement", "review", "revise", "publish"];
+const stepColors = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)"];
+const otherStep = { key: "step:other", label: "Other", color: "var(--faint)" };
+
+// stepSeries gives each step that ran a series for the steps chart. The known
+// steps keep their own color; other steps take the free colors, most run
+// first, and any left over fold into Other. steps is most run first.
+export function stepSeries(steps) {
+  const series = [];
+  const free = stepColors.filter((_, index) => !steps.includes(knownSteps[index]));
+  const folded = [];
+  for (const name of steps) {
+    const known = knownSteps.indexOf(name);
+    if (known >= 0) series.push({ key: `step:${name}`, label: label(name), color: stepColors[known], names: [name], order: known });
+    else if (free.length) series.push({ key: `step:${name}`, label: label(name), color: free.shift(), names: [name], order: stepColors.length + series.length });
+    else folded.push(name);
+  }
+  series.sort((a, b) => a.order - b.order);
+  if (folded.length) series.push({ ...otherStep, names: folded });
+  return series.map(({ order, ...rest }) => rest);
+}
+
+function label(name) {
+  return name ? name[0].toUpperCase() + name.slice(1) : name;
+}
+
+// stepDays turns each day's step counts into the keys of stepSeries.
+export function stepDays(daily, series) {
+  return daily.map(day => {
+    const counts = { day: day.day };
+    for (const { key, names } of series) counts[key] = names.reduce((sum, name) => sum + (day.steps?.[name] || 0), 0);
+    return counts;
+  });
+}
+
+// linePoints places a daily series on a 0 to 100 box for a line chart. Each
+// day sits at the middle of its column, so the line meets the hover columns.
+export function linePoints(values, top) {
+  const most = top > 0 ? top : 1;
+  return values.map((value, index) => [
+    Math.round(((index + 0.5) / values.length) * 10000) / 100,
+    Math.round((100 - ((value || 0) / most) * 100) * 100) / 100,
+  ]);
+}

@@ -118,6 +118,9 @@ case "$method $endpoint" in
 "GET repos/"*"/pulls/"*"/commits"*)
   number=$(printf %%s "$endpoint" | sed -n 's/.*pulls\/\([0-9]*\)\/commits.*/\1/p')
   show "$dir/commits-$number" '[[]]';;
+"GET repos/"*"/pulls/"*"/reviews"*)
+  number=$(printf %%s "$endpoint" | sed -n 's/.*pulls\/\([0-9]*\)\/reviews.*/\1/p')
+  show "$dir/reviews-$number" '[[]]';;
 "GET repos/"*"/branches/"*) show "$dir/branch" '{"protected":true}';;
 "GET repos/"*"/issues/"*)
   number=${endpoint##*/}
@@ -308,6 +311,12 @@ func (g *GitHub) SetCommits(number int, emails ...string) {
 		commits = append(commits, map[string]any{"commit": map[string]any{"author": map[string]string{"email": email}}})
 	}
 	g.write("commits-"+strconv.Itoa(number), [][]map[string]any{commits})
+}
+
+// SetReviews sets a PR's reviews, as GitHub's REST API lists them.
+func (g *GitHub) SetReviews(number int, reviews ...map[string]any) {
+	g.t.Helper()
+	g.write("reviews-"+strconv.Itoa(number), [][]map[string]any{reviews})
 }
 
 // SetAccess sets the default branch's protection and the login's rights.

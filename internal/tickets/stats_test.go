@@ -1,8 +1,11 @@
 package tickets
 
 import (
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 // timedRun queues a run at start, starts it waitMinutes later and ends it
@@ -80,3 +83,133 @@ func TestStatsWithNothingHasNoRates(t *testing.T) {
 		t.Fatalf("stats = %+v, err = %v", stats, err)
 	}
 }
+
+// runTo claims the ticket's next run and ends it with transition and stages.
+func runTo(t *testing.T, store *Store, ticket Ticket, transition Transition, stages ...protocol.StageResult) {
+	t.Helper()
+	if _, err := store.QueueRun(t.Context(), ticket.ID, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ClaimRun(t.Context(), "runner", []string{"claude"}, time.Now().Add(time.Hour), nil)
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %v, err = %v", claim, err)
+	}
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Stages: stages}, func(Ticket, string) Transition {
+		return transition
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStatsMeasureTheWayToMergeAndThePeopleItNeeded(t *testing.T) {
+	store := openStore(t)
+	ctx := t.Context()
+	at := time.Date(2026, 5, 9, 9, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return at })
+	clock := func(hour, minute int) time.Time { return time.Date(2026, 5, 9, hour, minute, 0, 0, time.UTC) }
+
+	// The merged job: started at 9:00, its pull request opened at 9:30, a
+	// person asked for a change, someone reviewed it at 11:00 and it merged
+	// at 12:00.
+	// Steps that ran an agent record it; shell steps such as checkout and
+	// merge, and a revise with nothing to revise, record none.
+	agent := []protocol.Agent{{Name: "coder", Harness: "claude"}}
+	merged := createTicket(t, store, "api:merged")
+	opened := clock(9, 30)
+	at = clock(9, 40)
+	runTo(t, store, merged, Transition{State: StatePRReady, PRNumber: 7, PROpenedAt: &opened},
+		protocol.StageResult{Name: "checkout", State: RunSucceeded},
+		protocol.StageResult{Name: "implement", State: RunSucceeded, Agents: agent},
+		protocol.StageResult{Name: "review", State: RunSucceeded, Agents: agent},
+		protocol.StageResult{Name: "revise", State: RunSucceeded},
+		protocol.StageResult{Name: "publish", State: protocol.StageSkipped, Agents: agent})
+	at = clock(10, 0)
+	if _, err := store.Reply(ctx, merged.ID, "linear", []Comment{{Body: "Use the other name."}}); err != nil {
+		t.Fatal(err)
+	}
+	at = clock(10, 20)
+	runTo(t, store, merged, Transition{State: StatePRReady, PRNumber: 7}, protocol.StageResult{Name: "revise", State: RunSucceeded, Agents: agent})
+	listed, err := store.TicketsWithOpenPRs(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("listed = %+v, err = %v", listed, err)
+	}
+	reviewed := clock(11, 0)
+	at = clock(12, 1)
+	if _, _, err := store.SetPRState(ctx, listed[0], PRUpdate{Number: 7, State: PRMerged, At: clock(12, 0), OpenedAt: opened, Reviews: &Reviews{Count: 2, First: &reviewed}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A job whose pull request is still open, after one rerun, and a job that
+	// never opened one.
+	at = clock(13, 0)
+	open := createTicket(t, store, "api:open")
+	runTo(t, store, open, Transition{State: StateFailed})
+	if _, err := store.Rerun(ctx, open.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	at = clock(14, 0)
+	runTo(t, store, open, Transition{State: StatePRReady, PRNumber: 8},
+		protocol.StageResult{Name: "implement", State: RunSucceeded, Agents: agent},
+		protocol.StageResult{Name: "merge", State: RunSucceeded})
+	createTicket(t, store, "api:no-pr")
+
+	stats, err := store.Stats(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle := stats.Cycle
+	if cycle.Merged != 1 || cycle.Reviewed != 1 || *cycle.ToMerge.Median != 3*hour || *cycle.ToPR.Median != hour/2 || *cycle.ToReview.Median != 3*hour/2 || *cycle.ReviewToMerge.Median != hour {
+		t.Fatalf("cycle = %+v", cycle)
+	}
+	if stats.Touches.Replies != 1 || stats.Touches.Reruns != 0 || stats.Touches.Reviews != 2 || *stats.Touches.PerPR != 3 {
+		t.Fatalf("touches = %+v, the open job's rerun does not count until it merges", stats.Touches)
+	}
+	if stats.PRs.Opened != 2 || stats.PRs.Merged != 1 || *stats.PRs.MergeRate != 0.5 {
+		t.Fatalf("prs = %+v", stats.PRs)
+	}
+	day := stats.Daily[6]
+	if day.Day != "2026-05-09" || day.Opened != 2 || day.Merged != 1 {
+		t.Fatalf("day = %+v", day)
+	}
+	if day.Steps["implement"] != 2 || day.Steps["review"] != 1 || day.Steps["revise"] != 1 || day.Steps["publish"] != 0 ||
+		day.Steps["checkout"] != 0 || day.Steps["merge"] != 0 {
+		t.Fatalf("steps = %+v, only agent steps that ran count", day.Steps)
+	}
+	if want := []string{"implement", "review", "revise"}; !slices.Equal(stats.Steps, want) {
+		t.Fatalf("steps = %v, want %v", stats.Steps, want)
+	}
+
+	// Running the merged job again starts a new pull request, so the old one's
+	// times and touches no longer count.
+	at = clock(15, 0)
+	if _, err := store.Rerun(ctx, merged.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if stats, err = store.Stats(ctx, 7); err != nil || stats.PRs.Opened != 1 || stats.Cycle.Merged != 0 || stats.Touches.PerPR != nil || stats.Cycle.ToMerge.Median != nil {
+		t.Fatalf("stats = %+v, err = %v", stats, err)
+	}
+	// When the rerun's new pull request merges, only the new generation's
+	// touches count — the previous PR's reply is not inherited.
+	opened2 := clock(15, 10)
+	at = clock(15, 15)
+	runTo(t, store, merged, Transition{State: StatePRReady, PRNumber: 9, PROpenedAt: &opened2})
+	listed, err = store.TicketsWithOpenPRs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rerunTicket Ticket
+	for _, item := range listed {
+		if item.ID == merged.ID {
+			rerunTicket = item
+		}
+	}
+	at = clock(16, 0)
+	if _, _, err := store.SetPRState(ctx, rerunTicket, PRUpdate{Number: 9, State: PRMerged, At: clock(16, 0), OpenedAt: opened2, Reviews: &Reviews{}}); err != nil {
+		t.Fatal(err)
+	}
+	if stats, err = store.Stats(ctx, 7); err != nil || stats.Touches.Replies != 0 || stats.Touches.Reruns != 1 || stats.Touches.Reviews != 0 || stats.Touches.PerPR == nil || *stats.Touches.PerPR != 1 {
+		t.Fatalf("touches after rerun merge = %+v, err = %v", stats.Touches, err)
+	}
+}
+
+const hour = int64(time.Hour / time.Millisecond)

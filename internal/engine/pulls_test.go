@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -132,5 +133,74 @@ func TestARerunJobIsNotMovedByAnOldPRCheck(t *testing.T) {
 	}
 	if github.calls != 0 || state(t, e, ticket.ID) != tickets.StateWorking {
 		t.Fatalf("calls = %d, state = %s", github.calls, state(t, e, ticket.ID))
+	}
+}
+
+func TestAMergedPRRecordsWhenItOpenedAndWhoReviewedIt(t *testing.T) {
+	e, github, ticket := jobWithOpenPR(t)
+	now := time.Now().UTC()
+	opened, reviewed, merged := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-time.Hour)
+	var asked []string
+	e.Reviews = func(_ context.Context, repository string, number int, _ time.Time) (tickets.Reviews, error) {
+		asked = append(asked, fmt.Sprintf("%s#%d", repository, number))
+		return tickets.Reviews{Count: 2, First: &reviewed}, nil
+	}
+	github.pr = PR{Number: 42, OpenedAt: opened}
+	if err := e.CheckPRs(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 0 {
+		t.Fatalf("an open PR's reviews were read: %v", asked)
+	}
+	github.pr = PR{Number: 42, Merged: true, ChangedAt: merged, OpenedAt: opened}
+	if err := e.CheckPRs(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 1 || asked[0] != "owner/repo#42" {
+		t.Fatalf("reviews read for %v", asked)
+	}
+	stats, err := e.Store.Stats(t.Context(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Cycle.Merged != 1 || stats.Cycle.Reviewed != 1 || *stats.Cycle.ToReview.Median != time.Hour.Milliseconds() || *stats.Cycle.ReviewToMerge.Median != time.Hour.Milliseconds() || stats.Touches.Reviews != 2 {
+		t.Fatalf("stats for %s: cycle = %+v, touches = %+v", ticket.ID, stats.Cycle, stats.Touches)
+	}
+}
+
+func TestAPRMergedByTheRunRecordsItsReviews(t *testing.T) {
+	e := newEngine(t)
+	opened := time.Now().UTC().Add(-time.Hour)
+	e.FindPR = func(context.Context, string, string) (*PR, error) {
+		return &PR{Number: 42, Merged: true, ChangedAt: time.Now().UTC(), OpenedAt: opened}, nil
+	}
+	e.Reviews = func(context.Context, string, int, time.Time) (tickets.Reviews, error) {
+		return tickets.Reviews{Count: 1, First: &opened}, nil
+	}
+	newTicket(t, e, "api")
+	request := assignRun(t, e)
+	if err := e.Complete(t.Context(), request.RunID, succeed("no_change", "Merged")); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := e.Store.Stats(t.Context(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Cycle.Merged != 1 || stats.Cycle.Reviewed != 1 || stats.Touches.Reviews != 1 || stats.PRs.Opened != 1 {
+		t.Fatalf("cycle = %+v, touches = %+v, prs = %+v", stats.Cycle, stats.Touches, stats.PRs)
+	}
+}
+
+func TestAMergedPRWaitsWhenItsReviewsCannotBeRead(t *testing.T) {
+	e, github, ticket := jobWithOpenPR(t)
+	e.Reviews = func(context.Context, string, int, time.Time) (tickets.Reviews, error) {
+		return tickets.Reviews{}, errors.New("rate limited")
+	}
+	github.pr = PR{Number: 42, Merged: true}
+	if err := e.CheckPRs(t.Context()); err == nil || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("err = %v", err)
+	}
+	if got := ticketOf(t, e, ticket.ID); got.State != tickets.StatePRReady {
+		t.Fatalf("the job moved on without its reviews: %+v", got)
 	}
 }

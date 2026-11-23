@@ -37,9 +37,12 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
     if (url === "/api/v1/tickets/t_new/rerun" && options.method === "POST") { reruns++; return reply(200, { ...ticket, state: "working" }); }
     if (url.startsWith("/api/v1/stats?days=")) {
       const days = Number(url.split("=")[1]);
-      const daily = Array.from({ length: days }, (_, index) => ({ day: `2026-11-${String(index + 1).padStart(2, "0")}`, jobs: 1, succeeded: index % 2, failed: 1, cancelled: 0 }));
+      const daily = Array.from({ length: days }, (_, index) => ({ day: `2026-11-${String(index + 1).padStart(2, "0")}`, jobs: 1, succeeded: index % 2, failed: 1, cancelled: 0, opened: 2, merged: index % 2, steps: { implement: 2, review: 1, lint: index % 2 } }));
       const group = { name: "coding", jobs: { total: 3, active: 1, done: 1, failed: 1, cancelled: 0 }, run_millis: 90000 };
-      return reply(200, { days, jobs: { total: 3, active: 1, done: 1, failed: 1, cancelled: 0 }, runs: { total: 4, succeeded: 3, failed: 1, cancelled: 0 }, success_rate: 0.75, run_millis: { median: 90000, p90: 300000 }, wait_millis: { median: 2000, p90: 9000 }, tokens: 12345, cost: 1.5, daily, presets: [group], repos: [{ ...group, name: "owner/repo" }] });
+      return reply(200, { days, jobs: { total: 3, active: 1, done: 1, failed: 1, cancelled: 0 }, runs: { total: 4, succeeded: 3, failed: 1, cancelled: 0 }, success_rate: 0.75, run_millis: { median: 90000, p90: 300000 }, wait_millis: { median: 2000, p90: 9000 }, tokens: 12345, cost: 1.5, daily, presets: [group], repos: [{ ...group, name: "owner/repo" }],
+        prs: { opened: 6, merged: 3, merge_rate: 0.5 }, steps: ["implement", "review", "lint"],
+        cycle: { merged: 3, reviewed: 2, to_merge: { median: 7_200_000, p90: 10_800_000 }, to_pr: { median: 1_800_000, p90: 2_400_000 }, to_review: { median: 3_600_000, p90: 3_600_000 }, review_to_merge: { median: null, p90: null } },
+        touches: { replies: 2, reruns: 1, reviews: 1, per_pr: 4 / 3 } });
     }
     if (url === "/api/v1/presets") return reply(200, { default: "coding", presets: [{ name: "coding", description: "Implement the prompt and open a pull request.", steps: [{ name: "checkout", agents: [] }, { name: "implement", agents: [{ name: "implement", harness: "claude" }] }, { name: "publish", agents: [{ name: "publish", harness: "claude" }] }] }, { name: "spec", description: "Write a spec.", steps: [{ name: "checkout", agents: [] }, { name: "write", agents: [{ name: "writer", harness: "agy", model: "gemini-4-neon-high" }] }] }] });
     if (url === "/machinist/run" && options.method === "POST") {
@@ -110,10 +113,19 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   assert.equal(document.querySelector("h1").textContent, "Dashboard");
   assert.equal(document.querySelectorAll('[aria-labelledby="runs-chart"] .chart-column').length, 14);
   assert.match(document.querySelector("#presets-table").parentElement.textContent, /coding.*50%.*1m 30s/);
+  const merge = document.querySelector('[aria-labelledby="merge-heading"]');
+  assert.deepEqual([...merge.querySelectorAll(".stat-tile")].map(tile => tile.querySelector(".stat-value").textContent), ["2h 0m", "30m 0s", "1h 0m", "None yet", "1.3"]);
+  assert.match(merge.textContent, /2 of 3 merged PRs reviewed by a person/);
+  assert.match(merge.textContent, /2 replies, 1 rerun, 1 review/);
+  assert.match(document.querySelector('[aria-labelledby="prs-chart"]').textContent, /Merge rate 50% of 6 opened PRs/);
+  assert.equal(document.querySelectorAll('[aria-labelledby="prs-chart"] polyline').length, 2);
+  assert.deepEqual([...document.querySelectorAll('[aria-labelledby="steps-chart"] .legend li')].map(item => item.textContent), ["Implement", "Review", "Lint"]);
+  await act(async () => document.querySelector('[aria-labelledby="steps-chart"] .chart-column').dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true })));
+  await eventually(() => assert.match(document.querySelector('[aria-labelledby="steps-chart"] .chart-tooltip')?.textContent || "", /Implement 2.*Review 1.*Lint 0/));
   await act(async () => document.querySelector('.range button:nth-child(1)').click());
   await eventually(() => assert.equal(document.querySelectorAll('[aria-labelledby="runs-chart"] .chart-column').length, 7));
-  await act(async () => document.querySelector(".chart-column").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true })));
-  await eventually(() => assert.match(document.querySelector(".chart-tooltip")?.textContent || "", /Nov 1.*Succeeded 0.*Failed 1/));
+  await act(async () => document.querySelector('[aria-labelledby="runs-chart"] .chart-column').dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true })));
+  await eventually(() => assert.match(document.querySelector('[aria-labelledby="runs-chart"] .chart-tooltip')?.textContent || "", /Nov 1.*Succeeded 0.*Failed 1/));
 
   // Start a job from the form, and land on its page.
   await act(async () => { window.location.hash = "#/jobs"; });

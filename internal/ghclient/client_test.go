@@ -35,10 +35,30 @@ func TestFindPRPrefersOpenAndIgnoresForks(t *testing.T) {
 		t.Fatalf("found = %+v, err = %v", found, err)
 	}
 	github.SetBranchPRs("machinist/t_1", []map[string]any{
-		{"number": 4, "state": "MERGED", "isCrossRepository": false, "mergedAt": "2026-11-20T10:30:00Z", "closedAt": "2026-11-20T10:30:00Z"},
+		{"number": 4, "state": "MERGED", "isCrossRepository": false, "mergedAt": "2026-11-20T10:30:00Z", "closedAt": "2026-11-20T10:30:00Z", "createdAt": "2026-11-20T09:00:00Z"},
 	})
-	if found, err = client.FindPR(t.Context(), "owner/repo", "machinist/t_1"); err != nil || found.State != StateMerged || found.MergedAt.Format(time.RFC3339) != "2026-11-20T10:30:00Z" {
+	if found, err = client.FindPR(t.Context(), "owner/repo", "machinist/t_1"); err != nil || found.State != StateMerged || found.MergedAt.Format(time.RFC3339) != "2026-11-20T10:30:00Z" || found.CreatedAt.Format(time.RFC3339) != "2026-11-20T09:00:00Z" {
 		t.Fatalf("found = %+v, err = %v", found, err)
+	}
+}
+
+func TestReviewsListsSubmittedReviewsOldestFirstAndMarksBots(t *testing.T) {
+	github := fakegh.Install(t, "bot")
+	github.SetReviews(7,
+		map[string]any{"user": map[string]any{"login": "alice", "type": "User"}, "state": "APPROVED", "submitted_at": "2026-11-20T11:00:00Z"},
+		map[string]any{"user": map[string]any{"login": "copilot-pull-request-reviewer[bot]", "type": "Bot"}, "state": "COMMENTED", "submitted_at": "2026-11-20T09:30:00Z"},
+		map[string]any{"user": map[string]any{"login": "bob", "type": "User"}, "state": "PENDING"},
+		map[string]any{"user": map[string]any{"login": "bob", "type": "User"}, "state": "CHANGES_REQUESTED", "submitted_at": "2026-11-20T10:00:00Z"},
+	)
+	reviews, err := New().Reviews(t.Context(), "owner/repo", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviews) != 3 || reviews[0].Login != "copilot-pull-request-reviewer[bot]" || !reviews[0].Bot || reviews[1].Login != "bob" || reviews[1].Bot || reviews[2].Login != "alice" {
+		t.Fatalf("reviews = %+v", reviews)
+	}
+	if calls := github.Calls(); !strings.Contains(calls[len(calls)-1], "repos/owner/repo/pulls/7/reviews") || !strings.Contains(calls[len(calls)-1], "--paginate") {
+		t.Fatalf("calls = %v", calls)
 	}
 }
 

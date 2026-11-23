@@ -84,6 +84,15 @@ engine asks GitHub about the pull request on each `pr_ready` ticket's branch (`e
 and a merge or close moves the ticket to `done` with `pr_state` and `pr_state_at` set. A
 tracker is told about the merge or close on its next poll.
 
+The dashboard's time to merge comes only from stored times. A ticket keeps `pr_opened_at`,
+when GitHub says its pull request opened. When the pull request merges, by the watcher or
+by the run itself, the engine reads its reviews once from GitHub's REST API and keeps
+`first_review_at` and `human_reviews`. Reviews from bots are left out. Each reply that runs a
+job again and each **Run again** adds a row to `human_touches`. Stats measures the jobs whose
+pull request merged in the range: started to merged, started to pull request, pull request
+to first review, first review to merged, and the touches before the merge. Running a merged
+job again clears these times, because its next pull request is measured afresh.
+
 Only the control plane posts Machinist's own messages, from rows it has stored. A crash
 between posting and recording can post a message twice.
 

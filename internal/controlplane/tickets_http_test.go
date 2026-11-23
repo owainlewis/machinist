@@ -305,6 +305,12 @@ func TestStatsRoute(t *testing.T) {
 	if stats.Days != 7 || len(stats.Daily) != 7 || stats.Jobs.Total != 1 || stats.Jobs.Active != 1 || len(stats.Repos) != 1 {
 		t.Fatalf("stats = %+v", stats)
 	}
+	// The dashboard reads these even when nothing has merged yet.
+	for _, field := range []string{`"cycle":{"merged":0,`, `"touches":{"replies":0,`, `"prs":{"opened":0,`, `"steps":[]`, `"steps":{}`} {
+		if !strings.Contains(string(body), field) {
+			t.Fatalf("stats lack %s: %s", field, body)
+		}
+	}
 	for _, query := range []string{"?days=0", "?days=91", "?days=week"} {
 		if response, _ := f.call(t, http.MethodGet, "/api/v1/stats"+query, f.token, nil); response.StatusCode != http.StatusBadRequest {
 			t.Fatalf("%s: status = %d", query, response.StatusCode)

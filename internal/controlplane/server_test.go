@@ -16,6 +16,7 @@ import (
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/fakegh"
+	"github.com/owainlewis/machinist/internal/ghclient"
 	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
@@ -260,5 +261,26 @@ func TestLinearSignsInWithTheCredentialsItWasGiven(t *testing.T) {
 	tracker := poller.Tracker.(*sources.Linear)
 	if tracker.Credentials == nil || tracker.Credentials.ClientID != "client-id" || tracker.Credentials.ClientSecret != "client-secret" {
 		t.Fatalf("client credentials: tracker = %+v", tracker)
+	}
+}
+
+func TestHumanReviewsLeaveOutBotsAndStartAtTheFirstPerson(t *testing.T) {
+	github := fakegh.Install(t, "machinist-bot")
+	github.SetReviews(7,
+		map[string]any{"user": map[string]any{"login": "reviewer[bot]", "type": "Bot"}, "state": "COMMENTED", "submitted_at": "2026-11-20T09:30:00Z"},
+		map[string]any{"user": map[string]any{"login": "bob", "type": "User"}, "state": "CHANGES_REQUESTED", "submitted_at": "2026-11-20T10:00:00Z"},
+		map[string]any{"user": map[string]any{"login": "bob", "type": "User"}, "state": "APPROVED", "submitted_at": "2026-11-20T11:00:00Z"},
+		map[string]any{"user": map[string]any{"login": "alice", "type": "User"}, "state": "COMMENTED", "submitted_at": "2026-11-20T12:00:00Z"},
+	)
+	mergedAt := time.Date(2026, 11, 20, 11, 30, 0, 0, time.UTC)
+	reviews, err := humanReviews(ghclient.New())(t.Context(), "owner/repo", 7, mergedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviews.Count != 2 || reviews.First == nil || reviews.First.Format(time.RFC3339) != "2026-11-20T10:00:00Z" {
+		t.Fatalf("reviews = %+v", reviews)
+	}
+	if reviews, err = humanReviews(ghclient.New())(t.Context(), "owner/repo", 8, mergedAt); err != nil || reviews.Count != 0 || reviews.First != nil {
+		t.Fatalf("no reviews: %+v, err = %v", reviews, err)
 	}
 }
