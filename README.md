@@ -117,7 +117,7 @@ the Machinist app (see [Linear](docs/linear.md)). The web app can also run an en
 
 | Page | What it does |
 | --- | --- |
-| Dashboard | Jobs and runs over 7, 14 or 30 days: success rate, run and wait times, tokens, runs per day, and each preset and repository |
+| Dashboard | Jobs and runs over 7, 14 or 30 days: time to merge and where it goes, how often a person stepped in, pull requests opened and merged, success rate, run and wait times, tokens, runs per day by outcome and by step, and each preset and repository |
 | Jobs | Every job as a board of Queued, Running and Done, or as a list with each one's repository, preset, pull request and state |
 | New job | Pick a repository, paste a prompt or spec, and start a job. It calls the run API |
 | Job | One job: its result, its prompt, its preset's steps drawn as a pipeline with each step's state, and every attempt with the output of each step. **Run again** starts an ended job once more |
