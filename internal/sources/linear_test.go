@@ -334,7 +334,7 @@ func (p *polling) poll(t *testing.T) {
 
 func (p *polling) tickets(t *testing.T) []tickets.Ticket {
 	t.Helper()
-	listed, err := p.store.ListTickets(t.Context(), "", "")
+	listed, err := p.store.ListTickets(t.Context(), tickets.TicketFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,6 +354,9 @@ func TestAnAssignmentStartsOneJob(t *testing.T) {
 	job := listed[0]
 	if job.Source != "linear" || job.Repo != "owner/repo" || job.Agent != "default" || job.Title != "Fix a1" || job.CreatedBy != "linear" {
 		t.Fatalf("job = %+v", job)
+	}
+	if job.Origin != "linear" || job.SourceURL != "https://linear.app/x/issue/a1" {
+		t.Fatalf("source = %q, link = %q", job.Origin, job.SourceURL)
 	}
 	entries, _ := p.store.Entries(t.Context(), job.ID)
 	if prompt := entries[0].Body; !strings.Contains(prompt, "The details of a1") || !strings.Contains(prompt, "https://linear.app/x/issue/a1") {

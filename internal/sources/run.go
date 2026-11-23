@@ -22,6 +22,9 @@ type RunRequest struct {
 	Preset string            `json:"preset"`
 	Vars   map[string]string `json:"vars"`
 	Prompt string            `json:"prompt"`
+	// Origin is where the request came from: tickets.OriginWeb for the web
+	// app, and tickets.OriginAPI otherwise. The caller sets it, not the body.
+	Origin string `json:"-"`
 }
 
 // Run returns the job for a request. A repeated key returns the first job, so
@@ -33,12 +36,18 @@ func (i *Intake) Run(ctx context.Context, request RunRequest, by string) (ticket
 	if extra := unknownVars(request.Vars); len(extra) > 0 {
 		return tickets.Ticket{}, false, invalid("unknown vars: %s", strings.Join(extra, ", "))
 	}
-	return i.start(ctx, start{source: "run", key: "run:" + request.Key, preset: request.Preset, repo: request.Vars[repoVar], prompt: request.Prompt, by: by})
+	origin := request.Origin
+	if origin == "" {
+		origin = tickets.OriginAPI
+	}
+	return i.start(ctx, start{source: "run", origin: origin, key: "run:" + request.Key, preset: request.Preset, repo: request.Vars[repoVar], prompt: request.Prompt, by: by})
 }
 
 // start is a job from any source that names its preset, repository and prompt.
+// origin is where it came from, such as web or linear, and link is the URL
+// of the original issue or message, if there is one.
 type start struct {
-	source, key, preset, repo, prompt, by string
+	source, origin, link, key, preset, repo, prompt, by string
 }
 
 func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, error) {
@@ -67,6 +76,8 @@ func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, er
 	}
 	return i.Store.CreateTicket(ctx, tickets.NewTicket{
 		Source:    job.source,
+		Origin:    job.origin,
+		SourceURL: job.link,
 		Repo:      repository,
 		Title:     title(prompt),
 		Body:      prompt,

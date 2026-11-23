@@ -98,7 +98,7 @@ func TestListTicketsFiltersNewestFirst(t *testing.T) {
 func TestGetTicketReturnsEntriesRunsAndFigures(t *testing.T) {
 	f := newFixture(t)
 	f.queueRun(t)
-	listed, err := f.store.ListTickets(t.Context(), "", "")
+	listed, err := f.store.ListTickets(t.Context(), tickets.TicketFilter{})
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("listed = %+v, err = %v", listed, err)
 	}

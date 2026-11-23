@@ -93,7 +93,7 @@ func (i *Intake) Assign(ctx context.Context, request AssignRequest, by string) (
 		return tickets.Ticket{}, false, invalid("send either issue_number, or both title and body")
 	}
 	key := "api:" + request.RequestID
-	ticket := tickets.NewTicket{Source: "api", Repo: repository, Title: request.Title, Body: request.Body, Agent: i.DefaultPreset, CreatedBy: by, SourceKey: key}
+	ticket := tickets.NewTicket{Source: "api", Origin: tickets.OriginAPI, Repo: repository, Title: request.Title, Body: request.Body, Agent: i.DefaultPreset, CreatedBy: by, SourceKey: key}
 	if request.IssueNumber > 0 {
 		if existing, found, err := i.existing(ctx, key, repository, request.IssueNumber); err != nil || found {
 			return existing, false, err
@@ -109,6 +109,7 @@ func (i *Intake) Assign(ctx context.Context, request AssignRequest, by string) (
 			return tickets.Ticket{}, false, invalid("%d is a pull request, not an issue", request.IssueNumber)
 		}
 		ticket.IssueNumber, ticket.Title = request.IssueNumber, issue.Title
+		ticket.SourceURL = tickets.GitHubIssueURL(repository, request.IssueNumber)
 		ticket.Body = issueText(issue, by, "Work on this issue.")
 	}
 	return i.Store.CreateTicket(ctx, ticket)

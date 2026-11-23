@@ -41,7 +41,7 @@ type StatsDay struct {
 	Cancelled int    `json:"cancelled"`
 }
 
-// StatsGroup is the jobs created for one preset or one repository.
+// StatsGroup is the jobs created for one preset, repository or source.
 type StatsGroup struct {
 	Name      string `json:"name"`
 	JobCounts `json:"jobs"`
@@ -64,6 +64,8 @@ type Stats struct {
 	Daily       []StatsDay   `json:"daily"`
 	Presets     []StatsGroup `json:"presets"`
 	Repos       []StatsGroup `json:"repos"`
+	// Sources groups the jobs by where they came from, such as web or linear.
+	Sources []StatsGroup `json:"sources"`
 }
 
 func countJob(counts *JobCounts, state string) {
@@ -91,7 +93,7 @@ func (s *Store) Stats(ctx context.Context, days int) (Stats, error) {
 		index[day.Format(time.DateOnly)] = len(stats.Daily)
 		stats.Daily = append(stats.Daily, StatsDay{Day: day.Format(time.DateOnly)})
 	}
-	presets, repos := map[string]*StatsGroup{}, map[string]*StatsGroup{}
+	presets, repos, sources := map[string]*StatsGroup{}, map[string]*StatsGroup{}, map[string]*StatsGroup{}
 	group := func(groups map[string]*StatsGroup, name string) *StatsGroup {
 		if groups[name] == nil {
 			groups[name] = &StatsGroup{Name: name}
@@ -99,19 +101,20 @@ func (s *Store) Stats(ctx context.Context, days int) (Stats, error) {
 		return groups[name]
 	}
 
-	jobs, err := s.db.QueryContext(ctx, `SELECT substr(created_at,1,10),state,agent,repo FROM tickets WHERE created_at>=?`, stamp(first))
+	jobs, err := s.db.QueryContext(ctx, `SELECT substr(created_at,1,10),state,agent,repo,origin FROM tickets WHERE created_at>=?`, stamp(first))
 	if err != nil {
 		return Stats{}, err
 	}
 	defer jobs.Close()
 	for jobs.Next() {
-		var day, state, preset, repo string
-		if err := jobs.Scan(&day, &state, &preset, &repo); err != nil {
+		var day, state, preset, repo, source string
+		if err := jobs.Scan(&day, &state, &preset, &repo, &source); err != nil {
 			return Stats{}, err
 		}
 		countJob(&stats.Jobs, state)
 		countJob(&group(presets, preset).JobCounts, state)
 		countJob(&group(repos, repo).JobCounts, state)
+		countJob(&group(sources, source).JobCounts, state)
 		if i, ok := index[day]; ok {
 			stats.Daily[i].Jobs++
 		}
@@ -120,20 +123,20 @@ func (s *Store) Stats(ctx context.Context, days int) (Stats, error) {
 		return Stats{}, err
 	}
 
-	runs, err := s.db.QueryContext(ctx, `SELECT r.status,r.queued_at,r.started_at,r.ended_at,COALESCE(r.tokens,0),COALESCE(r.cost,0),t.agent,t.repo
+	runs, err := s.db.QueryContext(ctx, `SELECT r.status,r.queued_at,r.started_at,r.ended_at,COALESCE(r.tokens,0),COALESCE(r.cost,0),t.agent,t.repo,t.origin
   FROM runs r JOIN tickets t ON t.id=r.ticket_id WHERE r.ended_at>=?`, stamp(first))
 	if err != nil {
 		return Stats{}, err
 	}
 	defer runs.Close()
 	var lengths, waits []int64
-	presetLengths, repoLengths := map[string][]int64{}, map[string][]int64{}
+	presetLengths, repoLengths, sourceLengths := map[string][]int64{}, map[string][]int64{}, map[string][]int64{}
 	for runs.Next() {
-		var status, preset, repo string
+		var status, preset, repo, source string
 		var queued, started, ended sql.NullString
 		var tokens int64
 		var cost float64
-		if err := runs.Scan(&status, &queued, &started, &ended, &tokens, &cost, &preset, &repo); err != nil {
+		if err := runs.Scan(&status, &queued, &started, &ended, &tokens, &cost, &preset, &repo, &source); err != nil {
 			return Stats{}, err
 		}
 		stats.Tokens += tokens
@@ -171,11 +174,13 @@ func (s *Store) Stats(ctx context.Context, days int) (Stats, error) {
 		lengths = append(lengths, length)
 		presetLengths[preset] = append(presetLengths[preset], length)
 		repoLengths[repo] = append(repoLengths[repo], length)
+		sourceLengths[source] = append(sourceLengths[source], length)
 		if queuedAt := parseTime(queued); queuedAt != nil {
 			waits = append(waits, startedAt.Sub(*queuedAt).Milliseconds())
 		}
 		group(presets, preset)
 		group(repos, repo)
+		group(sources, source)
 	}
 	if err := runs.Err(); err != nil {
 		return Stats{}, err
@@ -187,6 +192,7 @@ func (s *Store) Stats(ctx context.Context, days int) (Stats, error) {
 	stats.RunMillis, stats.WaitMillis = spread(lengths), spread(waits)
 	stats.Presets = groups(presets, presetLengths)
 	stats.Repos = groups(repos, repoLengths)
+	stats.Sources = groups(sources, sourceLengths)
 	return stats, nil
 }
 

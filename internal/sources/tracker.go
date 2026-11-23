@@ -33,8 +33,9 @@ type Assignment struct {
 	Identifier string
 	Title      string
 	Body       string
-	URL        string
-	Team       string
+	// URL links to the issue in the tracker. The job page links back to it.
+	URL  string
+	Team string
 	// Project and ProjectID name the issue's project. Both are empty when it
 	// has none.
 	Project   string
@@ -146,7 +147,7 @@ func (rules TrackerRules) Decide(assignment Assignment) (start, string) {
 	if !slices.Contains(rules.AllowedUsers, assignment.Actor) {
 		return start{}, fmt.Sprintf("user %q may not start jobs", assignment.Actor)
 	}
-	return start{key: assignment.Key, preset: rules.Preset, repo: repository, prompt: trackerPrompt(assignment)}, ""
+	return start{key: assignment.Key, link: assignment.URL, preset: rules.Preset, repo: repository, prompt: trackerPrompt(assignment)}, ""
 }
 
 func trackerPrompt(assignment Assignment) string {
@@ -419,7 +420,9 @@ func (p *Poller) handle(ctx context.Context, assignment Assignment) (handled, er
 		fmt.Fprintf(p.log(), "machinist: %s issue %s waits: %d jobs started in the last hour\n", name, assignment.Identifier, p.MaxJobsPerHour)
 		return handledLater, nil
 	}
-	job.source, job.by = name, name
+	// A tracker's jobs take its name as their source, so a new tracker shows
+	// in the jobs list, its filter and the dashboard with no other change.
+	job.source, job.origin, job.by = name, name, name
 	ticket, _, err := p.Intake.start(ctx, job)
 	if errors.Is(err, ErrInvalidRequest) {
 		fmt.Fprintf(p.log(), "machinist: %s issue %s ignored: %v\n", name, assignment.Identifier, err)

@@ -65,7 +65,8 @@ const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
   state TEXT NOT NULL, agent TEXT NOT NULL, pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
-  merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT);
+  merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
+  origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
   WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
 CREATE TABLE IF NOT EXISTS ticket_entries (
@@ -102,8 +103,15 @@ type Store struct {
 }
 
 type Ticket struct {
-	ID           string     `json:"id"`
-	Source       string     `json:"source"`
+	ID string `json:"id"`
+	// Source is where in Machinist the ticket came in: api, run, a tracker's
+	// name, or schedule:<automation>. Origin is what the API calls its source.
+	Source string `json:"intake"`
+	// Origin is where the job came from: web, api, schedule, or a tracker's
+	// name such as linear.
+	Origin string `json:"source"`
+	// SourceURL links to the issue or message the job came from, if any.
+	SourceURL    string     `json:"source_url,omitempty"`
 	Repo         string     `json:"repo"`
 	IssueNumber  int        `json:"issue_number,omitempty"`
 	Title        string     `json:"title"`
@@ -166,7 +174,13 @@ type Run struct {
 
 // NewTicket is one piece of intake. SourceKey makes it idempotent.
 type NewTicket struct {
-	Source      string
+	Source string
+	// Origin is where the job came from, such as web or linear. Empty works
+	// it out from Source and SourceKey.
+	Origin string
+	// SourceURL links to the original issue or message. Anything but an http
+	// or https URL is dropped.
+	SourceURL   string
 	Repo        string
 	IssueNumber int
 	Title       string
@@ -251,6 +265,14 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "tickets", "origin TEXT NOT NULL DEFAULT ''", "source_url TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = backfillOrigins(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("record where existing jobs came from: %w", err)
+	}
 	if err = addColumns(db, "run_stages", "cost_unknown INTEGER NOT NULL DEFAULT 0"); err != nil {
 		db.Close()
 		return nil, err
@@ -334,7 +356,7 @@ func nullableString(value string) any {
 	return value
 }
 
-const ticketColumns = `id,source,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at`
+const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at`
 
 type scanner interface{ Scan(...any) error }
 
@@ -343,7 +365,7 @@ func scanTicket(row scanner) (Ticket, error) {
 	var issue, pr, commits sql.NullInt64
 	var merged, prStateAt sql.NullString
 	var created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt); err != nil {
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
@@ -566,7 +588,11 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 			}
 		}
 		now := s.now()
-		if _, err = tx.ExecContext(ctx, `INSERT INTO tickets(id,source,repo,issue_number,title,state,agent,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, request.Source, request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.CreatedBy, stamp(now), stamp(now)); err != nil {
+		origin := request.Origin
+		if origin == "" {
+			origin = originOf(request.Source, request.SourceKey)
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, id, request.Source, origin, SourceURL(request.SourceURL), request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.CreatedBy, stamp(now), stamp(now)); err != nil {
 			return err
 		}
 		if err = insertEntry(ctx, tx, id, EntryRequest, request.CreatedBy, request.Body, request.SourceKey, now); err != nil {
@@ -629,9 +655,18 @@ func (s *Store) TicketBySourceKey(ctx context.Context, key string) (Ticket, erro
 
 // ListTickets returns the newest tickets first, whatever their state, up to
 // maxListedTickets. Empty filters match every ticket.
-func (s *Store) ListTickets(ctx context.Context, state, repo string) ([]Ticket, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR state=?) AND (?='' OR repo=?)
-  ORDER BY created_at DESC, id DESC LIMIT ?`, state, state, repo, repo, maxListedTickets)
+// TicketFilter picks the tickets a list shows. An empty field matches all.
+type TicketFilter struct {
+	State string
+	Repo  string
+	// Source is where the jobs came from, such as web or linear.
+	Source string
+}
+
+// ListTickets lists the newest tickets that match the filter, newest first.
+func (s *Store) ListTickets(ctx context.Context, filter TicketFilter) ([]Ticket, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR state=?) AND (?='' OR repo=?) AND (?='' OR origin=?)
+  ORDER BY created_at DESC, id DESC LIMIT ?`, filter.State, filter.State, filter.Repo, filter.Repo, filter.Source, filter.Source, maxListedTickets)
 	if err != nil {
 		return nil, err
 	}

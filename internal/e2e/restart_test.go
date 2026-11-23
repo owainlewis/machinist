@@ -33,7 +33,7 @@ func TestControlPlaneRestartDoesNotDisturbARun(t *testing.T) {
 	if err != nil || len(runs) != 1 || runs[0].Status != tickets.RunSucceeded || runs[0].Report.Summary != "The work needed no change." {
 		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
-	listed, err := s.store.ListTickets(t.Context(), "", "")
+	listed, err := s.store.ListTickets(t.Context(), tickets.TicketFilter{})
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("tickets = %+v, err = %v", listed, err)
 	}
