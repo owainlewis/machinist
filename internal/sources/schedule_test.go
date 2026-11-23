@@ -45,7 +45,7 @@ func (c *clockedSchedule) poll(t *testing.T) {
 
 func (c *clockedSchedule) tickets(t *testing.T) []tickets.Ticket {
 	t.Helper()
-	listed, err := c.store.ListTickets(t.Context(), "", "")
+	listed, err := c.store.ListTickets(t.Context(), tickets.TicketFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestFirstSightWaitsForTheNextOccurrence(t *testing.T) {
 	c.now = time.Date(2026, 3, 1, 9, 0, 10, 0, time.UTC)
 	c.poll(t)
 	got := c.tickets(t)
-	if len(got) != 1 || got[0].Source != "schedule:nightly" || got[0].Agent != "maintainer" || got[0].Repo != "owner/repo" || got[0].CreatedBy != "schedule" {
+	if len(got) != 1 || got[0].Source != "schedule:nightly" || got[0].Origin != tickets.OriginSchedule || got[0].Agent != "maintainer" || got[0].Repo != "owner/repo" || got[0].CreatedBy != "schedule" {
 		t.Fatalf("tickets = %+v", got)
 	}
 	entries, _ := c.store.Entries(t.Context(), got[0].ID)

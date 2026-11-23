@@ -49,7 +49,8 @@ func (s *Server) createTicket(w http.ResponseWriter, r *http.Request, tokenName 
 }
 
 func (s *Server) listTickets(w http.ResponseWriter, r *http.Request, _ string) {
-	found, err := s.store.ListTickets(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("repo"))
+	query := r.URL.Query()
+	found, err := s.store.ListTickets(r.Context(), tickets.TicketFilter{State: query.Get("state"), Repo: query.Get("repo"), Source: query.Get("source")})
 	if err != nil {
 		writeTicketError(w, err)
 		return

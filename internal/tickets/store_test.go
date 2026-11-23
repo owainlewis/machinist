@@ -542,7 +542,7 @@ func TestListTicketsLimitsToTheNewest(t *testing.T) {
 	for index := range maxListedTickets + 2 {
 		createTicket(t, store, fmt.Sprintf("api:%d", index))
 	}
-	listed, err := store.ListTickets(t.Context(), "", "")
+	listed, err := store.ListTickets(t.Context(), TicketFilter{})
 	if err != nil || len(listed) != maxListedTickets {
 		t.Fatalf("count = %d, err = %v", len(listed), err)
 	}
@@ -558,7 +558,7 @@ func TestListTicketsPutsANewerFinishedTicketFirst(t *testing.T) {
 	if _, err := store.Cancel(t.Context(), finished.ID, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	listed, err := store.ListTickets(t.Context(), "", "")
+	listed, err := store.ListTickets(t.Context(), TicketFilter{})
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("listed = %+v, err = %v", listed, err)
 	}
