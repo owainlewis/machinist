@@ -93,7 +93,7 @@ type Linear struct {
 	Poll         time.Duration `yaml:"-"`
 	// ClientID and ClientSecret are the app's client credentials. Machinist
 	// gets and renews its own access token with them. They are read from the
-	// environment, and take the place of Token when both are set.
+	// environment, and take the place of Token when either is set.
 	ClientID     string `yaml:"-"`
 	ClientSecret string `yaml:"-"`
 	// Token is a fixed access token. It is read from the environment.
@@ -105,6 +105,24 @@ func (l Linear) UsesClientCredentials() bool { return l.ClientID != "" }
 
 // Enabled reports whether Machinist takes work from Linear.
 func (l Linear) Enabled() bool { return len(l.Projects) > 0 || len(l.Teams) > 0 }
+
+// CheckCredentials reports whether Linear, when it is enabled, has what it
+// needs to sign in: both client credentials, or a fixed token. Only the control
+// plane talks to Linear, so only it calls this.
+func (l Linear) CheckCredentials() error {
+	switch {
+	case !l.Enabled():
+		return nil
+	case l.ClientID != "" && l.ClientSecret != "":
+		return nil
+	case l.ClientID != "" || l.ClientSecret != "":
+		return fmt.Errorf("linear: set both %s and %s to the Machinist app's client credentials", LinearClientIDEnv, LinearClientSecretEnv)
+	case l.Token != "":
+		return nil
+	default:
+		return fmt.Errorf("linear: set %s and %s to the Machinist app's client credentials, or %s to an access token", LinearClientIDEnv, LinearClientSecretEnv, LinearTokenEnv)
+	}
+}
 
 // The variables that hold the app's Linear credentials.
 const (
@@ -268,18 +286,13 @@ func applyLinearDefaults(linear Linear, getenv func(string) string) (Linear, err
 		}
 		return linear, nil
 	}
-	clientID := strings.TrimSpace(getenv(LinearClientIDEnv))
-	clientSecret := strings.TrimSpace(getenv(LinearClientSecretEnv))
-	token := strings.TrimSpace(getenv(LinearTokenEnv))
-	switch {
-	case clientID != "" && clientSecret != "":
-		linear.ClientID, linear.ClientSecret = clientID, clientSecret
-	case clientID != "" || clientSecret != "":
-		return Linear{}, fmt.Errorf("linear: set both %s and %s to the Machinist app's client credentials", LinearClientIDEnv, LinearClientSecretEnv)
-	case token != "":
-		linear.Token = token
-	default:
-		return Linear{}, fmt.Errorf("linear: set %s and %s to the Machinist app's client credentials, or %s to an access token", LinearClientIDEnv, LinearClientSecretEnv, LinearTokenEnv)
+	// The credentials are read here and checked by CheckCredentials when the
+	// control plane starts. Commands that only open the database, such as
+	// token create, run in shells that do not have them.
+	linear.ClientID = strings.TrimSpace(getenv(LinearClientIDEnv))
+	linear.ClientSecret = strings.TrimSpace(getenv(LinearClientSecretEnv))
+	if linear.ClientID == "" && linear.ClientSecret == "" {
+		linear.Token = strings.TrimSpace(getenv(LinearTokenEnv))
 	}
 	linear.Poll = defaultLinearPoll
 	if linear.PollInterval != "" {

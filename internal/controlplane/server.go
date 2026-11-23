@@ -129,6 +129,9 @@ func linearPoller(ctx context.Context, machinistConfig config.Config, loaded *fa
 	if !linear.Enabled() {
 		return nil, nil
 	}
+	if err := linear.CheckCredentials(); err != nil {
+		return nil, err
+	}
 	preset := linear.Preset
 	if preset == "" {
 		preset = machinistConfig.Server.DefaultPreset

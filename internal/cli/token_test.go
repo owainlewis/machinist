@@ -80,3 +80,22 @@ func TestTokenCreateGivesARole(t *testing.T) {
 		t.Fatalf("code = %d, stdout = %q", code, stdout)
 	}
 }
+
+// The Linear credentials live in the service's environment, which a login
+// shell does not have. The token commands only open the database, so they
+// must not need them.
+func TestTokenCommandsRunWithoutLinearCredentials(t *testing.T) {
+	path := writeConfigFile(t, t.TempDir(), "config.yaml", "server:\n  database: tickets.db\n\ngithub:\n  handle: bot\n\nlinear:\n  app_user_id: app-user\n  allowed_users: [owain]\n  teams:\n    ENG: owner/repo\n")
+	t.Setenv(config.LinearTokenEnv, "")
+	t.Setenv(config.LinearClientIDEnv, "")
+	t.Setenv(config.LinearClientSecretEnv, "")
+	if code, stdout, stderr := runToken(t, path, "create", "owain"); code != 0 || len(strings.TrimSpace(stdout)) != 64 {
+		t.Fatalf("create: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runToken(t, path, "list"); code != 0 || !strings.Contains(stdout, "owain") {
+		t.Fatalf("list: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runToken(t, path, "revoke", "owain"); code != 0 || !strings.Contains(stdout, "revoked owain") {
+		t.Fatalf("revoke: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}
