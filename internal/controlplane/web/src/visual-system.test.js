@@ -43,3 +43,12 @@ test("on a phone the chart leaves room for its last date", async () => {
   const phone = styles.slice(styles.indexOf("@media (max-width: 767px) {\n  .page {"));
   assert.match(phone.slice(0, phone.indexOf("\n}")), /\.chart-body, \.chart-dates \{ padding-right: 20px; \}/);
 });
+
+test("dashboard spend and model tables keep mobile spend columns and left-align the model header", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.model-table th\.model-name-col[^{]*\{ text-align: left; \}/);
+  const phone = styles.slice(styles.indexOf("@media (max-width: 767px) {\n  .page {"));
+  const phoneBlock = phone.slice(0, phone.indexOf("\n}"));
+  assert.match(phoneBlock, /\.group-table:not\(\.spend-group-table\) th:nth-child\(3\)/);
+  assert.doesNotMatch(phoneBlock, /\.group-table (?:th|td):nth-child\([34]\)/);
+});
