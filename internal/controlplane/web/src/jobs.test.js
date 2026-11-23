@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardOf, failureReason, formatDuration, linkParts, jobState, newestFirst, noPullRequest, prLink, prState, prSummary, runningJobs, runningTickets } from "./jobs.js";
+import { boardOf, failureReason, filterJobs, formatDuration, linkParts, jobState, newestFirst, noPullRequest, prChip, prLink, prState, prSummary, quickCounts, runningJobs, runningTickets, sourceLabel, sourceLink, sourceLinkText, sourcesOf } from "./jobs.js";
 
 test("ticket states read as the run API's job states", () => {
   assert.equal(jobState({ state: "working" }), "queued");
@@ -91,4 +91,66 @@ test("links in text are split out so they can be clicked", () => {
   assert.deepEqual(linkParts("(https://example.com/x)"), [{ text: "(" }, { href: "https://example.com/x" }, { text: ")" }]);
   assert.deepEqual(linkParts("no links here, javascript:alert(1)"), [{ text: "no links here, javascript:alert(1)" }]);
   assert.deepEqual(linkParts(""), []);
+});
+
+test("a job's source has a label, and a link only when it is a web link", () => {
+  assert.equal(sourceLabel("linear"), "Linear");
+  assert.equal(sourceLabel("api"), "API");
+  assert.equal(sourceLabel("web"), "Web");
+  assert.equal(sourceLabel("schedule"), "Schedule");
+  assert.equal(sourceLabel("asana"), "Asana", "a tracker added later shows its name");
+  assert.equal(sourceLabel(""), "Unknown");
+  assert.equal(sourceLink({ source: "linear", source_url: "https://linear.app/x/issue/ENG-1" }), "https://linear.app/x/issue/ENG-1");
+  assert.equal(sourceLink({ source: "api" }), "");
+  assert.equal(sourceLink({ source: "linear", source_url: "javascript:alert(1)" }), "");
+});
+
+test("the source filter offers the sources the jobs came from, in a fixed order", () => {
+  assert.deepEqual(sourcesOf([{ source: "linear" }, { source: "api" }, { source: "zendesk" }, { source: "web" }, { source: "linear" }, {}]), ["web", "api", "linear", "zendesk"]);
+});
+
+test("filtering by source shows only that source's jobs", () => {
+  const tickets = [
+    { id: "a", source: "linear", state: "working" },
+    { id: "b", source: "api", state: "done" },
+    { id: "c", source: "linear", state: "failed" },
+  ];
+  assert.deepEqual(filterJobs(tickets, { source: "linear" }).map(job => job.id), ["a", "c"]);
+  assert.deepEqual(filterJobs(tickets, {}).map(job => job.id), ["a", "b", "c"]);
+  assert.deepEqual(filterJobs(tickets, { source: "jira" }), []);
+});
+
+test("quick filters pick jobs by state, and count within the source", () => {
+  const tickets = [
+    { id: "run", source: "linear", state: "working" },
+    { id: "queue", source: "linear", state: "working" },
+    { id: "review", source: "linear", state: "pr_ready", pr_number: 3, pr_state: "open" },
+    { id: "merged", source: "api", state: "done" },
+    { id: "bad", source: "api", state: "failed" },
+    { id: "stop", source: "web", state: "cancelled" },
+  ];
+  const running = new Set(["run"]);
+  const pick = quick => filterJobs(tickets, { quick }, running).map(job => job.id);
+  assert.deepEqual(pick("running"), ["run"]);
+  assert.deepEqual(pick("done"), ["review", "merged"]);
+  assert.deepEqual(pick("failed"), ["bad"]);
+  assert.deepEqual(pick("needs_person"), ["review"]);
+  assert.deepEqual(pick("cancelled"), ["stop"]);
+  assert.deepEqual(filterJobs(tickets, { source: "linear", quick: "done" }, running).map(job => job.id), ["review"]);
+  assert.deepEqual(quickCounts(tickets, "", running), { running: 1, done: 2, failed: 1, needs_person: 1, cancelled: 1 });
+  assert.deepEqual(quickCounts(tickets, "linear", running), { running: 1, done: 1, failed: 0, needs_person: 1, cancelled: 0 });
+});
+
+test("a job's pull request chip has its number, state and GitHub link", () => {
+  assert.deepEqual(prChip({ repo: "owner/repo", pr_number: 4, pr_state: "merged" }), { number: 4, state: "merged", label: "Merged", href: "https://github.com/owner/repo/pull/4" });
+  assert.deepEqual(prChip({ repo: "owner/repo", pr_number: 4 }), { number: 4, state: "", label: "", href: "https://github.com/owner/repo/pull/4" });
+  assert.equal(prChip({ repo: "owner/repo" }), null);
+});
+
+test("a job's original is named by the site it is on", () => {
+  assert.equal(sourceLinkText("https://linear.app/team/issue/ENG-1/fix"), "Open in Linear");
+  assert.equal(sourceLinkText("https://github.com/owner/repo/issues/7"), "Open in GitHub");
+  assert.equal(sourceLinkText("https://acme.atlassian.net/browse/OPS-1"), "Open in Jira");
+  assert.equal(sourceLinkText("https://tracker.example.com/1"), "Open in tracker.example.com");
+  assert.equal(sourceLinkText("not a link"), "Open the original");
 });

@@ -1,10 +1,11 @@
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { harnessList, waitingForRunner } from "./agents.js";
 import { State, relativeTime, useNow } from "./display.jsx";
-import { failureReason, formatDuration, isFinished, jobState, linkParts, noPullRequest, prLink, prState } from "./jobs.js";
+import { failureReason, formatDuration, isFinished, jobState, linkParts, noPullRequest, prLink, prState, sourceLink, sourceLinkText } from "./jobs.js";
+import { Source } from "./source-mark.jsx";
 import { latestAction, noStepsNote, pipeline, pollEvents, runSpend, spend, spendTitle, stepTime, steps } from "./step-log.js";
 import { Button } from "@/components/ui/button";
 
@@ -200,6 +201,7 @@ export function JobView({ detail, onChange }) {
   const { ticket, entries = [], runs = [], steps: presetSteps = [], waiting_for: waitingFor = [] } = detail;
   const state = jobState(ticket, runs.some(run => run.status === "running"));
   const pr = prLink(ticket);
+  const original = sourceLink(ticket);
   const prompt = entries.find(entry => entry.kind === "request")?.body || "";
   const result = [...runs].reverse().find(run => run.report?.summary)?.report.summary || "";
   const failure = state === "failed" ? failureReason(entries) : "";
@@ -214,6 +216,7 @@ export function JobView({ detail, onChange }) {
       </div>
     </header>
     <dl className="job-facts">
+      <div><dt>Source</dt><dd className="job-source"><Source source={ticket.source} />{original && <a href={original} target="_blank" rel="noreferrer">{sourceLinkText(original)}<ArrowUpRight className="size-3.5" aria-hidden="true" /></a>}</dd></div>
       <div><dt>Repository</dt><dd>{ticket.repo}</dd></div>
       <div><dt>Preset</dt><dd>{ticket.agent}</dd></div>
       <div><dt>Pull request</dt><dd>{pr ? <PullRequest ticket={ticket} link={pr} /> : noPullRequest(state)}</dd></div>
