@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentSummary, agentTitle, harnessLabel, presetAgents } from "./agents.js";
+import { agentSummary, agentTitle, harnessLabel, harnessList, presetAgents, waitingForRunner } from "./agents.js";
 
 test("an agent is summed up by its model, or its harness's default", () => {
   assert.equal(agentSummary({ name: "review", harness: "agy", model: "gemini-4-neon-high" }), "gemini-4-neon-high");
@@ -15,4 +15,12 @@ test("a preset's agents are listed once each, in the order steps run them", () =
   const preset = { steps: [{ name: "checkout", agents: [] }, { name: "review", agents: [review] }, { name: "revise", agents: [revise, review] }] };
   assert.deepEqual(presetAgents(preset), [review, revise]);
   assert.deepEqual(presetAgents(undefined), []);
+});
+
+test("a queued job says which harnesses it waits for", () => {
+  assert.equal(harnessList([]), "");
+  assert.equal(harnessList(["codex"]), "Codex");
+  assert.equal(harnessList(["agy", "claude", "codex"]), "Antigravity, Claude Code and Codex");
+  assert.equal(waitingForRunner(), "Waiting for a runner");
+  assert.equal(waitingForRunner(["codex"]), "Waiting for a runner with Codex");
 });

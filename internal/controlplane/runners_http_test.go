@@ -3,9 +3,13 @@ package controlplane
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -152,5 +156,142 @@ func TestHeartbeatTellsRunnerToCancel(t *testing.T) {
 	var beat protocol.HeartbeatResponse
 	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &beat) != nil || !beat.Cancel {
 		t.Fatalf("heartbeat = %d: %s", response.StatusCode, body)
+	}
+}
+
+// An operator can remove a runner that is offline and idle, such as an old
+// laptop, but not one that is online or still holds a running job.
+func TestRemoveRunnerForgetsOnlyAnIdleOfflineRunner(t *testing.T) {
+	f := newFixture(t)
+	run := f.queueRun(t)
+	operator := f.newToken(t, "alice", tickets.RoleOperator)
+	remove := func(name string) (*http.Response, []byte) {
+		return f.call(t, http.MethodDelete, "/api/v1/runners/"+name, operator, nil)
+	}
+	if response, body := remove("runner-1"); response.StatusCode != http.StatusConflict || !strings.Contains(string(body), "online") {
+		t.Fatalf("removing an online runner = %d: %s", response.StatusCode, body)
+	}
+	lastWeek := time.Now().Add(-7 * 24 * time.Hour)
+	f.store.SetClock(func() time.Time { return lastWeek })
+	for _, name := range []string{"runner-1", "old-laptop"} {
+		if err := f.store.RecordRunner(t.Context(), name, "local", []string{protocol.StepsHarness}, 1, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.store.SetClock(time.Now)
+	if response, body := remove("runner-1"); response.StatusCode != http.StatusConflict || !strings.Contains(string(body), "running jobs") {
+		t.Fatalf("removing a runner with run %s = %d: %s", run.RunID, response.StatusCode, body)
+	}
+	if response, body := remove("nobody"); response.StatusCode != http.StatusNotFound {
+		t.Fatalf("removing an unknown runner = %d: %s", response.StatusCode, body)
+	}
+	if response, body := f.call(t, http.MethodDelete, "/api/v1/runners/old-laptop", "", nil); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("removing without a token = %d: %s", response.StatusCode, body)
+	}
+	response, body := remove("old-laptop")
+	var fleet struct {
+		Runners []tickets.Runner `json:"runners"`
+	}
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &fleet) != nil || len(fleet.Runners) != 1 || fleet.Runners[0].Name != "runner-1" {
+		t.Fatalf("removing an idle offline runner = %d: %s", response.StatusCode, body)
+	}
+}
+
+// A queued job whose agents need a harness no online runner has says which
+// one it waits for, on the Runners page and on the job.
+func TestQueuedRunsSayWhichHarnessTheyWaitFor(t *testing.T) {
+	f := newFixture(t)
+	f.server.factory = &factory.Factory{
+		Presets: map[string]factory.Preset{
+			"default": {Name: "default", Steps: []runner.Step{{Name: "work", Run: "machinist agent implement"}}},
+			"review":  {Name: "review", Steps: []runner.Step{{Name: "review", Run: "machinist agent review\n# machinist agent agy"}}},
+		},
+		Agents: map[string]harness.Agent{
+			"implement": {Name: "implement", Harness: "claude"},
+			"review":    {Name: "review", Harness: "codex"},
+			"agy":       {Name: "agy", Harness: "agy"},
+		},
+	}
+	f.server.engine.Factory = f.server.factory
+	queue := func(key, preset string) tickets.Ticket {
+		t.Helper()
+		ticket, _, err := f.store.CreateTicket(t.Context(), tickets.NewTicket{Source: "api", Repo: "owner/repo", Title: key, Body: "Do it", Agent: preset, CreatedBy: "alice", SourceKey: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ticket
+	}
+	queue("first", "review")
+	review := queue("second", "review")
+	implement := queue("third", "default")
+	if err := f.server.engine.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	type fleetView struct {
+		Queue tickets.Queue `json:"queue"`
+	}
+	blocked := func() []tickets.HarnessWait {
+		t.Helper()
+		response, body := f.call(t, http.MethodGet, "/api/v1/runners", f.token, nil)
+		var fleet fleetView
+		if response.StatusCode != http.StatusOK || json.Unmarshal(body, &fleet) != nil {
+			t.Fatalf("%d: %s", response.StatusCode, body)
+		}
+		return fleet.Queue.Blocked
+	}
+	waitingFor := func(id string) []string {
+		t.Helper()
+		response, body := f.call(t, http.MethodGet, "/api/v1/tickets/"+id, f.token, nil)
+		var detail struct {
+			WaitingFor []string `json:"waiting_for"`
+		}
+		if response.StatusCode != http.StatusOK || json.Unmarshal(body, &detail) != nil {
+			t.Fatalf("%d: %s", response.StatusCode, body)
+		}
+		return detail.WaitingFor
+	}
+	if got := blocked(); len(got) != 0 {
+		t.Fatalf("with no runner online the queue waits for any runner, not a harness: %+v", got)
+	}
+	if err := f.store.RecordRunner(t.Context(), "laptop", "local", []string{protocol.StepsHarness, "claude"}, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := blocked(); len(got) != 1 || !slices.Equal(got[0].Harnesses, []string{"codex"}) || got[0].Waiting != 2 {
+		t.Fatalf("blocked = %+v", got)
+	}
+	if got := waitingFor(review.ID); !slices.Equal(got, []string{"codex"}) {
+		t.Fatalf("waiting_for = %v", got)
+	}
+	if got := waitingFor(implement.ID); got != nil {
+		t.Fatalf("a job an online runner can take waits for no harness: %v", got)
+	}
+	if err := f.store.RecordRunner(t.Context(), "laptop", "local", []string{protocol.StepsHarness, "claude", "codex"}, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := blocked(); len(got) != 0 {
+		t.Fatalf("blocked = %+v", got)
+	}
+}
+
+func TestMissingHarnessesNamesWhatTheClosestRunnerLacks(t *testing.T) {
+	probed := func(harnesses ...string) tickets.Runner { return tickets.Runner{Harnesses: harnesses, Probed: true} }
+	needs := []string{"agy", "claude", "codex"}
+	for _, test := range []struct {
+		name   string
+		online []tickets.Runner
+		want   []string
+	}{
+		{"no runner online", nil, nil},
+		{"a runner has them all", []tickets.Runner{probed("claude"), probed("agy", "claude", "codex")}, nil},
+		{"a runner that did not look may have them", []tickets.Runner{probed(), {}}, nil},
+		{"the closest runner", []tickets.Runner{probed("claude"), probed("agy", "claude"), probed("codex")}, []string{"codex"}},
+		{"the first of equals", []tickets.Runner{probed("claude"), probed("codex")}, []string{"agy", "codex"}},
+	} {
+		if got := missingHarnesses(test.online, needs); !slices.Equal(got, test.want) {
+			t.Errorf("%s: missing = %v, want %v", test.name, got, test.want)
+		}
+	}
+	if got := missingHarnesses([]tickets.Runner{probed()}, nil); got != nil {
+		t.Errorf("a job that needs nothing: missing = %v", got)
 	}
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { api, SignedOutError } from "./api.js";
+import { Source } from "./source-mark.jsx";
 import { dayLabel, doneRate, formatCount, formatMillis, formatPercent, formatTokens, niceMax, outcomes, ranges, runsOn, sparkPoints } from "./dashboard.js";
 
 const refreshMillis = 15_000;
@@ -68,13 +69,15 @@ function ColumnChart({ id, title, days, series }) {
   </section>;
 }
 
-function GroupTable({ id, title, groups }) {
+// GroupTable counts jobs by one thing, such as preset. name draws a group's
+// name, for groups that are more than text.
+function GroupTable({ id, title, groups = [], name = group => group.name }) {
   return <section className="panel group-table" aria-labelledby={id}>
     <h2 id={id} className="chart-title">{title}</h2>
     {groups.length ? <table>
       <thead><tr><th scope="col">Name</th><th scope="col">Jobs</th><th scope="col">Done</th><th scope="col">Failed</th><th scope="col">Done rate</th><th scope="col">Median run</th></tr></thead>
       <tbody>{groups.map(group => <tr key={group.name}>
-        <th scope="row">{group.name}</th>
+        <th scope="row">{name(group)}</th>
         <td>{formatCount(group.jobs.total)}</td>
         <td>{formatCount(group.jobs.done)}</td>
         <td>{formatCount(group.jobs.failed)}</td>
@@ -157,6 +160,7 @@ export function DashboardPage({ onSignedOut }) {
         <GroupTable id="presets-table" title="By preset" groups={current.presets} />
         <GroupTable id="repos-table" title="By repository" groups={current.repos} />
       </div>
+      <GroupTable id="sources-table" title="By source" groups={current.sources} name={group => <Source source={group.name} />} />
       <DailyTable days={current.daily} />
     </>}
   </div>;

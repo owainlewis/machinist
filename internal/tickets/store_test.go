@@ -542,7 +542,7 @@ func TestListTicketsLimitsToTheNewest(t *testing.T) {
 	for index := range maxListedTickets + 2 {
 		createTicket(t, store, fmt.Sprintf("api:%d", index))
 	}
-	listed, err := store.ListTickets(t.Context(), "", "")
+	listed, err := store.ListTickets(t.Context(), TicketFilter{})
 	if err != nil || len(listed) != maxListedTickets {
 		t.Fatalf("count = %d, err = %v", len(listed), err)
 	}
@@ -558,7 +558,7 @@ func TestListTicketsPutsANewerFinishedTicketFirst(t *testing.T) {
 	if _, err := store.Cancel(t.Context(), finished.ID, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	listed, err := store.ListTickets(t.Context(), "", "")
+	listed, err := store.ListTickets(t.Context(), TicketFilter{})
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("listed = %+v, err = %v", listed, err)
 	}
@@ -742,5 +742,100 @@ func TestTokenUseIsRecordedAtMostOncePerMinute(t *testing.T) {
 	tokens, err := store.ListTokens(t.Context())
 	if err != nil || len(tokens) != 1 || tokens[0].LastUsedAt == nil || !tokens[0].LastUsedAt.Equal(start.Add(122*time.Second)) {
 		t.Fatalf("tokens = %+v, err = %v", tokens, err)
+	}
+}
+
+// ENG-132: a run cancelled while running is only told to stop at its next
+// heartbeat. Running the job again before then must not revive it.
+func TestACancelledRunNeverLandsOnTheRerun(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:cancel-rerun")
+	old := claimRun(t, store, ticket).Run
+	if _, err := store.Cancel(t.Context(), ticket.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Rerun(t.Context(), ticket.ID, "alice"); !errors.Is(err, ErrStillWorking) {
+		t.Fatalf("rerun while the cancelled run is still going: err = %v", err)
+	}
+	if stop, err := store.RenewLease(t.Context(), old.ID, time.Now().Add(time.Minute)); err != nil || !stop {
+		t.Fatalf("stop = %v, err = %v", stop, err)
+	}
+
+	// Even with the ticket working again, the cancelled run stays cancelled.
+	if _, err := store.db.Exec(`UPDATE tickets SET state=? WHERE id=?`, StateWorking, ticket.ID); err != nil {
+		t.Fatal(err)
+	}
+	if stop, err := store.RenewLease(t.Context(), old.ID, time.Now().Add(time.Minute)); err != nil || !stop {
+		t.Fatalf("revived: stop = %v, err = %v", stop, err)
+	}
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: old.ID, Status: RunSucceeded}, completeTo(StatePRReady)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.Ticket(t.Context(), ticket.ID); got.State != StateWorking {
+		t.Fatalf("the cancelled run's result landed: state = %s", got.State)
+	}
+	if got, _ := store.Run(t.Context(), old.ID); got.Status != RunCancelled {
+		t.Fatalf("old run status = %s", got.Status)
+	}
+}
+
+func TestRerunWaitsForTheCancelledRunToEnd(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:cancel-wait")
+	old := claimRun(t, store, ticket).Run
+	if _, err := store.Cancel(t.Context(), ticket.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: old.ID, Status: RunCancelled}, completeTo(StateFailed)); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.Rerun(t.Context(), ticket.ID, "alice")
+	if err != nil || again.State != StateWorking {
+		t.Fatalf("ticket = %+v, err = %v", again, err)
+	}
+	next := claimRun(t, store, again).Run
+	if stop, err := store.RenewLease(t.Context(), next.ID, time.Now().Add(time.Minute)); err != nil || stop {
+		t.Fatalf("the rerun was told to stop: stop = %v, err = %v", stop, err)
+	}
+	completeRun(t, store, next.ID, StatePRReady)
+	if got, _ := store.Ticket(t.Context(), ticket.ID); got.State != StatePRReady {
+		t.Fatalf("state = %s", got.State)
+	}
+}
+
+func TestReplyAfterAMergeForgetsTheMergedPullRequest(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:reply-merged")
+	run := claimRun(t, store, ticket).Run
+	merged := time.Now().Add(-time.Hour)
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: run.ID, Status: RunSucceeded}, func(Ticket, string) Transition {
+		return Transition{State: StateDone, PRNumber: 7, MergedAt: &merged}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.Rerun(t.Context(), ticket.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.PRNumber != 0 || again.MergedAt != nil || again.PRState != "" {
+		t.Fatalf("stale pull request: number = %d, merged_at = %v, state = %q", again.PRNumber, again.MergedAt, again.PRState)
+	}
+}
+
+func TestReplyToAnOpenPullRequestKeepsIt(t *testing.T) {
+	store := openStore(t)
+	ticket := createTicket(t, store, "api:reply-open")
+	run := claimRun(t, store, ticket).Run
+	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: run.ID, Status: RunSucceeded}, func(Ticket, string) Transition {
+		return Transition{State: StatePRReady, PRNumber: 7}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.Reply(t.Context(), ticket.ID, "alice", []Comment{{Body: "Rename it."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.PRNumber != 7 {
+		t.Fatalf("pr_number = %d", again.PRNumber)
 	}
 }

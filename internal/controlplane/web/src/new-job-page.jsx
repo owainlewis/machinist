@@ -1,20 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronDown, Play } from "lucide-react";
+import { ArrowLeft, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { api, SignedOutError } from "./api.js";
 import { canStart, initialPreset, keyFor, runRequest, titleOf } from "./new-job.js";
 import { jobHref } from "./routes.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { HarnessMark } from "./harness-mark.jsx";
 import { presetAgents } from "./agents.js";
-
-// Select is a native select with one chevron of the app's own.
-function Select({ onChange, children, ...props }) {
-  return <span className="select-field">
-    <select className="field-control" onChange={event => onChange(event.target.value)} {...props}>{children}</select>
-    <ChevronDown className="select-field-chevron size-4" aria-hidden="true" />
-  </span>;
-}
 
 // NewJobPage starts a job through the run API, like curl or a tracker would.
 export function NewJobPage({ onSignedOut }) {

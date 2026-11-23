@@ -3,6 +3,7 @@ package tickets
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"strings"
 	"testing"
@@ -167,5 +168,73 @@ func TestFleetShowsWhatARunningJobIsDoing(t *testing.T) {
 	}
 	if job := ingest(started(9, "publish", "2026-11-10T09:05:00Z")); job.Step != "publish" || job.Action != "" {
 		t.Fatalf("a new step kept the last one's action: %+v", job)
+	}
+}
+
+func TestRemoveRunnerForgetsAnIdleOfflineRunner(t *testing.T) {
+	store := openStore(t)
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
+	for _, name := range []string{"old-laptop", "runner-1", "mac-mini"} {
+		if err := store.RecordRunner(t.Context(), name, "local", []string{"claude"}, 1, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimRun(t, store, createTicket(t, store, "api:1"))
+	now = now.Add(time.Hour)
+	if err := store.TouchRunner(t.Context(), "mac-mini"); err != nil {
+		t.Fatal(err)
+	}
+	onlineSince := now.Add(-time.Minute)
+
+	if err := store.RemoveRunner(t.Context(), "runner-1", onlineSince); !errors.Is(err, ErrRunnerBusy) {
+		t.Fatalf("removing a runner with a running job: err = %v", err)
+	}
+	if err := store.RemoveRunner(t.Context(), "mac-mini", onlineSince); !errors.Is(err, ErrRunnerOnline) {
+		t.Fatalf("removing an online runner: err = %v", err)
+	}
+	if err := store.RemoveRunner(t.Context(), "nobody", onlineSince); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("removing an unknown runner: err = %v", err)
+	}
+	if err := store.RemoveRunner(t.Context(), "old-laptop", onlineSince); err != nil {
+		t.Fatal(err)
+	}
+	runners, _ := fleet(t, store)
+	if len(runners) != 2 || runners[0].Name != "mac-mini" || runners[1].Name != "runner-1" {
+		t.Fatalf("runners = %+v", runners)
+	}
+	// A removed runner that asks for work again is back.
+	if err := store.RecordRunner(t.Context(), "old-laptop", "local", nil, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	if runners, _ := fleet(t, store); len(runners) != 3 {
+		t.Fatalf("runners = %+v", runners)
+	}
+}
+
+func TestQueuedPresetsCountsWaitingRunsByPreset(t *testing.T) {
+	store := openStore(t)
+	claimRun(t, store, createTicket(t, store, "api:1"))
+	for _, key := range []string{"api:2", "api:3"} {
+		if _, err := store.QueueRun(t.Context(), createTicket(t, store, key).ID, "steps"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := request("api:4")
+	other.Agent = "review"
+	ticket, _, err := store.CreateTicket(t.Context(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.QueueRun(t.Context(), ticket.ID, "steps"); err != nil {
+		t.Fatal(err)
+	}
+	presets, err := store.QueuedPresets(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	preset := request("api:5").Agent
+	if len(presets) != 2 || presets[preset] != 2 || presets["review"] != 1 {
+		t.Fatalf("presets = %v", presets)
 	}
 }

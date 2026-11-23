@@ -253,6 +253,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /machinist/jobs/{id}/rerun", s.requireToken(s.rerunJob))
 	mux.HandleFunc("POST /api/v1/runners/poll", s.requireRunner(s.poll))
 	mux.HandleFunc("GET /api/v1/runners", s.requireToken(s.listRunners))
+	mux.HandleFunc("DELETE /api/v1/runners/{name}", s.requireToken(s.removeRunner))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.requireRunner(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/runs/{id}/events", s.requireRunner(s.ingestEvents))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.requireRunner(s.complete))

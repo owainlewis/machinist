@@ -5,6 +5,19 @@ export function harnessLabel(harness = "") {
   return harnesses[harness] || harness;
 }
 
+// harnessList names harnesses for a sentence: "Codex", "Antigravity and Codex".
+export function harnessList(names = []) {
+  const labels = names.map(harnessLabel);
+  if (labels.length < 2) return labels.join("");
+  return `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
+}
+
+// waitingForRunner says what a queued job waits for: any runner, or one with
+// the harnesses no online runner has.
+export function waitingForRunner(harnesses = []) {
+  return harnesses.length ? `Waiting for a runner with ${harnessList(harnesses)}` : "Waiting for a runner";
+}
+
 // agentSummary says what runs an agent: its model, or the harness's default
 // model when the agent names none.
 export function agentSummary(agent) {

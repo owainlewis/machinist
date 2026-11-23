@@ -28,7 +28,7 @@ func TestAssignFromTextHasNoIssue(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("created = %v, err = %v", created, err)
 	}
-	if ticket.Source != "api" || ticket.IssueNumber != 0 || ticket.Title != "Add a thing" || ticket.CreatedBy != "alice" || ticket.Agent != "default" {
+	if ticket.Source != "api" || ticket.Origin != tickets.OriginAPI || ticket.SourceURL != "" || ticket.IssueNumber != 0 || ticket.Title != "Add a thing" || ticket.CreatedBy != "alice" || ticket.Agent != "default" {
 		t.Fatalf("ticket = %+v", ticket)
 	}
 	if len(github.Calls()) != 0 {
@@ -42,6 +42,9 @@ func TestAssignFromIssueReadsIt(t *testing.T) {
 	ticket, created, err := intake.Assign(t.Context(), AssignRequest{RequestID: "r1", Repo: "OWNER/repo", IssueNumber: 5}, "alice")
 	if err != nil || !created || ticket.IssueNumber != 5 || ticket.Title != "Broken login" || ticket.Repo != "owner/repo" {
 		t.Fatalf("ticket = %+v, created = %v, err = %v", ticket, created, err)
+	}
+	if ticket.Origin != tickets.OriginAPI || ticket.SourceURL != "https://github.com/owner/repo/issues/5" {
+		t.Fatalf("source = %q, link = %q", ticket.Origin, ticket.SourceURL)
 	}
 	entries, _ := intake.Store.Entries(t.Context(), ticket.ID)
 	if !strings.Contains(entries[0].Body, "Login fails on Safari") || entries[1].Kind != tickets.EntryMessage {

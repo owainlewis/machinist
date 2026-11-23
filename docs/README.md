@@ -30,6 +30,7 @@ Start with the [quick start](../README.md#quick-start).
 | [Development](development.md) | Build, test and contribute |
 | [Vision](../VISION.md) | See what Machinist is for, where it is, and what comes next |
 | [Design](designs/generic-runner.md) | Read the design: one API, presets of steps, runners |
+| [Job sources](designs/issue-sources.md) | See where jobs come from and how a new tracker plugs in |
 | [Earlier design](designs/machinist-redesign.md) | Read the GitHub-first design the code still follows |
 | [Examples](../examples/README.md) | See the files `machinist init` installs |
 | [Issue triage demo](issue-triage-demo.md) | See a standalone GitHub Actions demo |

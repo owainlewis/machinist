@@ -23,12 +23,16 @@ type job struct {
 	ID string `json:"id"`
 	// Key is the key the job was started with. A job from another source shows
 	// that source's key.
-	Key      string            `json:"key"`
-	Preset   string            `json:"preset"`
-	Vars     map[string]string `json:"vars"`
-	Title    string            `json:"title"`
-	State    string            `json:"state"`
-	PRNumber int               `json:"pr_number,omitempty"`
+	Key string `json:"key"`
+	// Source is where the job came from: web, api, schedule, or a tracker
+	// such as linear. SourceURL links to the original issue or message.
+	Source    string            `json:"source"`
+	SourceURL string            `json:"source_url,omitempty"`
+	Preset    string            `json:"preset"`
+	Vars      map[string]string `json:"vars"`
+	Title     string            `json:"title"`
+	State     string            `json:"state"`
+	PRNumber  int               `json:"pr_number,omitempty"`
 	// PRState is open, merged or closed, once the job has a pull request.
 	PRState string `json:"pr_state,omitempty"`
 	// CurrentStep is the preset step a running job is on, or empty.
@@ -77,6 +81,8 @@ func (s *Server) job(r *http.Request, ticket tickets.Ticket) (job, error) {
 	view := job{
 		ID:        ticket.ID,
 		Key:       key,
+		Source:    ticket.Origin,
+		SourceURL: ticket.SourceURL,
 		Preset:    ticket.Agent,
 		Vars:      map[string]string{"repo": ticket.Repo},
 		Title:     ticket.Title,
@@ -121,6 +127,7 @@ func (s *Server) runJob(w http.ResponseWriter, r *http.Request, tokenName string
 	if !decodeJSON(w, r, maxRequestBytes, &request) {
 		return
 	}
+	request.Origin = requestOrigin(r)
 	ticket, created, err := s.intake.Run(r.Context(), request, tokenName)
 	if err != nil {
 		writeTicketError(w, err)
@@ -133,8 +140,18 @@ func (s *Server) runJob(w http.ResponseWriter, r *http.Request, tokenName string
 	s.writeJob(w, r, status, ticket)
 }
 
+// requestOrigin is web for a request signed in with the web app's session
+// cookie, and api for one that sends its token in the Authorization header.
+func requestOrigin(r *http.Request) string {
+	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		return tickets.OriginAPI
+	}
+	return tickets.OriginWeb
+}
+
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request, _ string) {
-	found, err := s.store.ListTickets(r.Context(), "", r.URL.Query().Get("repo"))
+	query := r.URL.Query()
+	found, err := s.store.ListTickets(r.Context(), tickets.TicketFilter{Repo: query.Get("repo"), Source: query.Get("source")})
 	if err != nil {
 		writeTicketError(w, err)
 		return
