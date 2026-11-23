@@ -28,7 +28,7 @@ The reply is the job, with `201` when it was created and `200` when the key alre
 
 | Route | Does |
 | --- | --- |
-| `GET /machinist/jobs` | Lists the newest jobs. `?repo=owner/name` filters them |
+| `GET /machinist/jobs` | Lists the newest jobs. `?repo=owner/name` and `?source=linear` filter them |
 | `GET /machinist/jobs/{id}` | Returns one job |
 | `POST /machinist/jobs/{id}/cancel` | Stops it. Its pull request stays open |
 | `POST /machinist/jobs/{id}/rerun` | Runs an ended job again, on the same branch, and returns it |
@@ -39,6 +39,7 @@ A job looks like this:
 {
   "id": "t_cc205867de0efc0e",
   "key": "linear:ENG-142",
+  "source": "api",
   "preset": "default",
   "vars": {"repo": "owner/name"},
   "title": "Add a retry to the upload client. See ENG-142.",
@@ -56,6 +57,8 @@ A job looks like this:
 | --- | --- |
 | `id` | Machinist's ID for the job. Use it in the routes above |
 | `key` | The key the job was started with. A job that came from somewhere else, such as a schedule, shows that source's key |
+| `source` | Where the job came from: `web` for the web app, `api` for a call with a token such as `curl`, `schedule` for an automation, or a tracker such as `linear`. See [job sources](designs/issue-sources.md) |
+| `source_url` | The original issue or message, such as the Linear issue. Left out when there is none, as for a job started with `curl` |
 | `preset`, `vars`, `title` | What the job runs, as in the request |
 | `state` | Where the job is. See the table below |
 | `current_step` | The preset step a running job is on. Empty when the job is not running, or has not started a step yet |
