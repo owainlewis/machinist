@@ -153,8 +153,9 @@ The Go tests run whole jobs end to end with fake `claude` and `gh` commands and 
 Git remote. See [Development](docs/development.md).
 
 The default preset has a second agent review the change, fixes what the review found and
-reviews it again, then opens a pull request. The `machinist merge` step merges it once the
-repository's checks pass and the review accepted the change. That rule is code, so no agent
+reviews it again, then opens a pull request. The `machinist merge` step hands it to the
+control plane, which merges it once the repository's checks pass and the review accepted the
+change, so no runner waits on CI. That rule is code, so no agent
 decides what merges. Set `github.auto_merge: false` to leave every pull request open for a
 person. How the pull request is written is in `factory/agents/publish.md`.
 Branch protection still decides what can merge. See [Security](SECURITY.md) for what a step

@@ -45,8 +45,11 @@ with `result.md` as its summary. After a run, the control plane looks up the bra
 request, so a step that opens one needs to report nothing: an open pull request makes the
 job `pr_ready`, and a merged one leaves it `done`. `github.auto_merge` reaches every step as
 `MACHINIST_AUTO_MERGE`. The shipped preset ends with `machinist merge` (`internal/ship`), which
-merges only when it is `true`, the latest review in `review.json` is `accepted` and every check
-passed. A missing or invalid `review.json` leaves the pull request open. See
+hands the pull request to the control plane with the review's verdict and ends, so no runner
+waits on CI. The pull request watcher, `engine.CheckPRs`, then looks at its checks each round
+and merges it only when `github.auto_merge` is on, the latest review in `review.json` is
+`accepted` and every check passed. A failed check fails the job. A missing or invalid
+`review.json` leaves the pull request open. See
 [Factory files](docs/factory.md#presets).
 
 | State | Meaning |

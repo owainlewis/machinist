@@ -109,20 +109,27 @@ The shipped agents:
 The review is worth most from a different model family than the one that wrote the
 change. If Codex or agy is on your runners, set `harness: codex` or `harness: agy` in `agents/review.md`.
 
-The last step, `machinist merge`, is code, not an agent. It merges the pull request with
-`gh pr merge` when all of these hold, and otherwise leaves it open, says why in the result,
-and the job waits as `pr_ready` for a person:
+The last step, `machinist merge`, is code, not an agent. It reads `review.json`, hands the
+pull request to the control plane and ends at once, so the run is over and its runner slot is
+free while CI runs. The result says whether the pull request will merge or stays open, and
+why. The job is `pr_ready` while the control plane watches the checks, about once a minute.
+It merges the pull request with `gh pr merge` when all of these hold, and otherwise leaves it
+open for a person:
 
-- `github.auto_merge` is on.
+- `github.auto_merge` is on. The control plane checks its own setting, whatever a step says.
 - `review.json` is valid and its verdict is `accepted`. A missing review leaves the pull
   request open, unless the step is `machinist merge --without-review` in a preset with no
   review step.
-- Every check on the pull request passed. It waits for them, and for checks to start, up to
-  two and a half minutes, before it treats the repository as having none. A failed check
-  fails the job, even when the pull request would have stayed open anyway.
+- Every check on the pull request passed. The control plane waits for them, and for checks
+  to start, up to two and a half minutes, before it treats the repository as having none. A
+  failed check fails the job, even when the pull request would have stayed open anyway.
 
-It merges with the first of a merge commit, a squash and a rebase that the repository
-allows, so squash-only and rebase-only repositories work without a setting.
+The merge names the head commit whose checks passed, so GitHub refuses any other. A branch
+that fell behind its base is updated, up to three times, and every check must pass again on
+the new head. It merges with the first of a merge commit, a squash and a rebase that the
+repository allows, so squash-only and rebase-only repositories work without a setting. With a
+GitHub App the control plane merges with the app's token, and otherwise with its own
+`GH_TOKEN`, so that token needs to be able to merge.
 
 The reviser does not judge its own fixes. `scripts/review.sh` removes any `review.json`
 before the review runs, and fails the step if the review writes none. `scripts/revise.sh`

@@ -34,8 +34,10 @@ steps:
     timeout: 10m
     run: publish.sh
 
-  # Merges only when github.auto_merge is on, the review accepted the change
-  # and every check passed. This is code, not an agent.
+  # Hands the pull request to the control plane, which merges it only when
+  # github.auto_merge is on, the review accepted the change and every check
+  # passed. This is code, not an agent. It ends at once, so the runner never
+  # waits on CI.
   - name: merge
-    timeout: 30m
+    timeout: 5m
     run: machinist merge
