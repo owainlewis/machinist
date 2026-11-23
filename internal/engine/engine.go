@@ -35,6 +35,8 @@ type PR struct {
 	Merged bool
 	// ChangedAt is when it merged or closed, if GitHub said.
 	ChangedAt time.Time
+	// OpenedAt is when it was opened, if GitHub said.
+	OpenedAt time.Time
 }
 
 // BotEmail is the commit author email of every agent run.
@@ -45,6 +47,10 @@ type PRFinder func(ctx context.Context, repository, branch string) (*PR, error)
 
 // PullRequests returns what watching one pull request needs.
 type PullRequests func(repository string, number int) ship.GitHub
+
+// ReviewReader returns the reviews people submitted on a pull request,
+// leaving out bots'.
+type ReviewReader func(ctx context.Context, repository string, number int) (tickets.Reviews, error)
 
 // TokenMinter returns a short-lived GitHub token for one repository.
 type TokenMinter func(ctx context.Context, repository string) (string, error)
@@ -64,7 +70,10 @@ type Options struct {
 	// PullRequests reaches one pull request on GitHub, to wait for its checks
 	// and merge it. Without it, a pull request a run hands over stays open.
 	PullRequests PullRequests
-	Post         Poster
+	// Reviews, when set, reads who reviewed a pull request once it merges,
+	// for the dashboard.
+	Reviews ReviewReader
+	Post    Poster
 	// GitHubToken, when set, gives each run its own token for its repository.
 	// Without it, a runner uses its own GH_TOKEN.
 	GitHubToken TokenMinter
@@ -270,6 +279,12 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	if err != nil {
 		return err
 	}
+	var reviews *tickets.Reviews
+	if pr != nil && pr.Merged {
+		if reviews, err = e.readReviews(ctx, runID, pr.Number); err != nil {
+			return err
+		}
+	}
 	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: reached(report, pr), Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages, Patch: completion.Patch}, func(ticket tickets.Ticket, status string) tickets.Transition {
 		transition := decide(status, report, reason, pr)
 		if transition.State == tickets.StateFailed && len(completion.Patch) > 0 {
@@ -280,6 +295,9 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 		}
 		if transition.State == tickets.StatePRReady && completion.Ship != nil {
 			transition.Shipping = e.startWatch(*completion.Ship)
+		}
+		if transition.MergedAt != nil {
+			transition.Reviews = reviews
 		}
 		return transition
 	})
@@ -343,12 +361,37 @@ func (e *Engine) findPR(ctx context.Context, runID string) (*PR, error) {
 	return e.FindPR(ctx, ticket.Repo, ticket.Branch())
 }
 
+// readReviews reads the reviews of a run's merged pull request. Nil means
+// they were not read.
+func (e *Engine) readReviews(ctx context.Context, runID string, number int) (*tickets.Reviews, error) {
+	if e.Reviews == nil {
+		return nil, nil
+	}
+	run, err := e.Store.Run(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	ticket, err := e.Store.Ticket(ctx, run.TicketID)
+	if err != nil {
+		return nil, err
+	}
+	reviews, err := e.Reviews(ctx, ticket.Repo, number)
+	if err != nil {
+		return nil, err
+	}
+	return &reviews, nil
+}
+
 // decide is the state table for the end of a run. A job ends done, with a pull
 // request or without one, or failed. It never waits for a person.
 func decide(status string, report *protocol.Report, reason string, pr *PR) tickets.Transition {
 	transition := tickets.Transition{}
 	if pr != nil {
 		transition.PRNumber = pr.Number
+		if !pr.OpenedAt.IsZero() {
+			opened := pr.OpenedAt
+			transition.PROpenedAt = &opened
+		}
 	}
 	if status == tickets.RunInterrupted {
 		transition.State = tickets.StateWorking

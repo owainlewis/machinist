@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -218,8 +219,9 @@ type PRRef struct {
 	Number int
 	State  string
 	// MergedAt and ClosedAt are zero until the PR merges or closes.
-	MergedAt time.Time
-	ClosedAt time.Time
+	MergedAt  time.Time
+	ClosedAt  time.Time
+	CreatedAt time.Time
 }
 
 // FindPR returns the open PR for a branch, or otherwise the newest. PRs from
@@ -228,7 +230,7 @@ func (c *Client) FindPR(ctx context.Context, repository, branch string) (*PRRef,
 	if err := validRepository(repository); err != nil {
 		return nil, err
 	}
-	output, err := c.run(ctx, repository, "find PR", nil, "pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--limit", "100", "--json", "number,state,isCrossRepository,mergedAt,closedAt")
+	output, err := c.run(ctx, repository, "find PR", nil, "pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--limit", "100", "--json", "number,state,isCrossRepository,mergedAt,closedAt,createdAt")
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +240,7 @@ func (c *Client) FindPR(ctx context.Context, repository, branch string) (*PRRef,
 		IsCrossRepository bool       `json:"isCrossRepository"`
 		MergedAt          *time.Time `json:"mergedAt"`
 		ClosedAt          *time.Time `json:"closedAt"`
+		CreatedAt         *time.Time `json:"createdAt"`
 	}
 	if err := decode("find PR", output, &candidates); err != nil {
 		return nil, err
@@ -253,6 +256,9 @@ func (c *Client) FindPR(ctx context.Context, repository, branch string) (*PRRef,
 		}
 		if candidate.ClosedAt != nil {
 			reference.ClosedAt = *candidate.ClosedAt
+		}
+		if candidate.CreatedAt != nil {
+			reference.CreatedAt = *candidate.CreatedAt
 		}
 		if reference.State == StateOpen {
 			return reference, nil
@@ -365,6 +371,52 @@ func (c *Client) UpdateBranch(ctx context.Context, repository string, number int
 	}
 	_, err := c.run(ctx, repository, "update branch", nil, "pr", "update-branch", strconv.Itoa(number), "--repo", repository)
 	return err
+}
+
+// Review is one submitted review of a PR.
+type Review struct {
+	Login       string
+	Bot         bool
+	SubmittedAt time.Time
+}
+
+// Reviews lists a PR's submitted reviews, oldest first. Pending reviews,
+// which only their author can see, are left out.
+func (c *Client) Reviews(ctx context.Context, repository string, number int) ([]Review, error) {
+	if err := validRepository(repository); err != nil {
+		return nil, err
+	}
+	output, err := c.run(ctx, repository, "list reviews", nil, "api", "--method", "GET", "--paginate", "--slurp", fmt.Sprintf("repos/%s/pulls/%d/reviews?per_page=100", repository, number))
+	if err != nil {
+		return nil, err
+	}
+	var pages [][]struct {
+		User *struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"user"`
+		State       string     `json:"state"`
+		SubmittedAt *time.Time `json:"submitted_at"`
+	}
+	if err := decode("list reviews", output, &pages); err != nil {
+		return nil, err
+	}
+	reviews := []Review{}
+	for _, page := range pages {
+		for _, review := range page {
+			if review.State == "PENDING" || review.SubmittedAt == nil {
+				continue
+			}
+			found := Review{SubmittedAt: *review.SubmittedAt}
+			if review.User != nil {
+				found.Login = review.User.Login
+				found.Bot = review.User.Type == "Bot" || strings.HasSuffix(review.User.Login, "[bot]")
+			}
+			reviews = append(reviews, found)
+		}
+	}
+	slices.SortStableFunc(reviews, func(a, b Review) int { return a.SubmittedAt.Compare(b.SubmittedAt) })
+	return reviews, nil
 }
 
 // TokenScopes returns the classic token scopes reported by GitHub. Fine-grained

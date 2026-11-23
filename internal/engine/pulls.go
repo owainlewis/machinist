@@ -108,7 +108,8 @@ func (e *Engine) wait(ctx context.Context, d time.Duration) bool {
 }
 
 // CheckPRs asks GitHub about the pull request on each job's branch while it is
-// open, one call per job, and records when it merges or closes. Machinist
+// open, one call per job, and records when it merges or closes. When one
+// merges, it also reads who reviewed it. Machinist
 // finds the pull request by the branch it named, never by asking the agent.
 func (e *Engine) CheckPRs(ctx context.Context) error {
 	if e.FindPR == nil {
@@ -138,7 +139,15 @@ func (e *Engine) CheckPRs(ctx context.Context) error {
 		if at.IsZero() {
 			at = e.now()
 		}
-		ticket, same, err := e.Store.SetPRState(ctx, listed, pr.Number, state, at)
+		update := tickets.PRUpdate{Number: pr.Number, State: state, At: at, OpenedAt: pr.OpenedAt}
+		if state == tickets.PRMerged && e.Reviews != nil {
+			reviews, err := e.Reviews(ctx, listed.Repo, pr.Number)
+			if err != nil {
+				return fmt.Errorf("job %s: reviews: %w", listed.ID, err)
+			}
+			update.Reviews = &reviews
+		}
+		ticket, same, err := e.Store.SetPRState(ctx, listed, update)
 		if err != nil {
 			return fmt.Errorf("job %s: %w", listed.ID, err)
 		}

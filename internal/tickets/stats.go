@@ -6,6 +6,8 @@ import (
 	"slices"
 	"sort"
 	"time"
+
+	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 // JobCounts counts jobs by where they are now.
@@ -32,13 +34,55 @@ type Spread struct {
 	P90    *int64 `json:"p90"`
 }
 
-// StatsDay is one UTC day: the jobs created and the runs that ended.
+// StatsDay is one UTC day: the jobs created, the runs that ended, the pull
+// requests opened and merged, and how many times each step ran.
 type StatsDay struct {
 	Day       string `json:"day"`
 	Jobs      int    `json:"jobs"`
 	Succeeded int    `json:"succeeded"`
 	Failed    int    `json:"failed"`
 	Cancelled int    `json:"cancelled"`
+	Opened    int    `json:"opened"`
+	Merged    int    `json:"merged"`
+	// Steps counts the steps of the runs that ended this day, by step name.
+	// A step that was skipped did not run.
+	Steps map[string]int `json:"steps"`
+}
+
+// PRCounts counts the pull requests opened and merged in the range.
+type PRCounts struct {
+	Opened int `json:"opened"`
+	Merged int `json:"merged"`
+	// MergeRate is the share of the pull requests opened in the range that
+	// have merged, from 0 to 1. It is nil when none was opened.
+	MergeRate *float64 `json:"merge_rate"`
+}
+
+// Cycle is how long the jobs whose pull request merged in the range took,
+// from the job starting to its pull request merging, and where the time went.
+// A job that merged without a review from a person has no review times.
+type Cycle struct {
+	Merged   int `json:"merged"`
+	Reviewed int `json:"reviewed"`
+	// ToMerge is started to merged, ToPR started to pull request opened,
+	// ToReview pull request opened to its first review from a person, and
+	// ReviewToMerge that review to merged.
+	ToMerge       Spread `json:"to_merge"`
+	ToPR          Spread `json:"to_pr"`
+	ToReview      Spread `json:"to_review"`
+	ReviewToMerge Spread `json:"review_to_merge"`
+}
+
+// Touches counts the times a person stepped in on the jobs whose pull request
+// merged in the range, up to the merge: replies that ran the job again,
+// reruns, and reviews from people. Fewer is better.
+type Touches struct {
+	Replies int `json:"replies"`
+	Reruns  int `json:"reruns"`
+	Reviews int `json:"reviews"`
+	// PerPR is all touches over the merged pull requests. It is nil when none
+	// merged.
+	PerPR *float64 `json:"per_pr"`
 }
 
 // StatsGroup is the jobs created for one preset, repository or source.
@@ -66,6 +110,11 @@ type Stats struct {
 	Repos       []StatsGroup `json:"repos"`
 	// Sources groups the jobs by where they came from, such as web or linear.
 	Sources []StatsGroup `json:"sources"`
+	PRs     PRCounts     `json:"prs"`
+	Cycle   Cycle        `json:"cycle"`
+	Touches Touches      `json:"touches"`
+	// Steps names every step that ran in the range, the most run first.
+	Steps []string `json:"steps"`
 }
 
 func countJob(counts *JobCounts, state string) {
@@ -91,7 +140,7 @@ func (s *Store) Stats(ctx context.Context, days int) (Stats, error) {
 	index := map[string]int{}
 	for day := first; !day.After(today); day = day.AddDate(0, 0, 1) {
 		index[day.Format(time.DateOnly)] = len(stats.Daily)
-		stats.Daily = append(stats.Daily, StatsDay{Day: day.Format(time.DateOnly)})
+		stats.Daily = append(stats.Daily, StatsDay{Day: day.Format(time.DateOnly), Steps: map[string]int{}})
 	}
 	presets, repos, sources := map[string]*StatsGroup{}, map[string]*StatsGroup{}, map[string]*StatsGroup{}
 	group := func(groups map[string]*StatsGroup, name string) *StatsGroup {
@@ -193,7 +242,150 @@ func (s *Store) Stats(ctx context.Context, days int) (Stats, error) {
 	stats.Presets = groups(presets, presetLengths)
 	stats.Repos = groups(repos, repoLengths)
 	stats.Sources = groups(sources, sourceLengths)
+	if err := s.pullRequestStats(ctx, &stats, first, index); err != nil {
+		return Stats{}, err
+	}
+	if err := s.stepStats(ctx, &stats, first, index); err != nil {
+		return Stats{}, err
+	}
 	return stats, nil
+}
+
+// pullRequestStats fills in the pull requests, cycle times and human touches.
+// Every number comes from times Machinist stored: when the job was created,
+// when GitHub says its pull request opened and merged, when the first person
+// reviewed it, and when someone replied or ran it again.
+func (s *Store) pullRequestStats(ctx context.Context, stats *Stats, first time.Time, index map[string]int) error {
+	since := stamp(first)
+	opened, err := s.db.QueryContext(ctx, `SELECT substr(pr_opened_at,1,10),merged_at IS NOT NULL FROM tickets WHERE pr_opened_at>=?`, since)
+	if err != nil {
+		return err
+	}
+	defer opened.Close()
+	openedMerged := 0
+	for opened.Next() {
+		var day string
+		var merged bool
+		if err := opened.Scan(&day, &merged); err != nil {
+			return err
+		}
+		stats.PRs.Opened++
+		if merged {
+			openedMerged++
+		}
+		if i, ok := index[day]; ok {
+			stats.Daily[i].Opened++
+		}
+	}
+	if err := opened.Err(); err != nil {
+		return err
+	}
+	if stats.PRs.Opened > 0 {
+		rate := float64(openedMerged) / float64(stats.PRs.Opened)
+		stats.PRs.MergeRate = &rate
+	}
+
+	merged, err := s.db.QueryContext(ctx, `SELECT created_at,pr_opened_at,first_review_at,merged_at,COALESCE(human_reviews,0) FROM tickets WHERE merged_at>=?`, since)
+	if err != nil {
+		return err
+	}
+	defer merged.Close()
+	var toMerge, toPR, toReview, reviewToMerge []int64
+	between := func(from, to *time.Time) int64 { return max(to.Sub(*from).Milliseconds(), 0) }
+	for merged.Next() {
+		var created, prOpened, reviewed, mergedAt sql.NullString
+		var reviews int
+		if err := merged.Scan(&created, &prOpened, &reviewed, &mergedAt, &reviews); err != nil {
+			return err
+		}
+		startedAt, openedAt, reviewedAt, mergedTime := parseTime(created), parseTime(prOpened), parseTime(reviewed), parseTime(mergedAt)
+		stats.PRs.Merged++
+		stats.Cycle.Merged++
+		stats.Touches.Reviews += reviews
+		if i, ok := index[mergedTime.Format(time.DateOnly)]; ok {
+			stats.Daily[i].Merged++
+		}
+		toMerge = append(toMerge, between(startedAt, mergedTime))
+		if openedAt != nil {
+			toPR = append(toPR, between(startedAt, openedAt))
+		}
+		if reviewedAt != nil {
+			stats.Cycle.Reviewed++
+			reviewToMerge = append(reviewToMerge, between(reviewedAt, mergedTime))
+			if openedAt != nil {
+				toReview = append(toReview, between(openedAt, reviewedAt))
+			}
+		}
+	}
+	if err := merged.Err(); err != nil {
+		return err
+	}
+	stats.Cycle.ToMerge, stats.Cycle.ToPR = spread(toMerge), spread(toPR)
+	stats.Cycle.ToReview, stats.Cycle.ReviewToMerge = spread(toReview), spread(reviewToMerge)
+
+	touches, err := s.db.QueryContext(ctx, `SELECT h.kind,COUNT(*) FROM human_touches h JOIN tickets t ON t.id=h.ticket_id
+  WHERE t.merged_at>=? AND h.at<=t.merged_at GROUP BY h.kind`, since)
+	if err != nil {
+		return err
+	}
+	defer touches.Close()
+	for touches.Next() {
+		var kind string
+		var count int
+		if err := touches.Scan(&kind, &count); err != nil {
+			return err
+		}
+		switch kind {
+		case TouchReply:
+			stats.Touches.Replies += count
+		case TouchRerun:
+			stats.Touches.Reruns += count
+		}
+	}
+	if err := touches.Err(); err != nil {
+		return err
+	}
+	if stats.Cycle.Merged > 0 {
+		perPR := float64(stats.Touches.Replies+stats.Touches.Reruns+stats.Touches.Reviews) / float64(stats.Cycle.Merged)
+		stats.Touches.PerPR = &perPR
+	}
+	return nil
+}
+
+// stepStats counts the steps that ran, by the day their run ended.
+func (s *Store) stepStats(ctx context.Context, stats *Stats, first time.Time, index map[string]int) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT substr(r.ended_at,1,10),s.name,COUNT(*) FROM run_stages s JOIN runs r ON r.id=s.run
+  WHERE r.ended_at>=? AND s.state<>? GROUP BY 1,2`, stamp(first), protocol.StageSkipped)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	totals := map[string]int{}
+	for rows.Next() {
+		var day, name string
+		var count int
+		if err := rows.Scan(&day, &name, &count); err != nil {
+			return err
+		}
+		totals[name] += count
+		if i, ok := index[day]; ok {
+			stats.Daily[i].Steps[name] += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	stats.Steps = make([]string, 0, len(totals))
+	for name := range totals {
+		stats.Steps = append(stats.Steps, name)
+	}
+	sort.Slice(stats.Steps, func(a, b int) bool {
+		if totals[stats.Steps[a]] != totals[stats.Steps[b]] {
+			return totals[stats.Steps[a]] > totals[stats.Steps[b]]
+		}
+		return stats.Steps[a] < stats.Steps[b]
+	})
+	return nil
 }
 
 func spread(values []int64) Spread {

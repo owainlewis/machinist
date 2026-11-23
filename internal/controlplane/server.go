@@ -85,6 +85,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		PullRequests: func(repository string, number int) ship.GitHub {
 			return pullRequest{client: client, repository: repository, number: number}
 		},
+		Reviews:     humanReviews(client),
 		Post:        client.PostComment,
 		GitHubToken: tokens,
 		Identity:    identity,
@@ -219,7 +220,7 @@ func findPR(client *ghclient.Client) engine.PRFinder {
 		if err != nil || found == nil {
 			return nil, err
 		}
-		pr := &engine.PR{Number: found.Number, Closed: found.State == ghclient.StateClosed, Merged: found.State == ghclient.StateMerged}
+		pr := &engine.PR{Number: found.Number, Closed: found.State == ghclient.StateClosed, Merged: found.State == ghclient.StateMerged, OpenedAt: found.CreatedAt}
 		if pr.Merged {
 			pr.ChangedAt = found.MergedAt
 		} else if pr.Closed {
@@ -271,6 +272,33 @@ func githubAnswer(err error) error {
 // SetPRInterval changes how often open pull requests are checked. Tests use it.
 func (s *Server) SetPRInterval(interval time.Duration) {
 	s.engine.PRInterval = interval
+}
+
+// humanReviews counts the reviews people submitted on a pull request. Bots'
+// reviews, such as an AI reviewer's, do not count as a person stepping in.
+func humanReviews(client *ghclient.Client) engine.ReviewReader {
+	return func(ctx context.Context, repository string, number int) (tickets.Reviews, error) {
+		found, err := client.Reviews(ctx, repository, number)
+		if err != nil {
+			return tickets.Reviews{}, err
+		}
+		return countHumanReviews(found), nil
+	}
+}
+
+func countHumanReviews(found []ghclient.Review) tickets.Reviews {
+	var reviews tickets.Reviews
+	for _, review := range found {
+		if review.Bot {
+			continue
+		}
+		if reviews.First == nil {
+			at := review.SubmittedAt
+			reviews.First = &at
+		}
+		reviews.Count++
+	}
+	return reviews
 }
 
 // SetPollInterval changes how often schedules are checked. Tests use it.

@@ -26,6 +26,19 @@ func (s *Store) TicketsWithOpenPRs(ctx context.Context) ([]Ticket, error) {
 	return found, rows.Err()
 }
 
+// PRUpdate is what GitHub says about a job's pull request.
+type PRUpdate struct {
+	Number int
+	State  string
+	// At is when the pull request merged or closed, or now while it is open.
+	At time.Time
+	// OpenedAt is when the pull request was opened. Zero means GitHub did not say.
+	OpenedAt time.Time
+	// Reviews, when set, are the people's reviews. Machinist reads them once,
+	// when the pull request merges.
+	Reviews *Reviews
+}
+
 // SetPRState records what GitHub says about a job's pull request. listed is
 // the job as TicketsWithOpenPRs returned it. A merged or closed pull request
 // ends the job as done. A job that has changed since it was listed, such as
@@ -35,7 +48,7 @@ func (s *Store) TicketsWithOpenPRs(ctx context.Context) ([]Ticket, error) {
 // It returns the job as it now stands, and false when the job had changed,
 // so the caller acts on nothing it listed. The job returned carries any new
 // pr_state_at, so a later SetShipping matches it.
-func (s *Store) SetPRState(ctx context.Context, listed Ticket, number int, state string, at time.Time) (Ticket, bool, error) {
+func (s *Store) SetPRState(ctx context.Context, listed Ticket, update PRUpdate) (Ticket, bool, error) {
 	ticketID := listed.ID
 	var current Ticket
 	var same bool
@@ -49,21 +62,31 @@ func (s *Store) SetPRState(ctx context.Context, listed Ticket, number int, state
 			return nil
 		}
 		same = true
-		if state == PROpen && number == ticket.PRNumber && ticket.PRState == PROpen {
-			return nil
+		if !update.OpenedAt.IsZero() {
+			// GitHub's time is the true one, so it replaces the time Machinist
+			// first saw the pull request.
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_opened_at=? WHERE id=?`, stamp(update.OpenedAt), ticketID); err != nil {
+				return err
+			}
 		}
-		if state == PROpen {
-			_, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=?,pr_state=?,pr_state_at=?,updated_at=? WHERE id=?`, number, PROpen, stamp(at), stamp(s.now()), ticketID)
+		if update.State == PROpen {
+			if update.Number != ticket.PRNumber || ticket.PRState != PROpen {
+				if _, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=?,pr_state=?,pr_state_at=?,updated_at=? WHERE id=?`, update.Number, PROpen, stamp(update.At), stamp(s.now()), ticketID); err != nil {
+					return err
+				}
+			}
 		} else {
 			var merged any
-			if state == PRMerged {
-				merged = stamp(at)
+			if update.State == PRMerged {
+				merged = stamp(update.At)
 			}
-			_, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=?,pr_state=?,pr_state_at=?,merged_at=COALESCE(?,merged_at),shipping=NULL,updated_at=? WHERE id=?`,
-				StateDone, number, state, stamp(at), merged, stamp(s.now()), ticketID)
-		}
-		if err != nil {
-			return err
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=?,pr_state=?,pr_state_at=?,merged_at=COALESCE(?,merged_at),shipping=NULL,updated_at=? WHERE id=?`,
+				StateDone, update.Number, update.State, stamp(update.At), merged, stamp(s.now()), ticketID); err != nil {
+				return err
+			}
+			if err = setReviews(ctx, tx, ticketID, update.Reviews); err != nil {
+				return err
+			}
 		}
 		current, err = loadTicket(ctx, tx, ticketID)
 		return err
@@ -136,6 +159,20 @@ func (s *Store) StillShipping(ctx context.Context, listed Ticket) (bool, error) 
 		return nil
 	})
 	return ok, err
+}
+
+// setReviews records the people's reviews of a job's pull request. Nil
+// leaves what is stored.
+func setReviews(ctx context.Context, q querier, ticketID string, reviews *Reviews) error {
+	if reviews == nil {
+		return nil
+	}
+	var first any
+	if reviews.First != nil {
+		first = stamp(*reviews.First)
+	}
+	_, err := q.ExecContext(ctx, `UPDATE tickets SET human_reviews=?,first_review_at=? WHERE id=?`, reviews.Count, first, ticketID)
+	return err
 }
 
 func sameTime(a, b *time.Time) bool {

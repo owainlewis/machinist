@@ -56,7 +56,7 @@ func TestAPRResultFromBeforeARerunIsIgnored(t *testing.T) {
 	if err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 8}); err != nil {
 		t.Fatal(err)
 	}
-	if _, same, err := store.SetPRState(ctx, listed[0], 7, PRMerged, now); err != nil || same {
+	if _, same, err := store.SetPRState(ctx, listed[0], PRUpdate{Number: 7, State: PRMerged, At: now}); err != nil || same {
 		t.Fatalf("same = %v, err = %v", same, err)
 	}
 	got, err := store.Ticket(ctx, ticket.ID)
