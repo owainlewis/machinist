@@ -55,6 +55,8 @@
   --ring: #4c6ef5;
   --chart-1: #4c6ef5;
   --chart-2: #dd6b20;
+  --chart-3: #199e70;
+  --chart-4: #c26bd6;
 }
 
 * { border-color: var(--border); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
@@ -343,6 +345,17 @@ a.source:hover span { text-decoration: underline; }
 .sparkline polyline { fill: none; stroke: var(--info); stroke-width: 1.5; stroke-linejoin: round; }
 .stat-value { margin-top: 6px; font-size: 24px; line-height: 1.2; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
 .stat-detail { margin-top: 4px; color: var(--muted-foreground); font-size: 13px; }
+.dashboard-section { display: flex; flex-direction: column; gap: 10px; }
+.dashboard-section > .label { margin: 0; }
+.stat-tiles-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1180px) { .stat-tiles-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .stat-tiles-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.chart-note { color: var(--muted-foreground); font-size: 12px; }
+.chart-note b { color: var(--foreground); font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-lines { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.chart-lines polyline { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-columns.chart-flush, .chart-dates.chart-flush { gap: 0; }
+.chart-marker { position: absolute; width: 8px; height: 8px; transform: translate(-50%, -50%); border-radius: 50%; box-shadow: 0 0 0 2px var(--surface); pointer-events: none; }
 .chart-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .chart-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
 .chart-title { font-size: 14px; font-weight: 600; }
