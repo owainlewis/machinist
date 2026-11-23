@@ -334,7 +334,7 @@ func (p *polling) poll(t *testing.T) {
 
 func (p *polling) tickets(t *testing.T) []tickets.Ticket {
 	t.Helper()
-	listed, err := p.store.ListTickets(t.Context(), "", "")
+	listed, err := p.store.ListTickets(t.Context(), tickets.TicketFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,6 +354,9 @@ func TestAnAssignmentStartsOneJob(t *testing.T) {
 	job := listed[0]
 	if job.Source != "linear" || job.Repo != "owner/repo" || job.Agent != "default" || job.Title != "Fix a1" || job.CreatedBy != "linear" {
 		t.Fatalf("job = %+v", job)
+	}
+	if job.Origin != "linear" || job.SourceURL != "https://linear.app/x/issue/a1" {
+		t.Fatalf("source = %q, link = %q", job.Origin, job.SourceURL)
 	}
 	entries, _ := p.store.Entries(t.Context(), job.ID)
 	if prompt := entries[0].Body; !strings.Contains(prompt, "The details of a1") || !strings.Contains(prompt, "https://linear.app/x/issue/a1") {
@@ -980,6 +983,55 @@ func TestRunningAMergedJobAgainMovesItsIssueBackToInProgress(t *testing.T) {
 	}
 	if got := p.state(t, job.ID); got != tickets.StateWorking {
 		t.Fatalf("job state = %q", got)
+	}
+}
+
+func TestRunningAJobAgainAfterItsPullRequestEndedCommentsTheNewOne(t *testing.T) {
+	for _, ended := range []string{tickets.PRMerged, tickets.PRClosed} {
+		t.Run(ended, func(t *testing.T) {
+			p := newPolling(t)
+			job := p.started(t)
+			if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.setPR(t, job.ID, ended); err != nil {
+				t.Fatal(err)
+			}
+			p.poll(t)
+			before := len(p.linear.news("a1"))
+			if _, err := p.store.Rerun(t.Context(), job.ID, "owain"); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 8}); err != nil {
+				t.Fatal(err)
+			}
+			p.poll(t)
+			p.poll(t)
+			got := p.linear.news("a1")[before:]
+			if len(got) != 1 || got[0] != "Machinist opened a pull request: https://github.com/owner/repo/pull/8" {
+				t.Fatalf("comments after the rerun = %v", got)
+			}
+		})
+	}
+}
+
+func TestRunningAJobAgainOnItsOpenPullRequestDoesNotCommentItAgain(t *testing.T) {
+	p := newPolling(t)
+	job := p.started(t)
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	if _, err := p.store.Rerun(t.Context(), job.ID, "owain"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+	p.poll(t)
+	if got := p.linear.news("a1"); len(got) != 1 {
+		t.Fatalf("comments = %v", got)
 	}
 }
 

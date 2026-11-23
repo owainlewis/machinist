@@ -66,7 +66,9 @@ The full state table is in the
 ## Intake
 
 Work comes from the Assign box, the [run API](docs/run-api.md) at `POST /machinist/run`,
-automation schedules and [Linear](docs/linear.md). A tracker such as Linear is a
+automation schedules and [Linear](docs/linear.md). Each job records its source (`web`,
+`api`, `schedule` or the tracker's name) and a link to the original issue, which the UI
+shows and filters by; see [job sources](docs/designs/issue-sources.md). A tracker such as Linear is a
 `sources.Tracker`: a `sources.Poller` asks it for new assignments every minute, starts their
 jobs through the same intake, and writes each job's news back once (In Progress with an
 acknowledgement, the pull request link, Done on merge, a comment on close, the result when

@@ -98,7 +98,7 @@ func TestListTicketsFiltersNewestFirst(t *testing.T) {
 func TestGetTicketReturnsEntriesRunsAndFigures(t *testing.T) {
 	f := newFixture(t)
 	f.queueRun(t)
-	listed, err := f.store.ListTickets(t.Context(), "", "")
+	listed, err := f.store.ListTickets(t.Context(), tickets.TicketFilter{})
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("listed = %+v, err = %v", listed, err)
 	}
@@ -342,5 +342,35 @@ func TestPresetsRouteListsEachPresetsSteps(t *testing.T) {
 	}
 	if response, _ := f.call(t, http.MethodGet, "/api/v1/presets", "", nil); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("signed out status = %d", response.StatusCode)
+	}
+}
+
+// ENG-132: Run again straight after Cancel must not revive the cancelled run.
+func TestRerunConflictsUntilTheCancelledRunStops(t *testing.T) {
+	f := newFixture(t)
+	run := f.queueRun(t)
+	ticketPath := "/api/v1/tickets/" + run.TicketID
+	runPath := "/api/v1/runs/" + run.RunID
+	if response, body := f.call(t, http.MethodPost, ticketPath+"/cancel", f.token, nil); response.StatusCode != http.StatusOK {
+		t.Fatalf("cancel = %d: %s", response.StatusCode, body)
+	}
+	if response, body := f.call(t, http.MethodPost, ticketPath+"/rerun", f.token, nil); response.StatusCode != http.StatusConflict {
+		t.Fatalf("rerun while the run is still going = %d: %s", response.StatusCode, body)
+	}
+	response, body := f.call(t, http.MethodPost, runPath+"/heartbeat", f.token, struct{}{})
+	var beat protocol.HeartbeatResponse
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &beat) != nil || !beat.Cancel {
+		t.Fatalf("heartbeat = %d: %s", response.StatusCode, body)
+	}
+	completion := protocol.Completion{State: tickets.RunSucceeded, Report: &protocol.Report{Outcome: "no_change", Summary: "Old result"}}
+	if response, body := f.call(t, http.MethodPost, runPath+"/complete", f.token, completion); response.StatusCode != http.StatusNoContent {
+		t.Fatalf("complete = %d: %s", response.StatusCode, body)
+	}
+	response, body = f.call(t, http.MethodPost, ticketPath+"/rerun", f.token, nil)
+	if response.StatusCode != http.StatusOK || decodeTicket(t, body).State != tickets.StateWorking {
+		t.Fatalf("rerun = %d: %s", response.StatusCode, body)
+	}
+	if report, err := f.store.LastReport(t.Context(), run.TicketID); err != nil || report != "" {
+		t.Fatalf("the cancelled run's report landed: %q, %v", report, err)
 	}
 }

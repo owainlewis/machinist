@@ -115,3 +115,87 @@ export function linkParts(text = "") {
   if (at < text.length) parts.push({ text: text.slice(at) });
   return parts;
 }
+
+// Where a job came from, as the API names it: the web app, the run API, a
+// schedule, or a tracker such as Linear. A tracker added later shows its own
+// name until it gets a label here.
+export const sourceLabels = {
+  web: "Web",
+  api: "API",
+  schedule: "Schedule",
+  linear: "Linear",
+  jira: "Jira",
+  github: "GitHub",
+  slack: "Slack",
+};
+
+const sourceOrder = Object.keys(sourceLabels);
+
+export function sourceLabel(source) {
+  if (!source) return "Unknown";
+  return sourceLabels[source] || source.charAt(0).toUpperCase() + source.slice(1);
+}
+
+// sourceLink is the original issue or message, if the job has one. Only a web
+// link is followed, so stored text can never become script.
+export function sourceLink(ticket) {
+  const link = ticket?.source_url || "";
+  return /^https?:\/\//i.test(link) ? link : "";
+}
+
+// sourceLinkText names where a job's original lives, for its link: "Open in
+// Linear", "Open in GitHub", or the site's own name.
+const siteNames = { "linear.app": "Linear", "github.com": "GitHub", "atlassian.net": "Jira", "slack.com": "Slack" };
+export function sourceLinkText(link) {
+  let host;
+  try { host = new URL(link).hostname.replace(/^www\./, ""); } catch { return "Open the original"; }
+  const site = Object.keys(siteNames).find(name => host === name || host.endsWith(`.${name}`));
+  return `Open in ${site ? siteNames[site] : host}`;
+}
+
+// sourcesOf lists the sources the jobs came from, known ones first in a fixed
+// order, so the filter's options do not move about as jobs arrive.
+export function sourcesOf(tickets = []) {
+  const found = new Set(tickets.map(ticket => ticket.source).filter(Boolean));
+  const rank = source => sourceOrder.includes(source) ? sourceOrder.indexOf(source) : sourceOrder.length;
+  return [...found].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
+// The quick filters above the jobs. "Needs a person" is a job whose pull
+// request is open and waits for someone to review and merge it.
+export const quickFilters = [
+  { key: "running", label: "Running" },
+  { key: "done", label: "Done" },
+  { key: "failed", label: "Failed" },
+  { key: "needs_person", label: "Needs a person" },
+  { key: "cancelled", label: "Cancelled" },
+];
+
+export function matchesQuick(ticket, running, quick) {
+  if (!quick) return true;
+  if (quick === "needs_person") return ticket.state === "pr_ready";
+  return jobState(ticket, running) === quick;
+}
+
+// filterJobs keeps the jobs from one source, in one quick filter. Either may be
+// empty, which keeps every job.
+export function filterJobs(tickets = [], { source = "", quick = "" } = {}, running = new Set()) {
+  return tickets.filter(ticket => (!source || ticket.source === source) && matchesQuick(ticket, running.has(ticket.id), quick));
+}
+
+// quickCounts counts the jobs in each quick filter, within a source.
+export function quickCounts(tickets = [], source = "", running = new Set()) {
+  const counts = Object.fromEntries(quickFilters.map(({ key }) => [key, 0]));
+  for (const ticket of filterJobs(tickets, { source }, running)) {
+    for (const { key } of quickFilters) if (matchesQuick(ticket, running.has(ticket.id), key)) counts[key]++;
+  }
+  return counts;
+}
+
+// prChip is what a job's pull request chip shows: its number, its state on
+// GitHub, and where it links. A job without a pull request has none.
+export function prChip(ticket) {
+  if (!ticket?.pr_number) return null;
+  const state = prStateLabels[ticket.pr_state] ? ticket.pr_state : "";
+  return { number: ticket.pr_number, state, label: prState(ticket), href: prLink(ticket) };
+}

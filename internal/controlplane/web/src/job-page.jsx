@@ -1,9 +1,11 @@
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
+import { harnessList, waitingForRunner } from "./agents.js";
 import { State, relativeTime, useNow } from "./display.jsx";
-import { failureReason, formatDuration, isFinished, jobState, linkParts, noPullRequest, prLink, prState } from "./jobs.js";
+import { failureReason, formatDuration, isFinished, jobState, linkParts, noPullRequest, prLink, prState, sourceLink, sourceLinkText } from "./jobs.js";
+import { Source } from "./source-mark.jsx";
 import { latestAction, noStepsNote, pipeline, pollEvents, runSpend, spend, spendTitle, stepTime, steps } from "./step-log.js";
 import { Button } from "@/components/ui/button";
 
@@ -126,7 +128,7 @@ function Step({ step, chosen, now }) {
   </li>;
 }
 
-function Run({ run, number, presetSteps }) {
+function Run({ run, number, presetSteps, waitingFor }) {
   const { events, error, loaded } = useRunEvents(run);
   const list = steps(events, run.stages || [], run.status);
   const now = useNow(run.status === "running");
@@ -139,7 +141,7 @@ function Run({ run, number, presetSteps }) {
   return <section className="run" aria-label={`Attempt ${number}`}>
     <div className="run-head">
       <h2>Attempt {number}</h2>
-      <span>{run.status === "queued" ? "Waiting for a runner" : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
+      <span>{run.status === "queued" ? waitingForRunner(waitingFor) : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
       {run.started_at && <span>{formatDuration((run.ended_at ? Date.parse(run.ended_at) : now) - Date.parse(run.started_at))}</span>}
       {runSpend(run.stages) && <span title={spendTitle((run.stages || []).some(stage => stage.cost_unknown))}>{runSpend(run.stages)}</span>}
     </div>
@@ -196,9 +198,10 @@ function RunAgain({ ticketID, onDone }) {
 }
 
 export function JobView({ detail, onChange }) {
-  const { ticket, entries = [], runs = [], steps: presetSteps = [] } = detail;
+  const { ticket, entries = [], runs = [], steps: presetSteps = [], waiting_for: waitingFor = [] } = detail;
   const state = jobState(ticket, runs.some(run => run.status === "running"));
   const pr = prLink(ticket);
+  const original = sourceLink(ticket);
   const prompt = entries.find(entry => entry.kind === "request")?.body || "";
   const result = [...runs].reverse().find(run => run.report?.summary)?.report.summary || "";
   const failure = state === "failed" ? failureReason(entries) : "";
@@ -213,19 +216,21 @@ export function JobView({ detail, onChange }) {
       </div>
     </header>
     <dl className="job-facts">
+      <div><dt>Source</dt><dd className="job-source"><Source source={ticket.source} />{original && <a href={original} target="_blank" rel="noreferrer">{sourceLinkText(original)}<ArrowUpRight className="size-3.5" aria-hidden="true" /></a>}</dd></div>
       <div><dt>Repository</dt><dd>{ticket.repo}</dd></div>
       <div><dt>Preset</dt><dd>{ticket.agent}</dd></div>
       <div><dt>Pull request</dt><dd>{pr ? <PullRequest ticket={ticket} link={pr} /> : noPullRequest(state)}</dd></div>
       <div><dt>Started by</dt><dd>{ticket.created_by}</dd></div>
       <div><dt>Created</dt><dd><time dateTime={ticket.created_at}>{relativeTime(ticket.created_at)}</time></dd></div>
     </dl>
+    {waitingFor.length > 0 && <p className="page-warning" role="status">No online runner has {harnessList(waitingFor)}, which this job's agents run, so it cannot start. Install {waitingFor.length === 1 ? "it" : "them"} on a runner and restart the runner.</p>}
     {failure && <section className="panel job-failure" aria-labelledby="job-failure">
       <h2 id="job-failure" className="label"><CircleAlert className="size-3.5" aria-hidden="true" />Why it failed</h2>
       <p className="prose"><Linked text={failure} /></p>
     </section>}
     {result && !failure && isFinished(state) && <section className="panel" aria-labelledby="job-result"><h2 id="job-result" className="label">Result</h2><p className="prose"><Linked text={result} /></p></section>}
     {prompt && <details className="panel prompt"><summary className="label">Prompt</summary><p className="prose">{prompt}</p></details>}
-    {attempts.length ? attempts.map(({ run, number }, index) => <Run key={run.id} run={run} number={number} presetSteps={index === 0 ? presetSteps : null} />) : <>
+    {attempts.length ? attempts.map(({ run, number }, index) => <Run key={run.id} run={run} number={number} presetSteps={index === 0 ? presetSteps : null} waitingFor={index === 0 ? waitingFor : []} />) : <>
       {presetSteps.length > 0 && <Pipeline nodes={pipeline(presetSteps, [], "")} onChoose={() => {}} />}
       <p className="page-note">Waiting for a runner.</p>
     </>}

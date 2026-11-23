@@ -20,9 +20,12 @@ test("mobile navigation holds exactly the four pages", async () => {
 test("the New job form has one chevron per select, one title hint, and a prompt that leaves Start job in view", async () => {
   const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
   const page = await readFile(new URL("./new-job-page.jsx", import.meta.url), "utf8");
+  const select = await readFile(new URL("./components/ui/select.jsx", import.meta.url), "utf8");
   assert.doesNotMatch(styles, /select[^{]*\{[^}]*linear-gradient/, "a select draws no triangles of its own");
   assert.match(styles, /\.select-field select\.field-control \{ appearance: none; background-image: none;/);
-  assert.equal((page.match(/<select /g) || []).length, 1, "both selects use the one Select");
+  assert.equal((page.match(/<select /g) || []).length, 0, "both selects use the one Select");
+  assert.equal((select.match(/<select /g) || []).length, 1);
+  assert.match(page, /import \{ Select \} from "@\/components\/ui\/select";/);
   assert.equal((page.match(/The first line becomes the job's title\./g) || []).length, 1);
   assert.match(page, /rows=\{8\}/);
   assert.match(styles, /\.new-job-prompt \{ min-height: 160px;/);

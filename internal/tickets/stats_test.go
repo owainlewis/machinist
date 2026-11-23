@@ -35,6 +35,7 @@ func TestStatsSummarisesJobsAndRuns(t *testing.T) {
 	at = time.Date(2026, 5, 9, 9, 0, 0, 0, time.UTC)
 	coding := request("api:coding")
 	coding.Agent, coding.Repo = "coding", "owner/app"
+	coding.Source, coding.Origin = "linear", "linear"
 	first, _, err := store.CreateTicket(t.Context(), coding)
 	if err != nil {
 		t.Fatal(err)
@@ -68,11 +69,14 @@ func TestStatsSummarisesJobsAndRuns(t *testing.T) {
 	if len(stats.Repos) != 2 || stats.Repos[0].Name != "owner/repo" {
 		t.Fatalf("repos = %+v", stats.Repos)
 	}
+	if len(stats.Sources) != 2 || stats.Sources[0].Name != OriginAPI || stats.Sources[0].Total != 2 || stats.Sources[1].Name != "linear" || stats.Sources[1].Done != 1 || *stats.Sources[1].RunMillis != 10*60_000 {
+		t.Fatalf("sources = %+v", stats.Sources)
+	}
 }
 
 func TestStatsWithNothingHasNoRates(t *testing.T) {
 	stats, err := openStore(t).Stats(t.Context(), 14)
-	if err != nil || stats.SuccessRate != nil || stats.RunMillis.Median != nil || len(stats.Daily) != 14 || stats.Presets == nil {
+	if err != nil || stats.SuccessRate != nil || stats.RunMillis.Median != nil || len(stats.Daily) != 14 || stats.Presets == nil || stats.Sources == nil {
 		t.Fatalf("stats = %+v, err = %v", stats, err)
 	}
 }

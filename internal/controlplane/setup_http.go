@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/githubapp"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -231,12 +230,7 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request, tokenName
 // agents need. A runner that did not report harnesses, such as a Kubernetes
 // runner, may have any of them. There is no check while no runner is online.
 func (s *Server) harnessCheck(runners []tickets.Runner) (SetupCheck, bool) {
-	var online []tickets.Runner
-	for _, runner := range runners {
-		if s.now().Sub(runner.LastContact) < runnerWindow {
-			online = append(online, runner)
-		}
-	}
+	online := s.onlineRunners(runners)
 	if len(online) == 0 || s.factory == nil {
 		return SetupCheck{}, false
 	}
@@ -249,9 +243,7 @@ func (s *Server) harnessCheck(runners []tickets.Runner) (SetupCheck, bool) {
 	var stuck []string
 	for _, name := range names {
 		needs := s.factory.Needs(s.factory.Presets[name])
-		if !slices.ContainsFunc(online, func(runner tickets.Runner) bool {
-			return !runner.Probed || engine.HasAll(runner.Harnesses, needs)
-		}) {
+		if len(missingHarnesses(online, needs)) > 0 {
 			stuck = append(stuck, fmt.Sprintf("%s needs %s", name, strings.Join(needs, " and ")))
 		}
 	}

@@ -116,6 +116,7 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .form-error { max-width: 72ch; color: var(--danger); font-size: 14px; }
 .page-warning { border-radius: 10px; background: var(--warning-soft); padding: 10px 14px; color: var(--warning); font-size: 14px; }
 .page-warning a { color: inherit; }
+.page-warning p + p { margin-top: 4px; }
 .label { color: var(--faint); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .ticket-meta { color: var(--muted-foreground); font-size: 13px; }
 .icon-button { display: grid; width: 34px; height: 34px; flex: none; place-items: center; border-radius: 8px; color: var(--muted-foreground); }
@@ -157,6 +158,36 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .jobs .job-title a::after { position: absolute; inset: 0; content: ""; }
 .jobs .job-detail { color: var(--muted-foreground); font-size: 13px; }
 .jobs .job-updated { color: var(--faint); font-size: 13px; text-align: right; }
+/* Links inside a row sit above the row's own link, so they can be clicked. */
+.jobs .pr-chip, .board-card .pr-chip, .board-card a.source { position: relative; z-index: 1; }
+
+/* Where a job came from: an icon and the source's name. */
+.source { display: inline-flex; align-items: center; gap: 6px; color: inherit; vertical-align: middle; white-space: nowrap; }
+.source svg { flex: none; color: var(--faint); }
+a.source:hover { color: var(--foreground); }
+a.source:hover span { text-decoration: underline; }
+
+/* A job's pull request, coloured as GitHub colours it. */
+.pr-chip { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border); padding: 1px 9px 1px 7px; color: var(--muted-foreground); font-size: 12px; line-height: 18px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; transition: box-shadow .15s ease; }
+.pr-chip:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 45%, var(--border)); }
+.pr-chip[data-state="open"] { background: var(--success-soft); box-shadow: none; color: var(--success); }
+.pr-chip[data-state="merged"] { background: var(--review-soft); box-shadow: none; color: var(--review); }
+.pr-chip[data-state="closed"] { background: var(--danger-soft); box-shadow: none; color: var(--danger); }
+.pr-chip[data-state]:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent); }
+.pr-chip-state { font-weight: 400; opacity: .85; }
+
+/* Filters above the jobs: quick chips by state, and the source. */
+.job-filters { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
+.quick-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.filter-chip { display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--border); padding: 4px 12px; color: var(--muted-foreground); font-size: 13px; line-height: 20px; font-weight: 500; transition: color .15s ease, background-color .15s ease, box-shadow .15s ease; }
+.filter-chip:hover { color: var(--foreground); }
+.filter-chip:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.filter-chip[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 16%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 55%, var(--border)); color: var(--foreground); }
+.filter-chip-count { min-width: 18px; border-radius: 999px; background: var(--muted); padding: 0 6px; color: var(--faint); font-size: 11.5px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.filter-chip[aria-pressed="true"] .filter-chip-count { background: color-mix(in srgb, var(--primary) 28%, var(--surface)); color: var(--foreground); }
+.source-filter { width: 180px; }
+.source-filter .field-control { min-height: 32px; padding-block: 5px; font-size: 13px; }
+.link-button { color: var(--info); text-decoration: underline; }
 
 .page-actions { display: flex; align-items: center; gap: 12px; }
 
@@ -192,6 +223,8 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 .job-facts dd { font-size: 14px; }
 .job-facts a { color: var(--info); }
 .job-facts a:hover { text-decoration: underline; }
+.job-facts .job-source { display: flex; align-items: center; gap: 10px; }
+.job-facts .job-source a { display: inline-flex; align-items: center; gap: 2px; }
 .job-actions { display: flex; flex: none; align-items: flex-start; gap: 10px; }
 .job-actions .pill { margin-top: 3px; }
 .job-failure { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); background: var(--danger-soft); }
@@ -277,6 +310,7 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
 /* Runners. */
 .runner-row { display: grid; grid-template-columns: minmax(0, 1fr) 200px 170px 128px; align-items: center; gap: 16px; padding: 14px 16px; }
 .runner-row > :last-child { justify-self: end; }
+.runner-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: -8px; padding: 0 16px 10px; }
 .runner-slots { display: inline-flex; align-items: center; gap: 10px; }
 .slot-meter { display: inline-flex; flex: none; gap: 3px; }
 .slot-meter > span { width: 6px; height: 14px; border-radius: 2px; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border); }
@@ -368,6 +402,10 @@ main h1 { font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: 
   .runner-jobs li { flex-wrap: wrap; gap: 4px 12px; }
   .runner-jobs a { flex-basis: 100%; }
   .jobs .job-detail, .jobs thead { display: none; }
+  .source-filter { width: 100%; }
+}
+@media (max-width: 767px) {
+  .jobs .job-pr { display: none; }
 }
 
 @media (max-width: 767px) {

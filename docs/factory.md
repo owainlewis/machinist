@@ -139,9 +139,11 @@ and is done without a pull request.
 
 The runner removes the workspace when the run ends, so a rejected push first saves the
 change: `git format-patch` of the commits beyond `origin/HEAD`, written to `change.patch` in
-the control directory. The control plane keeps it with the run, and the job page links to
-it. Download it and apply it with `git am`, then push it yourself, without running the agent
-again. Any step can leave `change.patch` the same way. A patch over 4 MiB is not kept.
+the control directory. `format-patch` skips merge commits, so when the branch has one, for
+example where the job merged the base branch in to resolve a conflict, the patch is one commit
+of everything the branch changed since it forked from `origin/HEAD`, resolution included.
+The control plane keeps it with the run, and the job page links to it. Download it and apply
+it with `git am`, then push it yourself, without running the agent again. Any step can leave `change.patch` the same way. A patch over 4 MiB is not kept.
 
 When any step fails, the job's result is the step's error and the last line the step wrote
 to stderr.

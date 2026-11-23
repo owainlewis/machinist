@@ -97,6 +97,7 @@ func (s *Schedule) poll(ctx context.Context, automation factory.Automation) erro
 func (s *Schedule) create(ctx context.Context, automation factory.Automation, by, occurrence string) (tickets.Ticket, bool, error) {
 	return s.Store.CreateTicket(ctx, tickets.NewTicket{
 		Source:    source(automation),
+		Origin:    tickets.OriginSchedule,
 		Repo:      automation.Repo,
 		Title:     automation.Name,
 		Body:      automation.Prompt,

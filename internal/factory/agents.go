@@ -32,13 +32,14 @@ var agentCall = regexp.MustCompile(`machinist\s+agent\s+([A-Za-z0-9][A-Za-z0-9_-
 
 // StepAgents names the agents a step runs, in order, so a job can show them
 // before it starts. It reads the step's command and any script from scripts/
-// that the command names for "machinist agent <name>". A step that runs no
-// agent, or one Machinist cannot see into, has none.
+// that the command names for "machinist agent <name>", leaving out shell
+// comments. A step that runs no agent, or one Machinist cannot see into, has
+// none.
 func (f *Factory) StepAgents(step string) []protocol.Agent {
-	text := step
-	for _, word := range strings.Fields(step) {
+	text := withoutComments(step)
+	for _, word := range strings.Fields(text) {
 		if script, ok := f.Files["scripts/"+strings.TrimPrefix(word, "./")]; ok {
-			text += "\n" + script
+			text += "\n" + withoutComments(script)
 		}
 	}
 	agents := []protocol.Agent{}
@@ -48,4 +49,42 @@ func (f *Factory) StepAgents(step string) []protocol.Agent {
 		}
 	}
 	return agents
+}
+
+// withoutComments drops shell comments from a script: a # that starts a word,
+// outside quotes, to the end of its line.
+func withoutComments(script string) string {
+	var out strings.Builder
+	var quote rune
+	escaped, comment, wordStart := false, false, true
+	for _, char := range script {
+		separator := false
+		switch {
+		case comment:
+			if char != '\n' {
+				continue
+			}
+			comment, separator = false, true
+		case escaped:
+			escaped = false
+		case quote != 0:
+			if char == quote {
+				quote = 0
+			} else if char == '\\' && quote == '"' {
+				escaped = true
+			}
+		case char == '\\':
+			escaped = true
+		case char == '\'' || char == '"':
+			quote = char
+		case char == '#' && wordStart:
+			comment = true
+			continue
+		default:
+			separator = strings.ContainsRune(" \t\n;&|()", char)
+		}
+		wordStart = separator
+		out.WriteRune(char)
+	}
+	return out.String()
 }
