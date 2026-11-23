@@ -48,9 +48,9 @@ type PRFinder func(ctx context.Context, repository, branch string) (*PR, error)
 // PullRequests returns what watching one pull request needs.
 type PullRequests func(repository string, number int) ship.GitHub
 
-// ReviewReader returns the reviews people submitted on a pull request,
-// leaving out bots'.
-type ReviewReader func(ctx context.Context, repository string, number int) (tickets.Reviews, error)
+// ReviewReader returns the reviews people submitted on a pull request up to
+// until (when non-zero), leaving out bots' and post-merge reviews.
+type ReviewReader func(ctx context.Context, repository string, number int, until time.Time) (tickets.Reviews, error)
 
 // TokenMinter returns a short-lived GitHub token for one repository.
 type TokenMinter func(ctx context.Context, repository string) (string, error)
@@ -281,7 +281,11 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	}
 	var reviews *tickets.Reviews
 	if pr != nil && pr.Merged {
-		if reviews, err = e.readReviews(ctx, runID, pr.Number); err != nil {
+		mergedAt := pr.ChangedAt
+		if mergedAt.IsZero() {
+			mergedAt = e.now()
+		}
+		if reviews, err = e.readReviews(ctx, runID, pr.Number, mergedAt); err != nil {
 			return err
 		}
 	}
@@ -361,9 +365,9 @@ func (e *Engine) findPR(ctx context.Context, runID string) (*PR, error) {
 	return e.FindPR(ctx, ticket.Repo, ticket.Branch())
 }
 
-// readReviews reads the reviews of a run's merged pull request. Nil means
-// they were not read.
-func (e *Engine) readReviews(ctx context.Context, runID string, number int) (*tickets.Reviews, error) {
+// readReviews reads the reviews of a run's merged pull request up to mergedAt.
+// Nil means they were not read.
+func (e *Engine) readReviews(ctx context.Context, runID string, number int, mergedAt time.Time) (*tickets.Reviews, error) {
 	if e.Reviews == nil {
 		return nil, nil
 	}
@@ -375,7 +379,7 @@ func (e *Engine) readReviews(ctx context.Context, runID string, number int) (*ti
 	if err != nil {
 		return nil, err
 	}
-	reviews, err := e.Reviews(ctx, ticket.Repo, number)
+	reviews, err := e.Reviews(ctx, ticket.Repo, number, mergedAt)
 	if err != nil {
 		return nil, err
 	}

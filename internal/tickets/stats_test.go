@@ -135,7 +135,7 @@ func TestStatsMeasureTheWayToMergeAndThePeopleItNeeded(t *testing.T) {
 	}
 	reviewed := clock(11, 0)
 	at = clock(12, 1)
-	if err := store.SetPRState(ctx, listed[0], PRUpdate{Number: 7, State: PRMerged, At: clock(12, 0), OpenedAt: opened, Reviews: &Reviews{Count: 2, First: &reviewed}}); err != nil {
+	if _, _, err := store.SetPRState(ctx, listed[0], PRUpdate{Number: 7, State: PRMerged, At: clock(12, 0), OpenedAt: opened, Reviews: &Reviews{Count: 2, First: &reviewed}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -204,7 +204,7 @@ func TestStatsMeasureTheWayToMergeAndThePeopleItNeeded(t *testing.T) {
 		}
 	}
 	at = clock(16, 0)
-	if err := store.SetPRState(ctx, rerunTicket, PRUpdate{Number: 9, State: PRMerged, At: clock(16, 0), OpenedAt: opened2, Reviews: &Reviews{}}); err != nil {
+	if _, _, err := store.SetPRState(ctx, rerunTicket, PRUpdate{Number: 9, State: PRMerged, At: clock(16, 0), OpenedAt: opened2, Reviews: &Reviews{}}); err != nil {
 		t.Fatal(err)
 	}
 	if stats, err = store.Stats(ctx, 7); err != nil || stats.Touches.Replies != 0 || stats.Touches.Reruns != 1 || stats.Touches.Reviews != 0 || stats.Touches.PerPR == nil || *stats.Touches.PerPR != 1 {

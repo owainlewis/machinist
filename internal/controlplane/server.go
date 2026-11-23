@@ -274,25 +274,28 @@ func (s *Server) SetPRInterval(interval time.Duration) {
 	s.engine.PRInterval = interval
 }
 
-// humanReviews counts the reviews people submitted on a pull request. Bots'
-// reviews, such as an AI reviewer's, do not count as a person stepping in.
+// humanReviews counts the reviews people submitted on a pull request up to
+// until (when non-zero). Bots' reviews and post-merge reviews are left out.
 func humanReviews(client *ghclient.Client) engine.ReviewReader {
-	return func(ctx context.Context, repository string, number int) (tickets.Reviews, error) {
+	return func(ctx context.Context, repository string, number int, until time.Time) (tickets.Reviews, error) {
 		found, err := client.Reviews(ctx, repository, number)
 		if err != nil {
 			return tickets.Reviews{}, err
 		}
-		return countHumanReviews(found), nil
+		return countHumanReviews(found, until), nil
 	}
 }
 
-func countHumanReviews(found []ghclient.Review) tickets.Reviews {
+func countHumanReviews(found []ghclient.Review, until time.Time) tickets.Reviews {
 	var reviews tickets.Reviews
 	for _, review := range found {
 		if review.Bot {
 			continue
 		}
-		if reviews.First == nil {
+		if !until.IsZero() && review.SubmittedAt.After(until) {
+			continue
+		}
+		if reviews.First == nil || review.SubmittedAt.Before(*reviews.First) {
 			at := review.SubmittedAt
 			reviews.First = &at
 		}

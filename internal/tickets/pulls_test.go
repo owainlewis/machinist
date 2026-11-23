@@ -148,7 +148,7 @@ func TestSetPRStateReturnsTheJobAsItNowStands(t *testing.T) {
 		t.Fatalf("listed = %+v, err = %v", listed, err)
 	}
 	// GitHub now reports #8 on the branch.
-	current, same, err := store.SetPRState(ctx, listed[0], 8, PROpen, now.Add(time.Minute))
+	current, same, err := store.SetPRState(ctx, listed[0], PRUpdate{Number: 8, State: PROpen, At: now.Add(time.Minute)})
 	if err != nil || !same || current.PRNumber != 8 || current.PRStateAt == nil || !current.PRStateAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("current = %+v, same = %v, err = %v", current, same, err)
 	}

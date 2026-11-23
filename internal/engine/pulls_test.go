@@ -141,7 +141,7 @@ func TestAMergedPRRecordsWhenItOpenedAndWhoReviewedIt(t *testing.T) {
 	now := time.Now().UTC()
 	opened, reviewed, merged := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-time.Hour)
 	var asked []string
-	e.Reviews = func(_ context.Context, repository string, number int) (tickets.Reviews, error) {
+	e.Reviews = func(_ context.Context, repository string, number int, _ time.Time) (tickets.Reviews, error) {
 		asked = append(asked, fmt.Sprintf("%s#%d", repository, number))
 		return tickets.Reviews{Count: 2, First: &reviewed}, nil
 	}
@@ -174,7 +174,7 @@ func TestAPRMergedByTheRunRecordsItsReviews(t *testing.T) {
 	e.FindPR = func(context.Context, string, string) (*PR, error) {
 		return &PR{Number: 42, Merged: true, ChangedAt: time.Now().UTC(), OpenedAt: opened}, nil
 	}
-	e.Reviews = func(context.Context, string, int) (tickets.Reviews, error) {
+	e.Reviews = func(context.Context, string, int, time.Time) (tickets.Reviews, error) {
 		return tickets.Reviews{Count: 1, First: &opened}, nil
 	}
 	newTicket(t, e, "api")
@@ -193,7 +193,7 @@ func TestAPRMergedByTheRunRecordsItsReviews(t *testing.T) {
 
 func TestAMergedPRWaitsWhenItsReviewsCannotBeRead(t *testing.T) {
 	e, github, ticket := jobWithOpenPR(t)
-	e.Reviews = func(context.Context, string, int) (tickets.Reviews, error) {
+	e.Reviews = func(context.Context, string, int, time.Time) (tickets.Reviews, error) {
 		return tickets.Reviews{}, errors.New("rate limited")
 	}
 	github.pr = PR{Number: 42, Merged: true}

@@ -141,7 +141,7 @@ func (e *Engine) CheckPRs(ctx context.Context) error {
 		}
 		update := tickets.PRUpdate{Number: pr.Number, State: state, At: at, OpenedAt: pr.OpenedAt}
 		if state == tickets.PRMerged && e.Reviews != nil {
-			reviews, err := e.Reviews(ctx, listed.Repo, pr.Number)
+			reviews, err := e.Reviews(ctx, listed.Repo, pr.Number, at)
 			if err != nil {
 				return fmt.Errorf("job %s: reviews: %w", listed.ID, err)
 			}
