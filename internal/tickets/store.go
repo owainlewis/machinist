@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS ticket_entries (
 CREATE INDEX IF NOT EXISTS ticket_entries_ticket ON ticket_entries(ticket_id, id);
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, kind TEXT NOT NULL, reviewer TEXT NOT NULL DEFAULT '', harness TEXT NOT NULL, runner TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL, lease_expires_at TEXT, tokens INTEGER, cost REAL, report TEXT, queued_at TEXT, started_at TEXT, ended_at TEXT);
+  status TEXT NOT NULL, lease_expires_at TEXT, tokens INTEGER, cost REAL, report TEXT, queued_at TEXT, started_at TEXT, ended_at TEXT,
+  cancel_requested_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_agent_run ON runs(ticket_id) WHERE kind='agent' AND status IN ('queued','running');
 CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
 CREATE TABLE IF NOT EXISTS tokens (
@@ -155,9 +156,12 @@ type Run struct {
 	Report   *protocol.Report       `json:"report,omitempty"`
 	Stages   []protocol.StageResult `json:"stages,omitempty"`
 	// Patch says the run saved its change as a patch, which RunPatch reads.
-	Patch     bool       `json:"patch,omitempty"`
-	StartedAt *time.Time `json:"started_at,omitempty"`
-	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	Patch bool `json:"patch,omitempty"`
+	// CancelRequested says someone cancelled the run while it was running.
+	// It stops at its next heartbeat and its result never moves the ticket.
+	CancelRequested bool       `json:"cancel_requested,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	EndedAt         *time.Time `json:"ended_at,omitempty"`
 }
 
 // NewTicket is one piece of intake. SourceKey makes it idempotent.
@@ -252,6 +256,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err = addColumns(db, "runners", "probed INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = addColumns(db, "runs", "cancel_requested_at TEXT"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -362,14 +370,14 @@ func (s *Store) Ticket(ctx context.Context, id string) (Ticket, error) {
 }
 
 const runColumns = `id,ticket_id,kind,reviewer,harness,runner,status,tokens,cost,report,started_at,ended_at,
-  EXISTS(SELECT 1 FROM run_patches WHERE run_patches.run=runs.id)`
+  EXISTS(SELECT 1 FROM run_patches WHERE run_patches.run=runs.id),cancel_requested_at IS NOT NULL`
 
 func scanRun(row scanner) (Run, error) {
 	var run Run
 	var tokens sql.NullInt64
 	var cost sql.NullFloat64
 	var report, started, ended sql.NullString
-	if err := row.Scan(&run.ID, &run.TicketID, &run.Kind, &run.Reviewer, &run.Harness, &run.Runner, &run.Status, &tokens, &cost, &report, &started, &ended, &run.Patch); err != nil {
+	if err := row.Scan(&run.ID, &run.TicketID, &run.Kind, &run.Reviewer, &run.Harness, &run.Runner, &run.Status, &tokens, &cost, &report, &started, &ended, &run.Patch, &run.CancelRequested); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Run{}, ErrNotFound
 		}
@@ -658,8 +666,9 @@ func activeState(state string) bool {
 	return state == StateWorking || state == StatePRReady
 }
 
-// Cancel ends a ticket. A queued run stops here. A running run is told to stop
-// by its next heartbeat.
+// Cancel ends a ticket. A queued run stops here. A running run is marked, and
+// told to stop by its next heartbeat. The mark keeps it cancelled even if the
+// ticket runs again before then, so its result never lands on the new run.
 func (s *Store) Cancel(ctx context.Context, ticketID, by string) (Ticket, error) {
 	var ticket Ticket
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -672,6 +681,9 @@ func (s *Store) Cancel(ctx context.Context, ticketID, by string) (Ticket, error)
 		}
 		now := s.now()
 		if err = cancelQueuedRuns(ctx, tx, ticketID, now); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE runs SET cancel_requested_at=? WHERE ticket_id=? AND status=? AND cancel_requested_at IS NULL`, stamp(now), ticketID, RunRunning); err != nil {
 			return err
 		}
 		if err = applyTransition(ctx, tx, ticket, Transition{State: StateCancelled, Message: "Cancelled by " + by}, now); err != nil {
@@ -688,7 +700,8 @@ var ErrStillWorking = errors.New("the job is still running")
 
 // Rerun starts a ticket's preset again from the first step, on the same branch.
 // It works on any ticket with nothing running: done, failed, cancelled, or with
-// its pull request open. The request is logged as a comment from by, so the
+// its pull request open. A cancelled run that has not stopped yet still counts
+// as running. The request is logged as a comment from by, so the
 // next run sees it and the lost-runner count starts again.
 func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) {
 	return s.Reply(ctx, ticketID, by, []Comment{{Body: "Run the job again."}})
@@ -702,7 +715,8 @@ type Comment struct {
 }
 
 // Reply adds comments to an ended ticket and runs it again on the same
-// branch. The new run's prompt is the whole log, so it sees them.
+// branch. The new run's prompt is the whole log, so it sees them. It returns
+// ErrStillWorking while any run of the ticket is queued or running.
 func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comment) (Ticket, error) {
 	var ticket Ticket
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -711,6 +725,13 @@ func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comme
 			return err
 		}
 		if ticket.State == StateWorking {
+			return ErrStillWorking
+		}
+		var active int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND status IN (?,?)`, ticketID, RunQueued, RunRunning).Scan(&active); err != nil {
+			return err
+		}
+		if active > 0 {
 			return ErrStillWorking
 		}
 		now := s.now()
@@ -724,9 +745,16 @@ func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comme
 			}
 		}
 		// The new run's pull request is followed afresh, and its tracker is told
-		// again that it started and how it ends.
+		// again that it started and how it ends. A pull request that merged or
+		// closed is finished with, so the new run opens and counts its own. An
+		// open one stays, so the new run keeps working on it.
 		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
 			return err
+		}
+		if ticket.MergedAt != nil || ticket.PRState == PRMerged || ticket.PRState == PRClosed {
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=NULL,merged_at=NULL WHERE id=?`, ticketID); err != nil {
+				return err
+			}
 		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed, ReportFinished); err != nil {
 			return err
@@ -983,7 +1011,7 @@ func (s *Store) RenewLease(ctx context.Context, runID string, leaseUntil time.Ti
 		if err != nil {
 			return err
 		}
-		cancel = !activeState(ticket.State) || (run.Kind == RunKindAgent && ticket.State != StateWorking)
+		cancel = run.CancelRequested || !activeState(ticket.State) || (run.Kind == RunKindAgent && ticket.State != StateWorking)
 		_, err = tx.ExecContext(ctx, `UPDATE runs SET lease_expires_at=? WHERE id=?`, stamp(leaseUntil), runID)
 		return err
 	})
@@ -1017,7 +1045,12 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 			return err
 		}
 		status := completion.Status
-		isTurn := run.Kind == RunKindAgent && ticket.State == StateWorking
+		if run.CancelRequested {
+			// Someone cancelled this run. Whatever it reports, it never moves
+			// the ticket, which may already be running again.
+			status = RunCancelled
+		}
+		isTurn := run.Kind == RunKindAgent && ticket.State == StateWorking && !run.CancelRequested
 		if isTurn && status == RunCancelled {
 			// Nobody cancelled this ticket, so its runner stopped. Treat it like a lost lease.
 			status = RunInterrupted
