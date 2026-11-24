@@ -427,6 +427,60 @@ func TestPresetsRouteListsEachPresetsSteps(t *testing.T) {
 	}
 }
 
+func TestPresetsRouteResolvesExtendsAndHarnessModelOverrides(t *testing.T) {
+	f := newFixture(t)
+	loaded := &factory.Factory{
+		Presets: map[string]factory.Preset{
+			"default": {
+				Name:        "default",
+				Description: "Default pipeline.",
+				Steps: []runner.Step{
+					{Name: "checkout", Run: "checkout.sh"},
+					{Name: "implement", Run: "machinist agent implement"},
+					{Name: "review", Run: "review.sh"},
+				},
+			},
+			"neon": {
+				Name:        "neon",
+				Description: "Default pipeline on Antigravity (Gemini 4 Neon).",
+				Harness:     "agy",
+				Model:       "gemini-4-neon-high",
+				Steps: []runner.Step{
+					{Name: "checkout", Run: "checkout.sh", Harness: "agy", Model: "gemini-4-neon-high"},
+					{Name: "implement", Run: "machinist agent implement", Harness: "agy", Model: "gemini-4-neon-high"},
+					{Name: "review", Run: "review.sh", Harness: "claude", Model: "opus"},
+				},
+			},
+		},
+		Agents: map[string]harness.Agent{
+			"implement": {Name: "implement", Harness: "claude"},
+			"review":    {Name: "review", Harness: "claude", Model: "sonnet"},
+		},
+		Files: map[string]string{
+			"scripts/review.sh": "#!/bin/sh\nmachinist agent review\n",
+		},
+	}
+	f.server.factory = loaded
+	f.server.presets = presetViews(loaded)
+
+	response, body := f.call(t, http.MethodGet, "/api/v1/presets", f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	want := `{"default":"default","presets":[` +
+		`{"name":"default","description":"Default pipeline.","steps":[` +
+		`{"name":"checkout","agents":[]},` +
+		`{"name":"implement","agents":[{"name":"implement","harness":"claude"}]},` +
+		`{"name":"review","agents":[{"name":"review","harness":"claude","model":"sonnet"}]}]},` +
+		`{"name":"neon","description":"Default pipeline on Antigravity (Gemini 4 Neon).","steps":[` +
+		`{"name":"checkout","agents":[]},` +
+		`{"name":"implement","agents":[{"name":"implement","harness":"agy","model":"gemini-4-neon-high"}]},` +
+		`{"name":"review","agents":[{"name":"review","harness":"claude","model":"opus"}]}]}]}`
+	if strings.TrimSpace(string(body)) != want {
+		t.Fatalf("body = %s\nwant = %s", body, want)
+	}
+}
+
 // ENG-132: Run again straight after Cancel must not revive the cancelled run.
 func TestRerunConflictsUntilTheCancelledRunStops(t *testing.T) {
 	f := newFixture(t)

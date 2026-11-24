@@ -236,3 +236,54 @@ func TestAStepShowsTheModelItsHarnessChoseAndAnUnknownCost(t *testing.T) {
 		t.Fatalf("usage = %+v", usage)
 	}
 }
+
+func TestAgentOverrideAndMergeOverride(t *testing.T) {
+	base := Agent{Name: "review", Harness: "codex", Model: "gpt-5", Program: "/opt/codex", Prompt: "Review."}
+
+	same, err := base.Override("", "")
+	if err != nil || same != base {
+		t.Fatalf("no override: %+v, err = %v", same, err)
+	}
+
+	modelOnly, err := base.Override("", "gpt-5-mini")
+	if err != nil || modelOnly.Harness != "codex" || modelOnly.Model != "gpt-5-mini" || modelOnly.Program != "/opt/codex" {
+		t.Fatalf("model only: %+v, err = %v", modelOnly, err)
+	}
+
+	sameHarness, err := base.Override("codex", "")
+	if err != nil || sameHarness != base {
+		t.Fatalf("same harness: %+v, err = %v", sameHarness, err)
+	}
+
+	switchedNoModel, err := base.Override("agy", "")
+	if err != nil || switchedNoModel.Harness != "agy" || switchedNoModel.Model != "" || switchedNoModel.Program != "" {
+		t.Fatalf("switched harness without model should clear model and program: %+v, err = %v", switchedNoModel, err)
+	}
+
+	switchedWithModel, err := base.Override("agy", "gemini-4-neon-high")
+	if err != nil || switchedWithModel.Harness != "agy" || switchedWithModel.Model != "gemini-4-neon-high" || switchedWithModel.Program != "" {
+		t.Fatalf("switched harness with model: %+v, err = %v", switchedWithModel, err)
+	}
+
+	if _, err := base.Override("bogus", ""); err == nil || !strings.Contains(err.Error(), `not "bogus"`) {
+		t.Fatalf("invalid harness error = %v", err)
+	}
+
+	for _, test := range []struct {
+		baseH, baseM, overH, overM string
+		wantH, wantM               string
+	}{
+		{"", "", "agy", "gemini-4-neon-high", "agy", "gemini-4-neon-high"},
+		{"agy", "gemini-4-neon-high", "", "", "agy", "gemini-4-neon-high"},
+		{"agy", "gemini-4-neon-high", "", "gemini-4-flash", "agy", "gemini-4-flash"},
+		{"agy", "gemini-4-neon-high", "agy", "", "agy", "gemini-4-neon-high"},
+		{"agy", "gemini-4-neon-high", "claude", "", "claude", ""},
+		{"agy", "gemini-4-neon-high", "claude", "opus", "claude", "opus"},
+		{"", "opus", "agy", "", "agy", ""},
+	} {
+		h, m := MergeOverride(test.baseH, test.baseM, test.overH, test.overM)
+		if h != test.wantH || m != test.wantM {
+			t.Errorf("MergeOverride(%q, %q, %q, %q) = (%q, %q), want (%q, %q)", test.baseH, test.baseM, test.overH, test.overM, h, m, test.wantH, test.wantM)
+		}
+	}
+}

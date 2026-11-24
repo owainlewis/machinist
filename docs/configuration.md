@@ -20,12 +20,16 @@ file.
 my-machinist/          a git repository
   config.yaml          the control plane
   runner.yaml          a runner
-  factory/presets/     presets
+  factory/presets/     presets (supports extends and harness/model overrides)
   factory/agents/      agents
   factory/prompts/     prompts
   factory/scripts/     scripts
   .machinist/          state, ignored by git
 ```
+
+Presets in `factory/presets/` can inherit from another preset with `extends: <preset>` and
+override `harness` and `model` at the preset or step level without duplicating agents or
+scripts. See [Extending presets and overriding harness or model](factory.md#extending-presets-and-overriding-harness-or-model).
 
 ## Control plane: config.yaml
 

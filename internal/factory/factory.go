@@ -31,7 +31,18 @@ type Preset struct {
 	Description string
 	// Timeout covers all steps together. Zero means the server's run deadline.
 	Timeout time.Duration
+	// Harness and Model override every agent invoked in this preset unless a
+	// step sets its own override.
+	Harness string
+	Model   string
 	Steps   []runner.Step
+}
+
+// EffectiveStep returns step with preset-level harness and model overrides
+// applied when the step does not override them itself.
+func (p Preset) EffectiveStep(step runner.Step) runner.Step {
+	step.Harness, step.Model = harness.MergeOverride(p.Harness, p.Model, step.Harness, step.Model)
+	return step
 }
 
 type Automation struct {
@@ -74,19 +85,25 @@ func Load(directory string) (*Factory, error) {
 	if old, _ := filepath.Glob(filepath.Join(directory, "presets", "*.toml")); len(old) > 0 {
 		return nil, fmt.Errorf("preset: %s is TOML, and Machinist now reads YAML. Rewrite it as %s", old[0], strings.TrimSuffix(old[0], ".toml")+".yaml")
 	}
+	rawPresets := map[string]rawPreset{}
 	if err := eachFile(filepath.Join(directory, "presets"), "*.yaml", func(name, body string) error {
 		preset, err := parsePreset(name, body, factory.Agents)
 		if err != nil {
 			return err
 		}
-		factory.Presets[name] = preset
+		rawPresets[name] = preset
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("preset: %w", err)
 	}
-	if len(factory.Presets) == 0 {
+	if len(rawPresets) == 0 {
 		return nil, fmt.Errorf("factory %s has no presets", directory)
 	}
+	presets, err := resolvePresets(rawPresets)
+	if err != nil {
+		return nil, fmt.Errorf("preset: %w", err)
+	}
+	factory.Presets = presets
 	files, err := loadFiles(directory)
 	if err != nil {
 		return nil, err
@@ -155,64 +172,228 @@ func parseDuration(field, value string) (time.Duration, error) {
 	return duration, nil
 }
 
-func parsePreset(name, body string, agents map[string]harness.Agent) (Preset, error) {
+type rawPreset struct {
+	name        string
+	extends     string
+	description string
+	timeout     time.Duration
+	harness     string
+	model       string
+	steps       []rawStep
+}
+
+type rawStep struct {
+	name              string
+	run               string
+	hasCommand        bool
+	timeoutMillis     int64
+	idleTimeoutMillis int64
+	harness           string
+	model             string
+}
+
+func validateHarnessOverride(value string) error {
+	if value == "" {
+		return nil
+	}
+	if _, ok := harness.Find(value); !ok {
+		return fmt.Errorf("harness must be one of %s, not %q", strings.Join(harness.Names(), ", "), value)
+	}
+	return nil
+}
+
+func parsePreset(name, body string, agents map[string]harness.Agent) (rawPreset, error) {
 	var settings struct {
 		Description string `yaml:"description"`
+		Extends     string `yaml:"extends"`
 		Timeout     string `yaml:"timeout"`
+		Harness     string `yaml:"harness"`
+		Model       string `yaml:"model"`
 		Steps       []struct {
 			Name        string `yaml:"name"`
 			Run         string `yaml:"run"`
 			Agent       string `yaml:"agent"`
 			Timeout     string `yaml:"timeout"`
 			IdleTimeout string `yaml:"idle_timeout"`
+			Harness     string `yaml:"harness"`
+			Model       string `yaml:"model"`
 		} `yaml:"steps"`
 	}
 	if err := config.DecodeStrict(name, []byte(body), &settings); err != nil {
-		return Preset{}, err
+		return rawPreset{}, err
 	}
 	timeout, err := parseDuration("timeout", settings.Timeout)
 	if err != nil {
-		return Preset{}, err
+		return rawPreset{}, err
 	}
-	preset := Preset{Name: name, Description: strings.Join(strings.Fields(settings.Description), " "), Timeout: timeout}
-	if len(settings.Steps) == 0 {
-		return Preset{}, errors.New("a preset needs at least one step")
+	if err := validateHarnessOverride(settings.Harness); err != nil {
+		return rawPreset{}, err
+	}
+	preset := rawPreset{
+		name:        name,
+		extends:     settings.Extends,
+		description: strings.Join(strings.Fields(settings.Description), " "),
+		timeout:     timeout,
+		harness:     settings.Harness,
+		model:       strings.TrimSpace(settings.Model),
+	}
+	if preset.extends == "" && len(settings.Steps) == 0 {
+		return rawPreset{}, errors.New("a preset needs at least one step")
 	}
 	names := map[string]bool{}
 	for index, step := range settings.Steps {
 		if !validName.MatchString(step.Name) {
-			return Preset{}, fmt.Errorf("step %d: invalid name %q", index+1, step.Name)
+			return rawPreset{}, fmt.Errorf("step %d: invalid name %q", index+1, step.Name)
 		}
 		if names[step.Name] {
-			return Preset{}, fmt.Errorf("step %s is listed twice", step.Name)
+			return rawPreset{}, fmt.Errorf("step %s is listed twice", step.Name)
 		}
 		names[step.Name] = true
+		if err := validateHarnessOverride(step.Harness); err != nil {
+			return rawPreset{}, fmt.Errorf("step %s: %w", step.Name, err)
+		}
 		run := step.Run
+		hasCommand := false
 		switch {
 		case step.Agent != "" && strings.TrimSpace(step.Run) != "":
-			return Preset{}, fmt.Errorf("step %s: give it agent or run, not both", step.Name)
+			return rawPreset{}, fmt.Errorf("step %s: give it agent or run, not both", step.Name)
 		case step.Agent != "":
 			if _, ok := agents[step.Agent]; !ok {
-				return Preset{}, fmt.Errorf("step %s: agent %q is not in agents/", step.Name, step.Agent)
+				return rawPreset{}, fmt.Errorf("step %s: agent %q is not in agents/", step.Name, step.Agent)
 			}
 			run = "machinist agent " + step.Agent
-		case strings.TrimSpace(step.Run) == "":
-			return Preset{}, fmt.Errorf("step %s: give it agent or run", step.Name)
+			hasCommand = true
+		case strings.TrimSpace(step.Run) != "":
+			hasCommand = true
+		case preset.extends == "" || step.Run != "":
+			return rawPreset{}, fmt.Errorf("step %s: give it agent or run", step.Name)
 		}
 		stepTimeout, err := parseDuration("step "+step.Name+": timeout", step.Timeout)
 		if err != nil {
-			return Preset{}, err
+			return rawPreset{}, err
 		}
 		idleTimeout, err := parseDuration("step "+step.Name+": idle_timeout", step.IdleTimeout)
 		if err != nil {
-			return Preset{}, err
+			return rawPreset{}, err
 		}
-		preset.Steps = append(preset.Steps, runner.Step{Name: step.Name, Run: run, TimeoutMillis: stepTimeout.Milliseconds(), IdleTimeoutMillis: idleTimeout.Milliseconds()})
+		preset.steps = append(preset.steps, rawStep{
+			name:              step.Name,
+			run:               run,
+			hasCommand:        hasCommand,
+			timeoutMillis:     stepTimeout.Milliseconds(),
+			idleTimeoutMillis: idleTimeout.Milliseconds(),
+			harness:           step.Harness,
+			model:             strings.TrimSpace(step.Model),
+		})
 	}
-	if preset.Description == "" {
-		return Preset{}, errors.New("add a description: one sentence on what a job on this preset does")
+	if preset.extends == "" && preset.description == "" {
+		return rawPreset{}, errors.New("add a description: one sentence on what a job on this preset does")
 	}
 	return preset, nil
+}
+
+// resolvePresets expands extends chains and applies preset-level harness/model
+// defaults to every step that does not set its own override.
+func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
+	resolvedRaw := map[string]rawPreset{}
+	var resolve func(name string, chain []string) (rawPreset, error)
+	resolve = func(name string, chain []string) (rawPreset, error) {
+		if done, ok := resolvedRaw[name]; ok {
+			return done, nil
+		}
+		if idx := slices.Index(chain, name); idx >= 0 {
+			cycle := strings.Join(append(append([]string(nil), chain[idx:]...), name), " -> ")
+			return rawPreset{}, fmt.Errorf("%s: extends cycle: %s", chain[idx], cycle)
+		}
+		current := raw[name]
+		if current.extends == "" {
+			resolvedRaw[name] = current
+			return current, nil
+		}
+		if _, ok := raw[current.extends]; !ok {
+			return rawPreset{}, fmt.Errorf("%s: extends unknown preset %q", name, current.extends)
+		}
+		base, err := resolve(current.extends, append(chain, name))
+		if err != nil {
+			return rawPreset{}, err
+		}
+		merged := rawPreset{
+			name:        current.name,
+			description: base.description,
+			timeout:     base.timeout,
+			steps:       append([]rawStep(nil), base.steps...),
+		}
+		if current.description != "" {
+			merged.description = current.description
+		}
+		if current.timeout > 0 {
+			merged.timeout = current.timeout
+		}
+		merged.harness, merged.model = harness.MergeOverride(base.harness, base.model, current.harness, current.model)
+		stepIndex := make(map[string]int, len(merged.steps))
+		for i, step := range merged.steps {
+			stepIndex[step.name] = i
+		}
+		for _, override := range current.steps {
+			if idx, ok := stepIndex[override.name]; ok {
+				existing := merged.steps[idx]
+				if override.hasCommand {
+					existing.run = override.run
+					existing.hasCommand = true
+				}
+				if override.timeoutMillis > 0 {
+					existing.timeoutMillis = override.timeoutMillis
+				}
+				if override.idleTimeoutMillis > 0 {
+					existing.idleTimeoutMillis = override.idleTimeoutMillis
+				}
+				existing.harness, existing.model = harness.MergeOverride(existing.harness, existing.model, override.harness, override.model)
+				merged.steps[idx] = existing
+				continue
+			}
+			if !override.hasCommand {
+				return rawPreset{}, fmt.Errorf("%s: step %s: not in base preset %q; give it agent or run to add a new step", name, override.name, current.extends)
+			}
+			stepIndex[override.name] = len(merged.steps)
+			merged.steps = append(merged.steps, override)
+		}
+		resolvedRaw[name] = merged
+		return merged, nil
+	}
+
+	names := make([]string, 0, len(raw))
+	for name := range raw {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	presets := make(map[string]Preset, len(raw))
+	for _, name := range names {
+		done, err := resolve(name, nil)
+		if err != nil {
+			return nil, err
+		}
+		steps := make([]runner.Step, len(done.steps))
+		for i, step := range done.steps {
+			effHarness, effModel := harness.MergeOverride(done.harness, done.model, step.harness, step.model)
+			steps[i] = runner.Step{
+				Name:              step.name,
+				Run:               step.run,
+				TimeoutMillis:     step.timeoutMillis,
+				IdleTimeoutMillis: step.idleTimeoutMillis,
+				Harness:           effHarness,
+				Model:             effModel,
+			}
+		}
+		presets[name] = Preset{
+			Name:        done.name,
+			Description: done.description,
+			Timeout:     done.timeout,
+			Harness:     done.harness,
+			Model:       done.model,
+			Steps:       steps,
+		}
+	}
+	return presets, nil
 }
 
 // Validate checks what depends on the control plane's own configuration.

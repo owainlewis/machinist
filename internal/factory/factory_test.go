@@ -184,6 +184,37 @@ func TestLoadRejectsInvalidFactories(t *testing.T) {
 				files["prompts/"+name+".md"] = strings.Repeat("x", 1<<20-1)
 			}
 		}},
+		{"unknown extends base", `extends unknown preset "missing"`, func(files map[string]string) {
+			files["presets/neon.yaml"] = "description: Neon.\nextends: missing\n"
+		}},
+		{"self extends cycle", "extends cycle: loop -> loop", func(files map[string]string) {
+			files["presets/loop.yaml"] = "description: Loop.\nextends: loop\n"
+		}},
+		{"two-preset extends cycle", "extends cycle: a -> b -> a", func(files map[string]string) {
+			files["presets/a.yaml"] = "description: A.\nextends: b\n"
+			files["presets/b.yaml"] = "description: B.\nextends: a\n"
+		}},
+		{"three-preset extends cycle", "extends cycle: a -> b -> c -> a", func(files map[string]string) {
+			files["presets/a.yaml"] = "description: A.\nextends: b\n"
+			files["presets/b.yaml"] = "description: B.\nextends: c\n"
+			files["presets/c.yaml"] = "description: C.\nextends: a\n"
+		}},
+		{"invalid preset harness", "harness must be one of agy, claude, codex, pi", func(files map[string]string) {
+			files["presets/default.yaml"] = "description: Bad.\nharness: gemini\n" + steps("  - name: b\n    run: \"true\"\n")
+		}},
+		{"invalid step harness", "step b: harness must be one of agy, claude, codex, pi", func(files map[string]string) {
+			files["presets/default.yaml"] = "description: Bad.\n" + steps("  - name: b\n    run: \"true\"\n    harness: gemini\n")
+		}},
+		{"extends step override not in base", `step typo: not in base preset "default"`, func(files map[string]string) {
+			files["presets/neon.yaml"] = "description: Neon.\nextends: default\nsteps:\n  - name: typo\n    harness: agy\n"
+		}},
+		{"extends step empty run", "step checkout: give it agent or run", func(files map[string]string) {
+			files["presets/neon.yaml"] = "description: Neon.\nextends: default\nsteps:\n  - name: checkout\n    run: \" \"\n"
+		}},
+		{"extends step agent and run", "step checkout: give it agent or run, not both", func(files map[string]string) {
+			files["agents/work.md"] = "---\nharness: claude\n---\nWork.\n"
+			files["presets/neon.yaml"] = "description: Neon.\nextends: default\nsteps:\n  - name: checkout\n    agent: work\n    run: \"true\"\n"
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			files := validFactory()
@@ -239,5 +270,122 @@ func TestShippedDefaultPresetSaysMergingNeedsAutoMerge(t *testing.T) {
 	}
 	if !strings.Contains(preset.Description, "when github.auto_merge is on") {
 		t.Fatalf("description = %q", preset.Description)
+	}
+}
+
+func TestPresetExtendsAndOverrides(t *testing.T) {
+	files := map[string]string{
+		"agents/implement.md": "---\nharness: claude\n---\nImplement.\n",
+		"agents/review.md":    "---\nharness: claude\nmodel: sonnet\n---\nReview.\n",
+		"agents/publish.md":   "---\nharness: claude\n---\nPublish.\n",
+		"scripts/review.sh":   "#!/bin/sh\nmachinist agent review\n",
+		"scripts/publish.sh":  "#!/bin/sh\nmachinist agent publish\n",
+		"presets/default.yaml": `description: Default pipeline.
+timeout: 60m
+steps:
+  - name: checkout
+    timeout: 5m
+    run: checkout.sh
+  - name: implement
+    agent: implement
+  - name: review
+    timeout: 15m
+    run: review.sh
+  - name: publish
+    timeout: 10m
+    run: publish.sh
+`,
+		// Alphabetically before "default" to verify load-order independence.
+		"presets/aaa-neon.yaml": `description: Default pipeline on Antigravity (Gemini 4 Neon).
+extends: default
+harness: agy
+model: gemini-4-neon-high
+`,
+		// Multi-level extends with cross-model review step override and a new step.
+		"presets/cross-model.yaml": `extends: aaa-neon
+steps:
+  - name: review
+    harness: claude
+    model: opus
+  - name: publish
+    harness: codex
+  - name: verify
+    run: go test ./...
+`,
+		// Base with preset-level override and a pinned step, extended by a child
+		// with a different preset-level override.
+		"presets/base-pinned.yaml": `description: Base pinned.
+harness: claude
+model: sonnet
+steps:
+  - name: implement
+    agent: implement
+  - name: review
+    run: review.sh
+    harness: codex
+    model: gpt-5
+`,
+		"presets/child-pinned.yaml": `description: Child overrides unpinned steps.
+extends: base-pinned
+harness: agy
+model: gemini-4-neon-high
+`,
+	}
+
+	loaded, err := Load(writeFiles(t, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	neon, ok := loaded.Preset("aaa-neon")
+	if !ok {
+		t.Fatal("missing aaa-neon preset")
+	}
+	if neon.Description != "Default pipeline on Antigravity (Gemini 4 Neon)." || neon.Timeout != 60*time.Minute || neon.Harness != "agy" || neon.Model != "gemini-4-neon-high" {
+		t.Fatalf("neon = %+v", neon)
+	}
+	if len(neon.Steps) != 4 {
+		t.Fatalf("neon steps = %+v", neon.Steps)
+	}
+	for _, step := range neon.Steps {
+		if step.Harness != "agy" || step.Model != "gemini-4-neon-high" {
+			t.Fatalf("neon step %s = %+v", step.Name, step)
+		}
+	}
+	if neon.Steps[0].TimeoutMillis != (5*time.Minute).Milliseconds() || neon.Steps[1].Run != "machinist agent implement" || neon.Steps[2].TimeoutMillis != (15*time.Minute).Milliseconds() {
+		t.Fatalf("neon steps = %+v", neon.Steps)
+	}
+
+	cross, ok := loaded.Preset("cross-model")
+	if !ok {
+		t.Fatal("missing cross-model preset")
+	}
+	// Omitting description inherits the parent's description.
+	if cross.Description != neon.Description || cross.Timeout != 60*time.Minute || len(cross.Steps) != 5 {
+		t.Fatalf("cross = %+v", cross)
+	}
+	if s := cross.Steps[1]; s.Name != "implement" || s.Harness != "agy" || s.Model != "gemini-4-neon-high" {
+		t.Fatalf("implement step = %+v", s)
+	}
+	if s := cross.Steps[2]; s.Name != "review" || s.Run != "review.sh" || s.TimeoutMillis != (15*time.Minute).Milliseconds() || s.Harness != "claude" || s.Model != "opus" {
+		t.Fatalf("review step = %+v", s)
+	}
+	// Switching harness on a step without naming a model drops the preset's model.
+	if s := cross.Steps[3]; s.Name != "publish" || s.Run != "publish.sh" || s.Harness != "codex" || s.Model != "" {
+		t.Fatalf("publish step = %+v", s)
+	}
+	if s := cross.Steps[4]; s.Name != "verify" || s.Run != "go test ./..." || s.Harness != "agy" || s.Model != "gemini-4-neon-high" {
+		t.Fatalf("verify step = %+v", s)
+	}
+
+	childPinned, ok := loaded.Preset("child-pinned")
+	if !ok {
+		t.Fatal("missing child-pinned preset")
+	}
+	if s := childPinned.Steps[0]; s.Name != "implement" || s.Harness != "agy" || s.Model != "gemini-4-neon-high" {
+		t.Fatalf("child-pinned implement = %+v", s)
+	}
+	if s := childPinned.Steps[1]; s.Name != "review" || s.Harness != "codex" || s.Model != "gpt-5" {
+		t.Fatalf("child-pinned review should keep base explicit step override: %+v", s)
 	}
 }
