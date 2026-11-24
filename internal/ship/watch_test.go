@@ -285,3 +285,15 @@ func TestLookReturnsTransientUpdateBranchErrorsForRetry(t *testing.T) {
 		t.Fatalf("LookOnce = (%+v, %v), want error %v", got, err, want)
 	}
 }
+
+func TestLookPreservesNormalizedWatchAcrossTransientMergeError(t *testing.T) {
+	want := &TransientError{Err: errors.New("gh merge pull request failed (timeout): signal: killed")}
+	github := &fakeGitHub{views: []PullRequest{open("sha2", "CLEAN")}, checks: [][]Check{passed}, mergeErr: want}
+	got, err := LookOnce(t.Context(), github, Watch{Since: start, OldHead: "sha1", Head: "sha1", Updates: 1}, start.Add(time.Minute))
+	if !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+	if got.Outcome != Waiting || got.Watch.OldHead != "" || got.Watch.Head != "sha2" {
+		t.Fatalf("got = %+v, want Waiting with OldHead cleared and Head=sha2", got)
+	}
+}

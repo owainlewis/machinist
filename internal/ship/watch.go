@@ -135,6 +135,10 @@ type Look struct {
 // merge: a commit pushed after that leaves the pull request for a person. A
 // branch behind its base is updated, and its new head's checks must pass in
 // turn.
+//
+// When LookOnce returns a non-nil error after normalizing the watch (such as
+// adopting a branch update's new head), Look.Outcome is Waiting with the
+// updated Watch so the caller persists it before retrying.
 func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (Look, error) {
 	pr, err := github.PullRequest(ctx)
 	if err != nil {
@@ -157,7 +161,7 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 	}
 	checks, err := github.Checks(ctx)
 	if err != nil {
-		return Look{}, err
+		return waiting(watch), err
 	}
 	names := make([]string, len(checks))
 	pending := 0
@@ -197,14 +201,14 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 			return Look{Outcome: Merged, Message: "Merged: " + pr.URL, Log: "merged"}, nil
 		}
 		if isTransient(ctx, err) {
-			return Look{}, err
+			return waiting(watch), err
 		}
 		refused := "GitHub refused the merge: " + err.Error()
 		// Another pull request can land between the look and the merge,
 		// which leaves this branch behind. Look again, and update the branch
 		// if that is why GitHub refused.
 		if pr, err = github.PullRequest(ctx); err != nil {
-			return Look{}, err
+			return waiting(watch), err
 		}
 		if pr.State != "OPEN" {
 			return Look{Outcome: Settled}, nil
@@ -221,7 +225,7 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 	}
 	if err := github.UpdateBranch(ctx); err != nil {
 		if isTransient(ctx, err) {
-			return Look{}, err
+			return waiting(watch), err
 		}
 		return leaveOpen(pr, "GitHub could not update the branch: "+err.Error()), nil
 	}
