@@ -17,6 +17,10 @@ software.
   step is a gate an agent cannot skip.
 - **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.
 
+<img src=".github/assets/screenshot-job.png" alt="A job started from a Linear issue, running on vm-runner. Its pipeline shows checkout passed, implement running, and review, revise, publish and merge waiting, each step with its model." width="100%">
+
+<img src=".github/assets/screenshot-spending.png" alt="The Spending dashboard: total spend this month, spend over 14 days, cost per merged pull request, tokens, daily spend, and spend by harness and model." width="100%">
+
 **Supported harnesses:** <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/harness-claude-dark.svg"><img src=".github/assets/harness-claude-light.svg" alt="Claude logo" height="20" align="top"></picture> Claude Code by Anthropic, <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/harness-openai-dark.svg"><img src=".github/assets/harness-openai-light.svg" alt="OpenAI logo" height="20" align="top"></picture> Codex by OpenAI, <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/harness-google-dark.svg"><img src=".github/assets/harness-google-light.svg" alt="Google logo" height="20" align="top"></picture> Antigravity by Google, and Pi. Logos belong to their owners. Machinist is not made by or tied to these companies.
 
 Send the work to the [run API](docs/run-api.md), or let an automation start it. The job works on its own branch, and the default preset opens one pull request.
