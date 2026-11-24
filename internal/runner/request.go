@@ -18,6 +18,8 @@ type Step struct {
 	Run               string `json:"run"`
 	TimeoutMillis     int64  `json:"timeout_millis,omitempty"`
 	IdleTimeoutMillis int64  `json:"idle_timeout_millis,omitempty"`
+	Harness           string `json:"harness,omitempty"`
+	Model             string `json:"model,omitempty"`
 }
 
 // DefaultIdleTimeout stops a step that has printed nothing for this long. An

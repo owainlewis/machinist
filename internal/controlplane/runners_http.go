@@ -255,7 +255,7 @@ func (s *Server) currentAgents(presetName, step string) []protocol.Agent {
 	}
 	for _, candidate := range preset.Steps {
 		if candidate.Name == step {
-			return s.factory.StepAgents(candidate.Run)
+			return s.factory.StepAgents(preset.EffectiveStep(candidate))
 		}
 	}
 	return nil

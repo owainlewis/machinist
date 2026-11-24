@@ -5,7 +5,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/runner"
 )
 
 // Needs lists the harnesses a preset's agents run, sorted, so the control
@@ -14,8 +16,8 @@ import (
 func (f *Factory) Needs(preset Preset) []string {
 	seen := map[string]bool{}
 	for _, step := range preset.Steps {
-		for _, agent := range f.StepAgents(step.Run) {
-			if file, ok := f.Agents[agent.Name]; ok && file.Program == "" {
+		for _, agent := range f.stepResolvedAgents(preset.EffectiveStep(step)) {
+			if agent.Program == "" {
 				seen[agent.Harness] = true
 			}
 		}
@@ -30,22 +32,34 @@ func (f *Factory) Needs(preset Preset) []string {
 
 var agentCall = regexp.MustCompile(`machinist\s+agent\s+([A-Za-z0-9][A-Za-z0-9_-]*)`)
 
-// StepAgents names the agents a step runs, in order, so a job can show them
-// before it starts. It reads the step's command and any script from scripts/
-// that the command names for "machinist agent <name>", leaving out shell
-// comments. A step that runs no agent, or one Machinist cannot see into, has
-// none.
-func (f *Factory) StepAgents(step string) []protocol.Agent {
-	text := withoutComments(step)
+// StepAgents names the agents a step runs, in order, with any harness or model
+// override applied, so a job can show them before it starts. It reads the
+// step's command and any script from scripts/ that the command names for
+// "machinist agent <name>", leaving out shell comments. A step that runs no
+// agent, or one Machinist cannot see into, has none.
+func (f *Factory) StepAgents(step runner.Step) []protocol.Agent {
+	resolved := f.stepResolvedAgents(step)
+	agents := make([]protocol.Agent, 0, len(resolved))
+	for _, agent := range resolved {
+		agents = append(agents, protocol.Agent{Name: agent.Name, Harness: agent.Harness, Model: agent.Model})
+	}
+	return agents
+}
+
+func (f *Factory) stepResolvedAgents(step runner.Step) []harness.Agent {
+	text := withoutComments(step.Run)
 	for _, word := range strings.Fields(text) {
 		if script, ok := f.Files["scripts/"+strings.TrimPrefix(word, "./")]; ok {
 			text += "\n" + withoutComments(script)
 		}
 	}
-	agents := []protocol.Agent{}
+	agents := []harness.Agent{}
 	for _, match := range agentCall.FindAllStringSubmatch(text, -1) {
 		if agent, ok := f.Agents[match[1]]; ok {
-			agents = append(agents, protocol.Agent{Name: agent.Name, Harness: agent.Harness, Model: agent.Model})
+			if overridden, err := agent.Override(step.Harness, step.Model); err == nil {
+				agent = overridden
+			}
+			agents = append(agents, agent)
 		}
 	}
 	return agents
