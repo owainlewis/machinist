@@ -49,9 +49,9 @@ jobs:
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
           existing_sha=$(gh api "repos/$GH_REPO/releases?per_page=30" \
-            --jq '[.[] | select(.draft == false and .prerelease == true and (.tag_name | contains("-nightly.")))][0].target_commitish // ""')
+            --jq '[.[] | select(.draft == false and .prerelease == true and (.tag_name | contains("-nightly.")))] | sort_by(.published_at // .created_at // "") | reverse | .[0].target_commitish // ""')
           existing_tag=$(gh api "repos/$GH_REPO/releases?per_page=30" \
-            --jq '[.[] | select(.draft == false and .prerelease == true and (.tag_name | contains("-nightly.")))][0].tag_name // ""')
+            --jq '[.[] | select(.draft == false and .prerelease == true and (.tag_name | contains("-nightly.")))] | sort_by(.published_at // .created_at // "") | reverse | .[0].tag_name // ""')
 
           if [[ "$FORCE_PUBLISH" != "true" && ( "$existing_sha" == "$commit" || "$existing_tag" == *".$short_sha" ) ]]; then
             echo "Nightly release $existing_tag already covers $commit; skipping."
@@ -152,7 +152,7 @@ jobs:
           set -euo pipefail
           keep=14
           tags=$(gh api "repos/$GH_REPO/releases?per_page=100" \
-            --jq '[.[] | select(.draft == false and .prerelease == true and (.tag_name | contains("-nightly."))) | .tag_name] | .['"$keep"':][]')
+            --jq '[.[] | select(.draft == false and .prerelease == true and (.tag_name | contains("-nightly.")))] | sort_by(.published_at // .created_at // "") | reverse | map(.tag_name) | .['"$keep"':][]')
           for old_tag in $tags; do
             echo "Pruning old nightly release: $old_tag"
             gh release delete "$old_tag" --cleanup-tag --yes || true
