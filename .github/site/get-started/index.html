@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Run Machinist on your computer in four steps: build it, initialize a factory, configure it and start the control plane and a runner.">
+    <meta name="description" content="Run Machinist on your computer in four steps: install it, initialize a factory, configure it and start the control plane and a runner.">
     <meta name="theme-color" content="#161618">
     <meta name="color-scheme" content="dark">
     <title>Get started | Machinist</title>
@@ -27,14 +27,14 @@
       <section class="hero page-hero" aria-labelledby="page-title">
         <span class="kicker">Get started</span>
         <h1 id="page-title">Run Machinist on your computer</h1>
-        <p class="lede">Set up the control plane and a runner on your own machine in four steps. You need Go, Git, the GitHub CLI and Claude Code. Sign in to the GitHub CLI and Claude Code first. You do not need a Machinist account.</p>
+        <p class="lede">Set up the control plane and a runner on your own machine in four steps. You need Git, the GitHub CLI and Claude Code. Sign in to the GitHub CLI and Claude Code first. You do not need a Machinist account.</p>
       </section>
 
       <section class="section section-first" id="start" aria-label="Setup steps">
         <ol class="setup-steps">
           <li>
-            <div><span class="step-index">01</span><h3>Build</h3><p>Build one program. It has the CLI, the control plane, the runner and the web app. Add it to your PATH.</p></div>
-            <button class="copy-command" type="button" data-copy="go build -o ./bin/machinist ./cmd/machinist &amp;&amp; export PATH=&quot;$PWD/bin:$PATH&quot;" aria-label="Copy build command"><code>go build -o ./bin/machinist ./cmd/machinist &amp;&amp; export PATH=&quot;$PWD/bin:$PATH&quot;</code><span aria-live="polite">Copy</span></button>
+            <div><span class="step-index">01</span><h3>Install</h3><p>Install one binary for Linux or macOS. It has the CLI, the control plane, the runner and the web app. Upgrade later with <code>machinist update</code>, or set <code>MACHINIST_CHANNEL=nightly</code> for nightly builds.</p></div>
+            <button class="copy-command" type="button" data-copy="curl -fsSL https://machinist.sh/install.sh | sh" aria-label="Copy install command"><code>curl -fsSL https://machinist.sh/install.sh | sh</code><span aria-live="polite">Copy</span></button>
           </li>
           <li>
             <div><span class="step-index">02</span><h3>Initialize</h3><p>Make a new directory and keep it in git. Run this there. It writes the config, a runner and the starter steps.</p></div>
