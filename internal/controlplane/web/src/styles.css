@@ -216,6 +216,15 @@ a.source:hover span { text-decoration: underline; }
 .board-card-action { overflow: hidden; color: var(--muted-foreground); font-family: var(--font-mono, ui-monospace, monospace); text-overflow: ellipsis; white-space: nowrap; }
 .board-card-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted-foreground); font-size: 12px; }
 .board-empty { padding: 8px 4px; color: var(--faint); font-size: 13px; }
+.board-column-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); padding: 8px 4px 2px; font-size: 12.5px; }
+.board-column-summary { color: var(--faint); font-variant-numeric: tabular-nums; }
+.board-view-all { color: var(--primary); font-weight: 500; }
+.board-view-all:hover { text-decoration: underline; }
+.board-view-all:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+.pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-top: 4px; font-size: 13px; }
+.pagination-summary { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.pagination-controls { display: flex; align-items: center; gap: 10px; }
+.pagination-page { color: var(--muted-foreground); font-variant-numeric: tabular-nums; white-space: nowrap; }
 @media (max-width: 900px) { .board { grid-template-columns: minmax(0, 1fr); } }
 
 /* One job: its facts, then each attempt and the steps it ran. */
