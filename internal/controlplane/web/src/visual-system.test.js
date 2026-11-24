@@ -52,3 +52,10 @@ test("dashboard spend and model tables keep mobile spend columns and left-align 
   assert.match(phoneBlock, /\.group-table:not\(\.spend-group-table\) th:nth-child\(3\)/);
   assert.doesNotMatch(phoneBlock, /\.group-table (?:th|td):nth-child\([34]\)/);
 });
+
+test("settings sections constrain wide preset pipelines so they scroll inside their card", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.settings-section \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(styles, /\.token-revoked-section \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(styles, /\.preset-cards \{[^}]*min-width: 0;/);
+});
