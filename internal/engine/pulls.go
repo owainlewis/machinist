@@ -224,6 +224,17 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		return nil
 	}
 	if err != nil {
+		// Persist any normalized watch state (for example, a branch update's
+		// new head) before retrying so a later push cannot be mistaken for
+		// Machinist's own branch update.
+		if look.Outcome == ship.Waiting {
+			if autoMergeTurnedOff {
+				look.Watch.Hold = watch.Hold
+			}
+			if body, marshalErr := json.Marshal(look.Watch); marshalErr == nil {
+				_ = e.Store.SetShipping(ctx, ticket, tickets.Shipped{Shipping: string(body), At: e.now()})
+			}
+		}
 		return err
 	}
 	if look.Log != "" {

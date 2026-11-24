@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ type fakePull struct {
 	pr       ship.PullRequest
 	checks   []ship.Check
 	merged   []string
+	mergeErr error
 	updated  int
 	looks    int
 	onChecks func()
@@ -33,7 +35,7 @@ func (f *fakePull) Checks(context.Context) ([]ship.Check, error) {
 }
 func (f *fakePull) Merge(_ context.Context, head string) error {
 	f.merged = append(f.merged, head)
-	return nil
+	return f.mergeErr
 }
 func (f *fakePull) UpdateBranch(context.Context) error {
 	f.updated++
@@ -294,5 +296,65 @@ func TestAJobStoppedWhileChecksAreFetchedIsNotMergedOrUpdated(t *testing.T) {
 				t.Fatalf("ticket = %+v, merged=%v, updated=%d", got, pull.merged, pull.updated)
 			}
 		})
+	}
+}
+
+// A transient merge error (like a gh timeout) keeps the ticket shipping so the
+// next poll merges it once GitHub responds.
+func TestATransientMergeFailureKeepsShippingAndRetries(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+	pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+	pull.mergeErr = &ship.TransientError{Err: errors.New("gh merge pull request failed (timeout): signal: killed")}
+
+	if err := e.CheckPRs(t.Context()); err == nil {
+		t.Fatal("CheckPRs returned nil, want transient merge error")
+	}
+	got := ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StatePRReady || got.Shipping == "" || len(pull.merged) != 1 {
+		t.Fatalf("after transient error: ticket = %+v, merged = %v", got, pull.merged)
+	}
+
+	pull.mergeErr = nil
+	checkPRs(t, e)
+	got = ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StateDone || got.PRState != tickets.PRMerged || got.Shipping != "" || len(pull.merged) != 2 {
+		t.Fatalf("after retry: ticket = %+v, merged = %v", got, pull.merged)
+	}
+}
+
+// If a transient merge error happens on the first look after a branch update,
+// the adopted head commit is persisted so a subsequent unreviewed push is
+// rejected instead of mistaken for Machinist's own branch update.
+func TestATransientMergeFailureAfterBranchUpdateLocksTheNewHead(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+	pull.pr.MergeStateStatus = "BEHIND"
+	pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+	checkPRs(t, e)
+	if got := ticketOf(t, e, ticket.ID); !strings.Contains(got.Shipping, `"old_head":"sha1"`) {
+		t.Fatalf("expected old_head after branch update: %+v", got)
+	}
+
+	// Branch update lands as sha2 with passing checks, but Merge times out.
+	pull.pr.HeadRefOid = "sha2"
+	pull.pr.MergeStateStatus = "CLEAN"
+	pull.mergeErr = &ship.TransientError{Err: errors.New("gh merge pull request failed (timeout): signal: killed")}
+	if err := e.CheckPRs(t.Context()); err == nil {
+		t.Fatal("CheckPRs returned nil, want transient merge error")
+	}
+	got := ticketOf(t, e, ticket.ID)
+	if strings.Contains(got.Shipping, `"old_head"`) || !strings.Contains(got.Shipping, `"head":"sha2"`) {
+		t.Fatalf("normalized head was not persisted: %+v", got)
+	}
+
+	// An unreviewed commit sha3 is pushed before the retry.
+	pull.pr.HeadRefOid = "sha3"
+	pull.mergeErr = nil
+	checkPRs(t, e)
+	got = ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StatePRReady || got.Shipping != "" || len(pull.merged) != 1 {
+		t.Fatalf("unreviewed commit sha3 should have been left open: ticket = %+v, merged = %v", got, pull.merged)
+	}
+	if message := lastMessage(t, e, ticket.ID); !strings.Contains(message, "commits pushed after the review") {
+		t.Fatalf("message = %q", message)
 	}
 }
