@@ -272,6 +272,7 @@ func TestReportRows(t *testing.T) {
 		{"no report", protocol.Completion{State: tickets.RunSucceeded}, nil, tickets.StateFailed, "The run ended without a report: succeeded"},
 		{"malformed report", succeed("complete", "old"), nil, tickets.StateFailed, "The run ended without a report: report outcome"},
 		{"run failed", protocol.Completion{State: tickets.RunFailed, Error: "exit 7"}, nil, tickets.StateFailed, "The run ended without a report: exit 7"},
+		{"run failed with report", protocol.Completion{State: tickets.RunFailed, Error: "step check: exit 1", Report: &protocol.Report{Outcome: protocol.OutcomeFailed, Summary: "Check test failed: https://ci.example.test/1"}}, found, tickets.StateFailed, "Check test failed: https://ci.example.test/1"},
 		{"deadline", protocol.Completion{State: tickets.RunTimedOut, Error: "command exceeded timeout"}, nil, tickets.StateFailed, "The run ended without a report: command exceeded"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

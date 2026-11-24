@@ -293,7 +293,11 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 			return err
 		}
 	}
-	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: reached(report, pr), Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages, Patch: completion.Patch}, func(ticket tickets.Ticket, status string) tickets.Transition {
+	runReport := report
+	if completion.State == tickets.RunSucceeded {
+		runReport = reached(report, pr)
+	}
+	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: runReport, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages, Patch: completion.Patch}, func(ticket tickets.Ticket, status string) tickets.Transition {
 		transition := decide(status, report, reason, pr)
 		if transition.State == tickets.StateFailed && len(completion.Patch) > 0 {
 			transition.Message = sentence(transition.Message) + " " + PatchSaved
@@ -405,7 +409,20 @@ func decide(status string, report *protocol.Report, reason string, pr *PR) ticke
 		transition.State = tickets.StateWorking
 		return transition
 	}
-	if status != tickets.RunSucceeded || report == nil {
+	if status != tickets.RunSucceeded {
+		transition.State = tickets.StateFailed
+		if report != nil {
+			transition.Report = report.Outcome + ": " + report.Summary
+			transition.Message = report.Summary
+			return transition
+		}
+		if reason == "" {
+			reason = status
+		}
+		transition.Message = "The run ended without a report: " + reason
+		return transition
+	}
+	if report == nil {
 		if reason == "" {
 			reason = status
 		}

@@ -208,6 +208,7 @@ a.source:hover span { text-decoration: underline; }
 .board-card { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: 0 1px 0 rgb(255 255 255 / .03) inset, 0 1px 2px rgb(0 0 0 / .25); padding: 12px 14px; transition: border-color .15s ease, transform .15s ease; }
 .board-card:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); transform: translateY(-1px); }
 .board-card[data-state="running"] { border-color: color-mix(in srgb, var(--info) 35%, var(--border)); background: linear-gradient(180deg, color-mix(in srgb, var(--info) 6%, var(--surface)), var(--surface) 60%); }
+.board-card[data-state="needs_you"] { border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
 .board-card[data-state="running"]::before { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: linear-gradient(90deg, transparent, var(--info), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: run-sweep 1.8s ease-in-out infinite; content: ""; }
 .board-card-title { font-size: 14px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
 .board-card-title::after { position: absolute; inset: 0; content: ""; }
@@ -244,7 +245,7 @@ a.source:hover span { text-decoration: underline; }
 .job-failure .label { display: flex; align-items: center; gap: 6px; color: var(--danger); }
 .job-page .prose a { color: var(--info); overflow-wrap: anywhere; }
 .job-page .prose a:hover { text-decoration: underline; }
-.run-again { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.run-again, .cancel-job { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 
 /* The pipeline: one node per step, left to right, joined by an edge. */
 .pipeline { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--border) 70%, transparent) 1px, transparent 0) 0 0 / 16px 16px, var(--surface); padding: 10px; }
@@ -468,7 +469,7 @@ a.source:hover span { text-decoration: underline; }
   .page { gap: 16px; padding: 20px 16px 48px; }
   .page-banner { padding-inline: 16px; }
   .job-head { flex-direction: column; gap: 8px; }
-  .run-again { align-items: flex-start; }
+  .run-again, .cancel-job { align-items: flex-start; }
   .job-head h1 { font-size: 19px; }
   .job-facts { gap: 8px 20px; }
   .step-row { grid-template-columns: auto minmax(0, 1fr) auto auto; }

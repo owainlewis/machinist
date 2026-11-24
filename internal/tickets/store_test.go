@@ -1127,3 +1127,34 @@ func TestReplyToAnOpenPullRequestKeepsIt(t *testing.T) {
 		t.Fatalf("pr_number = %d", again.PRNumber)
 	}
 }
+
+func TestUnpostedMessagesOnlyIncludesIssueTickets(t *testing.T) {
+	store := openStore(t)
+	webTicket := createTicket(t, store, "run:web-1")
+	if err := store.Apply(t.Context(), webTicket.ID, StateWorking, Transition{State: StateFailed, PRNumber: 42, Message: "The run ended without a report: exit 1"}); err != nil {
+		t.Fatal(err)
+	}
+	// Even a legacy row with posted_at IS NULL on a non-issue ticket with a PR must not be posted.
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE ticket_entries SET posted_at=NULL WHERE ticket_id=? AND kind=?`, webTicket.ID, EntryMessage); err != nil {
+		t.Fatal(err)
+	}
+
+	issueReq := request("github:issue:9")
+	issueReq.Source = "github"
+	issueReq.IssueNumber = 9
+	issueTicket, _, err := store.CreateTicket(t.Context(), issueReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	messages, err := store.UnpostedMessages(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Number != 9 {
+		t.Fatalf("messages = %+v, want only issue #9", messages)
+	}
+	if entries, err := store.Entries(t.Context(), issueTicket.ID); err != nil || len(entries) < 2 {
+		t.Fatalf("entries = %+v, err = %v", entries, err)
+	}
+}

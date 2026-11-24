@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from "react";
-import { Ban, Check, Clock3, LoaderCircle, X } from "lucide-react";
+import { Ban, Check, CircleAlert, Clock3, LoaderCircle, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { stateLabels } from "./jobs.js";
 
 const glyphs = {
   queued: [Clock3, ""],
   running: [LoaderCircle, "pill-info"],
+  needs_you: [CircleAlert, "pill-warning"],
   done: [Check, "pill-success"],
   failed: [X, "pill-danger"],
   cancelled: [Ban, ""],

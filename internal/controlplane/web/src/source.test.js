@@ -28,7 +28,9 @@ test("the jobs list shows each job's source and its pull request as a chip", { t
   assert.match(linear, /<span class="source" data-source="linear"><svg[^>]*>.*?<\/svg><span>Linear<\/span><\/span>/);
   assert.match(curl, /data-source="api"><svg[^>]*>.*?<\/svg><span>API<\/span>/);
   assert.match(linear, /<a class="pr-chip" data-state="open" href="https:\/\/github.com\/owner\/repo\/pull\/12" target="_blank" rel="noreferrer" aria-label="Pull request #12, open">.*<span>#12<\/span><span class="pr-chip-state">Open<\/span><\/a>/);
+  assert.match(linear, /<span class="pill pill-warning"><svg[^>]*>.*?<\/svg><span>Needs you<\/span><\/span>/);
   assert.match(curl, /class="pr-chip" data-state="merged"[^>]*>.*Merged<\/span><\/a>/);
+  assert.match(curl, /<span class="pill pill-success"><svg[^>]*>.*?<\/svg><span>Done<\/span><\/span>/);
 
   for (const label of ["Running", "Done", "Failed", "Needs a person", "Cancelled"]) assert.ok(list.includes(`>${label}<span class="filter-chip-count">`), label);
   assert.match(list, /<option value="" selected="">All sources<\/option><option value="api">API<\/option><option value="linear">Linear<\/option>/);

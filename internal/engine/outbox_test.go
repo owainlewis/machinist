@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -43,20 +44,23 @@ func TestDeliverPostsOnceOnTheIssue(t *testing.T) {
 	}
 }
 
-func TestDeliverUsesThePRWhenThereIsNoIssue(t *testing.T) {
+func TestDeliverDoesNotPostToPRWhenThereIsNoIssue(t *testing.T) {
 	e := newEngine(t)
 	withPR(e)
 	posts := recordPosts(e)
-	ticket := newTicket(t, e, "api")
+	ticket := newTicket(t, e, "run")
 	request := assignRun(t, e)
-	if err := e.Complete(t.Context(), request.RunID, succeed("failed", "Stuck")); err != nil {
+	if err := e.Complete(t.Context(), request.RunID, protocol.Completion{State: tickets.RunFailed, Error: "exit 1"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Deliver(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if len(*posts) != 1 || (*posts)[0].number != 42 || (*posts)[0].body != "Stuck" {
-		t.Fatalf("posts = %+v", *posts)
+	if len(*posts) != 0 {
+		t.Fatalf("posts = %+v, want none for non-issue job", *posts)
+	}
+	if message := lastMessage(t, e, ticket.ID); message != "The run ended without a report: exit 1" {
+		t.Fatalf("message = %q", message)
 	}
 	if got, _ := e.Store.Ticket(t.Context(), ticket.ID); got.PRNumber != 42 {
 		t.Fatalf("ticket = %+v", got)

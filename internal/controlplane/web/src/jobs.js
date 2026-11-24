@@ -1,18 +1,20 @@
-// The UI speaks in job states, the same ones the run API returns.
+// The UI speaks in job states, distinguishing pr_ready ("Needs you") from green Done.
 export const stateLabels = {
   queued: "Queued",
   running: "Running",
+  needs_you: "Needs you",
   done: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
 };
 
-// jobState mirrors jobState in internal/controlplane/run_http.go. A working
-// job is running once a runner holds it, and queued until then.
+// jobState maps a ticket to its UI state. A working job is running once a
+// runner holds it, and queued until then. A job whose pull request is waiting
+// on a person shows as needs_you rather than green done.
 export function jobState(ticket, running = false) {
   switch (ticket?.state) {
     case "working": return running ? "running" : "queued";
-    case "pr_ready":
+    case "pr_ready": return "needs_you";
     case "done": return "done";
     case "cancelled": return "cancelled";
     default: return "failed";
@@ -20,7 +22,7 @@ export function jobState(ticket, running = false) {
 }
 
 export function isFinished(state) {
-  return ["done", "failed", "cancelled"].includes(state);
+  return ["needs_you", "done", "failed", "cancelled"].includes(state);
 }
 
 const prStateLabels = { open: "Open", merged: "Merged", closed: "Closed" };
@@ -225,6 +227,7 @@ export function paginationOf({ total = 0, offset = 0, count = 0, pageSize = list
 export function matchesQuick(ticket, running, quick) {
   if (!quick) return true;
   if (quick === "needs_person") return ticket.state === "pr_ready";
+  if (quick === "done") return ticket.state === "done" || ticket.state === "pr_ready";
   return jobState(ticket, running) === quick;
 }
 
