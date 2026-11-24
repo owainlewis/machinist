@@ -480,18 +480,87 @@ func TestTokensAuthenticateByHashOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.HasPrefix(token, TokenPrefix) || len(token) != len(TokenPrefix)+64 {
+		t.Fatalf("token = %q", token)
+	}
 	if name, role, err := store.TokenName(t.Context(), token); err != nil || name != "runner-1" || role != RoleAll {
 		t.Fatalf("name = %q, err = %v", name, err)
 	}
 	if _, _, err := store.TokenName(t.Context(), "wrong"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("wrong token: %v", err)
 	}
-	var stored string
-	if err := store.db.QueryRow(`SELECT token_hash FROM tokens`).Scan(&stored); err != nil || stored == token {
-		t.Fatalf("stored = %q, err = %v", stored, err)
+	var stored, prefix string
+	if err := store.db.QueryRow(`SELECT token_hash, prefix FROM tokens`).Scan(&stored, &prefix); err != nil || stored == token || prefix != token[:tokenPrefixDisplayLength] {
+		t.Fatalf("stored = %q, prefix = %q, err = %v", stored, prefix, err)
 	}
 	if _, err := store.CreateToken(t.Context(), " ", RoleAll); err == nil {
 		t.Fatal("empty name accepted")
+	}
+	if _, err := store.CreateToken(t.Context(), "bad/name", RoleOperator); err == nil {
+		t.Fatal("slash in name accepted")
+	}
+}
+
+func TestLegacyTokensWorkWithoutPrefixAndRegenerateKeepsNameAndRole(t *testing.T) {
+	store := openStore(t)
+	legacy := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if _, err := store.db.Exec(`INSERT INTO tokens(id,name,token_hash,created_at,role) VALUES('old1','legacy',?,?,?)`, hashToken(legacy), stamp(time.Now().UTC()), RoleAll); err != nil {
+		t.Fatal(err)
+	}
+	if name, role, err := store.TokenName(t.Context(), legacy); err != nil || name != "legacy" || role != RoleAll {
+		t.Fatalf("legacy auth = (%q, %q, %v)", name, role, err)
+	}
+	tokens, err := store.ListTokens(t.Context())
+	if err != nil || len(tokens) != 1 || tokens[0].Prefix != "" {
+		t.Fatalf("tokens = %+v, err = %v", tokens, err)
+	}
+
+	// Regenerating revokes the legacy token and issues a new mch_ token with the same name and role.
+	fresh, err := store.RegenerateToken(t.Context(), "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(fresh, TokenPrefix) || fresh == legacy {
+		t.Fatalf("fresh = %q", fresh)
+	}
+	if _, _, err := store.TokenName(t.Context(), legacy); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old legacy token still works: %v", err)
+	}
+	if name, role, err := store.TokenName(t.Context(), fresh); err != nil || name != "legacy" || role != RoleAll {
+		t.Fatalf("fresh auth = (%q, %q, %v)", name, role, err)
+	}
+
+	// Regenerating a runner token keeps its runner role and clears its runner row.
+	oldRunner, err := store.CreateToken(t.Context(), "vm-1", RoleRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRunner(t.Context(), "vm-1", "local", []string{"claude"}, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	newRunner, err := store.RegenerateToken(t.Context(), "vm-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.TokenName(t.Context(), oldRunner); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old runner token still works: %v", err)
+	}
+	if name, role, err := store.TokenName(t.Context(), newRunner); err != nil || name != "vm-1" || role != RoleRunner {
+		t.Fatalf("new runner auth = (%q, %q, %v)", name, role, err)
+	}
+	if runners, _ := fleet(t, store); len(runners) != 0 {
+		t.Fatalf("runners after regenerate = %+v", runners)
+	}
+
+	// Regenerating a missing or revoked token returns ErrNotFound.
+	if _, err := store.RegenerateToken(t.Context(), "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing regenerate = %v", err)
+	}
+	if err := store.RevokeToken(t.Context(), "vm-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegenerateToken(t.Context(), "vm-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked regenerate = %v", err)
 	}
 }
 

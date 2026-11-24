@@ -84,7 +84,7 @@ CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
 CREATE INDEX IF NOT EXISTS runs_ticket_status ON runs(ticket_id, status);
 CREATE TABLE IF NOT EXISTS tokens (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT,
-  role TEXT NOT NULL DEFAULT '');
+  role TEXT NOT NULL DEFAULT '', prefix TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_token_per_name ON tokens(name) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS runners (
   name TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT '', harnesses TEXT NOT NULL DEFAULT '', slots INTEGER NOT NULL DEFAULT 1, last_contact TEXT NOT NULL);
@@ -294,7 +294,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if err = addColumns(db, "tokens", "role TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err = addColumns(db, "tokens", "role TEXT NOT NULL DEFAULT ''", "prefix TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -1609,11 +1609,33 @@ const (
 // Allows reports whether a token with this role may act as want.
 func Allows(role, want string) bool { return role == RoleAll || role == want }
 
+// TokenPrefix starts every new API token so a person can recognise it in a
+// config file or clipboard. tokenPrefixDisplayLength keeps TokenPrefix plus
+// four hex characters (16 bits of the 256-bit secret) so rows can be matched
+// to tokens without weakening them.
+const (
+	TokenPrefix              = "mch_"
+	tokenPrefixDisplayLength = len(TokenPrefix) + 4
+)
+
+func newToken() (token, prefix string, err error) {
+	secret, err := randomHex(32)
+	if err != nil {
+		return "", "", err
+	}
+	token = TokenPrefix + secret
+	return token, token[:tokenPrefixDisplayLength], nil
+}
+
 // CreateToken stores a new token with a role and returns its only plaintext
 // copy.
 func (s *Store) CreateToken(ctx context.Context, name, role string) (string, error) {
-	if strings.TrimSpace(name) == "" {
+	name = strings.TrimSpace(name)
+	if name == "" {
 		return "", errors.New("token name is required")
+	}
+	if strings.Contains(name, "/") {
+		return "", errors.New("token name cannot contain /")
 	}
 	switch role {
 	case RoleAll, RoleOperator, RoleRunner:
@@ -1624,7 +1646,7 @@ func (s *Store) CreateToken(ctx context.Context, name, role string) (string, err
 	if err != nil {
 		return "", err
 	}
-	token, err := randomHex(32)
+	token, prefix, err := newToken()
 	if err != nil {
 		return "", err
 	}
@@ -1637,7 +1659,43 @@ func (s *Store) CreateToken(ctx context.Context, name, role string) (string, err
 		if taken > 0 {
 			return ErrTokenExists
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at,role) VALUES(?,?,?,?,?)`, id, name, hashToken(token), stamp(s.now()), role)
+		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at,role,prefix) VALUES(?,?,?,?,?,?)`, id, name, hashToken(token), stamp(s.now()), role, prefix)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// RegenerateToken atomically revokes an active token and creates a new one
+// with the same name and role, returning its only plaintext copy.
+func (s *Store) RegenerateToken(ctx context.Context, name string) (string, error) {
+	id, err := randomHex(8)
+	if err != nil {
+		return "", err
+	}
+	token, prefix, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	err = s.inTx(ctx, func(tx *sql.Tx) error {
+		var role string
+		err := tx.QueryRowContext(ctx, `SELECT role FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&role)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		now := stamp(s.now())
+		if _, err := tx.ExecContext(ctx, `UPDATE tokens SET revoked_at=? WHERE name=? AND revoked_at IS NULL`, now, name); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM runners WHERE name=?`, name); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at,role,prefix) VALUES(?,?,?,?,?,?)`, id, name, hashToken(token), now, role, prefix)
 		return err
 	})
 	if err != nil {
@@ -1650,6 +1708,7 @@ func (s *Store) CreateToken(ctx context.Context, name, role string) (string, err
 type TokenInfo struct {
 	Name       string
 	Role       string
+	Prefix     string
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
 	RevokedAt  *time.Time
@@ -1657,7 +1716,7 @@ type TokenInfo struct {
 
 // ListTokens returns every token, oldest first.
 func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,role,created_at,last_used_at,revoked_at FROM tokens ORDER BY created_at,id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name,role,prefix,created_at,last_used_at,revoked_at FROM tokens ORDER BY created_at,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1667,7 +1726,7 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
 		var info TokenInfo
 		var created string
 		var used, revoked sql.NullString
-		if err := rows.Scan(&info.Name, &info.Role, &created, &used, &revoked); err != nil {
+		if err := rows.Scan(&info.Name, &info.Role, &info.Prefix, &created, &used, &revoked); err != nil {
 			return nil, err
 		}
 		info.CreatedAt = *parseTime(sql.NullString{String: created, Valid: true})

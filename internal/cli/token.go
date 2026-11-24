@@ -65,9 +65,9 @@ func newTokenCommand(options *commandOptions) *cobra.Command {
 				return err
 			}
 			table := tabwriter.NewWriter(options.stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(table, "NAME\tROLE\tCREATED\tLAST USED\tREVOKED")
+			fmt.Fprintln(table, "NAME\tROLE\tPREFIX\tCREATED\tLAST USED\tREVOKED")
 			for _, token := range tokens {
-				fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\n", token.Name, displayRole(token.Role), token.CreatedAt.Format(time.RFC3339), displayTime(token.LastUsedAt), displayTime(token.RevokedAt))
+				fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n", token.Name, displayRole(token.Role), displayPrefix(token.Prefix), token.CreatedAt.Format(time.RFC3339), displayTime(token.LastUsedAt), displayTime(token.RevokedAt))
 			}
 			return table.Flush()
 		},
@@ -102,6 +102,15 @@ func displayRole(role string) string {
 		return "any"
 	}
 	return role
+}
+
+// displayPrefix shows a token's recognisable prefix, or "No prefix" for
+// tokens made before prefixes were added.
+func displayPrefix(prefix string) string {
+	if prefix == "" {
+		return "No prefix"
+	}
+	return prefix + "…"
 }
 
 func displayTime(value *time.Time) string {
