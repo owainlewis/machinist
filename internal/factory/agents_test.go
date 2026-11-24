@@ -128,3 +128,24 @@ func TestStepAgentsAndNeedsRespectOverrides(t *testing.T) {
 		t.Fatalf("step default-codex = %+v", got)
 	}
 }
+
+func TestStepScriptsReturnsReferencedScriptsInOrderWithoutCommentsOrDuplicates(t *testing.T) {
+	loaded := &Factory{
+		Files: map[string]string{
+			"scripts/checkout.sh": "#!/bin/sh\ngit clone repo\n",
+			"scripts/review.sh":   "#!/bin/sh\nmachinist agent review\n",
+			"scripts/unused.sh":   "#!/bin/sh\necho unused\n",
+		},
+	}
+	got := loaded.StepScripts(runner.Step{Run: "./checkout.sh && review.sh && checkout.sh # unused.sh"})
+	want := []StepScript{
+		{Path: "scripts/checkout.sh", Content: "#!/bin/sh\ngit clone repo\n"},
+		{Path: "scripts/review.sh", Content: "#!/bin/sh\nmachinist agent review\n"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("scripts = %+v, want %+v", got, want)
+	}
+	if none := loaded.StepScripts(runner.Step{Run: "machinist merge"}); len(none) != 0 {
+		t.Fatalf("none = %+v", none)
+	}
+}

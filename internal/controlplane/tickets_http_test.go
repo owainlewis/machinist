@@ -511,12 +511,12 @@ func TestPresetsRouteListsEachPresetsSteps(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
-	// Each step names the agents it runs: its own command, or a script it runs.
+	// Each step names its command, referenced scripts, and the agents it runs.
 	want := `{"default":"default","presets":[` +
-		`{"name":"default","description":"Do the work.","steps":[{"name":"work","agents":[{"name":"review","harness":"agy","model":"gemini-4-neon-high"},{"name":"revise","harness":"codex"}]}]},` +
-		`{"name":"spec","description":"Write a spec.","steps":[{"name":"checkout","agents":[]},{"name":"write","agents":[{"name":"writer","harness":"claude"}]}]}]}`
+		`{"name":"default","description":"Do the work.","steps":[{"name":"work","run":"review.sh","scripts":[{"path":"scripts/review.sh","content":"#!/bin/sh\nmachinist agent review\nmachinist   agent revise\nmachinist agent ghost\n"}],"agents":[{"name":"review","harness":"agy","model":"gemini-4-neon-high"},{"name":"revise","harness":"codex"}]}]},` +
+		`{"name":"spec","description":"Write a spec.","steps":[{"name":"checkout","run":"checkout.sh","agents":[]},{"name":"write","run":"machinist agent writer","agents":[{"name":"writer","harness":"claude"}]}]}]}`
 	if strings.TrimSpace(string(body)) != want {
-		t.Fatalf("body = %s", body)
+		t.Fatalf("body = %s\nwant = %s", body, want)
 	}
 	if response, _ := f.call(t, http.MethodGet, "/api/v1/presets", "", nil); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("signed out status = %d", response.StatusCode)
@@ -530,8 +530,9 @@ func TestPresetsRouteResolvesExtendsAndHarnessModelOverrides(t *testing.T) {
 			"default": {
 				Name:        "default",
 				Description: "Default pipeline.",
+				Timeout:     60 * time.Minute,
 				Steps: []runner.Step{
-					{Name: "checkout", Run: "checkout.sh"},
+					{Name: "checkout", Run: "checkout.sh", TimeoutMillis: (5 * time.Minute).Milliseconds()},
 					{Name: "implement", Run: "machinist agent implement"},
 					{Name: "review", Run: "review.sh"},
 				},
@@ -539,10 +540,12 @@ func TestPresetsRouteResolvesExtendsAndHarnessModelOverrides(t *testing.T) {
 			"neon": {
 				Name:        "neon",
 				Description: "Default pipeline on Antigravity (Gemini 4 Neon).",
+				Extends:     "default",
+				Timeout:     60 * time.Minute,
 				Harness:     "agy",
 				Model:       "gemini-4-neon-high",
 				Steps: []runner.Step{
-					{Name: "checkout", Run: "checkout.sh", Harness: "agy", Model: "gemini-4-neon-high"},
+					{Name: "checkout", Run: "checkout.sh", TimeoutMillis: (5 * time.Minute).Milliseconds(), Harness: "agy", Model: "gemini-4-neon-high"},
 					{Name: "implement", Run: "machinist agent implement", Harness: "agy", Model: "gemini-4-neon-high"},
 					{Name: "review", Run: "review.sh", Harness: "claude", Model: "opus"},
 				},
@@ -564,14 +567,14 @@ func TestPresetsRouteResolvesExtendsAndHarnessModelOverrides(t *testing.T) {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
 	want := `{"default":"default","presets":[` +
-		`{"name":"default","description":"Default pipeline.","steps":[` +
-		`{"name":"checkout","agents":[]},` +
-		`{"name":"implement","agents":[{"name":"implement","harness":"claude"}]},` +
-		`{"name":"review","agents":[{"name":"review","harness":"claude","model":"sonnet"}]}]},` +
-		`{"name":"neon","description":"Default pipeline on Antigravity (Gemini 4 Neon).","steps":[` +
-		`{"name":"checkout","agents":[]},` +
-		`{"name":"implement","agents":[{"name":"implement","harness":"agy","model":"gemini-4-neon-high"}]},` +
-		`{"name":"review","agents":[{"name":"review","harness":"claude","model":"opus"}]}]}]}`
+		`{"name":"default","description":"Default pipeline.","timeout_millis":3600000,"steps":[` +
+		`{"name":"checkout","run":"checkout.sh","timeout_millis":300000,"agents":[]},` +
+		`{"name":"implement","run":"machinist agent implement","agents":[{"name":"implement","harness":"claude"}]},` +
+		`{"name":"review","run":"review.sh","scripts":[{"path":"scripts/review.sh","content":"#!/bin/sh\nmachinist agent review\n"}],"agents":[{"name":"review","harness":"claude","model":"sonnet"}]}]},` +
+		`{"name":"neon","description":"Default pipeline on Antigravity (Gemini 4 Neon).","extends":"default","harness":"agy","model":"gemini-4-neon-high","timeout_millis":3600000,"steps":[` +
+		`{"name":"checkout","run":"checkout.sh","timeout_millis":300000,"agents":[]},` +
+		`{"name":"implement","run":"machinist agent implement","agents":[{"name":"implement","harness":"agy","model":"gemini-4-neon-high"}]},` +
+		`{"name":"review","run":"review.sh","scripts":[{"path":"scripts/review.sh","content":"#!/bin/sh\nmachinist agent review\n"}],"agents":[{"name":"review","harness":"claude","model":"opus"}]}]}]}`
 	if strings.TrimSpace(string(body)) != want {
 		t.Fatalf("body = %s\nwant = %s", body, want)
 	}

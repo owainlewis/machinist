@@ -32,6 +32,31 @@ func (f *Factory) Needs(preset Preset) []string {
 
 var agentCall = regexp.MustCompile(`machinist\s+agent\s+([A-Za-z0-9][A-Za-z0-9_-]*)`)
 
+// StepScript is one file from factory/scripts/ referenced by a step's command.
+type StepScript struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// StepScripts returns the files from factory/scripts/ named by step.Run, in
+// order of first appearance, ignoring shell comments.
+func (f *Factory) StepScripts(step runner.Step) []StepScript {
+	text := withoutComments(step.Run)
+	var scripts []StepScript
+	seen := map[string]bool{}
+	for _, word := range strings.Fields(text) {
+		path := "scripts/" + strings.TrimPrefix(word, "./")
+		if seen[path] {
+			continue
+		}
+		if content, ok := f.Files[path]; ok {
+			seen[path] = true
+			scripts = append(scripts, StepScript{Path: path, Content: content})
+		}
+	}
+	return scripts
+}
+
 // StepAgents names the agents a step runs, in order, with any harness or model
 // override applied, so a job can show them before it starts. It reads the
 // step's command and any script from scripts/ that the command names for

@@ -198,17 +198,17 @@ func TestTokensListWithoutSecretsAndRevokeFromTheWebApp(t *testing.T) {
 	}
 }
 
-func TestAgentsListTheirHarnessModelAndPresets(t *testing.T) {
+func TestAgentsListTheirFrontMatterPromptAndUses(t *testing.T) {
 	f := newFixture(t)
 	loaded := &factory.Factory{
 		Presets: map[string]factory.Preset{
 			"default": {Name: "default", Steps: []runner.Step{{Name: "implement", Run: "machinist agent implement"}, {Name: "review", Run: "machinist agent review"}}},
-			"quick":   {Name: "quick", Steps: []runner.Step{{Name: "implement", Run: "machinist agent implement"}}},
+			"quick":   {Name: "quick", Harness: "agy", Model: "gemini-4-neon-high", Steps: []runner.Step{{Name: "implement", Run: "machinist agent implement", Harness: "agy", Model: "gemini-4-neon-high"}}},
 		},
 		Agents: map[string]harness.Agent{
-			"implement": {Name: "implement", Harness: "claude", Model: "opus", Prompt: "secret instructions"},
-			"review":    {Name: "review", Harness: "codex"},
-			"unused":    {Name: "unused", Harness: "pi"},
+			"implement": {Name: "implement", Harness: "claude", Model: "opus", Prompt: "Implement the request."},
+			"review":    {Name: "review", Harness: "codex", Program: "/opt/codex", Prompt: "Review the diff."},
+			"unused":    {Name: "unused", Harness: "pi", Prompt: "Unused instructions."},
 		},
 	}
 	f.server.factory, f.server.presets = loaded, presetViews(loaded)
@@ -218,20 +218,33 @@ func TestAgentsListTheirHarnessModelAndPresets(t *testing.T) {
 	status, body := f.get(t, "/api/v1/agents")
 	found := decodeAs[list](t, status, http.StatusOK, body)
 	want := []AgentView{
-		{Name: "implement", Harness: "claude", Model: "opus", Presets: []string{"default", "quick"}},
-		{Name: "review", Harness: "codex", Presets: []string{"default"}},
-		{Name: "unused", Harness: "pi", Presets: []string{}},
+		{
+			Name: "implement", Harness: "claude", Model: "opus", Prompt: "Implement the request.",
+			Presets: []string{"default", "quick"},
+			Uses: []AgentUse{
+				{Preset: "default", Step: "implement", Harness: "claude", Model: "opus"},
+				{Preset: "quick", Step: "implement", Harness: "agy", Model: "gemini-4-neon-high"},
+			},
+		},
+		{
+			Name: "review", Harness: "codex", Command: "/opt/codex", Prompt: "Review the diff.",
+			Presets: []string{"default"},
+			Uses:    []AgentUse{{Preset: "default", Step: "review", Harness: "codex"}},
+		},
+		{
+			Name: "unused", Harness: "pi", Prompt: "Unused instructions.",
+			Presets: []string{},
+			Uses:    []AgentUse{},
+		},
 	}
 	if len(found.Agents) != len(want) {
 		t.Fatalf("agents = %+v", found.Agents)
 	}
 	for index := range want {
-		if got := found.Agents[index]; got.Name != want[index].Name || got.Harness != want[index].Harness || got.Model != want[index].Model || !slices.Equal(got.Presets, want[index].Presets) {
+		got := found.Agents[index]
+		if got.Name != want[index].Name || got.Harness != want[index].Harness || got.Model != want[index].Model || got.Command != want[index].Command || got.Prompt != want[index].Prompt || !slices.Equal(got.Presets, want[index].Presets) || !slices.Equal(got.Uses, want[index].Uses) {
 			t.Fatalf("agent %d = %+v, want %+v", index, got, want[index])
 		}
-	}
-	if strings.Contains(string(body), "secret instructions") {
-		t.Fatalf("a prompt leaked: %s", body)
 	}
 }
 

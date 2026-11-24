@@ -330,12 +330,27 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 	s.writeTicket(w, r, status, ticket)
 }
 
-// presetView is what the New job form shows of a preset: its name, what it
-// does and its steps, in order.
+// presetView is what the New job form and Settings show of a preset: its name,
+// what it does, any inheritance or model overrides, and its steps in order.
 type presetView struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	Steps       []stepView `json:"steps"`
+	Name          string           `json:"name"`
+	Description   string           `json:"description"`
+	Extends       string           `json:"extends,omitempty"`
+	Harness       string           `json:"harness,omitempty"`
+	Model         string           `json:"model,omitempty"`
+	TimeoutMillis int64            `json:"timeout_millis,omitempty"`
+	Steps         []presetStepView `json:"steps"`
+}
+
+// presetStepView is one step on /api/v1/presets: its command, any referenced
+// factory scripts, timeouts, and the resolved agents it runs.
+type presetStepView struct {
+	Name              string               `json:"name"`
+	Run               string               `json:"run,omitempty"`
+	Scripts           []factory.StepScript `json:"scripts,omitempty"`
+	TimeoutMillis     int64                `json:"timeout_millis,omitempty"`
+	IdleTimeoutMillis int64                `json:"idle_timeout_millis,omitempty"`
+	Agents            []protocol.Agent     `json:"agents"`
 }
 
 // stepView is one step and the agents it runs, with their harness and model.
@@ -352,10 +367,34 @@ func stepViews(loaded *factory.Factory, preset factory.Preset) []stepView {
 	return steps
 }
 
+func presetStepViews(loaded *factory.Factory, preset factory.Preset) []presetStepView {
+	steps := make([]presetStepView, 0, len(preset.Steps))
+	for _, step := range preset.Steps {
+		effective := preset.EffectiveStep(step)
+		steps = append(steps, presetStepView{
+			Name:              step.Name,
+			Run:               strings.TrimRight(step.Run, "\n"),
+			Scripts:           loaded.StepScripts(effective),
+			TimeoutMillis:     step.TimeoutMillis,
+			IdleTimeoutMillis: step.IdleTimeoutMillis,
+			Agents:            loaded.StepAgents(effective),
+		})
+	}
+	return steps
+}
+
 func presetViews(loaded *factory.Factory) []presetView {
 	views := make([]presetView, 0, len(loaded.Presets))
 	for name, preset := range loaded.Presets {
-		views = append(views, presetView{Name: name, Description: preset.Description, Steps: stepViews(loaded, preset)})
+		views = append(views, presetView{
+			Name:          name,
+			Description:   preset.Description,
+			Extends:       preset.Extends,
+			Harness:       preset.Harness,
+			Model:         preset.Model,
+			TimeoutMillis: preset.Timeout.Milliseconds(),
+			Steps:         presetStepViews(loaded, preset),
+		})
 	}
 	sort.Slice(views, func(a, b int) bool { return views[a].Name < views[b].Name })
 	return views

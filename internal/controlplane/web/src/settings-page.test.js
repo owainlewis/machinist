@@ -106,8 +106,87 @@ test("Settings: a new install opens on the overview, each page has a route, and 
       tokens = tokens.map(token => token.name === name && !token.revoked_at ? { ...token, revoked_at: now } : token);
       return reply(200, { tokens });
     }
-    if (url === "/api/v1/presets") return reply(200, { default: "default", presets: [{ name: "default", description: "Implement and open a pull request.", steps: [{ name: "checkout", agents: [] }, { name: "implement", agents: [{ name: "implement", harness: "claude", model: "opus" }] }] }], ...(factoryUpdates.length ? { updates: factoryUpdates } : {}) });
-    if (url === "/api/v1/agents") return reply(200, { agents: [{ name: "implement", harness: "claude", model: "opus", presets: ["default"] }, { name: "review", harness: "codex", presets: [] }] });
+    if (url === "/api/v1/presets") return reply(200, {
+      default: "default",
+      presets: [
+        {
+          name: "default",
+          description: "Implement and open a pull request.",
+          timeout_millis: 3600000,
+          steps: [
+            { name: "checkout", run: "checkout.sh", scripts: [{ path: "scripts/checkout.sh", content: "#!/bin/sh\ngit clone repo\n" }], timeout_millis: 300000, agents: [] },
+            { name: "implement", run: "machinist agent implement", agents: [{ name: "implement", harness: "claude", model: "opus" }] },
+            { name: "review", run: "review.sh", scripts: [{ path: "scripts/review.sh", content: "#!/bin/sh\nmachinist agent review\n" }], agents: [{ name: "review", harness: "claude", model: "sonnet" }] },
+          ],
+        },
+        {
+          name: "neon",
+          description: "Default pipeline on Antigravity.",
+          extends: "default",
+          harness: "agy",
+          model: "gemini-4-neon-high",
+          timeout_millis: 3600000,
+          steps: [
+            { name: "checkout", run: "checkout.sh", scripts: [{ path: "scripts/checkout.sh", content: "#!/bin/sh\ngit clone repo\n" }], timeout_millis: 300000, agents: [] },
+            { name: "implement", run: "machinist agent implement", agents: [{ name: "implement", harness: "agy", model: "gemini-4-neon-high" }] },
+            { name: "review", run: "review.sh", scripts: [{ path: "scripts/review.sh", content: "#!/bin/sh\nmachinist agent review\n" }], agents: [{ name: "review", harness: "claude", model: "opus" }] },
+          ],
+        },
+      ],
+      ...(factoryUpdates.length ? { updates: factoryUpdates } : {}),
+    });
+    if (url === "/api/v1/agents") return reply(200, {
+      agents: [
+        {
+          name: "implement",
+          harness: "claude",
+          model: "opus",
+          prompt: "Implement the requested change with tests.",
+          presets: ["default", "neon"],
+          uses: [
+            { preset: "default", step: "implement", harness: "claude", model: "opus" },
+            { preset: "neon", step: "implement", harness: "agy", model: "gemini-4-neon-high" },
+          ],
+        },
+        {
+          name: "review",
+          harness: "claude",
+          model: "sonnet",
+          prompt: "Review the diff carefully.",
+          presets: ["default", "neon"],
+          uses: [
+            { preset: "default", step: "review", harness: "claude", model: "sonnet" },
+            { preset: "neon", step: "review", harness: "claude", model: "opus" },
+          ],
+        },
+        {
+          name: "implement-legacy",
+          harness: "codex",
+          model: "gpt-5",
+          prompt: "Implement the requested change with tests.",
+          presets: ["legacy"],
+          uses: [
+            { preset: "legacy", step: "implement", harness: "codex", model: "gpt-5" },
+          ],
+        },
+        {
+          name: "spec-writer",
+          harness: "agy",
+          prompt: "Write a detailed specification.",
+          presets: ["spec"],
+          uses: [
+            { preset: "spec", step: "write", harness: "agy" },
+          ],
+        },
+        {
+          name: "unused-codex",
+          harness: "codex",
+          prompt: "Legacy unused instructions.",
+          presets: [],
+          uses: [],
+        },
+      ],
+    });
     if (url === "/api/v1/tickets") return reply(200, { tickets: [] });
     if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
     return reply(404, { error: `no route ${url}` });
@@ -206,14 +285,68 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   assert.equal(document.querySelector('[aria-labelledby="teams-title"] .list'), null);
   assert.match(document.querySelector('[aria-labelledby="teams-title"] .empty').textContent, /No teams are mapped/);
 
-  // Presets and agents: read only, and shows out-of-date factory warnings when present.
+  // Presets and agents: horizontal pipelines, extends/override badges, click-to-inspect scripts & prompts, grouped agents, and read-only.
   await go("#/settings/presets");
   await eventually(() => assert.equal(heading(), "Presets and agents"));
   assert.equal(marked(), "Presets and agents");
-  await eventually(() => assert.deepEqual([...document.querySelectorAll(".preset-step-list .step-name")].map(name => name.textContent), ["checkout", "implement"]));
-  assert.match(document.querySelector(".agent-row").textContent, /Claude Code.*opus.*default/);
-  assert.match(document.querySelectorAll(".agent-row")[1].textContent, /Codex default.*No preset/);
-  assert.equal(document.querySelector(".settings-body button"), null, "nothing here changes the factory");
+  await eventually(() => assert.deepEqual([...document.querySelectorAll('[aria-label="Steps of default"] .step-name')].map(name => name.textContent), ["checkout", "implement", "review"]));
+  assert.equal(document.querySelectorAll(".preset-pipeline").length, 2, "each preset renders a horizontal pipeline");
+  const neonCard = [...document.querySelectorAll(".preset-card")].find(card => card.textContent.includes("neon"));
+  assert.match(neonCard.textContent, /extends default/);
+  assert.match(neonCard.textContent, /Antigravity.*gemini-4-neon-high/);
+  assert.match(neonCard.querySelector('[aria-label="Steps of neon"]').textContent, /Shell.*checkout\.sh/);
+  assert.match(neonCard.querySelector('[aria-label="Steps of neon"]').textContent, /Agent.*overridden/);
+
+  // Clicking a shell step opens its command and script; clicking again closes it.
+  await act(async () => neonCard.querySelector('button[aria-label*="checkout"]').click());
+  assert.match(neonCard.querySelector(".step-inspector").textContent, /factory\/scripts\/checkout\.sh/);
+  assert.match(neonCard.querySelector(".step-inspector").textContent, /git clone repo/);
+  await act(async () => neonCard.querySelector('button[aria-label="Close step details"]').click());
+  assert.equal(neonCard.querySelector(".step-inspector"), null);
+
+  // Clicking an overridden script+agent step shows script, effective model, override indicator, front matter, and prompt.
+  await act(async () => neonCard.querySelector('button[aria-label*="review"]').click());
+  const reviewInspector = neonCard.querySelector(".step-inspector").textContent;
+  assert.match(reviewInspector, /factory\/scripts\/review\.sh/);
+  assert.match(reviewInspector, /factory\/agents\/review\.md/);
+  assert.match(reviewInspector, /Overridden/);
+  assert.match(reviewInspector, /harness: claude/);
+  assert.match(reviewInspector, /Review the diff carefully\./);
+
+  // Agents list groups reusable roles, collapses duplicate prompts into one row, and collapses preset-specific & unused agents behind toggles.
+  const reusableRows = [...document.querySelectorAll('[aria-label="Reusable agents"] .agent-row')];
+  assert.equal(reusableRows.length, 2);
+  assert.match(reusableRows[0].textContent, /implement.*2 variants · same prompt.*default, legacy, neon/);
+  await act(async () => reusableRows[0].querySelector("button.agent-row-toggle").click());
+  const groupedInspector = reusableRows[0].querySelector(".agent-inspector").textContent;
+  assert.match(groupedInspector, /Variants sharing this prompt/);
+  assert.match(groupedInspector, /factory\/agents\/implement\.md/);
+  assert.match(groupedInspector, /factory\/agents\/implement-legacy\.md/);
+  assert.match(groupedInspector, /neon.*implement.*gemini-4-neon-high.*Overridden/);
+  assert.match(groupedInspector, /Implement the requested change with tests\./);
+
+  // Expanding a single reusable agent shows its front matter, uses with override status, and prompt.
+  await act(async () => reusableRows[1].querySelector("button.agent-row-toggle").click());
+  const singleInspector = reusableRows[1].querySelector(".agent-inspector").textContent;
+  assert.match(singleInspector, /factory\/agents\/review\.md/);
+  assert.match(singleInspector, /harness: claude/);
+  assert.match(singleInspector, /model: sonnet/);
+  assert.match(singleInspector, /neon.*review.*opus.*Overridden/);
+  assert.match(singleInspector, /Review the diff carefully\./);
+
+  // Preset-specific agents are collapsed behind a toggle when reusable roles exist.
+  assert.equal(document.querySelector('[aria-label="Agents only in spec"]'), null);
+  const presetSpecificToggle = [...document.querySelectorAll("button")].find(button => /Show preset-specific \(1\)/.test(button.textContent));
+  assert.ok(presetSpecificToggle);
+  await act(async () => presetSpecificToggle.click());
+  assert.match(document.querySelector('[aria-label="Agents only in spec"]').textContent, /spec-writer.*Antigravity default.*spec/);
+
+  assert.equal(document.querySelector('[aria-label="Unused agents"]'), null, "unused agents are collapsed by default");
+  const unusedToggle = [...document.querySelectorAll("button")].find(button => /Show unused \(1\)/.test(button.textContent));
+  assert.ok(unusedToggle);
+  await act(async () => unusedToggle.click());
+  assert.match(document.querySelector('[aria-label="Unused agents"]').textContent, /unused-codex.*Codex default.*No preset/);
+  assert.equal(document.querySelector(".settings-body form, .settings-body input, .settings-body textarea"), null, "nothing here edits the factory");
   assert.equal(document.querySelector(".factory-warning"), null, "no factory warning when up to date");
 
   // Outdated factory files warn on Settings overview and on Presets and agents.
