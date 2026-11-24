@@ -341,7 +341,7 @@ model: gemini-4-neon-high
 	if !ok {
 		t.Fatal("missing aaa-neon preset")
 	}
-	if neon.Description != "Default pipeline on Antigravity (Gemini 4 Neon)." || neon.Timeout != 60*time.Minute || neon.Harness != "agy" || neon.Model != "gemini-4-neon-high" {
+	if neon.Extends != "default" || neon.Description != "Default pipeline on Antigravity (Gemini 4 Neon)." || neon.Timeout != 60*time.Minute || neon.Harness != "agy" || neon.Model != "gemini-4-neon-high" {
 		t.Fatalf("neon = %+v", neon)
 	}
 	if len(neon.Steps) != 4 {
@@ -360,8 +360,8 @@ model: gemini-4-neon-high
 	if !ok {
 		t.Fatal("missing cross-model preset")
 	}
-	// Omitting description inherits the parent's description.
-	if cross.Description != neon.Description || cross.Timeout != 60*time.Minute || len(cross.Steps) != 5 {
+	// Omitting description inherits the parent's description; Extends records the direct parent.
+	if cross.Extends != "aaa-neon" || cross.Description != neon.Description || cross.Timeout != 60*time.Minute || len(cross.Steps) != 5 {
 		t.Fatalf("cross = %+v", cross)
 	}
 	if s := cross.Steps[1]; s.Name != "implement" || s.Harness != "agy" || s.Model != "gemini-4-neon-high" {

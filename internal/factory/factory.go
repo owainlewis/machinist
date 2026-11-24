@@ -29,6 +29,8 @@ type Preset struct {
 	// Description says in a sentence what a job on this preset does. The New
 	// job form shows it under the preset picker.
 	Description string
+	// Extends is the base preset this preset inherited from, if any.
+	Extends string
 	// Timeout covers all steps together. Zero means the server's run deadline.
 	Timeout time.Duration
 	// Harness and Model override every agent invoked in this preset unless a
@@ -319,6 +321,7 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 		}
 		merged := rawPreset{
 			name:        current.name,
+			extends:     current.extends,
 			description: base.description,
 			timeout:     base.timeout,
 			steps:       append([]rawStep(nil), base.steps...),
@@ -394,6 +397,7 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 		presets[name] = Preset{
 			Name:        done.name,
 			Description: done.description,
+			Extends:     done.extends,
 			Timeout:     done.timeout,
 			Harness:     done.harness,
 			Model:       done.model,

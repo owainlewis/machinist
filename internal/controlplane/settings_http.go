@@ -337,30 +337,55 @@ func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request, tokenName s
 	s.listTokens(w, r, tokenName)
 }
 
-// AgentView is one agent file: its harness and model, and the presets whose
-// steps run it. Its prompt stays in the file.
+// AgentUse is one preset step that runs an agent, with the effective harness
+// and model for that step after any preset or step overrides.
+type AgentUse struct {
+	Preset  string `json:"preset"`
+	Step    string `json:"step"`
+	Harness string `json:"harness"`
+	Model   string `json:"model,omitempty"`
+}
+
+// AgentView is one agent file: its front matter (harness, model, optional
+// command), its prompt body, and the presets and steps that run it.
 type AgentView struct {
-	Name    string   `json:"name"`
-	Harness string   `json:"harness"`
-	Model   string   `json:"model,omitempty"`
-	Presets []string `json:"presets"`
+	Name    string     `json:"name"`
+	Harness string     `json:"harness"`
+	Model   string     `json:"model,omitempty"`
+	Command string     `json:"command,omitempty"`
+	Prompt  string     `json:"prompt"`
+	Presets []string   `json:"presets"`
+	Uses    []AgentUse `json:"uses"`
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, _ *http.Request, _ string) {
 	agents := []AgentView{}
 	if s.factory != nil {
 		usedBy := map[string][]string{}
+		usesBy := map[string][]AgentUse{}
 		for _, preset := range s.presets {
 			for _, step := range preset.Steps {
 				for _, agent := range step.Agents {
 					if !slices.Contains(usedBy[agent.Name], preset.Name) {
 						usedBy[agent.Name] = append(usedBy[agent.Name], preset.Name)
 					}
+					use := AgentUse{Preset: preset.Name, Step: step.Name, Harness: agent.Harness, Model: agent.Model}
+					if !slices.Contains(usesBy[agent.Name], use) {
+						usesBy[agent.Name] = append(usesBy[agent.Name], use)
+					}
 				}
 			}
 		}
 		for name, agent := range s.factory.Agents {
-			agents = append(agents, AgentView{Name: name, Harness: agent.Harness, Model: agent.Model, Presets: append([]string{}, usedBy[name]...)})
+			agents = append(agents, AgentView{
+				Name:    name,
+				Harness: agent.Harness,
+				Model:   agent.Model,
+				Command: agent.Program,
+				Prompt:  agent.Prompt,
+				Presets: append([]string{}, usedBy[name]...),
+				Uses:    append([]AgentUse{}, usesBy[name]...),
+			})
 		}
 		sort.Slice(agents, func(a, b int) bool { return agents[a].Name < agents[b].Name })
 	}
