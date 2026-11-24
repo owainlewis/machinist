@@ -31,6 +31,8 @@ func TestReadGateValidation(t *testing.T) {
 		`{"decision":"maybe","risk":"low","reason":"ok"}`,
 		`{"decision":"approve","risk":"critical","reason":"ok"}`,
 		`{"decision":"approve","risk":"low","reason":"   "}`,
+		`{"decision":"approve","risk":"low","reason":"ok","extra":true}`,
+		`{"decision":"approve","risk":"low","reason":"ok"} trailing`,
 	} {
 		writeGate(t, dir, bad)
 		if _, err := ReadGate(dir); err == nil {
@@ -74,6 +76,9 @@ func TestMergeWithHighRiskGateCommentsAndBlocksAutoMerge(t *testing.T) {
 	}
 	if len(gh.calls) != 2 || !strings.Contains(gh.calls[1], "Human review required") || !strings.Contains(gh.calls[1], "dropping legacy_tokens") {
 		t.Fatalf("expected escalation comment on PR, calls = %q", gh.calls)
+	}
+	if strings.Count(gh.calls[1], "dropping legacy_tokens") != 1 || !strings.Contains(gh.calls[1], "- **Next step:** Left open for human review.") {
+		t.Fatalf("comment should not duplicate reason: %q", gh.calls[1])
 	}
 }
 

@@ -167,11 +167,12 @@ The shipped agents:
 | `review` | Review the branch without changing it, run the checks, and write `review.json`: a verdict of `accepted`, `revision_needed` or `human_decision_needed`, and findings marked unambiguous or not |
 | `revise` | Fix the unambiguous findings and mark them addressed. `scripts/revise.sh` runs it only when the verdict is `revision_needed`, then runs `review` again |
 | `publish` | Open one ready pull request with a summary, testing, the review and assumptions. It never pushes or merges. `scripts/publish.sh` pushes the branch first with `machinist push`, and runs it only when the branch has commits |
+| `merge-gate` | Judge the final diff against `.machinist/merge-policy.md` from `origin/HEAD` (or `prompts/merge-policy.md`), without changing files or GitHub credentials, and write `merge-gate.json` (`approve` + `low` risk, or `human_review`). `scripts/merge-gate.sh` skips branches with no commits or unaccepted reviews |
 
 The review is worth most from a different model family than the one that wrote the
 change. If Codex or agy is on your runners, set `harness: codex` or `harness: agy` in `agents/review.md`.
 
-The last step, `machinist merge`, is code, not an agent. It reads `review.json`, hands the
+The last step, `machinist merge`, is code, not an agent. It reads `review.json` and `merge-gate.json` (when present), posts the merge gate judgment as a comment on the pull request, hands the
 pull request to the control plane and ends at once, so the run is over and its runner slot is
 free while CI runs. The result says whether the pull request will merge or stays open, and
 why. The job is `pr_ready` while the control plane watches the checks, about once a minute.
@@ -182,6 +183,7 @@ open for a person:
 - `review.json` is valid and its verdict is `accepted`. A missing review leaves the pull
   request open, unless the step is `machinist merge --without-review` in a preset with no
   review step.
+- `merge-gate.json` (required by `--require-gate` in the default preset, and enforced whenever present) is valid with `decision: "approve"` and `risk: "low"`. Medium- or high-risk changes stay open for human review with the judgment commented on the pull request.
 - Every check on the pull request passed. The control plane waits for them, and for checks
   to start, up to two and a half minutes, before it treats the repository as having none. A
   failed check fails the job, even when the pull request would have stayed open anyway.

@@ -1,16 +1,24 @@
 package ship
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // GateFile is the file the merge-gate step writes in the control directory.
 const GateFile = "merge-gate.json"
+
+const (
+	maxGateFileBytes   = 64 << 10
+	maxGateReasonRunes = 2000
+)
 
 // Decisions the merge gate can return.
 const (
@@ -35,7 +43,7 @@ type Gate struct {
 // ErrNoGate means the control directory has no merge-gate.json.
 var ErrNoGate = errors.New("the merge-gate step wrote no merge-gate.json")
 
-// ReadGate reads and validates merge-gate.json in the control directory.
+// ReadGate reads and strictly validates merge-gate.json in the control directory.
 func ReadGate(control string) (Gate, error) {
 	var gate Gate
 	body, err := os.ReadFile(filepath.Join(control, GateFile))
@@ -45,8 +53,16 @@ func ReadGate(control string) (Gate, error) {
 	if err != nil {
 		return gate, err
 	}
-	if err := json.Unmarshal(body, &gate); err != nil {
+	if len(body) > maxGateFileBytes {
+		return gate, errors.New("merge-gate.json exceeds size limit")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&gate); err != nil {
 		return gate, fmt.Errorf("merge-gate.json is not valid JSON: %w", err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return gate, errors.New("merge-gate.json must contain a single JSON object")
 	}
 	gate.Decision = strings.TrimSpace(gate.Decision)
 	gate.Risk = strings.TrimSpace(gate.Risk)
@@ -67,6 +83,9 @@ func ReadGate(control string) (Gate, error) {
 	}
 	if gate.Reason == "" {
 		return gate, errors.New("merge-gate.json has no reason")
+	}
+	if utf8.RuneCountInString(gate.Reason) > maxGateReasonRunes {
+		return gate, errors.New("merge-gate.json reason exceeds 2000 characters")
 	}
 	return gate, nil
 }
@@ -89,14 +108,16 @@ func FormatGateComment(gate Gate, head string, willAutoMerge bool, hold string) 
 	}
 	heading := "Machinist Merge Gate — Human review required"
 	nextStep := "Left open for human review."
-	if hold != "" {
-		nextStep = "Left open: " + strings.TrimRight(hold, ". ") + "."
-	}
 	if willAutoMerge {
 		heading = "Machinist Merge Gate — Approved for auto-merge"
 		nextStep = "Will auto-merge automatically once CI checks pass."
 	} else if gate.Decision == GateApprove && gate.Risk == RiskLow {
 		heading = "Machinist Merge Gate — Approved (left open)"
+		if hold != "" {
+			nextStep = "Left open: " + strings.TrimRight(hold, ". ") + "."
+		}
+	} else if hold != "" && hold != gateBlocker(gate) {
+		nextStep = "Left open: " + strings.TrimRight(hold, ". ") + "."
 	}
 	riskLabel := map[string]string{
 		RiskLow:    "Low",
