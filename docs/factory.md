@@ -205,7 +205,18 @@ keeps the first review as `first-review.json` and runs the review again on the f
 and only that verdict counts. When the first review accepted the change, no revise agent
 runs.
 
-`machinist verdict` prints the verdict, for scripts like these.
+`machinist verdict` prints the verdict, for scripts like these. `machinist gate` validates and prints `merge-gate.json`.
+
+### Merge gate and policy
+
+The default preset runs a read-only `merge-gate` step (`scripts/merge-gate.sh`) after `publish` and before `merge`:
+
+- **Blast-radius judgment:** Code quality is already checked by `review` and CI runs before merge. `agents/merge-gate.md` (pinned to `haiku` by default for low cost and latency) inspects `git diff origin/HEAD...HEAD` and decides whether the change is reversible, low-risk work (`decision: "approve"`, `risk: "low"`) or needs a person (`decision: "human_review"`, `risk: "medium"` or `"high"`).
+- **Default policy:** `prompts/merge-policy.md` approves normal, reversible engineering work (features, UI updates, bug fixes, refactors, tests, documentation) and requires human review for high-blast-radius or hard-to-revert changes (database migrations/schema changes, auth/session/token/secrets logic, billing or breaking public APIs, CI/deployment/dependency upgrades, or weakening tests/safety checks).
+- **Per-repository override:** Commit `.machinist/merge-policy.md` to a repository's default branch to override `prompts/merge-policy.md` for that repository. The agent reads it via `git show origin/HEAD:.machinist/merge-policy.md`, never from the PR branch, so a pull request cannot weaken its own policy.
+- **Credential isolation:** `scripts/merge-gate.sh` unsets `GH_TOKEN` and `GITHUB_TOKEN` before running the judge agent, and skips the step when the branch has no commits or `review` did not accept.
+- **PR comments & observe mode:** `machinist merge` posts the Merge Gate judgment as a comment on the pull request via `gh pr comment`. Setting `github.auto_merge: false` acts as **observe mode**: the gate still evaluates every pull request and comments its judgment without merging anything.
+- **Opting out:** In a custom preset without a `merge-gate` step, use `machinist merge` (without `--require-gate`).
 
 `machinist push` pushes the job's branch. When GitHub rejects the push, for example because
 the token cannot change workflow files, the step fails with GitHub's answer. The job fails,

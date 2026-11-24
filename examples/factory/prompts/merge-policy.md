@@ -1,13 +1,17 @@
 # Default Merge Policy
 
-Auto-merge ONLY when the change is clearly low risk:
-- Documentation updates, typos, comments, or copy tweaks
-- Unit tests or test fixtures without risky production changes
-- Small, localized bug fixes or internal refactors with clear test coverage
+Code quality has already been checked by the review step, and CI checks run
+before merge. Judge **blast radius and reversibility**.
 
-Require human review (`decision: "human_review"`) for medium- or high-risk changes, including:
-- Database schema changes, SQL migrations, or destructive data operations
-- Authentication, authorization, permissions, cryptography, or security boundaries
-- Billing, payments, or breaking external API contract changes
-- CI/CD workflows, deployment configs, infrastructure, or dependency upgrades
-- Broad cross-cutting changes or anything where safety is uncertain
+Auto-merge (`decision: "approve"`, `risk: "low"`) normal, reversible engineering work:
+- Features, UI updates, bug fixes, refactors, additive security headers/checks, and internal improvements with appropriate tests
+- Unit or integration tests, documentation, copy tweaks, and routine maintenance
+- Well-scoped changes matching the request that can be safely undone with a single `git revert`
+
+Require human review (`decision: "human_review"`, `risk: "medium"` or `"high"`) for
+high-blast-radius or hard-to-revert changes:
+- **Data & schema:** database migrations, schema changes, or destructive data/storage operations
+- **Security & identity:** authentication, authorization, permissions, session/cookie/token logic, cryptography, or secrets
+- **Money & external contracts:** billing, payments, pricing, or breaking public API / wire-protocol changes
+- **Release & supply chain:** CI/CD workflows, deployment/infrastructure configs, or new/major dependency upgrades
+- **Integrity red flags:** disabling or deleting tests/safety checks, or sweeping unrelated changes outside the requested task
