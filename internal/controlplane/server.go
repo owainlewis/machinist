@@ -349,6 +349,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/settings/github", s.requireToken(s.githubSettings))
 	mux.HandleFunc("GET /api/v1/settings/linear", s.requireToken(s.linearSettings))
 	mux.HandleFunc("GET /api/v1/tokens", s.requireToken(s.listTokens))
+	mux.HandleFunc("POST /api/v1/tokens", s.requireToken(s.createToken))
+	mux.HandleFunc("POST /api/v1/tokens/{name}/regenerate", s.requireToken(s.regenerateToken))
 	mux.HandleFunc("DELETE /api/v1/tokens/{name}", s.requireToken(s.revokeToken))
 	mux.HandleFunc("GET /api/v1/automations", s.requireToken(s.listAutomations))
 	mux.HandleFunc("POST /api/v1/automations/{name}/run", s.requireToken(s.runAutomation))

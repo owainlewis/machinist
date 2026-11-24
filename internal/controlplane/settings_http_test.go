@@ -155,16 +155,22 @@ func TestTokensListWithoutSecretsAndRevokeFromTheWebApp(t *testing.T) {
 		t.Fatalf("tokens = %+v", found.Tokens)
 	}
 	me, vm, alice := found.Tokens[0], found.Tokens[1], found.Tokens[2]
-	if me.Name != "runner-1" || me.Role != "all" || !me.Current || me.LastUsedAt == nil || vm.Role != "runner" || vm.Current || vm.LastUsedAt != nil || alice.Role != "operator" || me.CreatedAt.IsZero() {
+	if me.Name != "runner-1" || me.Role != "all" || !me.Current || me.LastUsedAt == nil || me.Prefix != f.token[:len(tickets.TokenPrefix)+4] || vm.Role != "runner" || vm.Current || vm.LastUsedAt != nil || vm.Prefix != runnerToken[:len(tickets.TokenPrefix)+4] || alice.Role != "operator" || me.CreatedAt.IsZero() {
 		t.Fatalf("tokens = %+v", found.Tokens)
 	}
 	if strings.Contains(string(body), f.token) || strings.Contains(string(body), runnerToken) || strings.Contains(string(body), "hash") {
 		t.Fatalf("a token leaked: %s", body)
 	}
 
-	// A runner's token cannot list or revoke tokens.
+	// A runner's token cannot list, create, regenerate or revoke tokens.
 	if response, _ := f.call(t, http.MethodGet, "/api/v1/tokens", runnerToken, nil); response.StatusCode != http.StatusForbidden {
 		t.Fatalf("a runner listed tokens: %d", response.StatusCode)
+	}
+	if response, _ := f.call(t, http.MethodPost, "/api/v1/tokens", runnerToken, map[string]string{"name": "rogue", "role": "operator"}); response.StatusCode != http.StatusForbidden {
+		t.Fatalf("a runner created a token: %d", response.StatusCode)
+	}
+	if response, _ := f.call(t, http.MethodPost, "/api/v1/tokens/alice/regenerate", runnerToken, nil); response.StatusCode != http.StatusForbidden {
+		t.Fatalf("a runner regenerated a token: %d", response.StatusCode)
 	}
 	if response, _ := f.call(t, http.MethodDelete, "/api/v1/tokens/alice", runnerToken, nil); response.StatusCode != http.StatusForbidden {
 		t.Fatalf("a runner revoked a token: %d", response.StatusCode)
@@ -229,12 +235,111 @@ func TestAgentsListTheirHarnessModelAndPresets(t *testing.T) {
 	}
 }
 
+func TestCreateAndRegenerateTokensFromTheWebApp(t *testing.T) {
+	f := newFixture(t)
+
+	// Invalid requests are rejected.
+	for _, body := range []map[string]string{
+		{"name": "   ", "role": "operator"},
+		{"name": "bad/name", "role": "operator"},
+		{"name": "bob", "role": ""},
+		{"name": "bob", "role": "admin"},
+	} {
+		if response, data := f.call(t, http.MethodPost, "/api/v1/tokens", f.token, body); response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("create %+v: status = %d: %s", body, response.StatusCode, data)
+		}
+	}
+
+	// Creating a person token returns it once, with a prefix, and it works immediately.
+	response, body := f.call(t, http.MethodPost, "/api/v1/tokens", f.token, map[string]string{"name": "bob", "role": "operator"})
+	created := decodeAs[CreatedToken](t, response.StatusCode, http.StatusCreated, body)
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q", response.Header.Get("Cache-Control"))
+	}
+	if !strings.HasPrefix(created.Token, tickets.TokenPrefix) || created.Name != "bob" || created.Role != "operator" || created.Prefix != created.Token[:len(tickets.TokenPrefix)+4] {
+		t.Fatalf("created = %+v", created)
+	}
+	if len(created.Tokens) != 2 {
+		t.Fatalf("tokens = %+v", created.Tokens)
+	}
+	if check, _ := f.call(t, http.MethodGet, "/api/v1/tokens", created.Token, nil); check.StatusCode != http.StatusOK {
+		t.Fatalf("created token did not authenticate: %d", check.StatusCode)
+	}
+	// Duplicate active name is 409 Conflict.
+	if dup, _ := f.call(t, http.MethodPost, "/api/v1/tokens", f.token, map[string]string{"name": "bob", "role": "runner"}); dup.StatusCode != http.StatusConflict {
+		t.Fatalf("duplicate status = %d", dup.StatusCode)
+	}
+
+	// Listing never returns the plaintext token again.
+	status, listBody := f.get(t, "/api/v1/tokens")
+	if status != http.StatusOK || strings.Contains(string(listBody), created.Token) || !strings.Contains(string(listBody), created.Prefix) {
+		t.Fatalf("list = %d: %s", status, listBody)
+	}
+
+	// Creating a runner token gives it the runner role.
+	response, body = f.call(t, http.MethodPost, "/api/v1/tokens", f.token, map[string]string{"name": "mac-mini", "role": "runner"})
+	runnerCreated := decodeAs[CreatedToken](t, response.StatusCode, http.StatusCreated, body)
+	if runnerCreated.Role != "runner" || !strings.HasPrefix(runnerCreated.Token, tickets.TokenPrefix) {
+		t.Fatalf("runnerCreated = %+v", runnerCreated)
+	}
+
+	// Regenerating revokes the old token and returns a new one with the same name and role.
+	response, body = f.call(t, http.MethodPost, "/api/v1/tokens/mac-mini/regenerate", f.token, nil)
+	regenerated := decodeAs[CreatedToken](t, response.StatusCode, http.StatusOK, body)
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q", response.Header.Get("Cache-Control"))
+	}
+	if regenerated.Token == runnerCreated.Token || !strings.HasPrefix(regenerated.Token, tickets.TokenPrefix) || regenerated.Name != "mac-mini" || regenerated.Role != "runner" || regenerated.Prefix != regenerated.Token[:len(tickets.TokenPrefix)+4] {
+		t.Fatalf("regenerated = %+v", regenerated)
+	}
+	if oldResp, _ := f.call(t, http.MethodPost, "/api/v1/runners/poll", runnerCreated.Token, struct{}{}); oldResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old runner token still works: %d", oldResp.StatusCode)
+	}
+	if newResp, _ := f.call(t, http.MethodPost, "/api/v1/runners/poll", regenerated.Token, struct{}{}); newResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("new runner token failed: %d", newResp.StatusCode)
+	}
+	if missing, _ := f.call(t, http.MethodPost, "/api/v1/tokens/missing/regenerate", f.token, nil); missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing regenerate status = %d", missing.StatusCode)
+	}
+
+	// Regenerating your own token via session cookie rotates the cookie so the browser stays signed in.
+	req, err := http.NewRequest(http.MethodPost, f.http.URL+"/api/v1/tokens/bob/regenerate", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: created.Token})
+	cookieResp, err := f.http.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cookieResp.Body.Close()
+	var selfRegen CreatedToken
+	if err := json.NewDecoder(cookieResp.Body).Decode(&selfRegen); err != nil {
+		t.Fatal(err)
+	}
+	if cookieResp.StatusCode != http.StatusOK || selfRegen.Token == created.Token {
+		t.Fatalf("self regen = %d, %+v", cookieResp.StatusCode, selfRegen)
+	}
+	cookie := findCookie(cookieResp)
+	if cookie == nil || cookie.Value != selfRegen.Token {
+		t.Fatalf("rotated cookie = %+v, want %q", cookie, selfRegen.Token)
+	}
+	if got := f.withCookie(t, http.MethodGet, "/api/v1/tokens", cookie.Value); got.StatusCode != http.StatusOK {
+		t.Fatalf("rotated cookie did not work: %d", got.StatusCode)
+	}
+	if got := f.withCookie(t, http.MethodGet, "/api/v1/tokens", created.Token); got.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old cookie still worked: %d", got.StatusCode)
+	}
+}
+
 func TestSettingsRoutesNeedASignIn(t *testing.T) {
 	f := newFixture(t)
 	for _, route := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/settings/github"},
 		{http.MethodGet, "/api/v1/settings/linear"},
 		{http.MethodGet, "/api/v1/tokens"},
+		{http.MethodPost, "/api/v1/tokens"},
+		{http.MethodPost, "/api/v1/tokens/runner-1/regenerate"},
 		{http.MethodDelete, "/api/v1/tokens/runner-1"},
 		{http.MethodGet, "/api/v1/agents"},
 	} {

@@ -19,7 +19,14 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   let signedIn = true;
   let factoryUpdates = [];
   const added = [];
+  const created = [];
+  const regenerated = [];
   const revoked = [];
+  let copiedText = "";
+  Object.defineProperty(dom.window.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async value => { copiedText = value; } },
+  });
   const setup = () => ({
     ready: projects.length > 0,
     checks: [
@@ -42,7 +49,7 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   });
   const now = new Date().toISOString();
   let tokens = [
-    { name: "alice", role: "operator", created_at: "2026-11-01T12:00:00Z", last_used_at: now, current: true },
+    { name: "alice", role: "operator", prefix: "mch_1a2b", created_at: "2026-11-01T12:00:00Z", last_used_at: now, current: true },
     { name: "vm-runner", role: "runner", created_at: "2026-11-02T12:00:00Z" },
     { name: "old", role: "all", created_at: "2026-10-01T12:00:00Z", revoked_at: "2026-10-05T12:00:00Z" },
   ];
@@ -69,12 +76,34 @@ test("Settings: a new install opens on the overview, each page has a route, and 
     if (url === "/api/v1/settings/linear") return reply(200, linear
       ? { enabled: true, app_user_id: "app-1", allowed_users: ["alice@example.com"], preset: "default", teams: [], poll_seconds: 60, max_jobs_per_hour: 10, credential_env: ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"], renews: true, docs: "https://example.com/linear.md#set-it-up" }
       : { enabled: false, allowed_users: [], teams: [], credential_env: ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"], renews: true, docs: "https://example.com/linear.md#set-it-up" });
-    if (url === "/api/v1/tokens") return reply(200, { tokens });
+    if (url === "/api/v1/tokens" && (!options.method || options.method === "GET")) return reply(200, { tokens });
+    if (url === "/api/v1/tokens" && options.method === "POST") {
+      const { name, role } = JSON.parse(options.body);
+      created.push({ name, role });
+      if (tokens.some(token => token.name === name && !token.revoked_at)) return reply(409, { error: "an active token with this name exists" });
+      const secret = `mch_abcd${"0".repeat(60)}`;
+      const prefix = secret.slice(0, 8);
+      tokens = [...tokens, { name, role, prefix, created_at: now }];
+      return reply(201, { token: secret, name, role, prefix, tokens });
+    }
+    if (url.startsWith("/api/v1/tokens/") && url.endsWith("/regenerate") && options.method === "POST") {
+      const name = decodeURIComponent(url.slice("/api/v1/tokens/".length, -"/regenerate".length));
+      regenerated.push(name);
+      const existing = tokens.find(token => token.name === name && !token.revoked_at);
+      if (!existing) return reply(404, { error: `no active token is named ${name}` });
+      const secret = `mch_ef99${"1".repeat(60)}`;
+      const prefix = secret.slice(0, 8);
+      tokens = [
+        ...tokens.map(token => token === existing ? { ...token, revoked_at: now, current: false } : token),
+        { name, role: existing.role, prefix, created_at: now, current: existing.current },
+      ];
+      return reply(200, { token: secret, name, role: existing.role, prefix, tokens });
+    }
     if (url.startsWith("/api/v1/tokens/") && options.method === "DELETE") {
       const name = decodeURIComponent(url.slice("/api/v1/tokens/".length));
       revoked.push(name);
       if (name === "alice") { signedIn = false; return { ok: true, status: 204, json: async () => null }; }
-      tokens = tokens.map(token => token.name === name ? { ...token, revoked_at: now } : token);
+      tokens = tokens.map(token => token.name === name && !token.revoked_at ? { ...token, revoked_at: now } : token);
       return reply(200, { tokens });
     }
     if (url === "/api/v1/presets") return reply(200, { default: "default", presets: [{ name: "default", description: "Implement and open a pull request.", steps: [{ name: "checkout", agents: [] }, { name: "implement", agents: [{ name: "implement", harness: "claude", model: "opus" }] }] }], ...(factoryUpdates.length ? { updates: factoryUpdates } : {}) });
@@ -210,19 +239,76 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   assert.match(warningText, /scripts\/revise\.sh \(missing\)/);
   factoryUpdates = [];
 
-  // Tokens: list, then revoke one, and revoking your own signs you out.
+  // Tokens: revoked tokens are hidden by default, prefixes and "No prefix" show on rows, and tokens can be created, regenerated and revoked.
   await go("#/settings/tokens");
   await eventually(() => assert.equal(heading(), "Tokens"));
   assert.equal(marked(), "Tokens");
-  await eventually(() => assert.equal(document.querySelectorAll(".token-row").length, 3));
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 2));
+  assert.equal(document.querySelectorAll('.token-row[data-revoked]').length, 0, "revoked tokens are hidden by default");
   assert.match(document.querySelector(".page-sub").textContent, /2 active tokens, 1 revoked/);
-  assert.match(document.querySelector(".token-row").textContent, /alice.*You.*Person/);
+  const initialRows = [...document.querySelectorAll('[aria-label="Tokens"] .token-row')];
+  assert.match(initialRows[0].textContent, /alice.*You.*Person.*mch_1a2b…/);
+  assert.match(initialRows[1].textContent, /vm-runner.*Runner.*No prefix/);
+
+  // Expanding the collapsed revoked toggle reveals revoked tokens, and collapsing hides them again.
+  const revokedToggle = () => [...document.querySelectorAll("button")].find(button => /revoked \(\d+\)/.test(button.textContent));
+  assert.match(revokedToggle().textContent, /Show revoked \(1\)/);
+  await act(async () => revokedToggle().click());
+  assert.equal(document.querySelectorAll('[aria-label="Revoked tokens"] .token-row[data-revoked]').length, 1);
   assert.equal(document.querySelector('[aria-label="Revoke old"]'), null, "a revoked token cannot be revoked again");
+  assert.match(revokedToggle().textContent, /Hide revoked \(1\)/);
+  await act(async () => revokedToggle().click());
+  assert.equal(document.querySelector('[aria-label="Revoked tokens"]'), null);
+
+  // Creating a new token shows the full value once with a copy button and adds its row with a prefix.
+  await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent.includes("New token")).click());
+  await type("#token-name", "mac-mini");
+  await act(async () => {
+    const select = document.querySelector("#token-role");
+    select.value = "runner";
+    select.dispatchEvent(new window.Event("change", { bubbles: true }));
+  });
+  await act(async () => document.querySelector('.token-form button[type="submit"]').click());
+  await eventually(() => assert.ok(document.querySelector('[aria-label="New token value"]')));
+  assert.deepEqual(created, [{ name: "mac-mini", role: "runner" }]);
+  const reveal = document.querySelector('[aria-label="New token value"]');
+  assert.match(reveal.textContent, /won't be shown again/i);
+  assert.equal(reveal.querySelector(".token-secret").textContent, `mch_abcd${"0".repeat(60)}`);
+  await act(async () => [...reveal.querySelectorAll("button")].find(button => button.textContent.includes("Copy")).click());
+  assert.equal(copiedText, `mch_abcd${"0".repeat(60)}`);
+  assert.match(reveal.textContent, /Copied/);
+  assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 3);
+  assert.match(document.querySelectorAll('[aria-label="Tokens"] .token-row')[2].textContent, /mac-mini.*Runner.*mch_abcd…/);
+  await act(async () => document.querySelector('[aria-label="Dismiss token"]').click());
+  assert.equal(document.querySelector('[aria-label="New token value"]'), null);
+
+  // Regenerating a legacy token asks first, reveals the new token once, updates its prefix, and keeps revoked rows hidden.
+  await act(async () => document.querySelector('[aria-label="Regenerate vm-runner"]').click());
+  assert.deepEqual(regenerated, [], "regenerating asks first");
+  assert.match(document.querySelector('[aria-label="Regenerate vm-runner?"]').textContent, /update the runner/);
+  await act(async () => [...document.querySelectorAll('[aria-label="Regenerate vm-runner?"] button')].find(button => button.textContent === "Regenerate").click());
+  await eventually(() => assert.equal(document.querySelector(".token-secret")?.textContent, `mch_ef99${"1".repeat(60)}`));
+  assert.deepEqual(regenerated, ["vm-runner"]);
+  const vmRow = [...document.querySelectorAll('[aria-label="Tokens"] .token-row')].find(row => row.textContent.includes("vm-runner"));
+  assert.match(vmRow.textContent, /mch_ef99…/);
+  assert.doesNotMatch(vmRow.textContent, /No prefix/);
+  assert.match(revokedToggle().textContent, /Show revoked \(2\)/);
+
+  // Navigating away and back never shows the plaintext token again.
+  await go("#/settings/github");
+  await eventually(() => assert.equal(heading(), "GitHub"));
+  await go("#/settings/tokens");
+  await eventually(() => assert.equal(heading(), "Tokens"));
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 3));
+  assert.equal(document.querySelector('[aria-label="New token value"]'), null);
+
+  // Revoking asks first, hides the revoked token from the active list, and revoking your own signs you out.
   await act(async () => document.querySelector('[aria-label="Revoke vm-runner"]').click());
   assert.deepEqual(revoked, [], "revoking asks first");
   assert.match(document.querySelector('[aria-label="Revoke vm-runner?"]').textContent, /Its runner stops/);
   await act(async () => [...document.querySelectorAll('[aria-label="Revoke vm-runner?"] button')].find(button => button.textContent === "Revoke").click());
-  await eventually(() => assert.equal(document.querySelectorAll('.token-row[data-revoked]').length, 2));
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 2));
+  assert.match(revokedToggle().textContent, /Show revoked \(3\)/);
   assert.deepEqual(revoked, ["vm-runner"]);
   await act(async () => document.querySelector('[aria-label="Revoke alice"]').click());
   await act(async () => [...document.querySelectorAll('[aria-label="Revoke alice?"] button')].find(button => button.textContent === "Revoke").click());

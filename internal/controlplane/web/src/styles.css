@@ -513,15 +513,32 @@ a.source:hover span { text-decoration: underline; }
 .settings-map > span[aria-hidden] { color: var(--faint); }
 .settings-howto { display: grid; gap: 12px; justify-items: start; }
 .settings-howto ol { display: grid; gap: 8px; margin: 0; padding-left: 20px; color: var(--muted-foreground); font-size: 14px; line-height: 1.6; list-style: decimal; }
-.token-times { display: flex; flex-wrap: wrap; gap: 4px 24px; margin: 0; font-size: 13px; }
-.token-times div { display: flex; gap: 6px; }
+.token-times { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 24px; margin: 0; font-size: 13px; }
+.token-times div { display: flex; align-items: baseline; gap: 6px; }
 .token-times dt { color: var(--faint); }
 .token-times dd { color: var(--muted-foreground); }
-.token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; }
+.token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 16px; }
+.token-row .token-times { grid-column: 1 / -1; }
 .token-row[data-revoked] .settings-row-main strong { color: var(--muted-foreground); font-weight: 500; text-decoration: line-through; text-decoration-color: var(--faint); }
-.token-actions { display: flex; min-height: 32px; align-items: center; justify-content: flex-end; }
+.token-actions { display: flex; min-height: 32px; align-items: center; justify-content: flex-end; gap: 4px; }
 .token-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
 .token-confirm .ticket-meta { margin-right: 4px; }
+.token-no-prefix { color: var(--faint); }
+.token-form { display: grid; gap: 14px; }
+.token-form-fields { display: grid; grid-template-columns: minmax(0, 1fr) 200px; align-items: start; gap: 12px; }
+.token-form-fields .form-error { margin-top: 6px; font-size: 13px; }
+.token-role-hint { margin-top: 6px; }
+.token-form-actions { display: flex; align-items: center; gap: 8px; }
+.token-reveal { display: grid; gap: 12px; border-color: color-mix(in srgb, var(--success) 40%, var(--border)); background: color-mix(in srgb, var(--success-soft) 45%, var(--surface)); }
+.token-reveal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.token-reveal-head strong { display: block; font-weight: 600; }
+.token-reveal-value { display: flex; align-items: center; gap: 8px; }
+.token-secret { min-width: 0; flex: 1; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--background); padding: 8px 12px; color: var(--foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; white-space: nowrap; user-select: all; }
+.token-revoked-section { display: grid; justify-items: start; gap: 12px; }
+.token-revoked-section .list { width: 100%; }
+.token-revoked-toggle { color: var(--muted-foreground); }
+.token-revoked-chevron { transition: transform .15s ease; }
+.token-revoked-chevron-open { transform: rotate(90deg); }
 .preset-row { align-items: flex-start; }
 .preset-step-list { display: flex; flex-basis: 100%; flex-direction: column; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
 .preset-step-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
@@ -560,6 +577,8 @@ a.source:hover span { text-decoration: underline; }
   .token-row { grid-template-columns: minmax(0, 1fr); }
   .token-actions { justify-content: flex-start; }
   .token-confirm { justify-content: flex-start; }
+  .token-form-fields { grid-template-columns: minmax(0, 1fr); }
+  .token-reveal-value { flex-wrap: wrap; }
   .agent-row .token-times { justify-content: flex-start; }
 }
 @media (max-width: 560px) {
