@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardOf, failureReason, filterJobs, formatDuration, linkParts, jobState, newestFirst, noPullRequest, prChip, prLink, prState, prSummary, quickCounts, runningJobs, runningTickets, sourceLabel, sourceLink, sourceLinkText, sourcesOf } from "./jobs.js";
+import { boardDoneLimit, boardOf, failureReason, filterJobs, formatDuration, linkParts, listPageSize, jobState, newestFirst, noPullRequest, orderSources, paginationOf, prChip, prLink, prState, prSummary, quickCounts, runningJobs, runningTickets, sourceLabel, sourceLink, sourceLinkText, sourcesOf, ticketsPath } from "./jobs.js";
 
 test("ticket states read as the run API's job states", () => {
   assert.equal(jobState({ state: "working" }), "queued");
@@ -153,4 +153,45 @@ test("a job's original is named by the site it is on", () => {
   assert.equal(sourceLinkText("https://acme.atlassian.net/browse/OPS-1"), "Open in Jira");
   assert.equal(sourceLinkText("https://tracker.example.com/1"), "Open in tracker.example.com");
   assert.equal(sourceLinkText("not a link"), "Open the original");
+});
+
+test("boardOf caps Done to the 20 most recent finished jobs while keeping Queued and Running uncapped", () => {
+  const at = minutes => new Date(Date.UTC(2026, 10, 19, 12, minutes)).toISOString();
+  const tickets = [];
+  const running = new Set();
+  for (let i = 0; i < 24; i++) {
+    tickets.push({ id: `q_${i}`, state: "working", created_at: at(i), updated_at: at(i) });
+  }
+  for (let i = 0; i < 22; i++) {
+    tickets.push({ id: `r_${i}`, state: "working", created_at: at(i), updated_at: at(i) });
+    running.add(`r_${i}`);
+  }
+  for (let i = 0; i < 30; i++) {
+    tickets.push({ id: `d_${i}`, state: i % 2 === 0 ? "done" : "failed", created_at: at(i), updated_at: at(i) });
+  }
+  const board = boardOf(tickets, running);
+  assert.equal(boardDoneLimit, 20);
+  assert.equal(board.queued.length, 24, "Queued stays uncapped");
+  assert.equal(board.running.length, 22, "Running stays uncapped");
+  assert.equal(board.done.length, 20, "Done is capped to 20 cards");
+  assert.equal(board.doneTotal, 30, "doneTotal keeps the full finished count");
+  assert.equal(board.done[0].ticket.id, "d_29", "most recently updated finished job is first");
+  assert.equal(board.done[19].ticket.id, "d_10", "20th most recently updated finished job is last");
+});
+
+test("ticketsPath builds board and paginated list queries with filters", () => {
+  assert.equal(ticketsPath({ view: "board" }), "/api/v1/tickets?view=board&done_limit=20");
+  assert.equal(ticketsPath({ view: "board", source: "linear", quick: "failed" }), "/api/v1/tickets?source=linear&state=failed&view=board&done_limit=20");
+  assert.equal(ticketsPath({ view: "list", page: 0 }), `/api/v1/tickets?limit=${listPageSize}&offset=0`);
+  assert.equal(ticketsPath({ view: "list", page: 4, pageSize: 50 }), "/api/v1/tickets?limit=50&offset=200");
+  assert.equal(ticketsPath({ view: "list", page: 1, pageSize: 25, source: "api", quick: "done" }), "/api/v1/tickets?source=api&state=done%2Cpr_ready&limit=25&offset=25");
+  assert.equal(ticketsPath({ view: "list", page: 0, quick: "needs_person" }), `/api/v1/tickets?state=pr_ready&limit=${listPageSize}&offset=0`);
+  assert.equal(ticketsPath({ view: "list", page: 0, quick: "running" }), `/api/v1/tickets?state=running&limit=${listPageSize}&offset=0`);
+});
+
+test("paginationOf computes page bounds and navigation flags beyond 200 jobs", () => {
+  assert.deepEqual(paginationOf({ total: 230, offset: 0, count: 50, pageSize: 50 }), { page: 1, totalPages: 5, start: 1, end: 50, total: 230, hasPrev: false, hasNext: true });
+  assert.deepEqual(paginationOf({ total: 230, offset: 200, count: 30, pageSize: 50 }), { page: 5, totalPages: 5, start: 201, end: 230, total: 230, hasPrev: true, hasNext: false });
+  assert.deepEqual(paginationOf({ total: 0, offset: 0, count: 0, pageSize: 50 }), { page: 1, totalPages: 1, start: 0, end: 0, total: 0, hasPrev: false, hasNext: false });
+  assert.deepEqual(orderSources(["linear", "web", "", "api", "linear"]), ["web", "api", "linear"]);
 });
