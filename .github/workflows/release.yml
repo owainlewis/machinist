@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v[0-9]*"
+      - "!v*-nightly.*"
   workflow_dispatch:
     inputs:
       version:

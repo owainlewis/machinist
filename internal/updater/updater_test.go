@@ -128,6 +128,138 @@ func TestUpdateReportsCurrentVersionWithoutDownloadingAssets(t *testing.T) {
 	}
 }
 
+func TestUpdateInstallsLatestNightlyRelease(t *testing.T) {
+	const nightlyTag = "v0.5.1-nightly.20261124.abc1234"
+	binary := []byte("nightly machinist")
+	archive := testArchive(t, binary)
+	digest := sha256.Sum256(archive)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/releases":
+			if request.URL.Query().Get("per_page") != "30" {
+				t.Fatalf("unexpected query: %s", request.URL.RawQuery)
+			}
+			fmt.Fprintf(response, `[
+				{"tag_name":"v0.5.1-nightly.20261125.draft00","draft":true,"prerelease":true},
+				{"tag_name":"v0.5.0","draft":false,"prerelease":false},
+				{"tag_name":"v0.6.0-rc.1","draft":false,"prerelease":true},
+				{"tag_name":"bad-nightly.1","draft":false,"prerelease":true},
+				{"tag_name":"%s","draft":false,"prerelease":true},
+				{"tag_name":"v0.5.1-nightly.20261123.def5678","draft":false,"prerelease":true}
+			]`, nightlyTag)
+		case "/downloads/" + nightlyTag + "/checksums.txt":
+			fmt.Fprintf(response, "%x  machinist_0.5.1-nightly.20261124.abc1234_linux_amd64.tar.gz\n", digest)
+		case "/downloads/" + nightlyTag + "/machinist_0.5.1-nightly.20261124.abc1234_linux_amd64.tar.gz":
+			response.Write(archive)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	executable := filepath.Join(t.TempDir(), "machinist")
+	if err := os.WriteFile(executable, []byte("old machinist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Update(t.Context(), Options{
+		Channel:     ChannelNightly,
+		Current:     "v0.5.0",
+		Executable:  executable,
+		GOOS:        "linux",
+		GOARCH:      "amd64",
+		Client:      server.Client(),
+		APIBase:     server.URL + "/api",
+		ReleaseBase: server.URL + "/downloads",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Version != nightlyTag || result.AlreadyCurrent {
+		t.Fatalf("result = %#v", result)
+	}
+	got, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, binary) {
+		t.Fatalf("installed binary = %q", got)
+	}
+}
+
+func TestUpdateNightlyReportsAlreadyCurrent(t *testing.T) {
+	const nightlyTag = "v0.5.1-nightly.20261124.abc1234"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/releases" {
+			t.Fatalf("unexpected request: %s", request.URL.Path)
+		}
+		fmt.Fprintf(response, `[{"tag_name":"%s","draft":false,"prerelease":true}]`, nightlyTag)
+	}))
+	defer server.Close()
+	result, err := Update(t.Context(), Options{
+		Channel: ChannelNightly,
+		Current: nightlyTag,
+		Client:  server.Client(),
+		APIBase: server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.AlreadyCurrent || result.Version != nightlyTag {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestUpdateNightlyErrorsWhenNonePublished(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		fmt.Fprint(response, `[
+			{"tag_name":"v0.5.0","draft":false,"prerelease":false},
+			{"tag_name":"v0.5.1-nightly.20261124.draft00","draft":true,"prerelease":true},
+			{"tag_name":"v0.6.0-rc.1","draft":false,"prerelease":true}
+		]`)
+	}))
+	defer server.Close()
+	_, err := Update(t.Context(), Options{
+		Channel: ChannelNightly,
+		Current: "v0.5.0",
+		Client:  server.Client(),
+		APIBase: server.URL,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no nightly release found") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestUpdateRejectsInvalidChannelAndVersionChannelConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		t.Fatalf("unexpected network request: %s", request.URL.Path)
+	}))
+	defer server.Close()
+
+	executable := filepath.Join(t.TempDir(), "machinist")
+	if err := os.WriteFile(executable, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Update(t.Context(), Options{
+		Channel:    "beta",
+		Executable: executable,
+		Client:     server.Client(),
+		APIBase:    server.URL,
+	}); err == nil || !strings.Contains(err.Error(), "invalid release channel") {
+		t.Fatalf("invalid channel error = %v", err)
+	}
+
+	if _, err := Update(t.Context(), Options{
+		Version:    "v0.5.0",
+		Channel:    ChannelNightly,
+		Executable: executable,
+		Client:     server.Client(),
+		APIBase:    server.URL,
+	}); err == nil || !strings.Contains(err.Error(), "cannot combine version") {
+		t.Fatalf("version+channel conflict error = %v", err)
+	}
+}
+
 func TestReplaceExecutablePreservesSymlinks(t *testing.T) {
 	for _, relative := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relative=%t", relative), func(t *testing.T) {
