@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/ghclient"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/ship"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -109,8 +110,12 @@ func (e *Engine) wait(ctx context.Context, d time.Duration) bool {
 
 // CheckPRs asks GitHub about the pull request on each job's branch while it is
 // open, one call per job, and records when it merges or closes. When one
-// merges, it also reads who reviewed it. Machinist
-// finds the pull request by the branch it named, never by asking the agent.
+// merges, it also reads who reviewed it. Machinist finds the pull request by
+// the branch it named, never by asking the agent.
+//
+// A non-rate-limit failure on one job or repository is collected so other
+// repositories keep being tracked; a rate-limit error stops the round early so
+// the rate limit is not made worse.
 func (e *Engine) CheckPRs(ctx context.Context) error {
 	if e.FindPR == nil {
 		return nil
@@ -119,53 +124,63 @@ func (e *Engine) CheckPRs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var failures []error
 	for _, listed := range open {
-		pr, err := e.FindPR(ctx, listed.Repo, listed.Branch())
-		if err != nil {
-			// Stop at the first failure, so a rate limit is not made worse.
-			return fmt.Errorf("job %s: %w", listed.ID, err)
-		}
-		if pr == nil {
-			continue
-		}
-		state := tickets.PROpen
-		switch {
-		case pr.Merged:
-			state = tickets.PRMerged
-		case pr.Closed:
-			state = tickets.PRClosed
-		}
-		at := pr.ChangedAt
-		if at.IsZero() {
-			at = e.now()
-		}
-		update := tickets.PRUpdate{Number: pr.Number, State: state, At: at, OpenedAt: pr.OpenedAt}
-		if state == tickets.PRMerged && e.Reviews != nil {
-			reviews, err := e.Reviews(ctx, listed.Repo, pr.Number, at)
-			if err != nil {
-				return fmt.Errorf("job %s: reviews: %w", listed.ID, err)
+		if err := e.checkPR(ctx, listed); err != nil {
+			failures = append(failures, err)
+			if ghclient.IsRateLimit(err) || ctx.Err() != nil {
+				break
 			}
-			update.Reviews = &reviews
 		}
-		ticket, same, err := e.Store.SetPRState(ctx, listed, update)
+	}
+	return errors.Join(failures...)
+}
+
+func (e *Engine) checkPR(ctx context.Context, listed tickets.Ticket) error {
+	pr, err := e.FindPR(ctx, listed.Repo, listed.Branch())
+	if err != nil {
+		return fmt.Errorf("job %s (%s): %w", listed.ID, listed.Repo, err)
+	}
+	if pr == nil {
+		return nil
+	}
+	state := tickets.PROpen
+	switch {
+	case pr.Merged:
+		state = tickets.PRMerged
+	case pr.Closed:
+		state = tickets.PRClosed
+	}
+	at := pr.ChangedAt
+	if at.IsZero() {
+		at = e.now()
+	}
+	update := tickets.PRUpdate{Number: pr.Number, State: state, At: at, OpenedAt: pr.OpenedAt}
+	if state == tickets.PRMerged && e.Reviews != nil {
+		reviews, err := e.Reviews(ctx, listed.Repo, pr.Number, at)
 		if err != nil {
-			return fmt.Errorf("job %s: %w", listed.ID, err)
+			return fmt.Errorf("job %s (%s): reviews: %w", listed.ID, listed.Repo, err)
 		}
-		if !same {
-			// The job was cancelled or run again while GitHub was asked, so
-			// what was asked about it is out of date.
-			continue
-		}
-		if state != tickets.PROpen {
-			fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d %s\n", ticket.ID, pr.Number, state)
-			continue
-		}
-		// The job as it now stands, so a cancel or rerun is seen and a look
-		// is recorded against its newest pull request result.
-		if ticket.Shipping != "" {
-			if err := e.lookAt(ctx, ticket, pr.Number); err != nil {
-				return fmt.Errorf("job %s: pull request #%d: %w", ticket.ID, pr.Number, err)
-			}
+		update.Reviews = &reviews
+	}
+	ticket, same, err := e.Store.SetPRState(ctx, listed, update)
+	if err != nil {
+		return fmt.Errorf("job %s (%s): %w", listed.ID, listed.Repo, err)
+	}
+	if !same {
+		// The job was cancelled or run again while GitHub was asked, so
+		// what was asked about it is out of date.
+		return nil
+	}
+	if state != tickets.PROpen {
+		fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d %s\n", ticket.ID, pr.Number, state)
+		return nil
+	}
+	// The job as it now stands, so a cancel or rerun is seen and a look
+	// is recorded against its newest pull request result.
+	if ticket.Shipping != "" {
+		if err := e.lookAt(ctx, ticket, pr.Number); err != nil {
+			return fmt.Errorf("job %s (%s): pull request #%d: %w", ticket.ID, listed.Repo, pr.Number, err)
 		}
 	}
 	return nil

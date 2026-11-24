@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/ghclient"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -202,5 +203,88 @@ func TestAMergedPRWaitsWhenItsReviewsCannotBeRead(t *testing.T) {
 	}
 	if got := ticketOf(t, e, ticket.ID); got.State != tickets.StatePRReady {
 		t.Fatalf("the job moved on without its reviews: %+v", got)
+	}
+}
+
+func newRepoPRReady(t *testing.T, e *Engine, repo, key string, prNumber int) tickets.Ticket {
+	t.Helper()
+	ticket, _, err := e.Store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source: "api", Repo: repo, Title: "T " + repo, Body: "B", Agent: "default", CreatedBy: "alice", SourceKey: key,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := e.FindPR
+	e.FindPR = func(context.Context, string, string) (*PR, error) { return &PR{Number: prNumber}, nil }
+	prReady(t, e, ticket)
+	e.FindPR = prev
+	return ticket
+}
+
+func TestCheckPRsContinuesPastNonRateLimitFailureOnOtherRepos(t *testing.T) {
+	e := newEngine(t)
+	broken := newRepoPRReady(t, e, "owner/broken", "k1", 10)
+	good := newRepoPRReady(t, e, "owner/good", "k2", 20)
+	alsoBroken := newRepoPRReady(t, e, "owner/missing", "k3", 30)
+
+	merged := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	var checked []string
+	e.FindPR = func(_ context.Context, repo, _ string) (*PR, error) {
+		checked = append(checked, repo)
+		switch repo {
+		case "owner/broken":
+			return nil, &ghclient.Error{Kind: ghclient.ErrorCommand, Operation: "find PR", Detail: "gh: Not Found (HTTP 404)"}
+		case "owner/missing":
+			return nil, &ghclient.Error{Kind: ghclient.ErrorAuth, Operation: "get a token for owner/missing", Detail: "the GitHub App is not installed on owner/missing"}
+		default:
+			return &PR{Number: 20, Merged: true, ChangedAt: merged}, nil
+		}
+	}
+
+	err := e.CheckPRs(t.Context())
+	if err == nil {
+		t.Fatal("expected joined error from failing repositories")
+	}
+	if !strings.Contains(err.Error(), broken.ID) || !strings.Contains(err.Error(), alsoBroken.ID) {
+		t.Fatalf("error should mention both failing jobs: %v", err)
+	}
+	if len(checked) != 3 {
+		t.Fatalf("checked = %v, want all 3 repositories checked", checked)
+	}
+	if got := ticketOf(t, e, good.ID); got.State != tickets.StateDone || got.PRState != tickets.PRMerged {
+		t.Fatalf("good repo PR was not updated: %+v", got)
+	}
+	if got := ticketOf(t, e, broken.ID); got.State != tickets.StatePRReady {
+		t.Fatalf("broken repo PR unexpectedly changed: %+v", got)
+	}
+}
+
+func TestCheckPRsStopsEarlyOnRateLimit(t *testing.T) {
+	for name, rateErr := range map[string]error{
+		"ghclient rate limit": &ghclient.Error{Kind: ghclient.ErrorRateLimit, Operation: "find PR", Detail: "API rate limit exceeded"},
+		"plain rate limit":    errors.New("API rate limit exceeded (HTTP 429)"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEngine(t)
+			first := newRepoPRReady(t, e, "owner/first", "k1", 10)
+			_ = newRepoPRReady(t, e, "owner/second", "k2", 20)
+
+			var checked []string
+			e.FindPR = func(_ context.Context, repo, _ string) (*PR, error) {
+				checked = append(checked, repo)
+				if repo == "owner/first" {
+					return nil, rateErr
+				}
+				return &PR{Number: 20, Merged: true}, nil
+			}
+
+			err := e.CheckPRs(t.Context())
+			if err == nil || !strings.Contains(err.Error(), first.ID) {
+				t.Fatalf("err = %v", err)
+			}
+			if len(checked) != 1 || checked[0] != "owner/first" {
+				t.Fatalf("checked = %v, want early stop after rate limit on owner/first", checked)
+			}
+		})
 	}
 }

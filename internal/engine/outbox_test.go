@@ -1,12 +1,14 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/ghclient"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -149,5 +151,76 @@ func TestDeliverTruncatesLongMessages(t *testing.T) {
 	body := (*posts)[1].body
 	if len(body) > maxPostBytes+20 || !strings.HasSuffix(body, "[truncated]") || !strings.HasPrefix(body, "é") {
 		t.Fatalf("length = %d", len(body))
+	}
+}
+
+func TestDeliverDropsPermanent4xxErrorsAfterLoggingOnce(t *testing.T) {
+	for name, postErr := range map[string]error{
+		"400 bad request": &ghclient.Error{Kind: ghclient.ErrorCommand, Operation: "post comment", Detail: "gh: Bad Request (HTTP 400)"},
+		"403 forbidden":   &ghclient.Error{Kind: ghclient.ErrorCommand, Operation: "post comment", Detail: "gh: Issue is locked (HTTP 403)"},
+		"404 not found":   &ghclient.Error{Kind: ghclient.ErrorCommand, Operation: "post comment", Detail: "gh: Not Found (HTTP 404)"},
+		"410 gone":        &ghclient.Error{Kind: ghclient.ErrorCommand, Operation: "post comment", Detail: "gh: Gone (HTTP 410)"},
+		"422 validation":  &ghclient.Error{Kind: ghclient.ErrorCommand, Operation: "post comment", Detail: "gh: Validation Failed (HTTP 422)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEngine(t)
+			var log bytes.Buffer
+			e.Log = &log
+			ticket := newIssueTicket(t, e)
+			attempts := 0
+			e.Post = func(context.Context, string, int, string) error {
+				attempts++
+				return postErr
+			}
+			if err := e.Deliver(t.Context()); err != nil {
+				t.Fatalf("first Deliver error = %v, want nil for dropped permanent 4xx", err)
+			}
+			if err := e.Deliver(t.Context()); err != nil {
+				t.Fatalf("second Deliver error = %v", err)
+			}
+			if attempts != 1 {
+				t.Fatalf("attempts = %d, want 1 (must not retry permanent 4xx)", attempts)
+			}
+			entries, _ := e.Store.Entries(t.Context(), ticket.ID)
+			if entries[1].PostedAt == nil {
+				t.Fatalf("entry was not marked handled: %+v", entries[1])
+			}
+			if !strings.Contains(log.String(), "owner/repo#3") || strings.Count(log.String(), "owner/repo#3") != 1 {
+				t.Fatalf("log = %q, want one log line for owner/repo#3", log.String())
+			}
+		})
+	}
+}
+
+func TestDeliverStillRetriesTransientAndRateLimitErrors(t *testing.T) {
+	for name, postErr := range map[string]error{
+		"429 too many requests": &ghclient.Error{Kind: ghclient.ErrorRateLimit, Operation: "post comment", Detail: "gh: Too Many Requests (HTTP 429)"},
+		"403 rate limit":        &ghclient.Error{Kind: ghclient.ErrorRateLimit, Operation: "post comment", Detail: "gh: API rate limit exceeded (HTTP 403)"},
+		"408 request timeout":   &ghclient.Error{Kind: ghclient.ErrorCommand, Operation: "post comment", Detail: "gh: Request Timeout (HTTP 408)"},
+		"401 auth error":        &ghclient.Error{Kind: ghclient.ErrorAuth, Operation: "post comment", Detail: "gh: Bad credentials (HTTP 401)"},
+		"502 bad gateway":       &ghclient.Error{Kind: ghclient.ErrorCommand, Operation: "post comment", Detail: "gh: Bad Gateway (HTTP 502)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEngine(t)
+			ticket := newIssueTicket(t, e)
+			attempts := 0
+			e.Post = func(context.Context, string, int, string) error {
+				attempts++
+				return postErr
+			}
+			if err := e.Deliver(t.Context()); err == nil {
+				t.Fatalf("expected transient error to be returned for retry")
+			}
+			if err := e.Deliver(t.Context()); err == nil {
+				t.Fatalf("expected second Deliver to retry")
+			}
+			if attempts != 2 {
+				t.Fatalf("attempts = %d, want 2", attempts)
+			}
+			entries, _ := e.Store.Entries(t.Context(), ticket.ID)
+			if entries[1].PostedAt != nil {
+				t.Fatalf("transient failure was wrongly marked handled: %+v", entries[1])
+			}
+		})
 	}
 }

@@ -88,6 +88,7 @@ func TestErrorsAreClassifiedAndRedacted(t *testing.T) {
 	for message, kind := range map[string]ErrorKind{
 		"gh: Bad credentials (HTTP 401) ghp_abc123": ErrorAuth,
 		"API rate limit exceeded":                   ErrorRateLimit,
+		"gh: Too Many Requests (HTTP 429)":          ErrorRateLimit,
 		"something else":                            ErrorCommand,
 	} {
 		github.Fail(message)
@@ -250,5 +251,38 @@ func TestMergePRUsesAMethodTheRepositoryAllows(t *testing.T) {
 	calls := github.Calls()
 	if last := calls[len(calls)-1]; !strings.Contains(last, "pr merge 7 --repo owner/repo --squash ") {
 		t.Fatalf("merge = %s", last)
+	}
+}
+
+func TestRateLimitAndPermanentClientErrorHelpers(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		rateLimit bool
+		permanent bool
+	}{
+		{"nil", nil, false, false},
+		{"400 bad request", &Error{Kind: ErrorCommand, Detail: "gh: Bad Request (HTTP 400)"}, false, true},
+		{"401 auth", &Error{Kind: ErrorAuth, Detail: "gh: Bad credentials (HTTP 401)"}, false, false},
+		{"403 locked", &Error{Kind: ErrorCommand, Detail: "gh: Issue is locked (HTTP 403)"}, false, true},
+		{"403 rate limit", &Error{Kind: ErrorRateLimit, Detail: "gh: API rate limit exceeded (HTTP 403)"}, true, false},
+		{"404 not found", &Error{Kind: ErrorCommand, Detail: "gh: Not Found (HTTP 404)"}, false, true},
+		{"408 timeout", &Error{Kind: ErrorCommand, Detail: "gh: Request Timeout (HTTP 408)"}, false, false},
+		{"410 gone", &Error{Kind: ErrorCommand, Detail: "gh: Gone (HTTP 410)"}, false, true},
+		{"422 validation", &Error{Kind: ErrorCommand, Detail: "gh: Validation Failed (HTTP 422)"}, false, true},
+		{"429 rate limit", &Error{Kind: ErrorRateLimit, Detail: "gh: Too Many Requests (HTTP 429)"}, true, false},
+		{"502 gateway", &Error{Kind: ErrorCommand, Detail: "gh: Bad Gateway (HTTP 502)"}, false, false},
+		{"plain rate limited", errors.New("rate limited"), true, false},
+		{"plain 404", errors.New("gh: Not Found (HTTP 404)"), false, true},
+		{"plain without status", errors.New("issue is locked"), false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsRateLimit(tc.err); got != tc.rateLimit {
+				t.Fatalf("IsRateLimit(%v) = %v, want %v", tc.err, got, tc.rateLimit)
+			}
+			if got := IsPermanentClientError(tc.err); got != tc.permanent {
+				t.Fatalf("IsPermanentClientError(%v) = %v, want %v", tc.err, got, tc.permanent)
+			}
+		})
 	}
 }

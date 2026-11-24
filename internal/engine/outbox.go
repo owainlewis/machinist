@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/owainlewis/machinist/internal/ghclient"
 )
 
 const (
@@ -58,6 +60,13 @@ func (e *Engine) Deliver(ctx context.Context) error {
 			body = strings.ToValidUTF8(body[:maxPostBytes], "") + "\n[truncated]"
 		}
 		if err := e.Post(ctx, message.Repo, message.Number, body); err != nil {
+			if ghclient.IsPermanentClientError(err) {
+				fmt.Fprintf(e.Log, "machinist: drop unpostable message for %s#%d: %v\n", message.Repo, message.Number, err)
+				if markErr := e.Store.MarkPosted(ctx, message.EntryID); markErr != nil {
+					failures = append(failures, markErr)
+				}
+				continue
+			}
 			failures = append(failures, fmt.Errorf("%s#%d: %w", message.Repo, message.Number, err))
 			continue
 		}
