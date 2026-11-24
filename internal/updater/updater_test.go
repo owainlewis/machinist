@@ -140,12 +140,13 @@ func TestUpdateInstallsLatestNightlyRelease(t *testing.T) {
 				t.Fatalf("unexpected query: %s", request.URL.RawQuery)
 			}
 			fmt.Fprintf(response, `[
-				{"tag_name":"v0.5.1-nightly.20261125.draft00","draft":true,"prerelease":true},
-				{"tag_name":"v0.5.0","draft":false,"prerelease":false},
-				{"tag_name":"v0.6.0-rc.1","draft":false,"prerelease":true},
-				{"tag_name":"bad-nightly.1","draft":false,"prerelease":true},
-				{"tag_name":"%s","draft":false,"prerelease":true},
-				{"tag_name":"v0.5.1-nightly.20261123.def5678","draft":false,"prerelease":true}
+				{"tag_name":"v0.5.1-nightly.20261125.draft00","draft":true,"prerelease":true,"published_at":"2026-11-25T04:00:00Z"},
+				{"tag_name":"v0.5.0","draft":false,"prerelease":false,"published_at":"2026-11-24T20:00:00Z"},
+				{"tag_name":"v0.6.0-rc.1","draft":false,"prerelease":true,"published_at":"2026-11-24T19:00:00Z"},
+				{"tag_name":"bad-nightly.1","draft":false,"prerelease":true,"published_at":"2026-11-24T18:00:00Z"},
+				{"tag_name":"v0.5.1-nightly.20261124.7c30eab","draft":false,"prerelease":true,"published_at":"2026-11-24T11:14:17Z"},
+				{"tag_name":"%s","draft":false,"prerelease":true,"published_at":"2026-11-24T15:10:24Z"},
+				{"tag_name":"v0.5.1-nightly.20261123.def5678","draft":false,"prerelease":true,"published_at":"2026-11-23T04:00:00Z"}
 			]`, nightlyTag)
 		case "/downloads/" + nightlyTag + "/checksums.txt":
 			fmt.Fprintf(response, "%x  machinist_0.5.1-nightly.20261124.abc1234_linux_amd64.tar.gz\n", digest)

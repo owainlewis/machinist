@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -53,9 +54,23 @@ type Result struct {
 }
 
 type release struct {
-	TagName    string `json:"tag_name"`
-	Draft      bool   `json:"draft"`
-	Prerelease bool   `json:"prerelease"`
+	TagName     string `json:"tag_name"`
+	Draft       bool   `json:"draft"`
+	Prerelease  bool   `json:"prerelease"`
+	PublishedAt string `json:"published_at"`
+	CreatedAt   string `json:"created_at"`
+}
+
+func (r release) timestamp() time.Time {
+	for _, raw := range []string{r.PublishedAt, r.CreatedAt} {
+		if raw == "" {
+			continue
+		}
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func Update(ctx context.Context, options Options) (Result, error) {
@@ -167,6 +182,9 @@ func latestNightlyVersion(ctx context.Context, client *http.Client, apiBase stri
 	if err := json.Unmarshal(body, &releases); err != nil {
 		return "", fmt.Errorf("decode releases: %w", err)
 	}
+	var bestTag string
+	var bestTime time.Time
+	hasBest := false
 	for _, rel := range releases {
 		if rel.Draft || !rel.Prerelease || !strings.Contains(rel.TagName, "-nightly.") {
 			continue
@@ -174,7 +192,15 @@ func latestNightlyVersion(ctx context.Context, client *http.Client, apiBase stri
 		if err := validateVersion(rel.TagName); err != nil {
 			continue
 		}
-		return rel.TagName, nil
+		ts := rel.timestamp()
+		if !hasBest || ts.After(bestTime) {
+			bestTag = rel.TagName
+			bestTime = ts
+			hasBest = true
+		}
+	}
+	if hasBest {
+		return bestTag, nil
 	}
 	return "", errors.New("no nightly release found")
 }

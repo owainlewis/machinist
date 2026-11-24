@@ -76,21 +76,29 @@ extract_latest_nightly() {
     python3 -c '
 import json, re, sys
 pattern = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$")
-for rel in json.load(sys.stdin):
-    tag = rel.get("tag_name", "")
-    if not rel.get("draft") and rel.get("prerelease") and "-nightly." in tag and pattern.match(tag):
-        print(tag)
-        break
+matches = [
+    rel for rel in json.load(sys.stdin)
+    if not rel.get("draft")
+    and rel.get("prerelease")
+    and "-nightly." in rel.get("tag_name", "")
+    and pattern.match(rel.get("tag_name", ""))
+]
+if matches:
+    best = max(matches, key=lambda r: r.get("published_at") or r.get("created_at") or "")
+    print(best["tag_name"])
 '
   elif command -v jq >/dev/null 2>&1; then
-    jq -r '[.[] | select(.draft == false and .prerelease == true and (.tag_name | contains("-nightly.")) and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$")))][0].tag_name // empty'
+    jq -r '[.[] | select(.draft == false and .prerelease == true and (.tag_name | contains("-nightly.")) and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$")))] | sort_by(.published_at // .created_at // "") | last.tag_name // empty'
   elif command -v node >/dev/null 2>&1; then
     node -e '
 const fs = require("fs");
 const re = /^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$/;
 const list = JSON.parse(fs.readFileSync(0, "utf8"));
-const hit = list.find((r) => !r.draft && r.prerelease && typeof r.tag_name === "string" && r.tag_name.includes("-nightly.") && re.test(r.tag_name));
-if (hit) console.log(hit.tag_name);
+const matches = list.filter((r) => !r.draft && r.prerelease && typeof r.tag_name === "string" && r.tag_name.includes("-nightly.") && re.test(r.tag_name));
+if (matches.length) {
+  matches.sort((a, b) => String(b.published_at || b.created_at || "").localeCompare(String(a.published_at || a.created_at || "")));
+  console.log(matches[0].tag_name);
+}
 '
   else
     fail "need python3, jq, or node to resolve the latest nightly release (or set MACHINIST_VERSION)"

@@ -209,12 +209,13 @@ class InstallScriptTest(unittest.TestCase):
     def test_installs_latest_nightly_release(self):
         nightly = "v0.5.1-nightly.20261124.abc1234"
         self.routes["/api/releases?per_page=30"] = json.dumps([
-            {"tag_name": "v0.5.1-nightly.20261125.draft00", "draft": True, "prerelease": True},
-            {"tag_name": "v0.5.0", "draft": False, "prerelease": False},
-            {"tag_name": "v0.6.0-rc.1", "draft": False, "prerelease": True},
-            {"tag_name": "bad-nightly.1", "draft": False, "prerelease": True},
-            {"tag_name": nightly, "draft": False, "prerelease": True},
-            {"tag_name": "v0.5.1-nightly.20261123.def5678", "draft": False, "prerelease": True},
+            {"tag_name": "v0.5.1-nightly.20261125.draft00", "draft": True, "prerelease": True, "published_at": "2026-11-25T04:00:00Z"},
+            {"tag_name": "v0.5.0", "draft": False, "prerelease": False, "published_at": "2026-11-24T20:00:00Z"},
+            {"tag_name": "v0.6.0-rc.1", "draft": False, "prerelease": True, "published_at": "2026-11-24T19:00:00Z"},
+            {"tag_name": "bad-nightly.1", "draft": False, "prerelease": True, "published_at": "2026-11-24T18:00:00Z"},
+            {"tag_name": "v0.5.1-nightly.20261124.7c30eab", "draft": False, "prerelease": True, "published_at": "2026-11-24T11:14:17Z"},
+            {"tag_name": nightly, "draft": False, "prerelease": True, "published_at": "2026-11-24T15:10:24Z"},
+            {"tag_name": "v0.5.1-nightly.20261123.def5678", "draft": False, "prerelease": True, "published_at": "2026-11-23T04:00:00Z"},
         ])
         self.register_release(nightly, b"#!/bin/sh\necho nightly\n")
 
