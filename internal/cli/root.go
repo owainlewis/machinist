@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/updater"
@@ -78,13 +79,27 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 
 func newUpdateCommand(options *commandOptions) *cobra.Command {
 	var requestedVersion string
+	var channel string
+	var nightly bool
 	update := &cobra.Command{
-		Use:   "update",
-		Short: "Update Machinist to a released version",
-		Args:  cobra.NoArgs,
+		Use:     "update",
+		Aliases: []string{"upgrade"},
+		Short:   "Update Machinist to a released or nightly version",
+		Args:    cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			selectedChannel := channel
+			if nightly {
+				if command.Flags().Changed("channel") && strings.ToLower(strings.TrimSpace(channel)) != updater.ChannelNightly {
+					return fmt.Errorf("cannot combine --nightly with --channel=%s", channel)
+				}
+				selectedChannel = updater.ChannelNightly
+			}
+			if requestedVersion != "" && (nightly || (command.Flags().Changed("channel") && strings.ToLower(strings.TrimSpace(channel)) != updater.ChannelStable)) {
+				return errors.New("cannot combine --version with --nightly or a non-stable --channel")
+			}
 			result, err := updater.Update(command.Context(), updater.Options{
 				Version: requestedVersion,
+				Channel: selectedChannel,
 				Current: options.version,
 			})
 			if err != nil {
@@ -98,6 +113,8 @@ func newUpdateCommand(options *commandOptions) *cobra.Command {
 			return nil
 		},
 	}
-	update.Flags().StringVar(&requestedVersion, "version", "", "release version to install, such as v0.2.0 (default latest)")
+	update.Flags().StringVar(&requestedVersion, "version", "", "release version to install, such as v0.5.0 (default latest)")
+	update.Flags().StringVar(&channel, "channel", updater.ChannelStable, "release channel to install: stable or nightly")
+	update.Flags().BoolVar(&nightly, "nightly", false, "install the latest nightly pre-release (shorthand for --channel nightly)")
 	return update
 }

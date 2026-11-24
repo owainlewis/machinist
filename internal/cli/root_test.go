@@ -381,3 +381,48 @@ func TestKubernetesCommandReadsRunnerConfiguration(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
+
+func TestUpdateCommandFlagsAndUpgradeAlias(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if exitCode := Execute(t.Context(), []string{"upgrade", "--help"}, strings.NewReader(""), &stdout, &stderr, "test"); exitCode != 0 {
+		t.Fatalf("upgrade --help exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "--nightly") || !strings.Contains(stdout.String(), "--channel") {
+		t.Fatalf("upgrade --help stdout = %q", stdout.String())
+	}
+
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "nightly conflicts with channel stable",
+			args: []string{"update", "--nightly", "--channel=stable"},
+			want: "cannot combine --nightly with --channel=stable",
+		},
+		{
+			name: "upgrade nightly conflicts with version",
+			args: []string{"upgrade", "--nightly", "--version=v0.5.0"},
+			want: "cannot combine --version with --nightly",
+		},
+		{
+			name: "channel nightly conflicts with version",
+			args: []string{"update", "--channel=nightly", "--version=v0.5.0"},
+			want: "cannot combine --version with --nightly",
+		},
+		{
+			name: "invalid channel",
+			args: []string{"update", "--channel=beta"},
+			want: "invalid release channel",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var errOut bytes.Buffer
+			exitCode := Execute(t.Context(), test.args, strings.NewReader(""), &bytes.Buffer{}, &errOut, "test")
+			if exitCode != 2 || !strings.Contains(errOut.String(), test.want) {
+				t.Fatalf("exit code = %d, stderr = %q, want substring %q", exitCode, errOut.String(), test.want)
+			}
+		})
+	}
+}

@@ -24,6 +24,27 @@ A job runs headless from start to finish and never stops to ask a question.
 
 See [Vision](VISION.md) for what Machinist is for, where it is, and what comes next.
 
+## Install
+
+Install the latest stable release for Linux or macOS (`amd64` / `arm64`), verified against the release SHA-256 checksums:
+
+```sh
+curl -fsSL https://machinist.sh/install.sh | sh
+```
+
+To install the latest automated nightly build from `main` instead:
+
+```sh
+curl -fsSL https://machinist.sh/install.sh | MACHINIST_CHANNEL=nightly sh
+```
+
+Upgrade an existing install in place:
+
+```sh
+machinist update            # latest stable release
+machinist update --nightly  # latest nightly build (alias: machinist upgrade)
+```
+
 <a id="quick-start"></a>
 
 ## Quick start

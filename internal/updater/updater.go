@@ -26,12 +26,18 @@ const (
 	maxChecksumsSize   = 1 << 20
 	maxArchiveSize     = 100 << 20
 	maxBinarySize      = 100 << 20
+
+	// ChannelStable installs the latest stable GitHub release.
+	ChannelStable = "stable"
+	// ChannelNightly installs the newest published nightly pre-release.
+	ChannelNightly = "nightly"
 )
 
 var releaseVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$`)
 
 type Options struct {
 	Version     string
+	Channel     string
 	Current     string
 	Executable  string
 	GOOS        string
@@ -47,7 +53,9 @@ type Result struct {
 }
 
 type release struct {
-	TagName string `json:"tag_name"`
+	TagName    string `json:"tag_name"`
+	Draft      bool   `json:"draft"`
+	Prerelease bool   `json:"prerelease"`
 }
 
 func Update(ctx context.Context, options Options) (Result, error) {
@@ -66,6 +74,15 @@ func Update(ctx context.Context, options Options) (Result, error) {
 	if options.GOARCH == "" {
 		options.GOARCH = runtime.GOARCH
 	}
+
+	channel, err := normalizeChannel(options.Channel)
+	if err != nil {
+		return Result{}, err
+	}
+	if options.Version != "" && options.Channel != "" && channel != ChannelStable {
+		return Result{}, fmt.Errorf("cannot combine version %q with channel %q", options.Version, channel)
+	}
+
 	if options.Executable == "" {
 		path, err := os.Executable()
 		if err != nil {
@@ -76,8 +93,12 @@ func Update(ctx context.Context, options Options) (Result, error) {
 
 	version := options.Version
 	if version == "" {
-		var err error
-		version, err = latestVersion(ctx, options.Client, options.APIBase)
+		switch channel {
+		case ChannelNightly:
+			version, err = latestNightlyVersion(ctx, options.Client, options.APIBase)
+		default:
+			version, err = latestVersion(ctx, options.Client, options.APIBase)
+		}
 		if err != nil {
 			return Result{}, err
 		}
@@ -122,6 +143,40 @@ func Update(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 	return Result{Version: version}, nil
+}
+
+func normalizeChannel(raw string) (string, error) {
+	channel := strings.ToLower(strings.TrimSpace(raw))
+	if channel == "" {
+		return ChannelStable, nil
+	}
+	switch channel {
+	case ChannelStable, ChannelNightly:
+		return channel, nil
+	default:
+		return "", fmt.Errorf("invalid release channel %q; expected stable or nightly", raw)
+	}
+}
+
+func latestNightlyVersion(ctx context.Context, client *http.Client, apiBase string) (string, error) {
+	body, err := download(ctx, client, strings.TrimRight(apiBase, "/")+"/releases?per_page=30", maxMetadataSize)
+	if err != nil {
+		return "", fmt.Errorf("find latest nightly release: %w", err)
+	}
+	var releases []release
+	if err := json.Unmarshal(body, &releases); err != nil {
+		return "", fmt.Errorf("decode releases: %w", err)
+	}
+	for _, rel := range releases {
+		if rel.Draft || !rel.Prerelease || !strings.Contains(rel.TagName, "-nightly.") {
+			continue
+		}
+		if err := validateVersion(rel.TagName); err != nil {
+			continue
+		}
+		return rel.TagName, nil
+	}
+	return "", errors.New("no nightly release found")
 }
 
 func latestVersion(ctx context.Context, client *http.Client, apiBase string) (string, error) {

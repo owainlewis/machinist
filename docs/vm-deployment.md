@@ -141,7 +141,14 @@ On the other machine, set `control_plane` and `token_file` in `runner.yaml`. See
 
 ## Upgrade
 
-As root, keep the old binary and install the new one in its place with the same owner and mode:
+As root, keep the old binary and update in place with `machinist update` (or `machinist update --nightly` for the latest nightly build from `main`; `upgrade` is an alias):
+
+```sh
+cp -p /usr/local/bin/machinist /usr/local/bin/machinist.previous
+machinist update            # or: machinist update --nightly
+```
+
+If you are installing a binary you built yourself instead of a GitHub release, copy it in place with the same owner and mode:
 
 ```sh
 cp -p /usr/local/bin/machinist /usr/local/bin/machinist.previous
