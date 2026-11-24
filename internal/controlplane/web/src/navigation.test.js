@@ -33,7 +33,10 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
     }
     if (!signedIn) return reply(401, { error: "a token is required" });
     if (url === "/api/v1/repositories") return reply(200, { repositories: ["owner/repo"], name: "alice" });
-    if (url === "/api/v1/tickets") return reply(200, { tickets: [older, ticket] });
+    if (url === "/api/v1/tickets" || url.startsWith("/api/v1/tickets?")) {
+      const list = [older, ticket];
+      return reply(200, { tickets: list, total: list.length, limit: 50, offset: 0, has_more: false, done_total: list.length, done_limit: 20 });
+    }
     if (url === "/api/v1/tickets/t_new/rerun" && options.method === "POST") { reruns++; return reply(200, { ...ticket, state: "working" }); }
     if (url.startsWith("/api/v1/stats?days=")) {
       const days = Number(url.split("=")[1]);

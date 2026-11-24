@@ -74,15 +74,18 @@ export function formatDuration(milliseconds) {
 }
 
 // The board's columns. Queued jobs run oldest first, so the next to run is on
-// top. Running and ended jobs show the latest first. Done holds every ended
-// job, and its pill says whether it passed, failed or was cancelled.
+// top. Running and ended jobs show the latest first. Done holds at most
+// boardDoneLimit ended jobs so long history stays in the paginated List view.
+export const boardDoneLimit = 20;
+export const listPageSize = 50;
+
 export const boardColumns = [
   { key: "queued", label: "Queued" },
   { key: "running", label: "Running" },
   { key: "done", label: "Done" },
 ];
 
-export function boardOf(tickets = [], running = new Set()) {
+export function boardOf(tickets = [], running = new Set(), { doneLimit = boardDoneLimit } = {}) {
   const columns = Object.fromEntries(boardColumns.map(column => [column.key, []]));
   for (const ticket of tickets) {
     const state = jobState(ticket, running.has(ticket.id));
@@ -92,7 +95,11 @@ export function boardOf(tickets = [], running = new Set()) {
   columns.queued.sort((a, b) => at(a, "created_at") - at(b, "created_at"));
   columns.running.sort((a, b) => at(b, "updated_at") - at(a, "updated_at"));
   columns.done.sort((a, b) => at(b, "updated_at") - at(a, "updated_at"));
-  return columns;
+  const doneTotal = columns.done.length;
+  if (doneLimit > 0 && columns.done.length > doneLimit) {
+    columns.done = columns.done.slice(0, doneLimit);
+  }
+  return { ...columns, doneTotal };
 }
 
 // failureReason is why a failed job stopped: the last thing Machinist said on it.
@@ -153,12 +160,18 @@ export function sourceLinkText(link) {
   return `Open in ${site ? siteNames[site] : host}`;
 }
 
+// orderSources deduplicates source names and keeps known ones first in a fixed
+// order, so the filter's options do not move about as jobs arrive.
+export function orderSources(sources = []) {
+  const found = new Set(sources.filter(Boolean));
+  const rank = source => sourceOrder.includes(source) ? sourceOrder.indexOf(source) : sourceOrder.length;
+  return [...found].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
 // sourcesOf lists the sources the jobs came from, known ones first in a fixed
 // order, so the filter's options do not move about as jobs arrive.
 export function sourcesOf(tickets = []) {
-  const found = new Set(tickets.map(ticket => ticket.source).filter(Boolean));
-  const rank = source => sourceOrder.includes(source) ? sourceOrder.indexOf(source) : sourceOrder.length;
-  return [...found].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  return orderSources(tickets.map(ticket => ticket.source));
 }
 
 // The quick filters above the jobs. "Needs a person" is a job whose pull
@@ -170,6 +183,44 @@ export const quickFilters = [
   { key: "needs_person", label: "Needs a person" },
   { key: "cancelled", label: "Cancelled" },
 ];
+
+const quickFilterStates = {
+  running: "running",
+  done: "done,pr_ready",
+  failed: "failed",
+  needs_person: "pr_ready",
+  cancelled: "cancelled",
+};
+
+// ticketsPath builds the /api/v1/tickets query for either the capped Board
+// view or a paginated List page.
+export function ticketsPath({ view = "board", source = "", quick = "", page = 0, pageSize = listPageSize, doneLimit = boardDoneLimit } = {}) {
+  const params = new URLSearchParams();
+  if (source) params.set("source", source);
+  if (quick && quickFilterStates[quick]) params.set("state", quickFilterStates[quick]);
+  if (view === "board") {
+    params.set("view", "board");
+    params.set("done_limit", String(doneLimit));
+  } else {
+    params.set("limit", String(pageSize));
+    params.set("offset", String(Math.max(0, page) * pageSize));
+  }
+  return `/api/v1/tickets?${params.toString()}`;
+}
+
+// paginationOf computes 1-based page numbers, item bounds, and button states
+// for a paginated list response.
+export function paginationOf({ total = 0, offset = 0, count = 0, pageSize = listPageSize, hasMore } = {}) {
+  const safeSize = Math.max(1, pageSize);
+  const safeOffset = Math.max(0, offset);
+  const totalPages = Math.max(1, Math.ceil(total / safeSize));
+  const page = Math.min(totalPages, Math.floor(safeOffset / safeSize) + 1);
+  const start = count === 0 ? 0 : safeOffset + 1;
+  const end = safeOffset + count;
+  const hasPrev = safeOffset > 0;
+  const hasNext = typeof hasMore === "boolean" ? hasMore : end < total;
+  return { page, totalPages, start, end, total, hasPrev, hasNext };
+}
 
 export function matchesQuick(ticket, running, quick) {
   if (!quick) return true;

@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS tickets (
   origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
   WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
+CREATE INDEX IF NOT EXISTS tickets_created_at ON tickets(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS tickets_updated_at ON tickets(updated_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS ticket_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ticket_id TEXT NOT NULL, kind TEXT NOT NULL, author TEXT NOT NULL,
   body TEXT NOT NULL, source_key TEXT UNIQUE, created_at TEXT NOT NULL, consumed_by_run TEXT, posted_at TEXT);
@@ -79,6 +81,7 @@ CREATE TABLE IF NOT EXISTS runs (
   cancel_requested_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_agent_run ON runs(ticket_id) WHERE kind='agent' AND status IN ('queued','running');
 CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
+CREATE INDEX IF NOT EXISTS runs_ticket_status ON runs(ticket_id, status);
 CREATE TABLE IF NOT EXISTS tokens (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT,
   role TEXT NOT NULL DEFAULT '');
@@ -138,8 +141,15 @@ type Ticket struct {
 // Branch is the one branch every run of this ticket works on.
 func (t Ticket) Branch() string { return "machinist/" + t.ID }
 
-// maxListedTickets limits one ticket list.
-const maxListedTickets = 200
+// DefaultTicketLimit is how many tickets a list returns when no limit is given.
+// MaxTicketLimit is the largest page size a caller can ask for.
+// DefaultBoardDoneLimit is how many finished jobs the Board's Done column shows.
+const (
+	DefaultTicketLimit    = 200
+	MaxTicketLimit        = 200
+	DefaultBoardDoneLimit = 20
+	maxListedTickets      = DefaultTicketLimit
+)
 
 // Automation reports whether the ticket came from a schedule. Such a ticket
 // never waits for a person.
@@ -684,33 +694,280 @@ func (s *Store) TicketBySourceKey(ctx context.Context, key string) (Ticket, erro
 	return ticketForSourceKey(ctx, s.db, key)
 }
 
-// ListTickets returns the newest tickets first, whatever their state, up to
-// maxListedTickets. Empty filters match every ticket.
 // TicketFilter picks the tickets a list shows. An empty field matches all.
 type TicketFilter struct {
 	State string
-	Repo  string
+	// States, when non-empty, matches tickets in any of these states, including
+	// "running" and "queued" which distinguish working tickets held by a runner.
+	States []string
+	Repo   string
 	// Source is where the jobs came from, such as web or linear.
 	Source string
+	// Sort orders results: "" or "created" puts newest created first;
+	// "updated" puts most recently updated first.
+	Sort string
+	// Limit caps one page. Zero uses DefaultTicketLimit.
+	Limit int
+	// Offset skips the first Offset matching tickets.
+	Offset int
 }
 
-// ListTickets lists the newest tickets that match the filter, newest first.
-func (s *Store) ListTickets(ctx context.Context, filter TicketFilter) ([]Ticket, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE (?='' OR state=?) AND (?='' OR repo=?) AND (?='' OR origin=?)
-  ORDER BY created_at DESC, id DESC LIMIT ?`, filter.State, filter.State, filter.Repo, filter.Repo, filter.Source, filter.Source, maxListedTickets)
-	if err != nil {
-		return nil, err
+// TicketCounts counts jobs in each UI quick filter within the current repo and source.
+type TicketCounts struct {
+	Queued      int `json:"queued"`
+	Running     int `json:"running"`
+	Done        int `json:"done"`
+	Failed      int `json:"failed"`
+	NeedsPerson int `json:"needs_person"`
+	Cancelled   int `json:"cancelled"`
+}
+
+// TicketPage is one page of tickets, with the total matching count and
+// whether more tickets follow this page.
+type TicketPage struct {
+	Tickets   []Ticket     `json:"tickets"`
+	Total     int          `json:"total"`
+	Limit     int          `json:"limit"`
+	Offset    int          `json:"offset"`
+	HasMore   bool         `json:"has_more"`
+	DoneTotal *int         `json:"done_total,omitempty"`
+	DoneLimit *int         `json:"done_limit,omitempty"`
+	Counts    TicketCounts `json:"counts"`
+	Sources   []string     `json:"sources"`
+}
+
+const runningTicketExpr = `EXISTS(SELECT 1 FROM runs WHERE runs.ticket_id=tickets.id AND runs.status='running')`
+
+func ticketWhere(filter TicketFilter) (string, []any) {
+	clauses := []string{}
+	args := []any{}
+	states := make([]string, 0, len(filter.States)+1)
+	if filter.State != "" {
+		states = append(states, filter.State)
 	}
-	defer rows.Close()
-	tickets := []Ticket{}
+	states = append(states, filter.States...)
+	if len(states) > 0 {
+		parts := make([]string, 0, len(states))
+		for _, state := range states {
+			switch state {
+			case "running":
+				parts = append(parts, `(state='working' AND `+runningTicketExpr+`)`)
+			case "queued":
+				parts = append(parts, `(state='working' AND NOT `+runningTicketExpr+`)`)
+			default:
+				parts = append(parts, `state=?`)
+				args = append(args, state)
+			}
+		}
+		clauses = append(clauses, "("+strings.Join(parts, " OR ")+")")
+	}
+	if filter.Repo != "" {
+		clauses = append(clauses, "repo=?")
+		args = append(args, filter.Repo)
+	}
+	if filter.Source != "" {
+		clauses = append(clauses, "origin=?")
+		args = append(args, filter.Source)
+	}
+	if len(clauses) == 0 {
+		return "1=1", args
+	}
+	return strings.Join(clauses, " AND "), args
+}
+
+func scanTickets(rows *sql.Rows) ([]Ticket, error) {
+	found := []Ticket{}
 	for rows.Next() {
 		ticket, err := scanTicket(rows)
 		if err != nil {
 			return nil, err
 		}
-		tickets = append(tickets, ticket)
+		found = append(found, ticket)
 	}
-	return tickets, rows.Err()
+	return found, rows.Err()
+}
+
+func ticketSummary(ctx context.Context, q querier, repo, source string) (TicketCounts, []string, error) {
+	var counts TicketCounts
+	rows, err := q.QueryContext(ctx, `SELECT state,`+runningTicketExpr+`,COUNT(*) FROM tickets
+  WHERE (?='' OR repo=?) AND (?='' OR origin=?) GROUP BY 1,2`, repo, repo, source, source)
+	if err != nil {
+		return counts, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var state string
+		var running bool
+		var n int
+		if err := rows.Scan(&state, &running, &n); err != nil {
+			return counts, nil, err
+		}
+		switch state {
+		case StateWorking:
+			if running {
+				counts.Running += n
+			} else {
+				counts.Queued += n
+			}
+		case StatePRReady:
+			counts.Done += n
+			counts.NeedsPerson += n
+		case StateDone:
+			counts.Done += n
+		case StateCancelled:
+			counts.Cancelled += n
+		default:
+			counts.Failed += n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return counts, nil, err
+	}
+
+	sourceRows, err := q.QueryContext(ctx, `SELECT DISTINCT origin FROM tickets WHERE origin<>'' AND (?='' OR repo=?) ORDER BY origin`, repo, repo)
+	if err != nil {
+		return counts, nil, err
+	}
+	defer sourceRows.Close()
+	sources := []string{}
+	for sourceRows.Next() {
+		var origin string
+		if err := sourceRows.Scan(&origin); err != nil {
+			return counts, nil, err
+		}
+		sources = append(sources, origin)
+	}
+	return counts, sources, sourceRows.Err()
+}
+
+// ListTicketsPage lists one page of tickets matching the filter, with total
+// matching count, filter counts, and available sources.
+func (s *Store) ListTicketsPage(ctx context.Context, filter TicketFilter) (TicketPage, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = DefaultTicketLimit
+	}
+	if limit > MaxTicketLimit {
+		limit = MaxTicketLimit
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	orderBy := "created_at DESC, id DESC"
+	if filter.Sort == "updated" {
+		orderBy = "updated_at DESC, id DESC"
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return TicketPage{}, err
+	}
+	defer tx.Rollback()
+
+	where, args := ticketWhere(filter)
+	var total int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE `+where, args...).Scan(&total); err != nil {
+		return TicketPage{}, err
+	}
+
+	pageArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE `+where+` ORDER BY `+orderBy+` LIMIT ? OFFSET ?`, pageArgs...)
+	if err != nil {
+		return TicketPage{}, err
+	}
+	found, err := scanTickets(rows)
+	rows.Close()
+	if err != nil {
+		return TicketPage{}, err
+	}
+
+	counts, sources, err := ticketSummary(ctx, tx, filter.Repo, filter.Source)
+	if err != nil {
+		return TicketPage{}, err
+	}
+	return TicketPage{
+		Tickets: found,
+		Total:   total,
+		Limit:   limit,
+		Offset:  offset,
+		HasMore: offset+len(found) < total,
+		Counts:  counts,
+		Sources: sources,
+	}, nil
+}
+
+// ListBoardTickets returns every matching active (queued or running) ticket
+// uncapped, plus at most doneLimit of the most recently updated finished tickets.
+func (s *Store) ListBoardTickets(ctx context.Context, filter TicketFilter, doneLimit int) (TicketPage, error) {
+	if doneLimit <= 0 {
+		doneLimit = DefaultBoardDoneLimit
+	}
+	if doneLimit > MaxTicketLimit {
+		doneLimit = MaxTicketLimit
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return TicketPage{}, err
+	}
+	defer tx.Rollback()
+
+	where, args := ticketWhere(filter)
+	activeRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state='working' AND (`+where+`) ORDER BY created_at ASC, id ASC`, args...)
+	if err != nil {
+		return TicketPage{}, err
+	}
+	active, err := scanTickets(activeRows)
+	activeRows.Close()
+	if err != nil {
+		return TicketPage{}, err
+	}
+
+	var doneTotal int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE state<>'working' AND (`+where+`)`, args...).Scan(&doneTotal); err != nil {
+		return TicketPage{}, err
+	}
+
+	doneArgs := append(append([]any{}, args...), doneLimit)
+	doneRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state<>'working' AND (`+where+`) ORDER BY updated_at DESC, id DESC LIMIT ?`, doneArgs...)
+	if err != nil {
+		return TicketPage{}, err
+	}
+	done, err := scanTickets(doneRows)
+	doneRows.Close()
+	if err != nil {
+		return TicketPage{}, err
+	}
+
+	counts, sources, err := ticketSummary(ctx, tx, filter.Repo, filter.Source)
+	if err != nil {
+		return TicketPage{}, err
+	}
+
+	combined := make([]Ticket, 0, len(active)+len(done))
+	combined = append(combined, active...)
+	combined = append(combined, done...)
+	return TicketPage{
+		Tickets:   combined,
+		Total:     len(active) + doneTotal,
+		Limit:     doneLimit,
+		Offset:    0,
+		HasMore:   doneTotal > len(done),
+		DoneTotal: &doneTotal,
+		DoneLimit: &doneLimit,
+		Counts:    counts,
+		Sources:   sources,
+	}, nil
+}
+
+// ListTickets lists the newest tickets that match the filter, newest first.
+func (s *Store) ListTickets(ctx context.Context, filter TicketFilter) ([]Ticket, error) {
+	page, err := s.ListTicketsPage(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return page.Tickets, nil
 }
 
 // LatestMessage returns the newest thing Machinist said on a ticket.

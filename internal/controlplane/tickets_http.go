@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -50,12 +51,73 @@ func (s *Server) createTicket(w http.ResponseWriter, r *http.Request, tokenName 
 
 func (s *Server) listTickets(w http.ResponseWriter, r *http.Request, _ string) {
 	query := r.URL.Query()
-	found, err := s.store.ListTickets(r.Context(), tickets.TicketFilter{State: query.Get("state"), Repo: query.Get("repo"), Source: query.Get("source")})
+	filter := tickets.TicketFilter{
+		Repo:   query.Get("repo"),
+		Source: query.Get("source"),
+	}
+	if rawState := strings.TrimSpace(query.Get("state")); rawState != "" {
+		for _, part := range strings.Split(rawState, ",") {
+			if state := strings.TrimSpace(part); state != "" {
+				filter.States = append(filter.States, state)
+			}
+		}
+	}
+	if sortBy := strings.TrimSpace(query.Get("sort")); sortBy != "" {
+		if sortBy != "created" && sortBy != "updated" {
+			writeError(w, http.StatusBadRequest, errors.New("sort must be created or updated"))
+			return
+		}
+		filter.Sort = sortBy
+	}
+
+	view := strings.TrimSpace(query.Get("view"))
+	if view != "" && view != "board" && view != "list" {
+		writeError(w, http.StatusBadRequest, errors.New("view must be board or list"))
+		return
+	}
+
+	if view == "board" {
+		doneLimit := tickets.DefaultBoardDoneLimit
+		if raw := strings.TrimSpace(query.Get("done_limit")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > tickets.MaxTicketLimit {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("done_limit must be a whole number from 1 to %d", tickets.MaxTicketLimit))
+				return
+			}
+			doneLimit = parsed
+		}
+		page, err := s.store.ListBoardTickets(r.Context(), filter, doneLimit)
+		if err != nil {
+			writeTicketError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
+		return
+	}
+
+	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > tickets.MaxTicketLimit {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("limit must be a whole number from 1 to %d", tickets.MaxTicketLimit))
+			return
+		}
+		filter.Limit = parsed
+	}
+	if raw := strings.TrimSpace(query.Get("offset")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("offset must be a non-negative whole number"))
+			return
+		}
+		filter.Offset = parsed
+	}
+
+	page, err := s.store.ListTicketsPage(r.Context(), filter)
 	if err != nil {
 		writeTicketError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tickets": found})
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {

@@ -18,7 +18,7 @@ import { SignIn } from "./sign-in.jsx";
 import "./styles.css";
 
 const pollMillis = 2000;
-const emptyStatus = { tickets: [], runners: [], queue: null };
+const emptyStatus = { runners: [], queue: null };
 const navigation = [["dashboard", ChartColumn, "Dashboard"], ["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"], ["settings", Settings2, "Settings"]];
 
 // followRedirect moves an old address, such as #/setup, to where it lives now,
@@ -30,8 +30,8 @@ function followRedirect() {
 }
 
 async function loadStatus() {
-  const [tickets, runners] = await Promise.all([api("/api/v1/tickets"), api("/api/v1/runners")]);
-  return { tickets: tickets.tickets, runners: runners.runners, queue: runners.queue };
+  const runners = await api("/api/v1/runners");
+  return { runners: runners.runners, queue: runners.queue };
 }
 
 function App() {
@@ -119,7 +119,7 @@ function App() {
       </div>
     </aside>
     <main className="app-main">
-      {route.view === "jobs" && <JobsPage tickets={status.tickets} runners={status.runners} loaded={loaded} error={error} />}
+      {route.view === "jobs" && <JobsPage runners={status.runners} onSignedOut={signedOut} />}
       {route.view === "new" && <NewJobPage onSignedOut={signedOut} />}
       {route.view === "job" && <JobPage key={route.jobID} jobID={route.jobID} onSignedOut={signedOut} />}
       {route.view === "dashboard" && <DashboardPage onSignedOut={signedOut} />}

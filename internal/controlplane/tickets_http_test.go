@@ -3,6 +3,7 @@ package controlplane
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -92,6 +93,101 @@ func TestListTicketsFiltersNewestFirst(t *testing.T) {
 	}
 	if none := list("?repo=other/repo"); len(none) != 0 {
 		t.Fatalf("none = %+v", none)
+	}
+}
+
+func TestListTicketsPaginationAndBoardView(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+
+	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	tick := 0
+	f.store.SetClock(func() time.Time {
+		tick++
+		return start.Add(time.Duration(tick) * time.Second)
+	})
+
+	// Create 3 active tickets first, then 207 finished tickets (210 total, past the old 200 cliff).
+	activeIDs := map[string]bool{}
+	for i := range 3 {
+		created, _, err := f.store.CreateTicket(t.Context(), tickets.NewTicket{
+			Source: "api", Origin: "api", Repo: "owner/repo", Title: fmt.Sprintf("Active %d", i), Body: "Do it", Agent: "default", CreatedBy: "alice", SourceKey: fmt.Sprintf("api:a:%d", i),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		activeIDs[created.ID] = true
+	}
+	for i := range 207 {
+		created, _, err := f.store.CreateTicket(t.Context(), tickets.NewTicket{
+			Source: "api", Origin: "api", Repo: "owner/repo", Title: fmt.Sprintf("Done %d", i), Body: "Do it", Agent: "default", CreatedBy: "alice", SourceKey: fmt.Sprintf("api:d:%d", i),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := tickets.StateDone
+		if i%2 == 1 {
+			state = tickets.StateFailed
+		}
+		if err := f.store.Apply(t.Context(), created.ID, tickets.StateWorking, tickets.Transition{State: state}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	getPage := func(query string) tickets.TicketPage {
+		t.Helper()
+		response, body := f.call(t, http.MethodGet, "/api/v1/tickets"+query, f.token, nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d: %s", query, response.StatusCode, body)
+		}
+		var page tickets.TicketPage
+		if err := json.Unmarshal(body, &page); err != nil {
+			t.Fatal(err)
+		}
+		return page
+	}
+
+	// Default call preserves the 200-ticket default while reporting total and has_more.
+	def := getPage("")
+	if len(def.Tickets) != 200 || def.Total != 210 || def.Limit != 200 || def.Offset != 0 || !def.HasMore {
+		t.Fatalf("default = len=%d total=%d limit=%d offset=%d has_more=%v", len(def.Tickets), def.Total, def.Limit, def.Offset, def.HasMore)
+	}
+
+	// Paginating with limit=50 reaches items 201..210 cleanly.
+	page5 := getPage("?limit=50&offset=200")
+	if len(page5.Tickets) != 10 || page5.Total != 210 || page5.Limit != 50 || page5.Offset != 200 || page5.HasMore {
+		t.Fatalf("page5 = len=%d total=%d limit=%d offset=%d has_more=%v", len(page5.Tickets), page5.Total, page5.Limit, page5.Offset, page5.HasMore)
+	}
+	// Multi-state filter works via comma-separated states.
+	doneOnly := getPage("?state=done,pr_ready&limit=50&offset=0")
+	if doneOnly.Total != 104 || len(doneOnly.Tickets) != 50 || !doneOnly.HasMore {
+		t.Fatalf("doneOnly = len=%d total=%d has_more=%v", len(doneOnly.Tickets), doneOnly.Total, doneOnly.HasMore)
+	}
+
+	// Board view returns all 3 active tickets (even though older than 200 finished jobs)
+	// plus exactly 20 finished tickets, with done_total=207 and has_more=true.
+	board := getPage("?view=board")
+	if board.DoneTotal == nil || *board.DoneTotal != 207 || board.DoneLimit == nil || *board.DoneLimit != 20 || !board.HasMore {
+		t.Fatalf("board = done_total=%v done_limit=%v has_more=%v", board.DoneTotal, board.DoneLimit, board.HasMore)
+	}
+	if len(board.Tickets) != 23 || board.Total != 210 {
+		t.Fatalf("board len=%d total=%d, want 23 and 210", len(board.Tickets), board.Total)
+	}
+	seenActive := 0
+	for _, ticket := range board.Tickets {
+		if activeIDs[ticket.ID] {
+			seenActive++
+		}
+	}
+	if seenActive != 3 {
+		t.Fatalf("board active = %d, want 3", seenActive)
+	}
+
+	// Invalid pagination or view parameters return 400 Bad Request.
+	for _, bad := range []string{"?limit=0", "?limit=-5", "?limit=201", "?limit=abc", "?offset=-1", "?offset=abc", "?view=board&done_limit=0", "?view=board&done_limit=201", "?view=board&done_limit=x", "?sort=random", "?view=grid"} {
+		if response, body := f.call(t, http.MethodGet, "/api/v1/tickets"+bad, f.token, nil); response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d: %s", bad, response.StatusCode, body)
+		}
 	}
 }
 
