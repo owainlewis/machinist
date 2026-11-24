@@ -60,8 +60,7 @@ and merges it only when `github.auto_merge` is on, the latest review in `review.
 | `failed` | A step failed, the preset is gone, or the runner was lost three times |
 | `cancelled` | Someone cancelled it. Its pull request stays open |
 
-A run whose runner is lost is retried, at most three times in all. Each run has a deadline, the preset's `timeout` or `run_timeout`. A step that prints nothing for its `idle_timeout`, 15 minutes by default, is stopped, so a hung agent frees its slot. Provider spend
-limits cap total cost.
+A run whose runner is lost is retried, at most three times in all. Each run has a deadline, the preset's `timeout` or `run_timeout`. A step that prints nothing for its `idle_timeout`, 15 minutes by default, is stopped, so a hung agent frees its slot. Machinist records the tokens and cost agents report, but does not enforce a spend cap itself; use your model provider's spend limits to cap total cost.
 
 The full state table is in the
 [design](docs/designs/machinist-redesign.md#ticket-states), and every row has a test.

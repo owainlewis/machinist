@@ -19,7 +19,7 @@ func (Pi) Command(request Request) ([]string, string) {
 	if request.Model != "" {
 		args = append(args, "--model", request.Model)
 	}
-	return append(args, request.Prompt), ""
+	return append(args, "--", request.Prompt), ""
 }
 
 type piEvent struct {

@@ -51,7 +51,7 @@ func TestEachHarnessBuildsItsCommand(t *testing.T) {
 	}{
 		{Claude{}, []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions", "--append-system-prompt", "Rules.", "--model", "m"}, "Fix it."},
 		{Codex{}, []string{"codex", "exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--model", "m", "-"}, "Rules.\n\n# The task\n\nFix it."},
-		{Pi{}, []string{"pi", "--print", "--mode", "json", "--no-session", "--append-system-prompt", "Rules.", "--model", "m", "Fix it."}, ""},
+		{Pi{}, []string{"pi", "--print", "--mode", "json", "--no-session", "--append-system-prompt", "Rules.", "--model", "m", "--", "Fix it."}, ""},
 		{Agy{}, []string{"agy", "--print", "Rules.\n\n# The task\n\nFix it.", "--output-format", "stream-json", "--dangerously-skip-permissions", "--model", "m"}, ""},
 	} {
 		args, stdin := test.harness.Command(request)
@@ -64,6 +64,9 @@ func TestEachHarnessBuildsItsCommand(t *testing.T) {
 	}
 	if args, _ := (Claude{}).Command(Request{System: "Rules."}); slices.Contains(args, "--model") {
 		t.Fatalf("an empty model still passed --model: %q", args)
+	}
+	if args, stdin := (Pi{}).Command(Request{System: "Rules.", Prompt: "--help\n- list item"}); stdin != "" || len(args) < 2 || args[len(args)-2] != "--" || args[len(args)-1] != "--help\n- list item" {
+		t.Fatalf("pi flag-like prompt: args = %q, stdin = %q", args, stdin)
 	}
 }
 

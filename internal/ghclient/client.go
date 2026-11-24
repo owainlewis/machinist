@@ -35,6 +35,7 @@ const (
 var (
 	repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$`)
 	secretPattern     = regexp.MustCompile(`(?i)(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+)`)
+	httpStatusPattern = regexp.MustCompile(`(?i)\bhttp\s+([1-5][0-9]{2})\b`)
 )
 
 type ErrorKind string
@@ -142,13 +143,21 @@ func classify(ctx context.Context, stderr []byte, err error) ErrorKind {
 		return ErrorTimeout
 	}
 	message := strings.ToLower(string(stderr) + " " + err.Error())
-	if strings.Contains(message, "rate limit") || strings.Contains(message, "secondary rate") || strings.Contains(message, "abuse detection") {
+	if hasRateLimitMessage(message) {
 		return ErrorRateLimit
 	}
 	if strings.Contains(message, "authentication") || strings.Contains(message, "not logged in") || strings.Contains(message, "bad credentials") || strings.Contains(message, "http 401") {
 		return ErrorAuth
 	}
 	return ErrorCommand
+}
+
+func hasRateLimitMessage(message string) bool {
+	return strings.Contains(message, "rate limit") ||
+		strings.Contains(message, "secondary rate") ||
+		strings.Contains(message, "abuse detection") ||
+		strings.Contains(message, "too many requests") ||
+		strings.Contains(message, "http 429")
 }
 
 func sanitize(output []byte) string {
@@ -177,6 +186,58 @@ func validRepository(repository string) error {
 func IsNotFound(err error) bool {
 	var failure *Error
 	return errors.As(err, &failure) && failure.Kind == ErrorCommand && strings.Contains(strings.ToLower(failure.Detail), "http 404")
+}
+
+// HTTPStatus extracts an HTTP status code reported by gh (such as "HTTP 404"),
+// or 0 when the error does not carry one.
+func HTTPStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	text := err.Error()
+	var failure *Error
+	if errors.As(err, &failure) && failure.Detail != "" {
+		text = failure.Detail
+	}
+	match := httpStatusPattern.FindStringSubmatch(text)
+	if len(match) != 2 {
+		return 0
+	}
+	code, convErr := strconv.Atoi(match[1])
+	if convErr != nil {
+		return 0
+	}
+	return code
+}
+
+// IsRateLimit reports whether err indicates a GitHub rate limit.
+func IsRateLimit(err error) bool {
+	if err == nil {
+		return false
+	}
+	var failure *Error
+	if errors.As(err, &failure) && failure.Kind == ErrorRateLimit {
+		return true
+	}
+	return hasRateLimitMessage(strings.ToLower(err.Error()))
+}
+
+// IsPermanentClientError reports whether err is a permanent GitHub 4xx client
+// error that will not succeed on retry. Rate limits (429 and 403 rate limits),
+// timeouts (408) and authentication failures (401) are treated as retryable.
+func IsPermanentClientError(err error) bool {
+	if err == nil || IsRateLimit(err) {
+		return false
+	}
+	var failure *Error
+	if errors.As(err, &failure) && failure.Kind != ErrorCommand {
+		return false
+	}
+	status := HTTPStatus(err)
+	return status >= 400 && status < 500 &&
+		status != http.StatusUnauthorized &&
+		status != http.StatusRequestTimeout &&
+		status != http.StatusTooManyRequests
 }
 
 type Issue struct {
