@@ -562,11 +562,12 @@ func insertEntry(ctx context.Context, q querier, ticketID, kind, author, body st
 	return err
 }
 
-// insertMessage adds an outbound message. With no issue or PR there is nowhere
-// to post it, so it is marked handled and shows only in Machinist.
-func insertMessage(ctx context.Context, q querier, ticket Ticket, prNumber int, body string, sourceKey any, now time.Time) error {
+// insertMessage adds an outbound message. Only jobs that came from an issue
+// post comments back to GitHub; for all other jobs, the message is marked
+// handled and shows only in Machinist.
+func insertMessage(ctx context.Context, q querier, ticket Ticket, body string, sourceKey any, now time.Time) error {
 	var posted any
-	if ticket.IssueNumber == 0 && ticket.PRNumber == 0 && prNumber == 0 {
+	if ticket.IssueNumber == 0 {
 		posted = stamp(now)
 	}
 	_, err := q.ExecContext(ctx, `INSERT INTO ticket_entries(ticket_id,kind,author,body,source_key,created_at,posted_at) VALUES(?,?,?,?,?,?,?)`, ticket.ID, EntryMessage, authorMachinist, body, sourceKey, stamp(now), posted)
@@ -1160,12 +1161,12 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 	}
 	// The PR link goes first, so the result stays the newest thing Machinist said.
 	if transition.FirstPR != nil && transition.FirstPR.Link != "" {
-		if err := insertMessage(ctx, q, ticket, transition.PRNumber, transition.FirstPR.Link, nil, now); err != nil {
+		if err := insertMessage(ctx, q, ticket, transition.FirstPR.Link, nil, now); err != nil {
 			return err
 		}
 	}
 	if transition.Message != "" {
-		if err := insertMessage(ctx, q, ticket, transition.PRNumber, transition.Message, nil, now); err != nil {
+		if err := insertMessage(ctx, q, ticket, transition.Message, nil, now); err != nil {
 			return err
 		}
 	}
@@ -1567,10 +1568,10 @@ type Outbound struct {
 	Body    string
 }
 
-// UnpostedMessages lists messages to post, oldest first, on the issue or
-// otherwise the PR.
+// UnpostedMessages lists messages to post on GitHub, oldest first. Only jobs
+// that came from an issue post comments to GitHub.
 func (s *Store) UnpostedMessages(ctx context.Context) ([]Outbound, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT e.id,t.repo,COALESCE(t.issue_number,t.pr_number),e.body FROM ticket_entries e JOIN tickets t ON t.id=e.ticket_id WHERE e.kind=? AND e.posted_at IS NULL AND COALESCE(t.issue_number,t.pr_number) IS NOT NULL ORDER BY e.id`, EntryMessage)
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id,t.repo,t.issue_number,e.body FROM ticket_entries e JOIN tickets t ON t.id=e.ticket_id WHERE e.kind=? AND e.posted_at IS NULL AND t.issue_number IS NOT NULL ORDER BY e.id`, EntryMessage)
 	if err != nil {
 		return nil, err
 	}

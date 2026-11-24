@@ -142,7 +142,7 @@ func (s *Store) SetShipping(ctx context.Context, listed Ticket, shipped Shipped)
 		if err != nil || shipped.Message == "" {
 			return err
 		}
-		return insertMessage(ctx, tx, ticket, ticket.PRNumber, shipped.Message, nil, now)
+		return insertMessage(ctx, tx, ticket, shipped.Message, nil, now)
 	})
 }
 
