@@ -1,5 +1,5 @@
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Ban, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { harnessList, waitingForRunner } from "./agents.js";
@@ -197,6 +197,28 @@ function RunAgain({ ticketID, onDone }) {
   </div>;
 }
 
+// CancelJob stops an active (queued or running) job.
+function CancelJob({ ticketID, onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function cancel() {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/v1/tickets/${encodeURIComponent(ticketID)}/cancel`, { method: "POST" });
+      await onDone?.();
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div className="cancel-job">
+    <Button variant="outline" size="sm" className="text-danger" onClick={cancel} disabled={busy}><Ban className="size-3.5" aria-hidden="true" />{busy ? "Cancelling" : "Cancel"}</Button>
+    {error && <p className="form-error" role="alert">{error}</p>}
+  </div>;
+}
+
 export function JobView({ detail, onChange }) {
   const { ticket, entries = [], runs = [], steps: presetSteps = [], waiting_for: waitingFor = [] } = detail;
   const state = jobState(ticket, runs.some(run => run.status === "running"));
@@ -212,7 +234,7 @@ export function JobView({ detail, onChange }) {
       <h1>{ticket.title || ticket.id}</h1>
       <div className="job-actions">
         <State value={state} />
-        {isFinished(state) && <RunAgain ticketID={ticket.id} onDone={onChange} />}
+        {isFinished(state) ? <RunAgain ticketID={ticket.id} onDone={onChange} /> : <CancelJob ticketID={ticket.id} onDone={onChange} />}
       </div>
     </header>
     <dl className="job-facts">
