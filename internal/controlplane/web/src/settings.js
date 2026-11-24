@@ -51,6 +51,20 @@ export function tokenLine(tokens = []) {
   return revoked ? `${words}, ${revoked} revoked.` : `${words}.`;
 }
 
+// tokenPrefixLabel formats a token's stored prefix for display, or says when a
+// legacy token has none.
+export function tokenPrefixLabel(prefix) {
+  return prefix ? `${prefix}…` : "No prefix";
+}
+
+// validateTokenName trims a token name and reports any problem before sending.
+export function validateTokenName(value = "") {
+  const name = value.trim();
+  if (!name) return { name: "", error: "" };
+  if (name.includes("/")) return { name, error: "Token names cannot contain /." };
+  return { name, error: "" };
+}
+
 const dateFormat = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 
 // dayLabel is a date a person reads, such as "Nov 20, 2026".

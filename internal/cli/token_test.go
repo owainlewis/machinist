@@ -3,6 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/tickets"
+	_ "modernc.org/sqlite"
 )
 
 func runToken(t *testing.T, path string, args ...string) (int, string, string) {
@@ -23,7 +27,7 @@ func TestTokenLifecycle(t *testing.T) {
 	path := writeConfigFile(t, t.TempDir(), "config.yaml", "server:\n  database: tickets.db\n\ngithub:\n  handle: bot\n")
 	code, stdout, stderr := runToken(t, path, "create", "alice")
 	token := strings.TrimSpace(stdout)
-	if code != 0 || len(token) != 64 {
+	if code != 0 || !strings.HasPrefix(token, tickets.TokenPrefix) || len(token) != len(tickets.TokenPrefix)+64 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	machinistConfig, err := config.LoadConfig(path)
@@ -50,7 +54,8 @@ func TestTokenLifecycle(t *testing.T) {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 	code, stdout, _ = runToken(t, path, "list")
-	if code != 0 || !strings.Contains(stdout, "alice") || strings.Contains(stdout, token) {
+	wantPrefix := token[:len(tickets.TokenPrefix)+4] + "…"
+	if code != 0 || !strings.Contains(stdout, "alice") || !strings.Contains(stdout, "PREFIX") || !strings.Contains(stdout, wantPrefix) || strings.Contains(stdout, token) {
 		t.Fatalf("code = %d, stdout = %q", code, stdout)
 	}
 	if code, stdout, _ := runToken(t, path, "revoke", "alice"); code != 0 || !strings.Contains(stdout, "revoked alice") {
@@ -64,6 +69,35 @@ func TestTokenLifecycle(t *testing.T) {
 	}
 	if code, stdout, _ := runToken(t, path, "create", "alice"); code != 0 || strings.TrimSpace(stdout) == token {
 		t.Fatalf("code = %d, stdout = %q", code, stdout)
+	}
+}
+
+func TestTokenListShowsNoPrefixForLegacyTokens(t *testing.T) {
+	path := writeConfigFile(t, t.TempDir(), "config.yaml", "server:\n  database: tickets.db\n\ngithub:\n  handle: bot\n")
+	machinistConfig, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := tickets.Open(machinistConfig.Server.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	legacy := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	sum := sha256.Sum256([]byte(legacy))
+	db, err := sql.Open("sqlite", machinistConfig.Server.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO tokens(id,name,token_hash,created_at,role) VALUES('legacy1','old-token',?,'2026-10-01T12:00:00.000000000Z','')`, hex.EncodeToString(sum[:])); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runToken(t, path, "list")
+	if code != 0 || !regexp.MustCompile(`old-token\s+any\s+No prefix`).MatchString(stdout) {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 }
 
@@ -89,7 +123,7 @@ func TestTokenCommandsRunWithoutLinearCredentials(t *testing.T) {
 	t.Setenv(config.LinearTokenEnv, "")
 	t.Setenv(config.LinearClientIDEnv, "")
 	t.Setenv(config.LinearClientSecretEnv, "")
-	if code, stdout, stderr := runToken(t, path, "create", "owain"); code != 0 || len(strings.TrimSpace(stdout)) != 64 {
+	if code, stdout, stderr := runToken(t, path, "create", "owain"); code != 0 || !strings.HasPrefix(strings.TrimSpace(stdout), tickets.TokenPrefix) || len(strings.TrimSpace(stdout)) != len(tickets.TokenPrefix)+64 {
 		t.Fatalf("create: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if code, stdout, stderr := runToken(t, path, "list"); code != 0 || !strings.Contains(stdout, "owain") {

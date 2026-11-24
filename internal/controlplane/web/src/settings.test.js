@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkLink, dayLabel, factoryUpdateLine, githubLine, githubWarnings, pollLabel, roleLabel, settingsPages, tokenLine } from "./settings.js";
+import { checkLink, dayLabel, factoryUpdateLine, githubLine, githubWarnings, pollLabel, roleLabel, settingsPages, tokenLine, tokenPrefixLabel, validateTokenName } from "./settings.js";
 
 test("the side nav lists one page per topic, overview first", () => {
   assert.deepEqual(settingsPages.map(([page]) => page), ["overview", "projects", "github", "linear", "tokens", "presets"]);
@@ -28,6 +28,12 @@ test("roles and token counts read as words", () => {
   assert.equal(roleLabel("all")[0], "Person and runner");
   assert.equal(tokenLine([{}, {}]), "2 active tokens.");
   assert.equal(tokenLine([{}, { revoked_at: "2026-11-20T00:00:00Z" }]), "1 active token, 1 revoked.");
+  assert.equal(tokenPrefixLabel("mch_ab12"), "mch_ab12…");
+  assert.equal(tokenPrefixLabel(""), "No prefix");
+  assert.equal(tokenPrefixLabel(undefined), "No prefix");
+  assert.deepEqual(validateTokenName("  owain  "), { name: "owain", error: "" });
+  assert.deepEqual(validateTokenName("   "), { name: "", error: "" });
+  assert.deepEqual(validateTokenName("a/b"), { name: "a/b", error: "Token names cannot contain /." });
   assert.equal(dayLabel("2026-11-20T12:00:00Z"), "Nov 20, 2026");
   assert.equal(dayLabel("nope"), "");
 });

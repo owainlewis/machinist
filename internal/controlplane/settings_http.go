@@ -1,11 +1,13 @@
 package controlplane
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,8 +17,8 @@ import (
 
 // The Settings pages show how Machinist is configured. config.yaml and the
 // factory files stay the source of truth, so every route here reads, except
-// revoking a token. None of them returns a secret: no token, key or
-// environment value.
+// managing tokens. A token's plaintext is only returned once, when it is
+// created or regenerated; listing never returns a secret.
 
 // GitHubSettings is the GitHub page: who Machinist acts as and what each
 // repository lets it do.
@@ -166,11 +168,21 @@ func (s *Server) linearSettings(w http.ResponseWriter, _ *http.Request, _ string
 type TokenView struct {
 	Name       string     `json:"name"`
 	Role       string     `json:"role"`
+	Prefix     string     `json:"prefix,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 	// Current is true for the token that made this request.
 	Current bool `json:"current,omitempty"`
+}
+
+// CreatedToken is returned once when a token is created or regenerated.
+type CreatedToken struct {
+	Token  string      `json:"token"`
+	Name   string      `json:"name"`
+	Role   string      `json:"role"`
+	Prefix string      `json:"prefix"`
+	Tokens []TokenView `json:"tokens"`
 }
 
 // roleName is how a page names a role. A token from before roles can act as
@@ -182,24 +194,126 @@ func roleName(role string) string {
 	return role
 }
 
-func (s *Server) listTokens(w http.ResponseWriter, r *http.Request, tokenName string) {
-	tokens, err := s.store.ListTokens(r.Context())
+func (s *Server) tokenViews(ctx context.Context, tokenName string) ([]TokenView, error) {
+	tokens, err := s.store.ListTokens(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+		return nil, err
 	}
 	views := make([]TokenView, 0, len(tokens))
 	for _, token := range tokens {
 		views = append(views, TokenView{
 			Name:       token.Name,
 			Role:       roleName(token.Role),
+			Prefix:     token.Prefix,
 			CreatedAt:  token.CreatedAt,
 			LastUsedAt: token.LastUsedAt,
 			RevokedAt:  token.RevokedAt,
 			Current:    token.RevokedAt == nil && token.Name == tokenName,
 		})
 	}
+	return views, nil
+}
+
+func (s *Server) listTokens(w http.ResponseWriter, r *http.Request, tokenName string) {
+	views, err := s.tokenViews(r.Context(), tokenName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": views})
+}
+
+func (s *Server) createToken(w http.ResponseWriter, r *http.Request, tokenName string) {
+	var request struct {
+		Name string `json:"name"`
+		Role string `json:"role"`
+	}
+	if !decodeJSON(w, r, maxRequestBytes, &request) {
+		return
+	}
+	name := strings.TrimSpace(request.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, errors.New("token name is required"))
+		return
+	}
+	if strings.Contains(name, "/") {
+		writeError(w, http.StatusBadRequest, errors.New("token name cannot contain /"))
+		return
+	}
+	if request.Role != tickets.RoleOperator && request.Role != tickets.RoleRunner {
+		writeError(w, http.StatusBadRequest, errors.New("token role must be operator or runner"))
+		return
+	}
+	token, err := s.store.CreateToken(r.Context(), name, request.Role)
+	if errors.Is(err, tickets.ErrTokenExists) {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	fmt.Fprintf(s.log, "machinist: %s created %s token %q from the web app\n", tokenName, request.Role, name)
+	views, err := s.tokenViews(r.Context(), tokenName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	var prefix string
+	for _, view := range views {
+		if view.Name == name && view.RevokedAt == nil {
+			prefix = view.Prefix
+			break
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusCreated, CreatedToken{
+		Token:  token,
+		Name:   name,
+		Role:   roleName(request.Role),
+		Prefix: prefix,
+		Tokens: views,
+	})
+}
+
+func (s *Server) regenerateToken(w http.ResponseWriter, r *http.Request, tokenName string) {
+	name := r.PathValue("name")
+	token, err := s.store.RegenerateToken(r.Context(), name)
+	if errors.Is(err, tickets.ErrNotFound) {
+		writeError(w, http.StatusNotFound, fmt.Errorf("no active token is named %q", name))
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	fmt.Fprintf(s.log, "machinist: %s regenerated token %q from the web app\n", tokenName, name)
+	if name == tokenName {
+		if _, err := r.Cookie(sessionCookie); err == nil && !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			s.setSessionCookie(w, token, sessionMaxAge)
+		}
+	}
+	views, err := s.tokenViews(r.Context(), tokenName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	var role, prefix string
+	for _, view := range views {
+		if view.Name == name && view.RevokedAt == nil {
+			role = view.Role
+			prefix = view.Prefix
+			break
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, CreatedToken{
+		Token:  token,
+		Name:   name,
+		Role:   role,
+		Prefix: prefix,
+		Tokens: views,
+	})
 }
 
 func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request, tokenName string) {
