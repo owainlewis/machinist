@@ -330,8 +330,15 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 			merged.timeout = current.timeout
 		}
 		merged.harness, merged.model = harness.MergeOverride(base.harness, base.model, current.harness, current.model)
+		// Switching the preset harness invalidates inherited model-only step
+		// overrides so a model from the previous harness is not passed to the
+		// new one.
+		harnessChanged := current.harness != "" && current.harness != base.harness
 		stepIndex := make(map[string]int, len(merged.steps))
 		for i, step := range merged.steps {
+			if harnessChanged && step.harness == "" {
+				merged.steps[i].model = ""
+			}
 			stepIndex[step.name] = i
 		}
 		for _, override := range current.steps {

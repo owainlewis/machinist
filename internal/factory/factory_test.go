@@ -389,3 +389,96 @@ model: gemini-4-neon-high
 		t.Fatalf("child-pinned review should keep base explicit step override: %+v", s)
 	}
 }
+
+func TestPresetExtendsHarnessSwitchClearsInheritedModelOnlyStepOverride(t *testing.T) {
+	files := map[string]string{
+		"agents/implement.md": "---\nharness: claude\n---\nImplement.\n",
+		"scripts/review.sh":   "#!/bin/sh\nmachinist agent review\n",
+		"scripts/publish.sh":  "#!/bin/sh\nmachinist agent publish\n",
+		"presets/base.yaml": `description: Base with preset harness and model-only step override.
+harness: claude
+model: sonnet
+steps:
+  - name: implement
+    agent: implement
+  - name: review
+    run: review.sh
+    model: opus
+  - name: publish
+    run: publish.sh
+    harness: codex
+    model: gpt-5
+`,
+		"presets/switch-with-model.yaml": `description: Switch harness with preset model.
+extends: base
+harness: agy
+model: gemini-4-neon-high
+`,
+		"presets/switch-default-model.yaml": `description: Switch harness without preset model.
+extends: base
+harness: agy
+`,
+		"presets/switch-step-override.yaml": `description: Switch harness and set new step model.
+extends: base
+harness: agy
+model: gemini-4-neon-high
+steps:
+  - name: review
+    model: gemini-4-neon-low
+`,
+		"presets/same-harness.yaml": `description: Change preset model without switching harness.
+extends: base
+model: haiku
+`,
+		"presets/no-harness-base.yaml": `description: Base without preset harness but with model-only step override.
+steps:
+  - name: review
+    run: review.sh
+    model: opus
+`,
+		"presets/no-harness-child.yaml": `description: Child sets harness over base without preset harness.
+extends: no-harness-base
+harness: agy
+model: gemini-4-neon-high
+`,
+	}
+
+	loaded, err := Load(writeFiles(t, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	switchWithModel := loaded.Presets["switch-with-model"]
+	if s := switchWithModel.Steps[0]; s.Name != "implement" || s.Harness != "agy" || s.Model != "gemini-4-neon-high" {
+		t.Fatalf("switch-with-model implement = %+v", s)
+	}
+	if s := switchWithModel.Steps[1]; s.Name != "review" || s.Harness != "agy" || s.Model != "gemini-4-neon-high" {
+		t.Fatalf("switch-with-model review should drop inherited model-only override: %+v", s)
+	}
+	if s := switchWithModel.Steps[2]; s.Name != "publish" || s.Harness != "codex" || s.Model != "gpt-5" {
+		t.Fatalf("switch-with-model publish should keep explicit harness+model override: %+v", s)
+	}
+
+	switchDefault := loaded.Presets["switch-default-model"]
+	if s := switchDefault.Steps[1]; s.Name != "review" || s.Harness != "agy" || s.Model != "" {
+		t.Fatalf("switch-default-model review should clear inherited model: %+v", s)
+	}
+
+	switchStepOverride := loaded.Presets["switch-step-override"]
+	if s := switchStepOverride.Steps[1]; s.Name != "review" || s.Harness != "agy" || s.Model != "gemini-4-neon-low" {
+		t.Fatalf("switch-step-override review should apply child step model: %+v", s)
+	}
+
+	sameHarness := loaded.Presets["same-harness"]
+	if s := sameHarness.Steps[0]; s.Name != "implement" || s.Harness != "claude" || s.Model != "haiku" {
+		t.Fatalf("same-harness implement = %+v", s)
+	}
+	if s := sameHarness.Steps[1]; s.Name != "review" || s.Harness != "claude" || s.Model != "opus" {
+		t.Fatalf("same-harness review should keep model-only step override: %+v", s)
+	}
+
+	noHarnessChild := loaded.Presets["no-harness-child"]
+	if s := noHarnessChild.Steps[0]; s.Name != "review" || s.Harness != "agy" || s.Model != "gemini-4-neon-high" {
+		t.Fatalf("no-harness-child review should drop inherited model-only override: %+v", s)
+	}
+}
