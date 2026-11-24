@@ -290,7 +290,7 @@ func (s *Server) regenerateToken(w http.ResponseWriter, r *http.Request, tokenNa
 	fmt.Fprintf(s.log, "machinist: %s regenerated token %q from the web app\n", tokenName, name)
 	if name == tokenName {
 		if _, err := r.Cookie(sessionCookie); err == nil && !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			s.setSessionCookie(w, token, sessionMaxAge)
+			s.setSessionCookie(w, r, token, sessionMaxAge)
 		}
 	}
 	views, err := s.tokenViews(r.Context(), tokenName)
@@ -330,7 +330,7 @@ func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request, tokenName s
 	fmt.Fprintf(s.log, "machinist: %s revoked token %q from the web app\n", tokenName, name)
 	if name == tokenName {
 		// The token that asked is gone, so its sign-in ends here.
-		s.setSessionCookie(w, "", -time.Second)
+		s.setSessionCookie(w, r, "", -time.Second)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

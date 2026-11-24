@@ -1,7 +1,9 @@
 package controlplane
 
 import (
+	"bytes"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -86,6 +88,47 @@ func TestSignInCookieIsSecureUnderTLS(t *testing.T) {
 	response, _ := f.call(t, http.MethodPost, "/api/v1/session", "", map[string]string{"token": f.token})
 	if cookie := findCookie(response); cookie == nil || !cookie.Secure {
 		t.Fatalf("cookie = %+v", cookie)
+	}
+}
+
+func TestSessionCookieIsSecureWhenRequestUsesTLSWithoutConfigTLSCert(t *testing.T) {
+	f := newFixture(t)
+	tlsServer := httptest.NewTLSServer(f.server.Handler())
+	t.Cleanup(tlsServer.Close)
+
+	req, err := http.NewRequest(http.MethodPost, tlsServer.URL+"/api/v1/session", bytes.NewBufferString(`{"token":"`+f.token+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := tlsServer.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("sign-in status = %d", response.StatusCode)
+	}
+	cookie := findCookie(response)
+	if cookie == nil || !cookie.Secure {
+		t.Fatalf("sign-in cookie over TLS = %+v, want Secure=true", cookie)
+	}
+
+	signOutReq, err := http.NewRequest(http.MethodDelete, tlsServer.URL+"/api/v1/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signOutReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.token})
+	signOutResp, err := tlsServer.Client().Do(signOutReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signOutResp.Body.Close()
+	if signOutResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("sign-out status = %d", signOutResp.StatusCode)
+	}
+	cleared := findCookie(signOutResp)
+	if cleared == nil || !cleared.Secure || cleared.MaxAge >= 0 {
+		t.Fatalf("sign-out cookie over TLS = %+v, want Secure=true and cleared", cleared)
 	}
 }
 

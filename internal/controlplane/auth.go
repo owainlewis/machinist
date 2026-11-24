@@ -64,7 +64,7 @@ func (s *Server) requireRole(want string, next authenticatedHandler) http.Handle
 }
 
 // The cookie holds the token itself, so revoking the token ends the sign-in.
-func (s *Server) setSessionCookie(w http.ResponseWriter, value string, maxAge time.Duration) {
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, value string, maxAge time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    value,
@@ -72,7 +72,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, value string, maxAge ti
 		MaxAge:   int(maxAge.Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   s.config.Server.TLSCert != "",
+		Secure:   s.config.Server.TLSCert != "" || (r != nil && r.TLS != nil),
 	})
 }
 
@@ -96,11 +96,11 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.setSessionCookie(w, request.Token, sessionMaxAge)
+	s.setSessionCookie(w, r, request.Token, sessionMaxAge)
 	writeJSON(w, http.StatusOK, map[string]string{"name": name})
 }
 
-func (s *Server) signOut(w http.ResponseWriter, _ *http.Request, _ string) {
-	s.setSessionCookie(w, "", -time.Second)
+func (s *Server) signOut(w http.ResponseWriter, r *http.Request, _ string) {
+	s.setSessionCookie(w, r, "", -time.Second)
 	w.WriteHeader(http.StatusNoContent)
 }
