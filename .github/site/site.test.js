@@ -96,12 +96,13 @@ test('setup snippets match the quick start in the README', async () => {
   const readme = await read('../../README.md');
   const copied = [...source.matchAll(/data-copy="([^"]+)"/g)].map(([, value]) => value.replaceAll('&amp;', '&').replaceAll('&quot;', '"'));
   assert.deepEqual(copied, [
-    'go build -o ./bin/machinist ./cmd/machinist && export PATH="$PWD/bin:$PATH"',
+    'curl -fsSL https://machinist.sh/install.sh | sh',
     'machinist init',
     'gh api user --jq .login',
     'GH_TOKEN=$(gh auth token) machinist start',
   ]);
-  // Each part of each command is a line of the README's quick start, so the bare machinist command is on PATH.
+  assert.doesNotMatch(source, /\bGo\b|\bgo build\b/);
+  // Each part of each command is in the README's install or quick start section.
   for (const part of copied.flatMap((command) => command.split(' && '))) {
     assert.ok(readme.includes(part), `README has ${part}`);
   }
