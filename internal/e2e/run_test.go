@@ -133,6 +133,14 @@ func fakeLaterSteps(output string) string {
   gh pr view "$MACHINIST_BRANCH" > /dev/null
   echo "Opened: $(gh pr view "$MACHINIST_BRANCH")" > "$MACHINIST_DIR/result.md"
   exit 0;;
+*"Your step is to judge whether this change is safe to auto-merge"*)
+  cat > /dev/null
+  if [ -f ` + output + `/gate ]; then
+    cp ` + output + `/gate "$MACHINIST_DIR/merge-gate.json"
+  else
+    echo '{"decision":"approve","risk":"low","reason":"Low-risk change covered by tests."}' > "$MACHINIST_DIR/merge-gate.json"
+  fi
+  exit 0;;
 esac
 `
 }
@@ -401,7 +409,7 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	if run.Status != tickets.RunSucceeded || run.Runner != "runner-1" || run.Harness != protocol.StepsHarness {
 		t.Fatalf("run = %+v", run)
 	}
-	if got := stepStates(run); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=succeeded" {
+	if got := stepStates(run); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge-gate=succeeded merge=succeeded" {
 		t.Fatalf("steps = %s", got)
 	}
 	// Each agent step records the agent, harness and model that ran it.
@@ -550,7 +558,7 @@ func TestAFailedCheckFailsTheJob(t *testing.T) {
 		t.Fatalf("merged = %v", merged)
 	}
 	runs, err := s.store.Runs(t.Context(), ticket.ID)
-	if err != nil || len(runs) != 1 || stepStates(runs[0]) != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=succeeded" {
+	if err != nil || len(runs) != 1 || stepStates(runs[0]) != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge-gate=succeeded merge=succeeded" {
 		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
 	if message, err := s.store.LatestMessage(t.Context(), ticket.ID); err != nil || message != `Left open: check "test" failed: https://ci.example.test/2. https://github.com/owner/repo/pull/7` {
@@ -613,7 +621,7 @@ func TestARejectedPushFailsTheJob(t *testing.T) {
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
-	if got := stepStates(runs[0]); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=failed merge="+protocol.StageSkipped {
+	if got := stepStates(runs[0]); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=failed merge-gate="+protocol.StageSkipped+" merge="+protocol.StageSkipped {
 		t.Fatalf("steps = %s", got)
 	}
 	entries, err := s.store.Entries(t.Context(), ticket.ID)
@@ -659,7 +667,7 @@ func TestAJobThatNeedsNoChangeIsDoneWithoutAPullRequest(t *testing.T) {
 	if err != nil || len(runs) != 1 || runs[0].Report == nil || runs[0].Report.Summary != "The work needed no change." {
 		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
-	if got := stepStates(runs[0]); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge=succeeded" {
+	if got := stepStates(runs[0]); got != "checkout=succeeded implement=succeeded review=succeeded revise=succeeded publish=succeeded merge-gate=succeeded merge=succeeded" {
 		t.Fatalf("steps = %s", got)
 	}
 	if view := s.job(t, ticket.ID); view.PRNumber != 0 {
@@ -667,6 +675,28 @@ func TestAJobThatNeedsNoChangeIsDoneWithoutAPullRequest(t *testing.T) {
 	}
 	if branches := git(t, s.remote, "branch", "--list", "machinist/*"); branches != "" {
 		t.Fatalf("pushed %q", branches)
+	}
+}
+
+// A pull request rejected by the merge gate gets a judgment comment on GitHub
+// and stays open for human review even when auto-merge is on and code review accepted.
+func TestMergeGateCommentsAndHoldsHighRiskPullRequest(t *testing.T) {
+	s := startWith(t, options{claude: claudeScript})
+	if err := os.WriteFile(filepath.Join(s.output, "gate"), []byte(`{"decision":"human_review","risk":"high","reason":"Adds a destructive SQL database migration."}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ticket := s.createTicket(t)
+	s.waitForState(t, ticket.ID, tickets.StatePRReady)
+	if merged := s.github.Merged(); len(merged) != 0 {
+		t.Fatalf("high-risk PR must not auto-merge, merged = %v", merged)
+	}
+	comments := strings.Join(s.github.PRComments(), "\n")
+	if !strings.Contains(comments, "Human review required") || !strings.Contains(comments, "destructive SQL database migration") {
+		t.Fatalf("expected merge gate judgment comment on PR, got %q", comments)
+	}
+	runs, err := s.store.Runs(t.Context(), ticket.ID)
+	if err != nil || len(runs) != 1 || runs[0].Report == nil || !strings.Contains(runs[0].Report.Summary, "merge gate requires human review (high risk)") {
+		t.Fatalf("runs = %+v, err = %v", runs, err)
 	}
 }
 

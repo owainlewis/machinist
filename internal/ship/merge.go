@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/owainlewis/machinist/internal/protocol"
@@ -29,8 +30,12 @@ type MergeOptions struct {
 	// WithoutReview merges with no review.json, for presets with no review
 	// step. Otherwise a missing review leaves the pull request open.
 	WithoutReview bool
-	GH            GH
-	Log           io.Writer
+	// RequireGate requires a valid merge-gate.json before auto-merging. When
+	// false, a missing merge-gate.json is ignored for presets without a gate,
+	// while a present merge-gate.json is always validated and enforced.
+	RequireGate bool
+	GH          GH
+	Log         io.Writer
 }
 
 // Merge hands the job's pull request to the control plane, which waits for its
@@ -62,7 +67,7 @@ func Merge(ctx context.Context, options MergeOptions) error {
 		fmt.Fprintf(options.Log, "Pull request #%d was closed without merging\n", pr.Number)
 		return writeResult(options.Control, "Closed without merging: "+pr.URL)
 	}
-	request := shipRequest(options)
+	request, gate, hasGate := shipRequest(options)
 	request.Head = pr.HeadRefOid
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -71,7 +76,14 @@ func Merge(ctx context.Context, options MergeOptions) error {
 	if err := os.WriteFile(filepath.Join(options.Control, protocol.ShipFile), body, 0o600); err != nil {
 		return err
 	}
-	if reason := Blocker(options.AutoMerge, request); reason != "" {
+	reason := Blocker(options.AutoMerge, request)
+	if hasGate {
+		comment := FormatGateComment(gate, pr.HeadRefOid, reason == "", reason)
+		if _, stderr, err := options.GH(ctx, "pr", "comment", strconv.Itoa(pr.Number), "--body", comment); err != nil {
+			fmt.Fprintf(options.Log, "Could not post merge gate comment on pull request #%d: %s\n", pr.Number, firstLine(stderr, err))
+		}
+	}
+	if reason != "" {
 		fmt.Fprintf(options.Log, "Pull request #%d stays open: %s. Machinist still watches its checks.\n", pr.Number, reason)
 		return writeResult(options.Control, fmt.Sprintf("Left open: %s. %s", strings.TrimRight(reason, ". "), pr.URL))
 	}
@@ -79,9 +91,9 @@ func Merge(ctx context.Context, options MergeOptions) error {
 	return writeResult(options.Control, "Merges once its checks pass: "+pr.URL)
 }
 
-// shipRequest is what the step found: the review's verdict, or why the pull
-// request must stay open.
-func shipRequest(options MergeOptions) protocol.Ship {
+// shipRequest is what the step found: the review's verdict, the merge gate's
+// judgment when present, or why the pull request must stay open.
+func shipRequest(options MergeOptions) (protocol.Ship, Gate, bool) {
 	request := protocol.Ship{WithoutReview: options.WithoutReview}
 	if !options.AutoMerge {
 		request.Hold = "auto-merge is off"
@@ -99,7 +111,21 @@ func shipRequest(options MergeOptions) protocol.Ship {
 			request.Hold = mergeBlocker(review)
 		}
 	}
-	return request
+	gate, gateErr := ReadGate(options.Control)
+	switch {
+	case errors.Is(gateErr, ErrNoGate) && !options.RequireGate:
+		return request, Gate{}, false
+	case gateErr != nil:
+		if request.Hold == "" {
+			request.Hold = gateErr.Error()
+		}
+		return request, Gate{}, false
+	default:
+		if blocker := gateBlocker(gate); blocker != "" && request.Hold == "" {
+			request.Hold = blocker
+		}
+		return request, gate, true
+	}
 }
 
 // Blocker says why a pull request must stay open, or "" when it may merge
