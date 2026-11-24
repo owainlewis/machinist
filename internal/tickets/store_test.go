@@ -567,6 +567,225 @@ func TestListTicketsPutsANewerFinishedTicketFirst(t *testing.T) {
 	}
 }
 
+func TestListTicketsPagePaginatesBeyondDefaultLimit(t *testing.T) {
+	store := openStore(t)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	const totalTickets = maxListedTickets + 15
+	createdIDs := make([]string, 0, totalTickets)
+	for index := range totalTickets {
+		at := start.Add(time.Duration(index) * time.Second)
+		store.now = func() time.Time { return at }
+		ticket := createTicket(t, store, fmt.Sprintf("api:%d", index))
+		createdIDs = append(createdIDs, ticket.ID)
+	}
+
+	// Default call stays backward compatible at 200 tickets while reporting total and has_more.
+	firstDefault, err := store.ListTicketsPage(t.Context(), TicketFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstDefault.Tickets) != DefaultTicketLimit || firstDefault.Total != totalTickets || firstDefault.Limit != DefaultTicketLimit || firstDefault.Offset != 0 || !firstDefault.HasMore {
+		t.Fatalf("default page = len=%d total=%d limit=%d offset=%d has_more=%v", len(firstDefault.Tickets), firstDefault.Total, firstDefault.Limit, firstDefault.Offset, firstDefault.HasMore)
+	}
+
+	// Walk every ticket 50 at a time and verify we reach past the 200-ticket mark cleanly.
+	seen := make([]string, 0, totalTickets)
+	for offset := 0; offset < totalTickets; offset += 50 {
+		page, err := store.ListTicketsPage(t.Context(), TicketFilter{Limit: 50, Offset: offset})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantHasMore := offset+len(page.Tickets) < totalTickets
+		if page.Total != totalTickets || page.Offset != offset || page.Limit != 50 || page.HasMore != wantHasMore {
+			t.Fatalf("offset %d: total=%d limit=%d offset=%d has_more=%v (want %v)", offset, page.Total, page.Limit, page.Offset, page.HasMore, wantHasMore)
+		}
+		for _, ticket := range page.Tickets {
+			seen = append(seen, ticket.ID)
+		}
+	}
+	if len(seen) != totalTickets {
+		t.Fatalf("seen = %d, want %d", len(seen), totalTickets)
+	}
+	// Newest created first.
+	for i := range totalTickets {
+		want := createdIDs[totalTickets-1-i]
+		if seen[i] != want {
+			t.Fatalf("position %d = %s, want %s", i, seen[i], want)
+		}
+	}
+
+	// Past the end returns an empty slice, not nil.
+	empty, err := store.ListTicketsPage(t.Context(), TicketFilter{Limit: 50, Offset: totalTickets + 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Tickets == nil || len(empty.Tickets) != 0 || empty.HasMore || empty.Total != totalTickets {
+		t.Fatalf("empty page = %+v", empty)
+	}
+}
+
+func TestListTicketsPageFiltersStatesCountsAndSources(t *testing.T) {
+	store := openStore(t)
+	start := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	step := 0
+	nextTime := func() time.Time {
+		step++
+		return start.Add(time.Duration(step) * time.Minute)
+	}
+	store.now = nextTime
+
+	newFrom := func(origin, key string) Ticket {
+		t.Helper()
+		ticket, _, err := store.CreateTicket(t.Context(), NewTicket{
+			Source:    origin,
+			Origin:    origin,
+			Repo:      "owner/repo",
+			Title:     key,
+			Body:      "Do work",
+			Agent:     "default",
+			CreatedBy: "alice",
+			SourceKey: key,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ticket
+	}
+
+	runningTicket := newFrom("linear", "linear:1")
+	if _, err := store.QueueRun(t.Context(), runningTicket.ID, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if claim, err := store.ClaimRun(t.Context(), "runner-1", []string{"claude"}, start.Add(time.Hour), func(cand Ticket) bool { return cand.ID == runningTicket.ID }); err != nil || claim == nil {
+		t.Fatalf("claim = %v, err = %v", claim, err)
+	}
+	queuedTicket := newFrom("linear", "linear:2")
+	prReadyTicket := newFrom("linear", "linear:3")
+	if err := store.Apply(t.Context(), prReadyTicket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	doneTicket := newFrom("api", "api:1")
+	if err := store.Apply(t.Context(), doneTicket.ID, StateWorking, Transition{State: StateDone}); err != nil {
+		t.Fatal(err)
+	}
+	failedTicket := newFrom("web", "web:1")
+	if err := store.Apply(t.Context(), failedTicket.ID, StateWorking, Transition{State: StateFailed}); err != nil {
+		t.Fatal(err)
+	}
+	cancelledTicket := newFrom("web", "web:2")
+	if _, err := store.Cancel(t.Context(), cancelledTicket.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Synthetic "running" and "queued" state filters distinguish active working tickets.
+	runningPage, err := store.ListTicketsPage(t.Context(), TicketFilter{States: []string{"running"}})
+	if err != nil || len(runningPage.Tickets) != 1 || runningPage.Tickets[0].ID != runningTicket.ID || runningPage.Total != 1 {
+		t.Fatalf("runningPage = %+v, err = %v", runningPage, err)
+	}
+	queuedPage, err := store.ListTicketsPage(t.Context(), TicketFilter{States: []string{"queued"}})
+	if err != nil || len(queuedPage.Tickets) != 1 || queuedPage.Tickets[0].ID != queuedTicket.ID || queuedPage.Total != 1 {
+		t.Fatalf("queuedPage = %+v, err = %v", queuedPage, err)
+	}
+
+	// Multi-state filter done + pr_ready matches both done jobs and still reports full counts and sources.
+	donePage, err := store.ListTicketsPage(t.Context(), TicketFilter{States: []string{StateDone, StatePRReady}, Limit: 1, Offset: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(donePage.Tickets) != 1 || donePage.Total != 2 || !donePage.HasMore {
+		t.Fatalf("donePage = %+v", donePage)
+	}
+	wantCounts := TicketCounts{Queued: 1, Running: 1, Done: 2, Failed: 1, NeedsPerson: 1, Cancelled: 1}
+	if donePage.Counts != wantCounts {
+		t.Fatalf("counts = %+v, want %+v", donePage.Counts, wantCounts)
+	}
+	if len(donePage.Sources) != 3 || donePage.Sources[0] != "api" || donePage.Sources[1] != "linear" || donePage.Sources[2] != "web" {
+		t.Fatalf("sources = %v", donePage.Sources)
+	}
+
+	// Filtering by source scopes counts to that source, while sources keeps every available source.
+	linearPage, err := store.ListTicketsPage(t.Context(), TicketFilter{Source: "linear"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLinearCounts := TicketCounts{Queued: 1, Running: 1, Done: 1, NeedsPerson: 1}
+	if linearPage.Total != 3 || linearPage.Counts != wantLinearCounts || len(linearPage.Sources) != 3 {
+		t.Fatalf("linearPage = total=%d counts=%+v sources=%v", linearPage.Total, linearPage.Counts, linearPage.Sources)
+	}
+}
+
+func TestListBoardTicketsCapsDoneTo20AndKeepsActiveUncapped(t *testing.T) {
+	store := openStore(t)
+	start := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	tick := 0
+	advance := func() time.Time {
+		tick++
+		return start.Add(time.Duration(tick) * time.Minute)
+	}
+	store.now = advance
+
+	// Create 22 active tickets FIRST (older than all finished tickets) to prove active jobs
+	// are never dropped regardless of how many finished jobs follow or exceed 20.
+	activeIDs := map[string]bool{}
+	for i := range 22 {
+		ticket := createTicket(t, store, fmt.Sprintf("api:active:%d", i))
+		activeIDs[ticket.ID] = true
+	}
+
+	// Create 25 finished tickets afterward.
+	finished := make([]Ticket, 0, 25)
+	for i := range 25 {
+		ticket := createTicket(t, store, fmt.Sprintf("api:done:%d", i))
+		state := StateDone
+		if i%3 == 1 {
+			state = StateFailed
+		} else if i%3 == 2 {
+			state = StateCancelled
+		}
+		if err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: state}); err != nil {
+			t.Fatal(err)
+		}
+		finished = append(finished, ticket)
+	}
+
+	page, err := store.ListBoardTickets(t.Context(), TicketFilter{}, DefaultBoardDoneLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.DoneTotal == nil || *page.DoneTotal != 25 || page.DoneLimit == nil || *page.DoneLimit != 20 || !page.HasMore {
+		t.Fatalf("done metadata = total=%v limit=%v has_more=%v", page.DoneTotal, page.DoneLimit, page.HasMore)
+	}
+	if page.Total != 47 || len(page.Tickets) != 42 {
+		t.Fatalf("total=%d len=%d, want total=47 len=42 (22 active + 20 done)", page.Total, len(page.Tickets))
+	}
+
+	gotActive := 0
+	gotDone := make([]string, 0, 20)
+	for _, ticket := range page.Tickets {
+		if ticket.State == StateWorking {
+			if !activeIDs[ticket.ID] {
+				t.Fatalf("unexpected active ticket %s", ticket.ID)
+			}
+			gotActive++
+		} else {
+			gotDone = append(gotDone, ticket.ID)
+		}
+	}
+	if gotActive != 22 {
+		t.Fatalf("active count = %d, want 22", gotActive)
+	}
+	if len(gotDone) != 20 {
+		t.Fatalf("done count = %d, want 20", len(gotDone))
+	}
+	// The 20 done tickets are the most recently updated ones, newest first.
+	for i := range 20 {
+		want := finished[24-i].ID
+		if gotDone[i] != want {
+			t.Fatalf("done[%d] = %s, want %s", i, gotDone[i], want)
+		}
+	}
+}
+
 func TestTokenNamesAreUniqueWhileActive(t *testing.T) {
 	store := openStore(t)
 	token, err := store.CreateToken(t.Context(), "alice", RoleOperator)
