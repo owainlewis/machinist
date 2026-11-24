@@ -2,6 +2,7 @@ package ship
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -37,14 +38,34 @@ type Check struct {
 	Link   string `json:"link"`
 }
 
-// GitHub is what watching one pull request needs. An error from Merge or
-// UpdateBranch is GitHub's answer, which the person is told.
+// GitHub is what watching one pull request needs. A non-transient error from
+// Merge or UpdateBranch is GitHub's refusal, which the person is told; a
+// TransientError (or context deadline/cancellation) is returned so the watcher
+// keeps waiting and retries on a later look.
 type GitHub interface {
 	PullRequest(ctx context.Context) (PullRequest, error)
 	Checks(ctx context.Context) ([]Check, error)
 	// Merge merges the pull request only if its head is still head.
 	Merge(ctx context.Context, head string) error
 	UpdateBranch(ctx context.Context) error
+}
+
+// TransientError marks a temporary GitHub failure from Merge or UpdateBranch
+// so LookOnce returns it instead of permanently leaving the pull request open.
+type TransientError struct{ Err error }
+
+func (e *TransientError) Error() string { return e.Err.Error() }
+func (e *TransientError) Unwrap() error { return e.Err }
+
+func isTransient(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var transient *TransientError
+	return errors.As(err, &transient)
 }
 
 // Watch is what the control plane keeps about a pull request between looks.
@@ -175,6 +196,9 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 		if err == nil {
 			return Look{Outcome: Merged, Message: "Merged: " + pr.URL, Log: "merged"}, nil
 		}
+		if isTransient(ctx, err) {
+			return Look{}, err
+		}
 		refused := "GitHub refused the merge: " + err.Error()
 		// Another pull request can land between the look and the merge,
 		// which leaves this branch behind. Look again, and update the branch
@@ -196,6 +220,9 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 		return leaveOpen(pr, "the branch fell behind the default branch three times"), nil
 	}
 	if err := github.UpdateBranch(ctx); err != nil {
+		if isTransient(ctx, err) {
+			return Look{}, err
+		}
 		return leaveOpen(pr, "GitHub could not update the branch: "+err.Error()), nil
 	}
 	next := Watch{Hold: watch.Hold, Since: now, Seen: names, OldHead: pr.HeadRefOid, Updates: watch.Updates + 1, Head: watch.Head}

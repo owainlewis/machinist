@@ -240,6 +240,56 @@ func IsPermanentClientError(err error) bool {
 		status != http.StatusTooManyRequests
 }
 
+// IsTransient reports whether err is a temporary failure (timeout, rate limit,
+// authentication error, GitHub 5xx, or network failure) that may succeed on
+// retry rather than a refusal from GitHub.
+func IsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	if IsRateLimit(err) {
+		return true
+	}
+	var failure *Error
+	if errors.As(err, &failure) {
+		switch failure.Kind {
+		case ErrorTimeout, ErrorRateLimit, ErrorAuth:
+			return true
+		}
+	}
+	status := HTTPStatus(err)
+	if status >= 500 || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests {
+		return true
+	}
+	if status == 0 {
+		return hasTransientTransportMessage(strings.ToLower(err.Error()))
+	}
+	return false
+}
+
+func hasTransientTransportMessage(message string) bool {
+	for _, needle := range []string{
+		"connection reset",
+		"connection refused",
+		"i/o timeout",
+		"tls handshake timeout",
+		"no such host",
+		"network is unreachable",
+		"unexpected eof",
+		"server closed idle connection",
+		"error connecting to api.github.com",
+		"temporary failure in name resolution",
+	} {
+		if strings.Contains(message, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 type Issue struct {
 	Title       string          `json:"title"`
 	Body        string          `json:"body"`

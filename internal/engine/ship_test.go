@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ type fakePull struct {
 	pr       ship.PullRequest
 	checks   []ship.Check
 	merged   []string
+	mergeErr error
 	updated  int
 	looks    int
 	onChecks func()
@@ -33,7 +35,7 @@ func (f *fakePull) Checks(context.Context) ([]ship.Check, error) {
 }
 func (f *fakePull) Merge(_ context.Context, head string) error {
 	f.merged = append(f.merged, head)
-	return nil
+	return f.mergeErr
 }
 func (f *fakePull) UpdateBranch(context.Context) error {
 	f.updated++
@@ -294,5 +296,28 @@ func TestAJobStoppedWhileChecksAreFetchedIsNotMergedOrUpdated(t *testing.T) {
 				t.Fatalf("ticket = %+v, merged=%v, updated=%d", got, pull.merged, pull.updated)
 			}
 		})
+	}
+}
+
+// A transient merge error (like a gh timeout) keeps the ticket shipping so the
+// next poll merges it once GitHub responds.
+func TestATransientMergeFailureKeepsShippingAndRetries(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+	pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+	pull.mergeErr = &ship.TransientError{Err: errors.New("gh merge pull request failed (timeout): signal: killed")}
+
+	if err := e.CheckPRs(t.Context()); err == nil {
+		t.Fatal("CheckPRs returned nil, want transient merge error")
+	}
+	got := ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StatePRReady || got.Shipping == "" || len(pull.merged) != 1 {
+		t.Fatalf("after transient error: ticket = %+v, merged = %v", got, pull.merged)
+	}
+
+	pull.mergeErr = nil
+	checkPRs(t, e)
+	got = ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StateDone || got.PRState != tickets.PRMerged || got.Shipping != "" || len(pull.merged) != 2 {
+		t.Fatalf("after retry: ticket = %+v, merged = %v", got, pull.merged)
 	}
 }

@@ -262,9 +262,16 @@ func (p pullRequest) UpdateBranch(ctx context.Context) error {
 	return githubAnswer(p.client.UpdateBranch(ctx, p.repository, p.number))
 }
 
-// githubAnswer is what GitHub said, which the person reads in why their pull
-// request stays open.
+// githubAnswer turns a ghclient failure from Merge or UpdateBranch into either
+// a ship.TransientError (so the watcher keeps waiting and retries) or GitHub's
+// refusal message, which the person reads in why their pull request stays open.
 func githubAnswer(err error) error {
+	if err == nil {
+		return nil
+	}
+	if ghclient.IsTransient(err) {
+		return &ship.TransientError{Err: err}
+	}
 	var failure *ghclient.Error
 	if errors.As(err, &failure) && failure.Detail != "" {
 		return errors.New(failure.Detail)

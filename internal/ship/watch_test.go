@@ -16,6 +16,7 @@ type fakeGitHub struct {
 	checks [][]Check
 	// refuse is what GitHub answers to each merge; "" merges.
 	refuse     []string
+	mergeErr   error
 	updateErr  error
 	readErr    error
 	merged     []string // the head commits merges named
@@ -42,6 +43,9 @@ func (f *fakeGitHub) Checks(context.Context) ([]Check, error) {
 func (f *fakeGitHub) Merge(_ context.Context, head string) error {
 	attempt := len(f.merged)
 	f.merged = append(f.merged, head)
+	if f.mergeErr != nil {
+		return f.mergeErr
+	}
 	if len(f.refuse) > 0 {
 		if answer := f.refuse[min(attempt, len(f.refuse)-1)]; answer != "" {
 			return errors.New(answer)
@@ -243,5 +247,41 @@ func TestLookDoesNotUpdateABranchWithACommitPushedAfterTheReview(t *testing.T) {
 	got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
 	if got.Outcome != LeftOpen || !strings.Contains(got.Message, "commits pushed after the review") || github.updates != 0 || !slices.Equal(github.merged, []string{"sha1"}) {
 		t.Fatalf("look = %+v, updates %d, merged %v", got, github.updates, github.merged)
+	}
+}
+
+// Transient merge failures (such as a subprocess timeout or rate limit) return
+// an error so the watcher keeps shipping and retries on the next poll instead
+// of permanently leaving the pull request open.
+func TestLookReturnsTransientMergeErrorsForRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"transient wrapper", &TransientError{Err: errors.New("gh merge pull request failed (timeout): signal: killed")}},
+		{"context deadline", context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			github := &fakeGitHub{views: []PullRequest{open("sha1", "CLEAN")}, checks: [][]Check{passed}, mergeErr: tc.err}
+			got, err := LookOnce(t.Context(), github, Watch{Since: start, Head: "sha1"}, start)
+			if err == nil {
+				t.Fatalf("LookOnce returned outcome %+v with nil error, want transient error", got)
+			}
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("err = %v, want %v", err, tc.err)
+			}
+			if github.viewCount != 1 {
+				t.Fatalf("viewCount = %d, want 1 (should not re-read PR as a refusal)", github.viewCount)
+			}
+		})
+	}
+}
+
+func TestLookReturnsTransientUpdateBranchErrorsForRetry(t *testing.T) {
+	want := &TransientError{Err: errors.New("gh update branch failed (timeout): signal: killed")}
+	github := &fakeGitHub{views: []PullRequest{open("sha1", "BEHIND")}, checks: [][]Check{passed}, updateErr: want}
+	got, err := LookOnce(t.Context(), github, Watch{Since: start, Head: "sha1"}, start)
+	if !errors.Is(err, want) {
+		t.Fatalf("LookOnce = (%+v, %v), want error %v", got, err, want)
 	}
 }

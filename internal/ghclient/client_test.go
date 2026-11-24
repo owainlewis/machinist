@@ -286,3 +286,36 @@ func TestRateLimitAndPermanentClientErrorHelpers(t *testing.T) {
 		})
 	}
 }
+
+func TestIsTransient(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"timeout killed subprocess", &Error{Kind: ErrorTimeout, Operation: "merge pull request", Detail: "signal: killed"}, true},
+		{"rate limit", &Error{Kind: ErrorRateLimit, Operation: "merge pull request", Detail: "gh: API rate limit exceeded (HTTP 403)"}, true},
+		{"auth failure", &Error{Kind: ErrorAuth, Operation: "get a token for o/r", Detail: "GitHub replied 422"}, true},
+		{"context deadline", context.DeadlineExceeded, true},
+		{"context canceled", context.Canceled, true},
+		{"http 408", &Error{Kind: ErrorCommand, Detail: "gh: Request Timeout (HTTP 408)"}, true},
+		{"http 429", &Error{Kind: ErrorCommand, Detail: "gh: Too Many Requests (HTTP 429)"}, true},
+		{"http 502", &Error{Kind: ErrorCommand, Detail: "gh: Bad Gateway (HTTP 502)"}, true},
+		{"http 503", &Error{Kind: ErrorCommand, Detail: "gh: Service Unavailable (HTTP 503)"}, true},
+		{"network reset", &Error{Kind: ErrorCommand, Detail: "Post https://api.github.com/graphql: read tcp: connection reset by peer"}, true},
+		{"network io timeout", &Error{Kind: ErrorCommand, Detail: "error connecting to api.github.com: i/o timeout"}, true},
+		{"required review refusal", &Error{Kind: ErrorCommand, Detail: "Required review is missing"}, false},
+		{"base branch modified", &Error{Kind: ErrorCommand, Detail: "Base branch was modified"}, false},
+		{"merge conflict", &Error{Kind: ErrorCommand, Detail: "merge conflict between base and head"}, false},
+		{"http 405 not mergeable", &Error{Kind: ErrorCommand, Detail: "gh: Pull Request is not mergeable (HTTP 405)"}, false},
+		{"http 422 command error", &Error{Kind: ErrorCommand, Detail: "gh: Validation Failed (HTTP 422)"}, false},
+		{"http 404", &Error{Kind: ErrorCommand, Detail: "gh: Not Found (HTTP 404)"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsTransient(tc.err); got != tc.want {
+				t.Fatalf("IsTransient(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}

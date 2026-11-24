@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
+	"github.com/owainlewis/machinist/internal/ship"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -305,5 +307,30 @@ func TestNewLogsFactoryWarningWhenOutdated(t *testing.T) {
 		if !strings.Contains(log.String(), want) {
 			t.Fatalf("log missing %q: %q", want, log.String())
 		}
+	}
+}
+
+func TestGitHubAnswerPreservesTransientErrorsAndStripsRefusals(t *testing.T) {
+	if got := githubAnswer(nil); got != nil {
+		t.Fatalf("githubAnswer(nil) = %v", got)
+	}
+
+	timeoutErr := &ghclient.Error{Kind: ghclient.ErrorTimeout, Operation: "merge pull request", Detail: "signal: killed"}
+	got := githubAnswer(timeoutErr)
+	var transient *ship.TransientError
+	if !errors.As(got, &transient) || !errors.Is(got, timeoutErr) {
+		t.Fatalf("timeout error = %T (%v), want *ship.TransientError wrapping timeoutErr", got, got)
+	}
+
+	rateLimitErr := &ghclient.Error{Kind: ghclient.ErrorRateLimit, Operation: "merge pull request", Detail: "API rate limit exceeded (HTTP 403)"}
+	got = githubAnswer(rateLimitErr)
+	if !errors.As(got, &transient) || !ghclient.IsRateLimit(got) {
+		t.Fatalf("rate limit error = %T (%v), want *ship.TransientError recognized by ghclient.IsRateLimit", got, got)
+	}
+
+	refusalErr := &ghclient.Error{Kind: ghclient.ErrorCommand, Operation: "merge pull request", Detail: "Required review is missing"}
+	got = githubAnswer(refusalErr)
+	if errors.As(got, &transient) || got.Error() != "Required review is missing" {
+		t.Fatalf("refusal error = %T (%q), want plain detail", got, got)
 	}
 }
