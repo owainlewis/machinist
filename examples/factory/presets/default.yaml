@@ -34,10 +34,17 @@ steps:
     timeout: 10m
     run: publish.sh
 
-  # Hands the pull request to the control plane, which merges it only when
-  # github.auto_merge is on, the review accepted the change and every check
+  # Runs agents/merge-gate.md, which judges the final diff against the team's
+  # merge policy and writes merge-gate.json: approve (low risk) or human_review.
+  - name: merge-gate
+    timeout: 10m
+    run: merge-gate.sh
+
+  # Posts the merge gate judgment on the pull request and hands it to the
+  # control plane, which merges it only when github.auto_merge is on, the review
+  # accepted the change, the merge gate approved it as low risk, and every check
   # passed. This is code, not an agent. It ends at once, so the runner never
   # waits on CI.
   - name: merge
     timeout: 5m
-    run: machinist merge
+    run: machinist merge --require-gate

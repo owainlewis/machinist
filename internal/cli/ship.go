@@ -20,12 +20,13 @@ import (
 // whether a change merges.
 func newMergeCommand(options *commandOptions) *cobra.Command {
 	var withoutReview bool
+	var requireGate bool
 	command := &cobra.Command{
 		Use:   "merge",
 		Short: "Have the control plane merge the job's pull request once its checks pass, inside a step",
-		Long: "Hand the open pull request on $MACHINIST_BRANCH to the control plane, with the verdict in review.json, and end " +
+		Long: "Hand the open pull request on $MACHINIST_BRANCH to the control plane, with the verdict in review.json and optional merge-gate.json, and end " +
 			"at once, so the runner does not wait on CI. The control plane merges it when github.auto_merge is on, the " +
-			"review accepted the change and every check passed, and fails the job when a check fails. result.md says " +
+			"review accepted the change, the merge gate approved it (when present), and every check passed. result.md says " +
 			"whether it will merge or stays open, and why.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -38,12 +39,14 @@ func newMergeCommand(options *commandOptions) *cobra.Command {
 				Branch:        os.Getenv("MACHINIST_BRANCH"),
 				AutoMerge:     os.Getenv("MACHINIST_AUTO_MERGE") == "true",
 				WithoutReview: withoutReview,
+				RequireGate:   requireGate,
 				GH:            runGH,
 				Log:           options.stdout,
 			})
 		},
 	}
 	command.Flags().BoolVar(&withoutReview, "without-review", false, "merge when there is no review.json, for presets with no review step")
+	command.Flags().BoolVar(&requireGate, "require-gate", false, "require a valid merge-gate.json before auto-merging")
 	return command
 }
 
@@ -90,6 +93,28 @@ func newVerdictCommand(options *commandOptions) *cobra.Command {
 				return err
 			}
 			fmt.Fprintln(options.stdout, review.Verdict)
+			return nil
+		},
+	}
+}
+
+// newGateCommand validates merge-gate.json and prints its decision, so a
+// script step fails immediately when the merge-gate agent wrote no valid verdict.
+func newGateCommand(options *commandOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "gate",
+		Short: "Validate and print the decision in merge-gate.json, inside a step",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			control, err := controlDirectory("gate")
+			if err != nil {
+				return err
+			}
+			gate, err := ship.ReadGate(control)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(options.stdout, "%s (%s): %s\n", gate.Decision, gate.Risk, gate.Reason)
 			return nil
 		},
 	}

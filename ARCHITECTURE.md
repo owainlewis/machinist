@@ -44,12 +44,13 @@ Otherwise the report is `no_change`,
 with `result.md` as its summary. After a run, the control plane looks up the branch's pull
 request, so a step that opens one needs to report nothing: an open pull request makes the
 job `pr_ready`, and a merged one leaves it `done`. `github.auto_merge` reaches every step as
-`MACHINIST_AUTO_MERGE`. The shipped preset ends with `machinist merge` (`internal/ship`), which
-hands the pull request to the control plane with the review's verdict and ends, so no runner
+`MACHINIST_AUTO_MERGE`. The shipped preset ends with `merge-gate` and `machinist merge --require-gate` (`internal/ship`), which
+posts the merge gate's risk judgment on the pull request, hands the pull request to the control plane
+with the review's verdict and any merge-gate hold, and ends, so no runner
 waits on CI. The pull request watcher, `engine.CheckPRs`, then looks at its checks each round
 and merges it only when `github.auto_merge` is on, the latest review in `review.json` is
-`accepted` and every check passed. A failed check fails the job. A missing or invalid
-`review.json` leaves the pull request open. See
+`accepted`, `merge-gate.json` approved it as `low` risk, and every check passed. A failed check fails the job. A missing or invalid
+`review.json` or `merge-gate.json` leaves the pull request open. See
 [Factory files](docs/factory.md#presets).
 
 | State | Meaning |

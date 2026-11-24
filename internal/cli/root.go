@@ -66,6 +66,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newPushCommand(options))
 	root.AddCommand(newMergeCommand(options))
 	root.AddCommand(newVerdictCommand(options))
+	root.AddCommand(newGateCommand(options))
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the Machinist version",
