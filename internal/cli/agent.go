@@ -20,7 +20,8 @@ func newAgentCommand(options *commandOptions) *cobra.Command {
 		Use:   "agent <name>",
 		Short: "Run one of the factory's agents inside a step",
 		Long: "Run the agent in $MACHINIST_DIR/agents/<name>.md on the job's prompt. Its system prompt is where it is working, " +
-			"then prompts/rules.md if there is one, then the agent file's prompt. Progress prints as readable lines, " +
+			"then prompts/rules.md if there is one, then the agent file's prompt. MACHINIST_HARNESS and MACHINIST_MODEL, when set, " +
+			"override the harness and model from the agent file. Progress prints as readable lines, " +
 			"and the tokens and cost the agent reports are recorded. It exits with the agent's exit code.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -56,6 +57,10 @@ func agentTurn(control, name string) (system, task string, agent harness.Agent, 
 	agent, err = harness.ParseAgent(name, string(body))
 	if err != nil {
 		return "", "", harness.Agent{}, fmt.Errorf("agents/%s.md: %w", name, err)
+	}
+	agent, err = agent.Override(strings.TrimSpace(os.Getenv("MACHINIST_HARNESS")), strings.TrimSpace(os.Getenv("MACHINIST_MODEL")))
+	if err != nil {
+		return "", "", harness.Agent{}, fmt.Errorf("MACHINIST_HARNESS: %w", err)
 	}
 	parts := []string{fmt.Sprintf("You are working in a clone of %s on branch %s.\nThe control directory is %s. Files named below without a path are there.",
 		os.Getenv("MACHINIST_REPO"), os.Getenv("MACHINIST_BRANCH"), control)}

@@ -213,6 +213,10 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 			})
 		}
 	}
+	steps := make([]runner.Step, len(preset.Steps))
+	for index, step := range preset.Steps {
+		steps[index] = preset.EffectiveStep(step)
+	}
 	return &runner.RunRequest{
 		RunID:         claim.Run.ID,
 		TicketID:      claim.Ticket.ID,
@@ -222,7 +226,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		Vars:          map[string]string{"repo": claim.Ticket.Repo, "auto_merge": strconv.FormatBool(e.AutoMerge)},
 		Prompt:        tickets.RenderLog(claim.Entries),
 		Files:         e.Factory.Files,
-		Steps:         preset.Steps,
+		Steps:         steps,
 		TimeoutMillis: timeout.Milliseconds(),
 		GitName:       gitName,
 		GitEmail:      gitEmail,

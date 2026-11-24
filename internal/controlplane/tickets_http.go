@@ -347,7 +347,7 @@ type stepView struct {
 func stepViews(loaded *factory.Factory, preset factory.Preset) []stepView {
 	steps := make([]stepView, 0, len(preset.Steps))
 	for _, step := range preset.Steps {
-		steps = append(steps, stepView{Name: step.Name, Agents: loaded.StepAgents(step.Run)})
+		steps = append(steps, stepView{Name: step.Name, Agents: loaded.StepAgents(preset.EffectiveStep(step))})
 	}
 	return steps
 }

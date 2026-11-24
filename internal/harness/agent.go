@@ -64,6 +64,43 @@ func ParseAgent(name, body string) (Agent, error) {
 	return Agent{Name: name, Harness: settings.Harness, Model: settings.Model, Program: settings.Command, Prompt: strings.TrimSpace(prompt)}, nil
 }
 
+// MergeOverride applies an override harness and/or model on top of a base
+// harness and model. Switching to a different harness without naming a model
+// clears the base model so a model from the previous harness is not passed to
+// the new one.
+func MergeOverride(baseHarness, baseModel, overHarness, overModel string) (string, string) {
+	h, m := baseHarness, baseModel
+	if overHarness != "" && overHarness != h {
+		h = overHarness
+		m = ""
+	}
+	if overModel != "" {
+		m = overModel
+	}
+	return h, m
+}
+
+// Override returns a copy of the agent with harness and/or model replaced.
+// When harnessName is non-empty it must name a known harness; switching to a
+// different harness clears the agent file's model and custom command unless
+// model is also given.
+func (a Agent) Override(harnessName, model string) (Agent, error) {
+	if harnessName != "" {
+		if _, ok := Find(harnessName); !ok {
+			return Agent{}, fmt.Errorf("harness must be one of %s, not %q", strings.Join(Names(), ", "), harnessName)
+		}
+		if harnessName != a.Harness {
+			a.Harness = harnessName
+			a.Model = ""
+			a.Program = ""
+		}
+	}
+	if model != "" {
+		a.Model = model
+	}
+	return a, nil
+}
+
 // Command builds the agent's argv and stdin for one turn.
 func (a Agent) Command(system, prompt string) ([]string, string) {
 	found, _ := Find(a.Harness)

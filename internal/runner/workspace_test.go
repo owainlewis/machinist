@@ -381,3 +381,34 @@ func TestARunCarriesThePullRequestTheMergeStepHandedOver(t *testing.T) {
 		}
 	}
 }
+
+func TestStepsPassHarnessAndModelOverridesWithoutLeaking(t *testing.T) {
+	request := stepsRequest(
+		Step{Name: "one", Run: `printf '%s|%s\n' "$MACHINIST_HARNESS" "$MACHINIST_MODEL" >> env.log`, Harness: "agy", Model: "gemini-4-neon-high"},
+		Step{Name: "two", Run: `printf '%s|%s\n' "$MACHINIST_HARNESS" "$MACHINIST_MODEL" >> env.log`, Harness: "claude"},
+		Step{Name: "three", Run: `printf '%s|%s\n' "$MACHINIST_HARNESS" "$MACHINIST_MODEL" >> env.log`},
+	)
+	root := t.TempDir()
+	workspace, err := PrepareWorkspace(WorkspaceOptions{
+		Request:     request,
+		Root:        root,
+		GitHubToken: "token",
+		Environment: []string{"PATH=" + os.Getenv("PATH"), "MACHINIST_HARNESS=stale", "MACHINIST_MODEL=stale-model"},
+		Home:        filepath.Join(root, "home"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := RunSteps(t.Context(), request, workspace, t.TempDir())
+	if result.State != StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+	got, err := os.ReadFile(filepath.Join(workspace.Directory, "env.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "agy|gemini-4-neon-high\nclaude|\n|\n"
+	if string(got) != want {
+		t.Fatalf("env.log =\n%q\nwant\n%q", string(got), want)
+	}
+}

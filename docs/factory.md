@@ -78,6 +78,52 @@ A step that hits either timeout gets SIGTERM and five seconds to exit cleanly be
 killed. Usage a harness reported before then is kept; one that reports cost only when it
 finishes, such as Claude Code, shows none.
 
+### Extending presets and overriding harness or model
+
+To run the same pipeline on another harness or model without copying agent prompts or
+scripts, set `extends`, `harness` and `model` in a preset:
+
+```yaml
+# presets/neon.yaml
+description: Default pipeline on Antigravity (Gemini 4 Neon).
+extends: default
+harness: agy
+model: gemini-4-neon-high
+```
+
+`extends` inherits the base preset's steps, `timeout`, `harness`, `model` and (when omitted)
+`description`. You can chain `extends` across presets, and override individual steps by name
+— for example, to run a cross-model review without duplicating `review.sh`:
+
+```yaml
+# presets/neon-opus-review.yaml
+description: Default pipeline on Antigravity with Claude Opus review.
+extends: neon
+
+steps:
+  - name: review
+    harness: claude
+    model: opus
+```
+
+Override precedence is **step > preset > `agents/<name>.md` front matter**:
+
+- Preset-level `harness` and `model` apply to every agent invoked inside the preset, whether
+  the step uses `agent: <name>` or a shell script such as `review.sh`, `revise.sh` or
+  `publish.sh`.
+- Step-level `harness` and `model` override the preset for that step alone. The runner passes
+  the effective values to the step as `MACHINIST_HARNESS` and `MACHINIST_MODEL`, which
+  `machinist agent` reads.
+- Switching `harness` without setting `model` drops any model inherited from the previous
+  harness (and any custom `command:` in the agent file), so a model name from one harness is
+  never passed to another.
+- When extending a preset, a step in `steps:` whose `name` matches a base step updates that
+  step in place (keeping its `run`/`agent` and timeouts unless replaced). A new step name
+  must include `run` or `agent` and is appended at the end.
+
+The web app, runner routing and Dashboard model metrics all resolve and report the effective
+`harness` and `model` for every step.
+
 ### Agents
 
 An agent file says which harness runs it, which model to ask for, and what to tell it:
@@ -217,6 +263,8 @@ Step names are letters, digits, hyphens and underscores, and are unique in a pre
 | `MACHINIST_JOB_ID` | The job's ID |
 | `MACHINIST_PRESET` | The preset's name |
 | `MACHINIST_DIR` | The control directory, outside the workspace |
+| `MACHINIST_HARNESS` | Effective harness override for the step, when set by the preset or step; read by `machinist agent` |
+| `MACHINIST_MODEL` | Effective model override for the step, when set by the preset or step; read by `machinist agent` |
 | `GH_TOKEN` | The runner's GitHub token, for `gh` and `git` |
 | `GIT_AUTHOR_*`, `GIT_COMMITTER_*` | The bot's name and email |
 

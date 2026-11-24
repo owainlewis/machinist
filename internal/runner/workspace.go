@@ -343,6 +343,26 @@ func freshToken(ctx context.Context, request RunRequest, environment []string) [
 	return fresh
 }
 
+// stepOverrideEnvironment builds a step's environment from the workspace base,
+// replacing any inherited MACHINIST_HARNESS or MACHINIST_MODEL with the step's
+// own overrides (or omitting them when unset).
+func stepOverrideEnvironment(base []string, step Step) []string {
+	env := make([]string, 0, len(base)+2)
+	for _, entry := range base {
+		if strings.HasPrefix(entry, "MACHINIST_HARNESS=") || strings.HasPrefix(entry, "MACHINIST_MODEL=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	if step.Harness != "" {
+		env = append(env, "MACHINIST_HARNESS="+step.Harness)
+	}
+	if step.Model != "" {
+		env = append(env, "MACHINIST_MODEL="+step.Model)
+	}
+	return env
+}
+
 func runStep(ctx context.Context, request RunRequest, step Step, workspace Workspace, dataDirectory string, log *eventLog, remaining time.Duration, stderr io.Writer) (Result, error) {
 	if remaining <= 0 {
 		return Result{State: StateTimedOut}, errors.New("the run timed out before this step started")
@@ -362,7 +382,7 @@ func runStep(ctx context.Context, request RunRequest, step Step, workspace Works
 		return Result{}, err
 	}
 	return Execute(ctx, Options{
-		Environment:   workspace.Environment,
+		Environment:   stepOverrideEnvironment(workspace.Environment, step),
 		Prompt:        request.Prompt,
 		RunID:         request.RunID,
 		Command:       Command{Name: step.Name, Args: []string{"sh", "-e", "-c", step.Run}, Timeout: timeout, IdleTimeout: idle},
