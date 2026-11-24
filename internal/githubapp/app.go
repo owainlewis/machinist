@@ -47,6 +47,7 @@ var Permissions = map[string]string{
 	"issues":        "write",
 	"checks":        "read",
 	"statuses":      "read",
+	"actions":       "read",
 }
 
 // App mints tokens as one GitHub App.

@@ -21,6 +21,7 @@ and the job fails.
 | Issues | Read and write | Read issues and post comments |
 | Checks | Read | Read CI results on the pull request |
 | Commit statuses | Read | Read CI results that use statuses |
+| Actions | Read | Read workflow run status for `gh pr checks` |
 | Metadata | Read | Always granted by GitHub |
 
 It cannot change workflow files, settings, secrets, branch protection, or any other
@@ -42,7 +43,7 @@ Open this link. It fills in the form with no webhook, the permissions above and 
 installation:
 
 ```text
-https://github.com/settings/apps/new?name=machinist-yourname&url=https://github.com/owainlewis/machinist&webhook_active=false&public=false&contents=write&pull_requests=write&issues=write&checks=read&statuses=read
+https://github.com/settings/apps/new?name=machinist-yourname&url=https://github.com/owainlewis/machinist&webhook_active=false&public=false&contents=write&pull_requests=write&issues=write&checks=read&statuses=read&actions=read
 ```
 
 Change `machinist-yourname` to a name of your own. App names are unique across GitHub, and
