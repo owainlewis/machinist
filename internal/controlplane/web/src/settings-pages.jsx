@@ -1,14 +1,14 @@
 import React, { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, CircleAlert, Copy, ExternalLink, Plus, RefreshCw, ShieldCheck, ShieldOff, Trash2, X } from "lucide-react";
+import { Check, ChevronRight, CircleAlert, Copy, ExternalLink, FileCode2, GitFork, Plus, RefreshCw, ShieldCheck, ShieldOff, Terminal, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { api, SignedOutError } from "./api.js";
-import { AgentBadges } from "./agent-badge.jsx";
+import { AgentBadge, AgentBadges } from "./agent-badge.jsx";
 import { agentSummary, harnessLabel } from "./agents.js";
 import { relativeTime } from "./display.jsx";
 import { HarnessMark } from "./harness-mark.jsx";
-import { dayLabel, factoryUpdateLine, githubLine, pollLabel, roleLabel, tokenLine, tokenPrefixLabel, validateTokenName } from "./settings.js";
+import { agentFrontMatter, agentOverridden, dayLabel, durationShort, factoryUpdateLine, githubLine, groupAgents, pollLabel, roleLabel, stepKind, stepKindLabel, stepShellPreview, tokenLine, tokenPrefixLabel, validateTokenName } from "./settings.js";
 import { sentence } from "./setup-page.jsx";
 
 // useResource loads what a page shows from one or more API routes.
@@ -379,13 +379,215 @@ function TokenRow({ token, busy, confirming, onAskRegenerate, onAskRevoke, onCan
   </li>;
 }
 
+function PresetCard({ preset, isDefault, agentsByName }) {
+  const [selectedIndex, setSelectedIndex] = useState(null);
+  const selectedStep = selectedIndex !== null ? preset.steps[selectedIndex] : null;
+  const timeout = durationShort(preset.timeout_millis);
+  const toggleStep = index => setSelectedIndex(current => (current === index ? null : index));
+
+  return <li className="panel preset-card">
+    <div className="preset-card-head">
+      <div className="settings-row-main">
+        <strong>{preset.name}</strong>
+        {isDefault && <span className="pill pill-info">Default</span>}
+        {preset.extends && <span className="pill preset-extends"><GitFork className="size-3" aria-hidden="true" />extends <code>{preset.extends}</code></span>}
+        {(preset.harness || preset.model) && <span className="agent-badge preset-override-badge" data-harness={preset.harness || undefined}>
+          {preset.harness && <HarnessMark harness={preset.harness} className="agent-badge-mark" />}
+          <span>{preset.harness ? harnessLabel(preset.harness) : "Model override"}</span>
+          {preset.model && <span className="agent-badge-model">{preset.model}</span>}
+        </span>}
+        {timeout && <span className="pill">{timeout}</span>}
+      </div>
+      {preset.description && <p className="ticket-meta">{preset.description}</p>}
+    </div>
+    <section className="pipeline preset-pipeline" aria-label={`Pipeline for ${preset.name}`}>
+      <ol className="preset-step-list" aria-label={`Steps of ${preset.name}`}>{preset.steps.map((step, index) => {
+        const kind = stepKind(step);
+        const kindText = stepKindLabel(step);
+        const stepTimeout = durationShort(step.timeout_millis);
+        const shellPreview = stepShellPreview(step);
+        const selected = selectedIndex === index;
+        const overridden = (step.agents || []).some(agent => agentOverridden(agent, agentsByName.get(agent.name)));
+        return <li key={`${step.name}-${index}`} data-kind={kind} data-selected={selected || undefined}>
+          {index > 0 && <span className="pipeline-edge" aria-hidden="true" />}
+          <button type="button" className="pipeline-node preset-pipeline-node" aria-expanded={selected} onClick={() => toggleStep(index)} aria-label={`Inspect step ${index + 1}, ${step.name} (${kindText})`}>
+            <span className="preset-step-number" aria-hidden="true">{index + 1}</span>
+            <span className="pipeline-name step-name">{step.name}</span>
+            <span className="pipeline-meta">
+              {kind === "shell" && <Terminal className="size-3 inline-icon" aria-hidden="true" />}
+              {kindText}
+              {stepTimeout ? ` · ${stepTimeout}` : ""}
+              {overridden ? " · overridden" : ""}
+            </span>
+            {step.agents?.length > 0
+              ? <AgentBadges agents={step.agents} step={step.name} compact className="pipeline-agents" />
+              : shellPreview && <span className="pipeline-shell-cmd" title={shellPreview}>{shellPreview}</span>}
+          </button>
+        </li>;
+      })}</ol>
+    </section>
+    {selectedStep && <StepInspector step={selectedStep} index={selectedIndex} agentsByName={agentsByName} onClose={() => setSelectedIndex(null)} />}
+  </li>;
+}
+
+function StepInspector({ step, index, agentsByName, onClose }) {
+  const kind = stepKind(step);
+  const timeout = durationShort(step.timeout_millis);
+  const idleTimeout = durationShort(step.idle_timeout_millis);
+  const scripts = step.scripts || [];
+  const uniqueAgents = [];
+  const seen = new Set();
+  for (const agent of step.agents || []) {
+    const key = `${agent.name}\u0000${agent.harness}\u0000${agent.model || ""}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueAgents.push(agent);
+    }
+  }
+  return <section className="inspector step-inspector" aria-label={`Details for step ${step.name}`}>
+    <div className="inspector-head">
+      <div className="settings-row-main">
+        <span className="preset-step-number" aria-hidden="true">{index + 1}</span>
+        <strong className="step-name">{step.name}</strong>
+        <span className="pill">{stepKindLabel(step)}</span>
+        {timeout && <span className="ticket-meta">Timeout {timeout}</span>}
+        {idleTimeout && <span className="ticket-meta">Idle timeout {idleTimeout}</span>}
+      </div>
+      <Button type="button" variant="ghost" size="sm" onClick={onClose} aria-label="Close step details"><X className="size-3.5" aria-hidden="true" />Close</Button>
+    </div>
+    {step.run && <div className="inspector-block">
+      <h3 className="label">{kind === "agent" ? "Invocation" : "Command"}</h3>
+      <pre className="inspector-code">{step.run}</pre>
+    </div>}
+    {scripts.map(script => <div key={script.path} className="inspector-block">
+      <h3 className="inspector-file-label"><FileCode2 className="size-3.5" aria-hidden="true" /><code>factory/{script.path}</code></h3>
+      <pre className="inspector-code">{script.content.replace(/\n$/, "")}</pre>
+    </div>)}
+    {uniqueAgents.map((stepAgent, agentIndex) => {
+      const fileAgent = agentsByName.get(stepAgent.name);
+      const overridden = agentOverridden(stepAgent, fileAgent);
+      const frontMatter = agentFrontMatter(fileAgent);
+      return <div key={`${stepAgent.name}-${agentIndex}`} className="inspector-agent">
+        <div className="inspector-agent-head">
+          <span className="inspector-file-label"><code>factory/agents/{stepAgent.name}.md</code></span>
+          <AgentBadge agent={stepAgent} />
+          {overridden && <span className="pill pill-info">Overridden</span>}
+          {overridden && fileAgent && <span className="ticket-meta">File default: {harnessLabel(fileAgent.harness)}{fileAgent.model ? ` · ${fileAgent.model}` : " default"}</span>}
+        </div>
+        {frontMatter && <div className="inspector-block">
+          <h4 className="label">Front matter</h4>
+          <pre className="inspector-code">{`---\n${frontMatter}\n---`}</pre>
+        </div>}
+        <div className="inspector-block">
+          <h4 className="label">Prompt</h4>
+          {fileAgent?.prompt
+            ? <pre className="inspector-prompt">{fileAgent.prompt}</pre>
+            : <p className="ticket-meta">Prompt not available.</p>}
+        </div>
+      </div>;
+    })}
+    {!step.run && !scripts.length && !uniqueAgents.length && <p className="ticket-meta">No command or script details available.</p>}
+  </section>;
+}
+
+function AgentGroupRow({ group, fileAgentsByName }) {
+  const [open, setOpen] = useState(false);
+  const { primary, variants, presets, uses, harnesses, prompt } = group;
+  const multi = variants.length > 1;
+  const usageLabel = !presets.length
+    ? "No preset"
+    : presets.length <= 3
+      ? presets.join(", ")
+      : `${presets.length} presets`;
+
+  return <li className="agent-row" data-expanded={open || undefined}>
+    <button type="button" className="agent-row-toggle" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+      <ChevronRight className="size-4 step-chevron" aria-hidden="true" />
+      <span className="agent-row-marks">
+        {harnesses.map(harness => <HarnessMark key={harness} harness={harness} className="size-4" />)}
+      </span>
+      <span className="agent-row-name">
+        <strong>{primary.name}</strong>
+        {multi && <span className="pill">{variants.length} variants · same prompt</span>}
+      </span>
+      <span className="agent-row-summary">
+        {multi
+          ? <span className="ticket-meta">{variants.map(v => v.name).join(", ")}</span>
+          : primary.model
+            ? <span className="ticket-meta">{harnessLabel(primary.harness)} · <code>{primary.model}</code></span>
+            : <span className="ticket-meta">{agentSummary(primary)}</span>}
+        <span className="ticket-meta agent-row-usage">{usageLabel}</span>
+      </span>
+    </button>
+    {open && <div className="inspector agent-inspector">
+      {multi
+        ? <div className="inspector-block">
+          <h3 className="label">Variants sharing this prompt</h3>
+          <ul className="inspector-variants">{variants.map(variant => {
+            const frontMatter = agentFrontMatter(variant);
+            const variantUses = variant.uses?.length
+              ? variant.uses
+              : (variant.presets || []).map(preset => ({ preset, step: "", harness: variant.harness, model: variant.model || "" }));
+            return <li key={variant.name} className="inspector-variant">
+              <div className="inspector-agent-head">
+                <HarnessMark harness={variant.harness} className="size-4" />
+                <code>factory/agents/{variant.name}.md</code>
+                <span className="ticket-meta">{variant.model ? `${harnessLabel(variant.harness)} · ${variant.model}` : agentSummary(variant)}</span>
+              </div>
+              {frontMatter && <pre className="inspector-code">{`---\n${frontMatter}\n---`}</pre>}
+              {variantUses.length > 0 && <ul className="inspector-uses">{variantUses.map((use, idx) => <li key={`${use.preset}-${use.step}-${idx}`}>
+                <span className="inspector-use-target"><code>{use.preset}</code>{use.step && <><span>→</span><code>{use.step}</code></>}</span>
+                <AgentBadge agent={{ name: variant.name, harness: use.harness, model: use.model }} step={use.step || variant.name} />
+                {agentOverridden(use, variant) && <span className="pill pill-info">Overridden</span>}
+              </li>)}</ul>}
+            </li>;
+          })}</ul>
+        </div>
+        : <>
+          <div className="inspector-agent-head">
+            <span className="inspector-file-label"><code>factory/agents/{primary.name}.md</code></span>
+            <span className="ticket-meta">{harnessLabel(primary.harness)}{primary.model ? ` · ${primary.model}` : " default"}</span>
+          </div>
+          {agentFrontMatter(primary) && <div className="inspector-block">
+            <h3 className="label">Front matter</h3>
+            <pre className="inspector-code">{`---\n${agentFrontMatter(primary)}\n---`}</pre>
+          </div>}
+          {uses.length > 0 && <div className="inspector-block">
+            <h3 className="label">Used by</h3>
+            <ul className="inspector-uses">{uses.map((use, idx) => {
+              const fileAgent = fileAgentsByName.get(use.agent) || primary;
+              return <li key={`${use.preset}-${use.step}-${idx}`}>
+                <span className="inspector-use-target"><code>{use.preset}</code>{use.step && <><span>→</span><code>{use.step}</code></>}</span>
+                <AgentBadge agent={{ name: fileAgent.name, harness: use.harness, model: use.model }} step={use.step || fileAgent.name} />
+                {agentOverridden(use, fileAgent) && <span className="pill pill-info">Overridden</span>}
+              </li>;
+            })}</ul>
+          </div>}
+        </>}
+      <div className="inspector-block">
+        <h3 className="label">{multi ? "Shared prompt" : "Prompt"}</h3>
+        {prompt
+          ? <pre className="inspector-prompt">{prompt}</pre>
+          : <p className="ticket-meta">No prompt body.</p>}
+      </div>
+    </div>}
+  </li>;
+}
+
 export function PresetsPage({ onSignedOut }) {
   const { data, error } = useResource(["/api/v1/presets", "/api/v1/agents"], onSignedOut);
   const [presets, agents] = data || [];
+  const [showPresetSpecific, setShowPresetSpecific] = useState(false);
+  const [showUnused, setShowUnused] = useState(false);
   const updates = presets?.updates || [];
+  const agentsByName = new Map((agents?.agents || []).map(agent => [agent.name, agent]));
+  const grouped = groupAgents(agents?.agents || []);
+  const presetSpecificCount = grouped.presetGroups.reduce((sum, entry) => sum + entry.groups.length, 0);
+  const hasActiveAgents = grouped.primary.length > 0 || presetSpecificCount > 0;
+
   return <>
     <Head title="Presets and agents" sub={data && `${presets.presets.length} ${presets.presets.length === 1 ? "preset" : "presets"} and ${agents.agents.length} ${agents.agents.length === 1 ? "agent" : "agents"}.`} />
-    <p className="page-note">These come from <code>factory/presets</code> and <code>factory/agents</code>. Change them in git and restart the control plane.</p>
+    <p className="page-note">These come from <code>factory/presets</code> and <code>factory/agents</code>. Click any step or agent to inspect its script, front matter, or prompt. Change them in git and restart the control plane.</p>
     {updates.length > 0 && <div className="page-warning factory-warning" role="status">
       <p><strong>{factoryUpdateLine(updates)}</strong> Run <code>machinist factory upgrade</code> and restart the control plane.</p>
       <ul className="factory-warning-files">
@@ -400,33 +602,51 @@ export function PresetsPage({ onSignedOut }) {
     {data && <>
       <section className="settings-section" aria-labelledby="presets-title">
         <h2 id="presets-title" className="chart-title">Presets</h2>
-        <ul className="list">{presets.presets.map(preset => <li key={preset.name} className="settings-row preset-row">
-          <div className="settings-row-main">
-            <strong>{preset.name}</strong>
-            {preset.name === presets.default && <span className="pill pill-info">Default</span>}
-          </div>
-          {preset.description && <p className="ticket-meta">{preset.description}</p>}
-          <ol className="preset-step-list" aria-label={`Steps of ${preset.name}`}>{preset.steps.map((step, index) => <li key={`${step.name}-${index}`}>
-            <span className="preset-step-number">{index + 1}</span>
-            <span className="step-name">{step.name}</span>
-            <AgentBadges agents={step.agents} step={step.name} />
-          </li>)}</ol>
-        </li>)}</ul>
+        <ul className="preset-cards">{presets.presets.map(preset => <PresetCard key={preset.name} preset={preset} isDefault={preset.name === presets.default} agentsByName={agentsByName} />)}</ul>
       </section>
       <section className="settings-section" aria-labelledby="agents-title">
         <h2 id="agents-title" className="chart-title">Agents</h2>
         {agents.agents.length
-          ? <ul className="list">{agents.agents.map(agent => <li key={agent.name} className="settings-row agent-row">
-            <div className="settings-row-main">
-              <HarnessMark harness={agent.harness} className="size-4" />
-              <strong>{agent.name}</strong>
-            </div>
-            <dl className="token-times">
-              <div><dt>Harness</dt><dd>{harnessLabel(agent.harness)}</dd></div>
-              <div><dt>Model</dt><dd>{agent.model ? <code>{agent.model}</code> : agentSummary(agent)}</dd></div>
-              <div><dt>Used by</dt><dd>{agent.presets.length ? agent.presets.join(", ") : "No preset"}</dd></div>
-            </dl>
-          </li>)}</ul>
+          ? <>
+            {grouped.primary.length > 0 && <div className="agent-section-group">
+              {grouped.hasShared && <h3 className="label">Reusable roles</h3>}
+              <ul className="list" aria-label={grouped.hasShared ? "Reusable agents" : "Agents"}>
+                {grouped.primary.map(group => <AgentGroupRow key={group.key} group={group} fileAgentsByName={agentsByName} />)}
+              </ul>
+            </div>}
+            {grouped.presetGroups.length > 0 && (grouped.hasShared
+              ? <div className="token-revoked-section">
+                <Button type="button" variant="ghost" size="sm" className="token-revoked-toggle" aria-expanded={showPresetSpecific} onClick={() => setShowPresetSpecific(open => !open)}>
+                  <ChevronRight className={cn("size-3.5 token-revoked-chevron", showPresetSpecific && "token-revoked-chevron-open")} aria-hidden="true" />
+                  {showPresetSpecific ? `Hide preset-specific (${presetSpecificCount})` : `Show preset-specific (${presetSpecificCount})`}
+                </Button>
+                {showPresetSpecific && <div className="agent-preset-groups">{grouped.presetGroups.map(({ preset, groups }) => <div key={preset} className="agent-section-group">
+                  <h3 className="label">Only in {preset}</h3>
+                  <ul className="list" aria-label={`Agents only in ${preset}`}>
+                    {groups.map(group => <AgentGroupRow key={group.key} group={group} fileAgentsByName={agentsByName} />)}
+                  </ul>
+                </div>)}</div>}
+              </div>
+              : <div className="agent-preset-groups">{grouped.presetGroups.map(({ preset, groups }) => <div key={preset} className="agent-section-group">
+                <h3 className="label">{preset}</h3>
+                <ul className="list" aria-label={`Agents in ${preset}`}>
+                  {groups.map(group => <AgentGroupRow key={group.key} group={group} fileAgentsByName={agentsByName} />)}
+                </ul>
+              </div>)}</div>)}
+            {grouped.unused.length > 0 && (hasActiveAgents
+              ? <div className="token-revoked-section">
+                <Button type="button" variant="ghost" size="sm" className="token-revoked-toggle" aria-expanded={showUnused} onClick={() => setShowUnused(open => !open)}>
+                  <ChevronRight className={cn("size-3.5 token-revoked-chevron", showUnused && "token-revoked-chevron-open")} aria-hidden="true" />
+                  {showUnused ? `Hide unused (${grouped.unused.length})` : `Show unused (${grouped.unused.length})`}
+                </Button>
+                {showUnused && <ul className="list" aria-label="Unused agents">
+                  {grouped.unused.map(group => <AgentGroupRow key={group.key} group={group} fileAgentsByName={agentsByName} />)}
+                </ul>}
+              </div>
+              : <ul className="list" aria-label="Unused agents">
+                {grouped.unused.map(group => <AgentGroupRow key={group.key} group={group} fileAgentsByName={agentsByName} />)}
+              </ul>)}
+          </>
           : <p className="empty">No agents. A step runs one with <code>machinist agent &lt;name&gt;</code>.</p>}
       </section>
     </>}
