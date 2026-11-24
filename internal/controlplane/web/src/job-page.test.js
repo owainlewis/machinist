@@ -155,3 +155,94 @@ test("clicking Cancel on an active job posts to cancel and refreshes, or shows a
   await act(async () => cancelButton().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
   assert.match(document.querySelector('.job-actions [role="alert"]').textContent, /ticket has already ended/);
 });
+
+test("JobPage stops polling on terminal jobs and restarts polling on Run again", { timeout: 30000 }, async context => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/jobs/t_1" });
+  const previous = new Map();
+  for (const name of ["window", "document", "navigator", "HTMLElement", "MouseEvent", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
+  }
+  const scheduled = new Map();
+  let nextTimerID = 1;
+  dom.window.setTimeout = (fn, delay) => {
+    const id = nextTimerID++;
+    scheduled.set(id, { fn, delay });
+    return id;
+  };
+  dom.window.clearTimeout = id => { scheduled.delete(id); };
+
+  const ticketRequests = [];
+  const responses = [
+    { ticket: { ...ticket, state: "working" }, entries: [], runs: [{ id: "run_1", status: "running", started_at: now }] },
+    { ticket: { ...ticket, state: "done", pr_number: 12, pr_state: "merged" }, entries: [], runs: [{ id: "run_1", status: "succeeded", started_at: now, ended_at: now }] },
+    { ticket: { ...ticket, state: "working" }, entries: [], runs: [{ id: "run_1", status: "succeeded", started_at: now, ended_at: now }, { id: "run_2", status: "queued" }] },
+  ];
+  let responseIndex = 0;
+  let rerunCalls = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    if (url === "/api/v1/tickets/t_1" && (!init.method || init.method === "GET")) {
+      const payload = responses[Math.min(responseIndex++, responses.length - 1)];
+      ticketRequests.push(payload.ticket.state);
+      return { ok: true, status: 200, json: async () => payload };
+    }
+    if (url === "/api/v1/tickets/t_1/rerun" && init.method === "POST") {
+      rerunCalls++;
+      return { ok: true, status: 200, json: async () => ({ ...ticket, state: "working" }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ events: [], cursor: 0 }) };
+  };
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root"));
+  context.after(async () => {
+    await act(async () => root.unmount());
+    await server.close();
+    dom.window.close();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  const { JobPage } = await server.ssrLoadModule("/src/job-page.jsx");
+  await act(async () => root.render(React.createElement(JobPage, { jobID: "t_1" })));
+
+  assert.deepEqual(ticketRequests, ["working"]);
+  const pollTimers = () => [...scheduled.entries()].filter(([, entry]) => entry.delay === 2000);
+  assert.ok(pollTimers().length >= 1, "active job should schedule a 2s poll timer");
+
+  // Fire scheduled 2s timers; ticket transitions to terminal done+merged state.
+  for (const [id, entry] of pollTimers()) {
+    scheduled.delete(id);
+    await act(async () => { await entry.fn(); });
+  }
+  assert.deepEqual(ticketRequests, ["working", "done"]);
+  assert.equal(pollTimers().length, 0, "terminal job must stop scheduling 2s poll timers");
+
+  // Clicking Run again restarts polling.
+  const rerunButton = [...document.querySelectorAll(".job-actions button")].find(button => button.textContent.includes("Run again"));
+  assert.ok(rerunButton, "expected Run again button on terminal job");
+  await act(async () => rerunButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.equal(rerunCalls, 1);
+  assert.deepEqual(ticketRequests, ["working", "done", "working"]);
+  assert.ok(pollTimers().length >= 1, "clicking Run again must restart 2s polling");
+});
+
+test("pollJob stops only on terminal states with no active run and no open or shipping PR", { timeout: 30000 }, async context => {
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  context.after(() => server.close());
+  const { pollJob } = await server.ssrLoadModule("/src/job-page.jsx");
+
+  assert.equal(pollJob(null), true);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "working" }, runs: [] }), true);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "pr_ready", pr_number: 1, pr_state: "open" }, runs: [] }), true);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "done" }, runs: [{ id: "run_1", status: "succeeded", ended_at: now }] }), false);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "done", pr_number: 1, pr_state: "merged" }, runs: [{ id: "run_1", status: "succeeded", ended_at: now }] }), false);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "failed" }, runs: [{ id: "run_1", status: "failed", ended_at: now }] }), false);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "cancelled" }, runs: [{ id: "run_1", status: "cancelled", ended_at: now }] }), false);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "cancelled" }, runs: [{ id: "run_1", status: "cancelled" }] }), true);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "cancelled" }, runs: [{ id: "run_1", status: "running" }] }), true);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "failed", pr_number: 1, pr_state: "open" }, runs: [{ id: "run_1", status: "failed", ended_at: now }] }), true);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "done", shipping: '{"hold":""}' }, runs: [{ id: "run_1", status: "succeeded", ended_at: now }] }), true);
+});

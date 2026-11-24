@@ -260,29 +260,69 @@ export function JobView({ detail, onChange }) {
   </div>;
 }
 
+// pollJob says whether a job can still change on its own, so JobPage should
+// keep polling its detail. A job in done, failed or cancelled with no active
+// run and no open or shipping pull request has reached a terminal state.
+export function pollJob(detail) {
+  if (!detail?.ticket) return true;
+  const { ticket, runs = [] } = detail;
+  if (!["done", "failed", "cancelled"].includes(ticket.state)) return true;
+  if (runs.some(run => pollEvents(run))) return true;
+  if (ticket.pr_state === "open" || Boolean(ticket.shipping)) return true;
+  return false;
+}
+
 // The app keys this by job, so a reply for a job someone has left never shows under another.
 export function JobPage({ jobID, onSignedOut }) {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
-  const refresh = useCallback(async () => {
-    try {
-      setDetail(await api(`/api/v1/tickets/${encodeURIComponent(jobID)}`));
-      setError("");
-    } catch (failure) {
-      if (failure instanceof SignedOutError) onSignedOut?.();
-      else setError(failure.message);
-    }
-  }, [jobID, onSignedOut]);
+  const loop = useRef(null);
+
   useEffect(() => {
     let stopped = false;
     let timer;
+    let requestID = 0;
+    let controller;
+
     const load = async () => {
-      await refresh();
-      if (!stopped) timer = window.setTimeout(load, pollMillis);
+      window.clearTimeout(timer);
+      timer = undefined;
+      controller?.abort();
+      const currentController = new AbortController();
+      controller = currentController;
+      const currentID = ++requestID;
+      let keepPolling = false;
+      try {
+        const next = await api(`/api/v1/tickets/${encodeURIComponent(jobID)}`, { signal: currentController.signal });
+        if (stopped || currentID !== requestID) return;
+        setDetail(next);
+        setError("");
+        keepPolling = pollJob(next);
+      } catch (failure) {
+        if (stopped || currentID !== requestID || failure?.name === "AbortError") return;
+        if (failure instanceof SignedOutError) {
+          onSignedOut?.();
+          return;
+        }
+        setError(failure.message);
+        keepPolling = true;
+      }
+      if (!stopped && currentID === requestID && keepPolling) {
+        timer = window.setTimeout(load, pollMillis);
+      }
     };
+
+    loop.current = load;
     load();
-    return () => { stopped = true; window.clearTimeout(timer); };
-  }, [refresh]);
+    return () => {
+      stopped = true;
+      loop.current = null;
+      window.clearTimeout(timer);
+      controller?.abort();
+    };
+  }, [jobID, onSignedOut]);
+
+  const refresh = useCallback(() => loop.current?.(), []);
   if (!detail) return <div className="page">
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
     {error ? <p className="form-error" role="alert">{error}</p> : <p className="page-note" role="status">Loading job</p>}
