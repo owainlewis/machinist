@@ -186,6 +186,7 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 	deadline := time.Now().Add(time.Duration(request.TimeoutMillis) * time.Millisecond)
 	for index, step := range request.Steps {
 		workspace.Environment = freshToken(ctx, request, workspace.Environment)
+		beforeResult, _ := readControlFile(workspace.Control, "result.md")
 		stderr := &lastLine{}
 		result, err := runStep(ctx, request, step, workspace, dataDirectory, log, time.Until(deadline), stderr)
 		if result.State == "" {
@@ -205,6 +206,12 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 				entry.Error = strings.TrimPrefix(entry.Error+": "+said, ": ")
 			}
 			output.Error = fmt.Sprintf("step %s: %s", step.Name, entry.Error)
+			// Keep an explanation the failing step left in result.md.
+			if result.State == StateFailed || result.State == StateTimedOut {
+				if summary, readErr := readControlFile(workspace.Control, "result.md"); readErr == nil && summary != "" && summary != beforeResult {
+					output.Report = &protocol.Report{Outcome: protocol.OutcomeFailed, Summary: summary}
+				}
+			}
 			break
 		}
 	}

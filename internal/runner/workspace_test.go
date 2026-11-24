@@ -131,6 +131,45 @@ func TestFailingStepStopsTheRun(t *testing.T) {
 	}
 }
 
+func TestFailedStepKeepsResultFile(t *testing.T) {
+	result, _ := run(t, stepsRequest(
+		Step{Name: "check", Run: `printf 'Check test failed: https://ci.example.test/1\n' > "$MACHINIST_DIR/result.md"; exit 1`},
+		Step{Name: "ship", Run: "true"},
+	))
+	if result.State != StateFailed || result.Report == nil || result.Report.Outcome != protocol.OutcomeFailed || result.Report.Summary != "Check test failed: https://ci.example.test/1" {
+		t.Fatalf("result = %+v", result)
+	}
+	if !strings.Contains(result.Error, "step check: command exited with status 1") {
+		t.Fatalf("error = %q", result.Error)
+	}
+
+	// An earlier succeeding step's result.md is not attributed to a later step that failed without writing one.
+	stale, _ := run(t, stepsRequest(
+		Step{Name: "publish", Run: `printf 'Opened: https://example.test/pull/1\n' > "$MACHINIST_DIR/result.md"`},
+		Step{Name: "merge", Run: `echo 'network down' >&2; exit 1`},
+	))
+	if stale.State != StateFailed || stale.Report != nil || !strings.Contains(stale.Error, "network down") {
+		t.Fatalf("stale = %+v", stale)
+	}
+
+	// Overwriting an earlier result.md on failure keeps the failing step's explanation.
+	overwritten, _ := run(t, stepsRequest(
+		Step{Name: "publish", Run: `printf 'Opened: https://example.test/pull/1\n' > "$MACHINIST_DIR/result.md"`},
+		Step{Name: "merge", Run: `printf 'Check lint failed\n' > "$MACHINIST_DIR/result.md"; exit 1`},
+	))
+	if overwritten.State != StateFailed || overwritten.Report == nil || overwritten.Report.Outcome != protocol.OutcomeFailed || overwritten.Report.Summary != "Check lint failed" {
+		t.Fatalf("overwritten = %+v", overwritten)
+	}
+
+	// An unreadable result.md on failure does not hide the step's own error.
+	badLink, _ := run(t, stepsRequest(
+		Step{Name: "check", Run: `ln -s /etc/passwd "$MACHINIST_DIR/result.md"; echo 'boom' >&2; exit 2`},
+	))
+	if badLink.State != StateFailed || badLink.Report != nil || !strings.Contains(badLink.Error, "boom") {
+		t.Fatalf("badLink = %+v", badLink)
+	}
+}
+
 func TestAFailedStepSaysWhatItLastWroteToStderr(t *testing.T) {
 	result, _ := run(t, stepsRequest(Step{Name: "publish", Run: `echo progress; printf 'warming up\nmachinist: GitHub rejected the push: no workflows  \n\n' >&2; exit 2`}))
 	want := "step publish: command exited with status 2: machinist: GitHub rejected the push: no workflows"
