@@ -639,7 +639,7 @@ func (s *Server) mcpRunJob(ctx context.Context, auth tickets.TokenAuth, raw []by
 		if repo != "" || prompt != "" || preset != "" || key != "" {
 			return nil, errors.New("specify either automation, or repo and prompt, not both")
 		}
-		ticket, created, err = s.schedule.RunNow(ctx, automation, auth.Name)
+		ticket, created, err = s.schedule.RunNow(ctx, automation, auth.Name, "")
 		if errors.Is(err, tickets.ErrNotFound) {
 			return nil, fmt.Errorf("automation %q not found", automation)
 		}
