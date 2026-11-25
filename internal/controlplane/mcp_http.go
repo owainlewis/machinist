@@ -716,6 +716,9 @@ func (s *Server) mcpCancelJob(ctx context.Context, auth tickets.TokenAuth, raw [
 	if err != nil {
 		return nil, err
 	}
+	if s.engine != nil {
+		s.engine.UnpinThrough(ticket.ID, ticket.UpdatedAt)
+	}
 	return s.mcpJobDetail(ctx, ticket)
 }
 
@@ -784,7 +787,7 @@ func (s *Server) mcpJobDetail(ctx context.Context, ticket tickets.Ticket) (mcpJo
 			}
 		}
 	}
-	detail.Steps = buildMCPSteps(s.presetStepsForTicket(ticket.ID, ticket.Agent), latestRun, startedSteps)
+	detail.Steps = buildMCPSteps(s.presetStepsForTicket(ticket), latestRun, startedSteps)
 	return detail, nil
 }
 

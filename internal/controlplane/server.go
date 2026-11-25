@@ -438,7 +438,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/reload", s.requireToken(s.reload))
 	mux.Handle("/", http.FileServer(http.FS(mustSub(webAssets, "web/dist"))))
 	var handler http.Handler = mux
-	if isLoopbackListen(s.config.Server.Listen) {
+	cfg := s.state().config
+	if isLoopbackListen(cfg.Server.Listen) {
 		handler = loopbackHostOnly(handler)
 	}
 	return securityHeaders(handler)
@@ -467,9 +468,10 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 // Serve runs the API and the engine until ctx ends.
 func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
-	listener, err := net.Listen("tcp", s.config.Server.Listen)
+	cfg := s.state().config
+	listener, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", s.config.Server.Listen, err)
+		return fmt.Errorf("listen on %s: %w", cfg.Server.Listen, err)
 	}
 	defer listener.Close()
 	if onListening != nil {
@@ -478,8 +480,8 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	httpServer := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	served := make(chan error, 1)
 	go func() {
-		if s.config.Server.TLSCert != "" {
-			served <- httpServer.ServeTLS(listener, s.config.Server.TLSCert, s.config.Server.TLSKey)
+		if cfg.Server.TLSCert != "" {
+			served <- httpServer.ServeTLS(listener, cfg.Server.TLSCert, cfg.Server.TLSKey)
 			return
 		}
 		served <- httpServer.Serve(listener)

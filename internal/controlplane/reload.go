@@ -18,6 +18,7 @@ import (
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/githubapp"
 	"github.com/owainlewis/machinist/internal/sources"
+	"github.com/owainlewis/machinist/internal/tickets"
 )
 
 // errReloadInvalid marks a reload failure caused by invalid configuration or
@@ -107,9 +108,9 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 		nextLinear.Intake = s.intake
 	}
 
-	var queuedTicketIDs []string
+	var queuedTickets []tickets.Ticket
 	if s.store != nil {
-		queuedTicketIDs, err = s.store.QueuedTicketIDs(ctx)
+		queuedTickets, err = s.store.QueuedTickets(ctx)
 		if err != nil {
 			return ReloadResult{}, fmt.Errorf("list queued jobs: %w", err)
 		}
@@ -132,7 +133,7 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 	}
 
 	s.engine.Reload(
-		queuedTicketIDs,
+		queuedTickets,
 		nextFactory,
 		effectiveConfig.Server.RunDeadline(),
 		effectiveConfig.GitHub.Handle,

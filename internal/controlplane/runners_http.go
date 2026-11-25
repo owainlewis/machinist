@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/owainlewis/machinist/internal/engine"
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -101,7 +102,10 @@ func (s *Server) onlineRunners(runners []tickets.Runner) []tickets.Runner {
 // runner is online, or when the preset is gone, since such a job is claimed
 // only to fail.
 func (s *Server) waitingFor(online []tickets.Runner, presetName string) []string {
-	loaded := s.state().factory
+	return waitingForFrom(s.state().factory, online, presetName)
+}
+
+func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName string) []string {
 	if loaded == nil {
 		return nil
 	}

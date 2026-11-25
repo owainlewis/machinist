@@ -46,13 +46,28 @@ func TestQueuedTicketIDsAndDeleteToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := store.QueuedTicketIDs(ctx)
+	got, err := store.QueuedTickets(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	gotIDs := make([]string, len(got))
+	for i, ticket := range got {
+		gotIDs[i] = ticket.ID
+	}
 	want := []string{awaiting.ID, queued.ID}
-	if !slices.Equal(got, want) {
-		t.Fatalf("QueuedTicketIDs = %v, want %v", got, want)
+	if !slices.Equal(gotIDs, want) {
+		t.Fatalf("QueuedTickets IDs = %v, want %v", gotIDs, want)
+	}
+	if !got[0].UpdatedAt.Equal(awaiting.UpdatedAt) || !got[1].UpdatedAt.Equal(queued.UpdatedAt) {
+		t.Fatalf("QueuedTickets UpdatedAt mismatch: got [%v, %v], want [%v, %v]", got[0].UpdatedAt, got[1].UpdatedAt, awaiting.UpdatedAt, queued.UpdatedAt)
+	}
+
+	claim, err := store.ClaimRun(ctx, "runner-1", []string{"steps"}, time.Now().Add(time.Minute), func(tk Ticket) bool { return tk.ID == queued.ID })
+	if err != nil || claim == nil {
+		t.Fatalf("ClaimRun = %+v, %v", claim, err)
+	}
+	if !claim.QueuedUpdatedAt.Equal(queued.UpdatedAt) {
+		t.Fatalf("Claim.QueuedUpdatedAt = %v, want %v", claim.QueuedUpdatedAt, queued.UpdatedAt)
 	}
 
 	// DeleteToken removes the token completely so it cannot authenticate and does not appear in ListTokens.

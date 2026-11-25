@@ -281,10 +281,12 @@ type RunCompletion struct {
 }
 
 // Claim is a run given to a runner, with the ticket and log it works from.
+// QueuedUpdatedAt is the ticket's UpdatedAt just before ClaimRun updated it.
 type Claim struct {
-	Run     Run
-	Ticket  Ticket
-	Entries []Entry
+	Run             Run
+	Ticket          Ticket
+	Entries         []Entry
+	QueuedUpdatedAt time.Time
 }
 
 type querier interface {
@@ -1227,23 +1229,15 @@ func (s *Store) Apply(ctx context.Context, ticketID, from string, transition Tra
 	return updated, applied, nil
 }
 
-// QueuedTicketIDs returns the IDs of working tickets that do not currently
-// have a running agent run (either awaiting QueueRun or already queued).
-func (s *Store) QueuedTicketIDs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tickets WHERE state=? AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.ticket_id=tickets.id AND runs.kind=? AND runs.status=?) ORDER BY rowid`, StateWorking, RunKindAgent, RunRunning)
+// QueuedTickets returns working tickets that do not currently have a running
+// agent run (either awaiting QueueRun or already queued).
+func (s *Store) QueuedTickets(ctx context.Context) ([]Ticket, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state=? AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.ticket_id=tickets.id AND runs.kind=? AND runs.status=?) ORDER BY rowid`, StateWorking, RunKindAgent, RunRunning)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return scanTickets(rows)
 }
 
 // TicketsAwaitingRun lists working tickets with no queued or running agent run.
@@ -1386,6 +1380,10 @@ func (s *Store) ClaimRun(ctx context.Context, runner string, harnesses []string,
 		if err != nil {
 			return err
 		}
+		before, err := loadTicket(ctx, tx, run.TicketID)
+		if err != nil {
+			return err
+		}
 		now := s.now()
 		if _, err = tx.ExecContext(ctx, `UPDATE runs SET status=?,runner=?,lease_expires_at=?,started_at=? WHERE id=?`, RunRunning, runner, stamp(leaseUntil), stamp(now), run.ID); err != nil {
 			return err
@@ -1410,7 +1408,7 @@ func (s *Store) ClaimRun(ctx context.Context, runner string, harnesses []string,
 		if err != nil {
 			return err
 		}
-		claim = &Claim{Run: run, Ticket: ticket, Entries: entries}
+		claim = &Claim{Run: run, Ticket: ticket, Entries: entries, QueuedUpdatedAt: before.UpdatedAt}
 		return nil
 	})
 	return claim, err

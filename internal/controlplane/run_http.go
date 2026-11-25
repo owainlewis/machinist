@@ -191,6 +191,9 @@ func (s *Server) rerunJob(w http.ResponseWriter, r *http.Request, tokenName stri
 		writeTicketError(w, err)
 		return
 	}
+	if s.engine != nil {
+		s.engine.UnpinBefore(ticket.ID, ticket.UpdatedAt)
+	}
 	s.writeJob(w, r, http.StatusOK, ticket)
 }
 
@@ -199,6 +202,9 @@ func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request, tokenName str
 	if err != nil {
 		writeTicketError(w, err)
 		return
+	}
+	if s.engine != nil {
+		s.engine.UnpinThrough(ticket.ID, ticket.UpdatedAt)
 	}
 	s.writeJob(w, r, http.StatusOK, ticket)
 }

@@ -634,3 +634,380 @@ github:
 		t.Fatal("Serve did not stop after cancellation")
 	}
 }
+
+func TestReloadConcurrentWithServeStartup(t *testing.T) {
+	rf := newReloadFixture(t)
+	for range 5 {
+		ctx, cancel := context.WithCancel(t.Context())
+		reloaded := make(chan error, 1)
+		serveDone := make(chan error, 1)
+		go func() {
+			serveDone <- rf.server.Serve(ctx, func(net.Addr) {
+				go func() {
+					_, err := rf.server.Reload(ctx)
+					reloaded <- err
+				}()
+			})
+		}()
+		if err := <-reloaded; err != nil {
+			cancel()
+			t.Fatalf("concurrent Reload during Serve startup: %v", err)
+		}
+		cancel()
+		select {
+		case err := <-serveDone:
+			if err != nil {
+				t.Fatalf("Serve error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Serve did not stop after cancellation")
+		}
+	}
+}
+
+func TestReloadCancelledAndRerunQueuedTicketUsesReloadedConfig(t *testing.T) {
+	reloadConfigV2 := func(t *testing.T, rf *reloadFixture) {
+		t.Helper()
+		writeFile(t, rf.configPath, `server:
+  listen: 127.0.0.1:0
+  database: .machinist/tickets.db
+  factory: factory
+  default_preset: default
+  run_timeout: 15m
+
+github:
+  handle: reloaded-bot
+  auto_merge: false
+  repositories:
+    - owner/alpha
+`)
+		writeFile(t, filepath.Join(rf.factoryDir, "presets", "default.yaml"), "description: Default v2.\nsteps:\n  - name: work-v2\n    run: echo new-step\n")
+		writeFile(t, filepath.Join(rf.factoryDir, "prompts", "rules.md"), "New rules v2.\n")
+	}
+
+	assertReloadedRun := func(t *testing.T, req runner.RunRequest, ticketID string) {
+		t.Helper()
+		if req.TicketID != ticketID || len(req.Steps) != 1 || req.Steps[0].Name != "work-v2" || req.Steps[0].Run != "echo new-step" || req.Files["prompts/rules.md"] != "New rules v2.\n" || req.Vars["auto_merge"] != "false" || req.GitName != "reloaded-bot" || req.TimeoutMillis != (15*time.Minute).Milliseconds() {
+			t.Fatalf("rerun got stale pre-reload definition: %+v", req)
+		}
+	}
+
+	t.Run("cancel and rerun via HTTP API", func(t *testing.T) {
+		rf := newReloadFixture(t)
+		runnerToken := rf.newToken(t, "runner-1", tickets.RoleRunner)
+
+		tk, _, err := rf.server.intake.Run(t.Context(), sources.RunRequest{
+			Key: "rerun-http", Preset: "default", Vars: map[string]string{"repo": "owner/alpha"}, Prompt: "Queued job",
+		}, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rf.server.engine.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+
+		reloadConfigV2(t, rf)
+		if status, _, errMsg := rf.postReload(t, rf.token); status != http.StatusOK {
+			t.Fatalf("reload failed: %d %q", status, errMsg)
+		}
+
+		// Still pinned while queued before cancel.
+		resp, body := rf.call(t, http.MethodGet, "/api/v1/tickets/"+tk.ID, rf.token, nil)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"name":"work"`) {
+			t.Fatalf("pre-cancel getTicket = %d %s", resp.StatusCode, body)
+		}
+
+		if resp, body := rf.call(t, http.MethodPost, "/api/v1/tickets/"+tk.ID+"/cancel", rf.token, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("cancel = %d %s", resp.StatusCode, body)
+		}
+		if resp, body := rf.call(t, http.MethodPost, "/api/v1/tickets/"+tk.ID+"/rerun", rf.token, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("rerun = %d %s", resp.StatusCode, body)
+		}
+
+		// After cancel + rerun, getTicket must reflect the reloaded preset steps.
+		resp, body = rf.call(t, http.MethodGet, "/api/v1/tickets/"+tk.ID, rf.token, nil)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"name":"work-v2"`) {
+			t.Fatalf("post-rerun getTicket = %d %s", resp.StatusCode, body)
+		}
+
+		if err := rf.server.engine.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		resp, body = rf.call(t, http.MethodPost, "/api/v1/runners/poll", runnerToken, protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("poll rerun = %d %s", resp.StatusCode, body)
+		}
+		var req runner.RunRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		assertReloadedRun(t, req, tk.ID)
+	})
+
+	t.Run("direct store cancel and rerun invalidates stale pin", func(t *testing.T) {
+		rf := newReloadFixture(t)
+		runnerToken := rf.newToken(t, "runner-1", tickets.RoleRunner)
+
+		tk, _, err := rf.server.intake.Run(t.Context(), sources.RunRequest{
+			Key: "rerun-store", Preset: "default", Vars: map[string]string{"repo": "owner/alpha"}, Prompt: "Queued job",
+		}, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rf.server.engine.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+
+		reloadConfigV2(t, rf)
+		if status, _, errMsg := rf.postReload(t, rf.token); status != http.StatusOK {
+			t.Fatalf("reload failed: %d %q", status, errMsg)
+		}
+
+		// Cancel and rerun directly via store (as trackers do) without HTTP unpin.
+		if _, err := rf.store.Cancel(t.Context(), tk.ID, "linear"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rf.store.Rerun(t.Context(), tk.ID, "linear"); err != nil {
+			t.Fatal(err)
+		}
+
+		resp, body := rf.call(t, http.MethodGet, "/api/v1/tickets/"+tk.ID, rf.token, nil)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"name":"work-v2"`) {
+			t.Fatalf("post-rerun getTicket = %d %s", resp.StatusCode, body)
+		}
+
+		if err := rf.server.engine.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		resp, body = rf.call(t, http.MethodPost, "/api/v1/runners/poll", runnerToken, protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("poll rerun = %d %s", resp.StatusCode, body)
+		}
+		var req runner.RunRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		assertReloadedRun(t, req, tk.ID)
+	})
+
+	t.Run("claimed between QueuedTickets and Engine.Reload then replied to", func(t *testing.T) {
+		rf := newReloadFixture(t)
+		runnerToken := rf.newToken(t, "runner-1", tickets.RoleRunner)
+
+		tk, _, err := rf.server.intake.Run(t.Context(), sources.RunRequest{
+			Key: "race-reply", Preset: "default", Vars: map[string]string{"repo": "owner/alpha"}, Prompt: "Queued job",
+		}, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rf.server.engine.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+
+		// Snapshot queued tickets and v1 state before the runner claims the run.
+		origState := rf.server.state()
+		staleQueued, err := rf.store.QueuedTickets(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Runner claims and completes the pre-reload run.
+		resp, body := rf.call(t, http.MethodPost, "/api/v1/runners/poll", runnerToken, protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("poll initial = %d %s", resp.StatusCode, body)
+		}
+		var firstReq runner.RunRequest
+		if err := json.Unmarshal(body, &firstReq); err != nil {
+			t.Fatal(err)
+		}
+		if resp, body := rf.call(t, http.MethodPost, "/api/v1/runs/"+firstReq.RunID+"/complete", runnerToken, protocol.Completion{
+			State:  tickets.RunSucceeded,
+			Report: &protocol.Report{Outcome: protocol.OutcomeNoChange, Summary: "Done."},
+		}); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("complete initial = %d %s", resp.StatusCode, body)
+		}
+
+		// Apply reloaded config and re-inject a stale v1 pin (simulating
+		// ClaimRun interleaving between QueuedTickets and Engine.Reload).
+		reloadConfigV2(t, rf)
+		if status, _, errMsg := rf.postReload(t, rf.token); status != http.StatusOK {
+			t.Fatalf("reload failed: %d %q", status, errMsg)
+		}
+		st := rf.server.state()
+		rf.server.engine.Reload(nil, origState.factory, origState.config.Server.RunDeadline(), origState.config.GitHub.Handle, origState.config.GitHub.AutoMerges(), nil, nil)
+		rf.server.engine.Reload(staleQueued, st.factory, st.config.Server.RunDeadline(), st.config.GitHub.Handle, st.config.GitHub.AutoMerges(), nil, nil)
+		if rf.server.engine.PinnedFactory(tk.ID, staleQueued[0].UpdatedAt) != origState.factory {
+			t.Fatal("expected stale v1 pin to be present for pre-claim generation")
+		}
+
+		// Reply on the finished ticket to start a new post-reload run.
+		if _, err := rf.store.Reply(t.Context(), tk.ID, "alice", []tickets.Comment{{Body: "Try again."}}); err != nil {
+			t.Fatal(err)
+		}
+		resp, body = rf.call(t, http.MethodGet, "/api/v1/tickets/"+tk.ID, rf.token, nil)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"name":"work-v2"`) {
+			t.Fatalf("post-reply getTicket = %d %s", resp.StatusCode, body)
+		}
+		if err := rf.server.engine.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		resp, body = rf.call(t, http.MethodPost, "/api/v1/runners/poll", runnerToken, protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("poll reply = %d %s", resp.StatusCode, body)
+		}
+		var secondReq runner.RunRequest
+		if err := json.Unmarshal(body, &secondReq); err != nil {
+			t.Fatal(err)
+		}
+		assertReloadedRun(t, secondReq, tk.ID)
+	})
+}
+
+func TestReloadGetTicketWaitingForHonorsPinnedFactory(t *testing.T) {
+	rf := newReloadFixture(t)
+	runnerToken := rf.newToken(t, "claude-runner", tickets.RoleRunner)
+
+	// Configure presets with distinct harness needs before reload:
+	// - default: claude
+	// - review: codex
+	// - legacy: codex (will be removed on reload)
+	writeFile(t, filepath.Join(rf.factoryDir, "agents", "coder.md"), "---\nharness: claude\n---\nCode.\n")
+	writeFile(t, filepath.Join(rf.factoryDir, "agents", "reviewer.md"), "---\nharness: codex\n---\nReview.\n")
+	writeFile(t, filepath.Join(rf.factoryDir, "presets", "default.yaml"), "description: Default.\nsteps:\n  - name: code\n    agent: coder\n")
+	writeFile(t, filepath.Join(rf.factoryDir, "presets", "review.yaml"), "description: Review.\nsteps:\n  - name: review\n    agent: reviewer\n")
+	writeFile(t, filepath.Join(rf.factoryDir, "presets", "legacy.yaml"), "description: Legacy.\nsteps:\n  - name: legacy-review\n    agent: reviewer\n")
+	if status, _, errMsg := rf.postReload(t, rf.token); status != http.StatusOK {
+		t.Fatalf("initial reload failed: %d %q", status, errMsg)
+	}
+
+	// Register an online probed runner that only has claude (no codex).
+	if resp, body := rf.call(t, http.MethodPost, "/api/v1/runners/poll", runnerToken, protocol.PollRequest{
+		Harnesses: []string{protocol.StepsHarness, "claude"},
+		Probed:    true,
+	}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("initial runner poll = %d %s", resp.StatusCode, body)
+	}
+
+	waitingFor := func(id string) []string {
+		t.Helper()
+		resp, body := rf.call(t, http.MethodGet, "/api/v1/tickets/"+id, rf.token, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("getTicket(%s) = %d %s", id, resp.StatusCode, body)
+		}
+		var detail struct {
+			WaitingFor []string `json:"waiting_for"`
+		}
+		if err := json.Unmarshal(body, &detail); err != nil {
+			t.Fatalf("decode ticket detail: %v (%s)", err, body)
+		}
+		return detail.WaitingFor
+	}
+
+	// Queue three tickets before reload.
+	tReview, _, err := rf.server.intake.Run(t.Context(), sources.RunRequest{
+		Key: "wf-review", Preset: "review", Vars: map[string]string{"repo": "owner/alpha"}, Prompt: "Review",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tLegacy, _, err := rf.server.intake.Run(t.Context(), sources.RunRequest{
+		Key: "wf-legacy", Preset: "legacy", Vars: map[string]string{"repo": "owner/alpha"}, Prompt: "Legacy",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tDefault, _, err := rf.server.intake.Run(t.Context(), sources.RunRequest{
+		Key: "wf-default", Preset: "default", Vars: map[string]string{"repo": "owner/alpha"}, Prompt: "Default",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rf.server.engine.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload: swap harness needs (default -> codex, review -> claude) and remove legacy.
+	writeFile(t, filepath.Join(rf.factoryDir, "presets", "default.yaml"), "description: Default v2.\nsteps:\n  - name: code\n    agent: reviewer\n")
+	writeFile(t, filepath.Join(rf.factoryDir, "presets", "review.yaml"), "description: Review v2.\nsteps:\n  - name: review\n    agent: coder\n")
+	if err := os.Remove(filepath.Join(rf.factoryDir, "presets", "legacy.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, errMsg := rf.postReload(t, rf.token); status != http.StatusOK {
+		t.Fatalf("swap reload failed: %d %q", status, errMsg)
+	}
+
+	// Pinned tickets report waiting_for from their pinned factory, matching Assign.
+	if got := waitingFor(tReview.ID); !slices.Equal(got, []string{"codex"}) {
+		t.Fatalf("pinned review waiting_for = %v, want [codex]", got)
+	}
+	if got := waitingFor(tLegacy.ID); !slices.Equal(got, []string{"codex"}) {
+		t.Fatalf("pinned removed legacy waiting_for = %v, want [codex]", got)
+	}
+	if got := waitingFor(tDefault.ID); len(got) != 0 {
+		t.Fatalf("pinned default waiting_for = %v, want empty", got)
+	}
+
+	// The claude-only runner claims the pinned default ticket (and cannot claim review or legacy).
+	resp, body := rf.call(t, http.MethodPost, "/api/v1/runners/poll", runnerToken, protocol.PollRequest{
+		Harnesses: []string{protocol.StepsHarness, "claude"},
+		Probed:    true,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("poll pinned default = %d %s", resp.StatusCode, body)
+	}
+	var claimed runner.RunRequest
+	if err := json.Unmarshal(body, &claimed); err != nil {
+		t.Fatal(err)
+	}
+	if claimed.TicketID != tDefault.ID {
+		t.Fatalf("claimed %s, want %s", claimed.TicketID, tDefault.ID)
+	}
+	if resp, body := rf.call(t, http.MethodPost, "/api/v1/runners/poll", runnerToken, protocol.PollRequest{
+		Harnesses: []string{protocol.StepsHarness, "claude"},
+		Probed:    true,
+	}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 while only codex-pinned tickets remain, got %d %s", resp.StatusCode, body)
+	}
+
+	// A new post-reload default ticket uses the reloaded factory (needs codex).
+	tNewDefault, _, err := rf.server.intake.Run(t.Context(), sources.RunRequest{
+		Key: "wf-new-default", Preset: "default", Vars: map[string]string{"repo": "owner/alpha"}, Prompt: "New default",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rf.server.engine.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitingFor(tNewDefault.ID); !slices.Equal(got, []string{"codex"}) {
+		t.Fatalf("new default waiting_for = %v, want [codex]", got)
+	}
+
+	// Cancelling and rerunning tReview switches it to reloaded review (needs claude -> unblocked).
+	if resp, body := rf.call(t, http.MethodPost, "/api/v1/tickets/"+tReview.ID+"/cancel", rf.token, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("cancel review = %d %s", resp.StatusCode, body)
+	}
+	if resp, body := rf.call(t, http.MethodPost, "/api/v1/tickets/"+tReview.ID+"/rerun", rf.token, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("rerun review = %d %s", resp.StatusCode, body)
+	}
+	if err := rf.server.engine.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitingFor(tReview.ID); len(got) != 0 {
+		t.Fatalf("rerun review waiting_for = %v, want empty", got)
+	}
+	resp, body = rf.call(t, http.MethodPost, "/api/v1/runners/poll", runnerToken, protocol.PollRequest{
+		Harnesses: []string{protocol.StepsHarness, "claude"},
+		Probed:    true,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("poll rerun review = %d %s", resp.StatusCode, body)
+	}
+	var rerunClaimed runner.RunRequest
+	if err := json.Unmarshal(body, &rerunClaimed); err != nil {
+		t.Fatal(err)
+	}
+	if rerunClaimed.TicketID != tReview.ID {
+		t.Fatalf("claimed %s, want %s", rerunClaimed.TicketID, tReview.ID)
+	}
+}

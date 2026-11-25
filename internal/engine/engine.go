@@ -103,10 +103,15 @@ type runConfig struct {
 	identity    IdentityFinder
 }
 
+type pinnedConfig struct {
+	config    *runConfig
+	updatedAt time.Time
+}
+
 type Engine struct {
 	Options
 	mu          sync.RWMutex
-	pinned      map[string]*runConfig
+	pinned      map[string]pinnedConfig
 	now         func() time.Time
 	sleep       func(context.Context, time.Duration) bool
 	deliverNext time.Time
@@ -130,34 +135,67 @@ func (e *Engine) snapshotLocked() *runConfig {
 	}
 }
 
-func (e *Engine) configForTicket(ticketID string) *runConfig {
+func (e *Engine) configForTicket(ticketID string, updatedAt time.Time) *runConfig {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-	if cfg, ok := e.pinned[ticketID]; ok {
+	pin, ok := e.pinned[ticketID]
+	if !ok {
+		cfg := e.snapshotLocked()
+		e.mu.RUnlock()
 		return cfg
+	}
+	if pin.updatedAt.Equal(updatedAt) {
+		e.mu.RUnlock()
+		return pin.config
+	}
+	e.mu.RUnlock()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if current, ok := e.pinned[ticketID]; ok && !current.updatedAt.Equal(updatedAt) {
+		delete(e.pinned, ticketID)
 	}
 	return e.snapshotLocked()
 }
 
-func (e *Engine) takeConfigForTicket(ticketID string) *runConfig {
+func (e *Engine) takeConfigForTicket(ticketID string, updatedAt time.Time) *runConfig {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if cfg, ok := e.pinned[ticketID]; ok {
+	if pin, ok := e.pinned[ticketID]; ok {
 		delete(e.pinned, ticketID)
-		return cfg
+		if pin.updatedAt.Equal(updatedAt) {
+			return pin.config
+		}
 	}
 	return e.snapshotLocked()
 }
 
 // PinnedFactory returns the factory a ticket was pinned to during a reload,
-// or nil if the ticket uses the current factory.
-func (e *Engine) PinnedFactory(ticketID string) *factory.Factory {
+// or nil if the ticket uses the current factory or its generation changed.
+func (e *Engine) PinnedFactory(ticketID string, updatedAt time.Time) *factory.Factory {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if cfg, ok := e.pinned[ticketID]; ok {
-		return cfg.factory
+	if pin, ok := e.pinned[ticketID]; ok && pin.updatedAt.Equal(updatedAt) {
+		return pin.config.factory
 	}
 	return nil
+}
+
+// UnpinThrough drops any reload pin for ticketID recorded at or before at.
+func (e *Engine) UnpinThrough(ticketID string, at time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if pin, ok := e.pinned[ticketID]; ok && !pin.updatedAt.After(at) {
+		delete(e.pinned, ticketID)
+	}
+}
+
+// UnpinBefore drops any reload pin for ticketID recorded strictly before at.
+func (e *Engine) UnpinBefore(ticketID string, at time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if pin, ok := e.pinned[ticketID]; ok && pin.updatedAt.Before(at) {
+		delete(e.pinned, ticketID)
+	}
 }
 
 func (e *Engine) autoMerge() bool {
@@ -174,17 +212,17 @@ func (e *Engine) githubToken() TokenMinter {
 
 // Reload swaps the engine's factory and reloadable config atomically while
 // pinning every currently queued or awaiting-run ticket to the configuration
-// it started with.
-func (e *Engine) Reload(queuedTicketIDs []string, loaded *factory.Factory, runTimeout time.Duration, handle string, autoMerge bool, tokens TokenMinter, identity IdentityFinder) {
+// it started with, tied to that ticket's current UpdatedAt generation.
+func (e *Engine) Reload(queuedTickets []tickets.Ticket, loaded *factory.Factory, runTimeout time.Duration, handle string, autoMerge bool, tokens TokenMinter, identity IdentityFinder) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	previous := e.snapshotLocked()
-	nextPinned := make(map[string]*runConfig, len(queuedTicketIDs))
-	for _, id := range queuedTicketIDs {
-		if existing, ok := e.pinned[id]; ok {
-			nextPinned[id] = existing
+	nextPinned := make(map[string]pinnedConfig, len(queuedTickets))
+	for _, ticket := range queuedTickets {
+		if existing, ok := e.pinned[ticket.ID]; ok && existing.updatedAt.Equal(ticket.UpdatedAt) {
+			nextPinned[ticket.ID] = existing
 		} else {
-			nextPinned[id] = previous
+			nextPinned[ticket.ID] = pinnedConfig{config: previous, updatedAt: ticket.UpdatedAt}
 		}
 	}
 	e.pinned = nextPinned
@@ -246,7 +284,7 @@ func (e *Engine) advance(ctx context.Context, ticket tickets.Ticket) error {
 		message := fmt.Sprintf("Stopped after %d attempts, because the runner was lost each time.", maxAttempts)
 		return e.apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: message})
 	}
-	cfg := e.configForTicket(ticket.ID)
+	cfg := e.configForTicket(ticket.ID, ticket.UpdatedAt)
 	if _, ok := cfg.factory.Preset(ticket.Agent); !ok {
 		return e.apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: missingPresetMessage(ticket.Agent)})
 	}
@@ -274,9 +312,9 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		pinned := maps.Clone(e.pinned)
 		e.mu.RUnlock()
 		accept = func(ticket tickets.Ticket) bool {
-			cfg := pinned[ticket.ID]
-			if cfg == nil {
-				cfg = current
+			cfg := current
+			if pin, ok := pinned[ticket.ID]; ok && pin.updatedAt.Equal(ticket.UpdatedAt) {
+				cfg = pin.config
 			}
 			preset, ok := cfg.factory.Preset(ticket.Agent)
 			// A job whose preset is gone is claimed so that it fails.
@@ -287,7 +325,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 	if err != nil || claim == nil {
 		return nil, err
 	}
-	cfg := e.takeConfigForTicket(claim.Ticket.ID)
+	cfg := e.takeConfigForTicket(claim.Ticket.ID, claim.QueuedUpdatedAt)
 	preset, ok := cfg.factory.Preset(claim.Ticket.Agent)
 	if !ok {
 		message := missingPresetMessage(claim.Ticket.Agent)
