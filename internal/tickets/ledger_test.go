@@ -17,7 +17,7 @@ func finishRun(t *testing.T, store *Store, ticketID string, report *protocol.Rep
 	if err != nil || claim == nil {
 		t.Fatalf("claim = %v, err = %v", claim, err)
 	}
-	err = store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: report, Tokens: &tokens, Cost: cost}, func(Ticket, string) Transition {
+	_, _, err = store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: report, Tokens: &tokens, Cost: cost}, func(Ticket, string) Transition {
 		return Transition{State: StatePRReady}
 	})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestTicketElapsedCountsOnlyTimeRunsSpentRunning(t *testing.T) {
 			t.Fatalf("claim = %v, err = %v", claim, err)
 		}
 		at(ended)
-		if err := store.CompleteRun(ctx, RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: &protocol.Report{Outcome: "pr_ready", Summary: "s"}}, func(Ticket, string) Transition {
+		if _, _, err := store.CompleteRun(ctx, RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: &protocol.Report{Outcome: "pr_ready", Summary: "s"}}, func(Ticket, string) Transition {
 			return Transition{State: StatePRReady}
 		}); err != nil {
 			t.Fatal(err)

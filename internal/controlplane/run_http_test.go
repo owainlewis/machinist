@@ -268,7 +268,7 @@ func TestJobAPIMergeGateJSONSerialization(t *testing.T) {
 	}
 
 	// After persisting a merge-gate verdict, both single and list job endpoints include it.
-	if err := f.store.Apply(t.Context(), created.ID, tickets.StateWorking, tickets.Transition{
+	if _, _, err := f.store.Apply(t.Context(), created.ID, tickets.StateWorking, tickets.Transition{
 		State:    tickets.StatePRReady,
 		PRNumber: 91,
 		MergeGate: &tickets.MergeGate{

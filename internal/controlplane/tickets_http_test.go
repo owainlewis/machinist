@@ -68,7 +68,7 @@ func TestListTicketsFiltersNewestFirst(t *testing.T) {
 	first := f.assign(t, "r1")
 	time.Sleep(2 * time.Millisecond)
 	second := f.assign(t, "r2")
-	if err := f.store.Apply(t.Context(), second.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed}); err != nil {
+	if _, _, err := f.store.Apply(t.Context(), second.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed}); err != nil {
 		t.Fatal(err)
 	}
 	list := func(query string) []tickets.Ticket {
@@ -129,7 +129,7 @@ func TestListTicketsPaginationAndBoardView(t *testing.T) {
 		if i%2 == 1 {
 			state = tickets.StateFailed
 		}
-		if err := f.store.Apply(t.Context(), created.ID, tickets.StateWorking, tickets.Transition{State: state}); err != nil {
+		if _, _, err := f.store.Apply(t.Context(), created.ID, tickets.StateWorking, tickets.Transition{State: state}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -369,7 +369,7 @@ func TestAutomationRoutes(t *testing.T) {
 	if response, _ := f.call(t, http.MethodPost, "/api/v1/automations/missing/run", f.token, nil); response.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d", response.StatusCode)
 	}
-	if err := f.store.Apply(t.Context(), first.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Checked 3 PRs"}); err != nil {
+	if _, _, err := f.store.Apply(t.Context(), first.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Checked 3 PRs"}); err != nil {
 		t.Fatal(err)
 	}
 	response, body = f.call(t, http.MethodGet, "/api/v1/automations", f.token, nil)
@@ -454,7 +454,7 @@ func TestRerunRouteAndPresetSteps(t *testing.T) {
 	if response, _ := f.call(t, http.MethodPost, path, f.token, nil); response.StatusCode != http.StatusConflict {
 		t.Fatalf("working: status = %d", response.StatusCode)
 	}
-	if err := f.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed}); err != nil {
+	if _, _, err := f.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed}); err != nil {
 		t.Fatal(err)
 	}
 	response, body = f.call(t, http.MethodPost, path, f.token, nil)
@@ -525,7 +525,7 @@ func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
 			transition.State = tickets.StateDone
 			transition.MergedAt = &now
 		}
-		if err := f.store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunSucceeded, Tokens: tokens, Cost: cost, Stages: stages}, func(tickets.Ticket, string) tickets.Transition {
+		if _, _, err := f.store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunSucceeded, Tokens: tokens, Cost: cost, Stages: stages}, func(tickets.Ticket, string) tickets.Transition {
 			return transition
 		}); err != nil {
 			t.Fatal(err)
@@ -708,7 +708,7 @@ func TestTicketAPIMergeGateJSONSerialization(t *testing.T) {
 	}
 
 	// Persist a merge-gate verdict and verify /api/v1/tickets/{id}, list, and board responses expose it.
-	if err := f.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{
+	if _, _, err := f.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{
 		State:    tickets.StatePRReady,
 		PRNumber: 42,
 		MergeGate: &tickets.MergeGate{

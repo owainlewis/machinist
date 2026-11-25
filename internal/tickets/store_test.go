@@ -54,7 +54,7 @@ func completeTo(state string) func(Ticket, string) Transition {
 
 func completeRun(t *testing.T, store *Store, runID, state string) {
 	t.Helper()
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: runID, Status: RunSucceeded}, completeTo(state)); err != nil {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: runID, Status: RunSucceeded}, completeTo(state)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -158,7 +158,7 @@ func TestCompleteRunAppliesTransitionAndStoresResult(t *testing.T) {
 	claim := claimRun(t, store, ticket)
 	tokens, cost := int64(12), 0.5
 	report := &protocol.Report{Outcome: protocol.OutcomeFailed, Summary: "Stuck"}
-	err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: report, Tokens: &tokens, Cost: &cost}, func(Ticket, string) Transition {
+	_, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded, Report: report, Tokens: &tokens, Cost: &cost}, func(Ticket, string) Transition {
 		return Transition{State: StateFailed, Report: "failed: Stuck", Message: "Stuck"}
 	})
 	if err != nil {
@@ -175,7 +175,7 @@ func TestCompleteRunAppliesTransitionAndStoresResult(t *testing.T) {
 	if entries[1].Kind != EntryReport || entries[2].Kind != EntryMessage || entries[2].Body != "Stuck" {
 		t.Fatalf("entries = %+v", entries)
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, completeTo(StateDone)); !errors.Is(err, ErrRunNotActive) {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, completeTo(StateDone)); !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("second completion: %v", err)
 	}
 }
@@ -188,7 +188,7 @@ func TestCompleteRunKeepsTheSavedPatch(t *testing.T) {
 		t.Fatalf("patch before completion: %v", err)
 	}
 	patch := []byte("Subject: [PATCH] Use Postgres\n\x00binary")
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed, Patch: patch}, completeTo(StateFailed)); err != nil {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed, Patch: patch}, completeTo(StateFailed)); err != nil {
 		t.Fatal(err)
 	}
 	if body, err := store.RunPatch(t.Context(), claim.Run.ID); err != nil || string(body) != string(patch) {
@@ -204,7 +204,7 @@ func TestARunWithoutAPatchSaysSo(t *testing.T) {
 	store := openStore(t)
 	ticket := createTicket(t, store, "api:1")
 	claim := claimRun(t, store, ticket)
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed}, completeTo(StateFailed)); err != nil {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed}, completeTo(StateFailed)); err != nil {
 		t.Fatal(err)
 	}
 	if run, err := store.Run(t.Context(), claim.Run.ID); err != nil || run.Patch {
@@ -225,7 +225,7 @@ func TestCompleteRunStoresStagesInOrder(t *testing.T) {
 		{Name: "test", Kind: "script", State: "failed", DurationMillis: 20, Error: "command exited with status 1"},
 		{Name: "review", Kind: "agent", State: protocol.StageSkipped, Tokens: &tokens, CostUnknown: true},
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed, Stages: stages}, completeTo(StateFailed)); err != nil {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunFailed, Stages: stages}, completeTo(StateFailed)); err != nil {
 		t.Fatal(err)
 	}
 	runs, err := store.Runs(t.Context(), ticket.ID)
@@ -264,7 +264,7 @@ func TestAFailedRunIgnoresWaitingInput(t *testing.T) {
 	if _, _, err := store.AddInput(t.Context(), ticket.ID, Input{Kind: EntryCI, Author: "github", Body: "CI failed on abc", SourceKey: "github:ci:abc"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, completeTo(StateFailed)); err != nil {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, completeTo(StateFailed)); err != nil {
 		t.Fatal(err)
 	}
 	if got := reload(t, store, ticket.ID); got.State != StateFailed {
@@ -280,7 +280,7 @@ func TestEndedTicketIgnoresWaitingInputAndCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunCancelled}, func(Ticket, string) Transition {
+	_, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunCancelled}, func(Ticket, string) Transition {
 		called = true
 		return Transition{State: StateDone}
 	})
@@ -309,7 +309,7 @@ func TestAddInputFollowsStateRows(t *testing.T) {
 	} {
 		store := openStore(t)
 		ticket := createTicket(t, store, "api:1")
-		if err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: test.from}); err != nil {
+		if _, _, err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: test.from}); err != nil {
 			t.Fatal(err)
 		}
 		got, added, err := store.AddInput(t.Context(), ticket.ID, Input{Kind: test.kind, Author: "bob", Body: "text", SourceKey: "k"})
@@ -370,7 +370,7 @@ func TestLeasesRenewExpireAndAskRunnersToStop(t *testing.T) {
 	if _, err := store.RenewLease(t.Context(), claim.Run.ID, now); !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("expired run renewed: %v", err)
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, completeTo(StateDone)); !errors.Is(err, ErrRunNotActive) {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: RunSucceeded}, completeTo(StateDone)); !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("expired run completed: %v", err)
 	}
 	if _, err := store.RenewLease(t.Context(), "run_unknown", now); !errors.Is(err, ErrNotFound) {
@@ -433,7 +433,7 @@ func TestTicketsAwaitingRunSkipsActiveRunsAndOtherStates(t *testing.T) {
 	if _, err := store.QueueRun(t.Context(), busy.ID, "claude"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Apply(t.Context(), paused.ID, StateWorking, Transition{State: StatePRReady}); err != nil {
+	if _, _, err := store.Apply(t.Context(), paused.ID, StateWorking, Transition{State: StatePRReady}); err != nil {
 		t.Fatal(err)
 	}
 	tickets, err := store.TicketsAwaitingRun(t.Context())
@@ -730,15 +730,15 @@ func TestListTicketsPageFiltersStatesCountsAndSources(t *testing.T) {
 	}
 	queuedTicket := newFrom("linear", "linear:2")
 	prReadyTicket := newFrom("linear", "linear:3")
-	if err := store.Apply(t.Context(), prReadyTicket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 7}); err != nil {
+	if _, _, err := store.Apply(t.Context(), prReadyTicket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
 	doneTicket := newFrom("api", "api:1")
-	if err := store.Apply(t.Context(), doneTicket.ID, StateWorking, Transition{State: StateDone}); err != nil {
+	if _, _, err := store.Apply(t.Context(), doneTicket.ID, StateWorking, Transition{State: StateDone}); err != nil {
 		t.Fatal(err)
 	}
 	failedTicket := newFrom("web", "web:1")
-	if err := store.Apply(t.Context(), failedTicket.ID, StateWorking, Transition{State: StateFailed}); err != nil {
+	if _, _, err := store.Apply(t.Context(), failedTicket.ID, StateWorking, Transition{State: StateFailed}); err != nil {
 		t.Fatal(err)
 	}
 	cancelledTicket := newFrom("web", "web:2")
@@ -804,7 +804,7 @@ func TestListBoardTicketsCapsDoneTo20AndKeepsActiveUncapped(t *testing.T) {
 	reviewIDs := map[string]bool{}
 	for i := range 2 {
 		ticket := createTicket(t, store, fmt.Sprintf("api:review:%d", i))
-		if err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: StatePRReady}); err != nil {
+		if _, _, err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: StatePRReady}); err != nil {
 			t.Fatal(err)
 		}
 		reviewIDs[ticket.ID] = true
@@ -820,7 +820,7 @@ func TestListBoardTicketsCapsDoneTo20AndKeepsActiveUncapped(t *testing.T) {
 		} else if i%3 == 2 {
 			state = StateCancelled
 		}
-		if err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: state}); err != nil {
+		if _, _, err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: state}); err != nil {
 			t.Fatal(err)
 		}
 		finished = append(finished, ticket)
@@ -956,7 +956,7 @@ func TestRerunReopensAnEndedTicket(t *testing.T) {
 	if _, err := store.Rerun(t.Context(), ticket.ID, "alice"); err != ErrStillWorking {
 		t.Fatalf("working: err = %v", err)
 	}
-	if err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: StateFailed}); err != nil {
+	if _, _, err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: StateFailed}); err != nil {
 		t.Fatal(err)
 	}
 	again, err := store.Rerun(t.Context(), ticket.ID, "alice")
@@ -1071,7 +1071,7 @@ func TestACancelledRunNeverLandsOnTheRerun(t *testing.T) {
 	if stop, err := store.RenewLease(t.Context(), old.ID, time.Now().Add(time.Minute)); err != nil || !stop {
 		t.Fatalf("revived: stop = %v, err = %v", stop, err)
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: old.ID, Status: RunSucceeded}, completeTo(StatePRReady)); err != nil {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: old.ID, Status: RunSucceeded}, completeTo(StatePRReady)); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := store.Ticket(t.Context(), ticket.ID); got.State != StateWorking {
@@ -1089,7 +1089,7 @@ func TestRerunWaitsForTheCancelledRunToEnd(t *testing.T) {
 	if _, err := store.Cancel(t.Context(), ticket.ID, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: old.ID, Status: RunCancelled}, completeTo(StateFailed)); err != nil {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: old.ID, Status: RunCancelled}, completeTo(StateFailed)); err != nil {
 		t.Fatal(err)
 	}
 	again, err := store.Rerun(t.Context(), ticket.ID, "alice")
@@ -1111,7 +1111,7 @@ func TestReplyAfterAMergeForgetsTheMergedPullRequest(t *testing.T) {
 	ticket := createTicket(t, store, "api:reply-merged")
 	run := claimRun(t, store, ticket).Run
 	merged := time.Now().Add(-time.Hour)
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: run.ID, Status: RunSucceeded}, func(Ticket, string) Transition {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: run.ID, Status: RunSucceeded}, func(Ticket, string) Transition {
 		return Transition{State: StateDone, PRNumber: 7, MergedAt: &merged}
 	}); err != nil {
 		t.Fatal(err)
@@ -1129,7 +1129,7 @@ func TestReplyToAnOpenPullRequestKeepsIt(t *testing.T) {
 	store := openStore(t)
 	ticket := createTicket(t, store, "api:reply-open")
 	run := claimRun(t, store, ticket).Run
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: run.ID, Status: RunSucceeded}, func(Ticket, string) Transition {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: run.ID, Status: RunSucceeded}, func(Ticket, string) Transition {
 		return Transition{State: StatePRReady, PRNumber: 7}
 	}); err != nil {
 		t.Fatal(err)
@@ -1146,7 +1146,7 @@ func TestReplyToAnOpenPullRequestKeepsIt(t *testing.T) {
 func TestUnpostedMessagesOnlyIncludesIssueTickets(t *testing.T) {
 	store := openStore(t)
 	webTicket := createTicket(t, store, "run:web-1")
-	if err := store.Apply(t.Context(), webTicket.ID, StateWorking, Transition{State: StateFailed, PRNumber: 42, Message: "The run ended without a report: exit 1"}); err != nil {
+	if _, _, err := store.Apply(t.Context(), webTicket.ID, StateWorking, Transition{State: StateFailed, PRNumber: 42, Message: "The run ended without a report: exit 1"}); err != nil {
 		t.Fatal(err)
 	}
 	// Even a legacy row with posted_at IS NULL on a non-issue ticket with a PR must not be posted.

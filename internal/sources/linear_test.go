@@ -600,7 +600,7 @@ func TestAPullRequestIsCommentedOnItsIssueOnce(t *testing.T) {
 	p.linear.assign("a1", "ENG", "owain", p.now)
 	p.poll(t)
 	job := p.tickets(t)[0]
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -709,7 +709,7 @@ func TestPickingUpAnIssueMovesItToInProgressOnce(t *testing.T) {
 func TestAJobWithNoPullRequestHandsItsIssueBackWithTheResult(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Not enough to go on: which page has the broken toast?"}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Not enough to go on: which page has the broken toast?"}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -726,7 +726,7 @@ func TestAJobWithNoPullRequestHandsItsIssueBackWithTheResult(t *testing.T) {
 func TestAReplyRunsTheJobAgainWithTheComment(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -750,7 +750,7 @@ func TestAReplyRunsTheJobAgainWithTheComment(t *testing.T) {
 		t.Fatalf("issue state = %q", got)
 	}
 	// Reading the same replies again starts nothing more.
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Fixed."}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Fixed."}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -762,7 +762,7 @@ func TestAReplyRunsTheJobAgainWithTheComment(t *testing.T) {
 func TestAReplyOnADelegatedIssueRunsTheJobAgain(t *testing.T) {
 	p := newPolling(t)
 	job := p.delegated(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -795,7 +795,7 @@ func TestAReplyWhileTheJobRunsWaitsForTheRunToEnd(t *testing.T) {
 	if strings.Contains(tickets.RenderLog(entries), "footer") {
 		t.Fatal("a reply joined a running job")
 	}
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -811,7 +811,7 @@ func TestAReplyWhileTheJobRunsWaitsForTheRunToEnd(t *testing.T) {
 func TestAFailedJobMovesItsIssueBackWithTheReason(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: "The tests would not pass."}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: "The tests would not pass."}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -912,7 +912,7 @@ func TestAJobIsNotCancelledBeforeItsIssueReachedInProgress(t *testing.T) {
 func TestAMergedPullRequestMovesItsIssueToDoneOnce(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -933,7 +933,7 @@ func TestAMergedPullRequestMovesItsIssueToDoneOnce(t *testing.T) {
 func TestAClosedPullRequestIsCommentedOnItsIssue(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.setPR(t, job.ID, tickets.PRClosed); err != nil {
@@ -964,7 +964,7 @@ func (p *polling) setPR(t *testing.T, id, state string) error {
 func TestRunningAMergedJobAgainMovesItsIssueBackToInProgress(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.setPR(t, job.ID, tickets.PRMerged); err != nil {
@@ -992,7 +992,7 @@ func TestRunningAJobAgainAfterItsPullRequestEndedCommentsTheNewOne(t *testing.T)
 		t.Run(ended, func(t *testing.T) {
 			p := newPolling(t)
 			job := p.started(t)
-			if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+			if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
 				t.Fatal(err)
 			}
 			if err := p.setPR(t, job.ID, ended); err != nil {
@@ -1003,7 +1003,7 @@ func TestRunningAJobAgainAfterItsPullRequestEndedCommentsTheNewOne(t *testing.T)
 			if _, err := p.store.Rerun(t.Context(), job.ID, "owain"); err != nil {
 				t.Fatal(err)
 			}
-			if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 8}); err != nil {
+			if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 8}); err != nil {
 				t.Fatal(err)
 			}
 			p.poll(t)
@@ -1019,14 +1019,14 @@ func TestRunningAJobAgainAfterItsPullRequestEndedCommentsTheNewOne(t *testing.T)
 func TestRunningAJobAgainOnItsOpenPullRequestDoesNotCommentItAgain(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
 	if _, err := p.store.Rerun(t.Context(), job.ID, "owain"); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -1040,7 +1040,7 @@ func TestRepliesAtTheSameMomentGoIntoOneRun(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
 	p.linear.reply("a1", "owain", "Comment from before the job.", job.CreatedAt.Add(-30*time.Second))
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -1062,7 +1062,7 @@ func TestRepliesAtTheSameMomentGoIntoOneRun(t *testing.T) {
 func TestRepliesWaitPastTheHourlyCap(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)
@@ -1083,7 +1083,7 @@ func TestRepliesWaitPastTheHourlyCap(t *testing.T) {
 func TestAHugeReplyBacklogIsReadInShorterSpans(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
-	if err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Which page?"}); err != nil {
 		t.Fatal(err)
 	}
 	p.poll(t)

@@ -40,6 +40,7 @@ each run, and needs no `GH_TOKEN`.
 ```yaml
 server:
   listen: 127.0.0.1:7331
+  # public_url: https://machinist.example.com
   database: .machinist/tickets.db
   factory: factory
   default_preset: default
@@ -51,11 +52,15 @@ github:
   handle: machinist-bot
   repositories: [owner/name]
   auto_merge: true
+
+# notify:
+#   webhook: https://hooks.slack.com/services/...
 ```
 
 | Key | Meaning |
 | --- | --- |
 | `listen` | Address for the UI, API and runners. Keep it private. On a loopback address, requests whose Host is not `localhost`, `127.0.0.1` or `[::1]` get 421, which blocks DNS rebinding |
+| `public_url` | Base URL of the web app, such as `https://machinist.example.com`. Used to link to jobs in webhook notifications (`<public_url>/#/jobs/<id>`). Without it, notifications have no link |
 | `database` | The SQLite file. Back this up |
 | `factory` | The factory directory |
 | `default_preset` | The preset a job uses when it names none |
@@ -67,6 +72,7 @@ github:
 | `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
 | `github.app.private_key_file` | The app's private key file. Keep it out of git |
 | `linear.*` | Start jobs from Linear issues. Off unless `linear.projects` or `linear.teams` is set. See [Linear](linear.md) |
+| `notify.webhook` | Optional HTTP or HTTPS URL that receives one JSON `POST` when a job opens a pull request that waits for a person, or fails. Includes a Slack-compatible `text` field plus `ticket_id`, `title`, `repo`, `state`, `created_by`, and `url` (when `server.public_url` is set). Prompts and agent output are never sent. Failed posts are logged and not retried |
 
 ### Merge gate, observe mode and per-repository policy
 
