@@ -323,5 +323,6 @@ Quote `schedule`, because a cron line can start with `*`.
 `repo` must be in `github.repositories`, and `preset` must name a preset. Missed runs
 collapse into one, and no job starts while the automation's last one is active. An
 automation never waits for a person: anything that would ask one fails the job instead, so
-one bad run cannot stop its schedule. To run one now, call
-`POST /api/v1/automations/<name>/run` with a token.
+one bad run cannot stop its schedule. To run one now, open **Jobs → Automations** in the web
+app, or call `POST /api/v1/automations/<name>/run` with a token and an optional
+`{"prompt": "..."}` JSON body to override the prompt for that run only.
