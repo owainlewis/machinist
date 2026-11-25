@@ -74,6 +74,9 @@ type Options struct {
 	// for the dashboard.
 	Reviews ReviewReader
 	Post    Poster
+	// Notify, when set, tells someone when a job opens a pull request that
+	// waits for a person, or fails.
+	Notify Notifier
 	// GitHubToken, when set, gives each run its own token for its repository.
 	// Without it, a runner uses its own GH_TOKEN.
 	GitHubToken TokenMinter
@@ -148,10 +151,10 @@ func (e *Engine) advance(ctx context.Context, ticket tickets.Ticket) error {
 	}
 	if attempts >= maxAttempts {
 		message := fmt.Sprintf("Stopped after %d attempts, because the runner was lost each time.", maxAttempts)
-		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: message})
+		return e.apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: message})
 	}
 	if _, ok := e.Factory.Preset(ticket.Agent); !ok {
-		return e.Store.Apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: missingPresetMessage(ticket.Agent)})
+		return e.apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: missingPresetMessage(ticket.Agent)})
 	}
 	// The ticket can leave working between the listing and here. Then there is nothing to run.
 	if _, err = e.Store.QueueRun(ctx, ticket.ID, protocol.StepsHarness); errors.Is(err, tickets.ErrNotWorking) {
@@ -185,7 +188,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 	preset, ok := e.Factory.Preset(claim.Ticket.Agent)
 	if !ok {
 		message := missingPresetMessage(claim.Ticket.Agent)
-		return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
+		return nil, e.completeRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
 			return tickets.Transition{State: tickets.StateFailed, Message: message}
 		})
 	}
@@ -198,7 +201,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		token, err = e.GitHubToken(ctx, claim.Ticket.Repo)
 		if err != nil {
 			message := sentence(fmt.Sprintf("Machinist could not get a GitHub token from the GitHub App: %v", err))
-			return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
+			return nil, e.completeRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
 				return tickets.Transition{State: tickets.StateFailed, Message: message}
 			})
 		}
@@ -208,7 +211,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		gitName, gitEmail, err = e.Identity(ctx)
 		if err != nil {
 			message := sentence(fmt.Sprintf("Machinist could not look up the GitHub App's bot account: %v", err))
-			return nil, e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
+			return nil, e.completeRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
 				return tickets.Transition{State: tickets.StateFailed, Message: message}
 			})
 		}
@@ -297,7 +300,7 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	if completion.State == tickets.RunSucceeded {
 		runReport = reached(report, pr)
 	}
-	return e.Store.CompleteRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: runReport, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages, Patch: completion.Patch}, func(ticket tickets.Ticket, status string) tickets.Transition {
+	return e.completeRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: runReport, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages, Patch: completion.Patch}, func(ticket tickets.Ticket, status string) tickets.Transition {
 		transition := decide(status, report, reason, pr)
 		if transition.State == tickets.StateFailed && len(completion.Patch) > 0 {
 			transition.Message = sentence(transition.Message) + " " + PatchSaved
@@ -330,6 +333,37 @@ func mergeGateOf(request protocol.Ship) *tickets.MergeGate {
 		Risk:     risk,
 		Reason:   reason,
 	}
+}
+
+func (e *Engine) apply(ctx context.Context, ticketID, from string, transition tickets.Transition) error {
+	ticket, applied, err := e.Store.Apply(ctx, ticketID, from, transition)
+	if err == nil && applied {
+		e.notifyIfNeeded(ticket)
+	}
+	return err
+}
+
+func (e *Engine) completeRun(ctx context.Context, completion tickets.RunCompletion, decide func(tickets.Ticket, string) tickets.Transition) error {
+	ticket, transitioned, err := e.Store.CompleteRun(ctx, completion, decide)
+	if err == nil && transitioned {
+		e.notifyIfNeeded(ticket)
+	}
+	return err
+}
+
+func (e *Engine) setShipping(ctx context.Context, listed tickets.Ticket, shipped tickets.Shipped) error {
+	ticket, changed, err := e.Store.SetShipping(ctx, listed, shipped)
+	if err == nil && changed {
+		e.notifyIfNeeded(ticket)
+	}
+	return err
+}
+
+func (e *Engine) notifyIfNeeded(ticket tickets.Ticket) {
+	if e.Notify == nil || !needsPerson(ticket) {
+		return
+	}
+	e.Notify.Notify(ticket)
 }
 
 // PatchSaved is what a failed job whose change was saved as a patch tells the

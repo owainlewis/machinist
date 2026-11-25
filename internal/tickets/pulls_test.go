@@ -41,7 +41,7 @@ func TestAPRResultFromBeforeARerunIsIgnored(t *testing.T) {
 	store.SetClock(func() time.Time { return now })
 	ticket := createTicket(t, store, "k1")
 	ctx := context.Background()
-	if err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7}); err != nil {
+	if _, _, err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
 	listed, err := store.TicketsWithOpenPRs(ctx)
@@ -53,7 +53,7 @@ func TestAPRResultFromBeforeARerunIsIgnored(t *testing.T) {
 	if _, err := store.Rerun(ctx, ticket.ID, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 8}); err != nil {
+	if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 8}); err != nil {
 		t.Fatal(err)
 	}
 	if _, same, err := store.SetPRState(ctx, listed[0], PRUpdate{Number: 7, State: PRMerged, At: now}); err != nil || same {
@@ -71,7 +71,7 @@ func TestALookAtChecksFromBeforeARerunIsIgnored(t *testing.T) {
 	store.SetClock(func() time.Time { return now })
 	ticket := createTicket(t, store, "k1")
 	ctx := context.Background()
-	if err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{"since":"x"}`}); err != nil {
+	if _, _, err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{"since":"x"}`}); err != nil {
 		t.Fatal(err)
 	}
 	listed, err := store.TicketsWithOpenPRs(ctx)
@@ -84,10 +84,10 @@ func TestALookAtChecksFromBeforeARerunIsIgnored(t *testing.T) {
 	if _, err := store.Rerun(ctx, ticket.ID, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 8}); err != nil {
+	if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 8}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetShipping(ctx, listed[0], Shipped{Merged: true, At: now, Message: "Merged"}); err != nil {
+	if _, _, err := store.SetShipping(ctx, listed[0], Shipped{Merged: true, At: now, Message: "Merged"}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.Ticket(ctx, ticket.ID)
@@ -111,14 +111,14 @@ func TestSetShippingKeepsTheWatchOrEndsTheJob(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			store := openStore(t)
 			ticket := createTicket(t, store, "k1")
-			if err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{}`}); err != nil {
+			if _, _, err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{}`}); err != nil {
 				t.Fatal(err)
 			}
 			listed, err := store.TicketsWithOpenPRs(ctx)
 			if err != nil || len(listed) != 1 {
 				t.Fatalf("listed = %+v, err = %v", listed, err)
 			}
-			if err := store.SetShipping(ctx, listed[0], test.shipped); err != nil {
+			if _, _, err := store.SetShipping(ctx, listed[0], test.shipped); err != nil {
 				t.Fatal(err)
 			}
 			got, err := store.Ticket(ctx, ticket.ID)
@@ -140,7 +140,7 @@ func TestSetPRStateReturnsTheJobAsItNowStands(t *testing.T) {
 	store.SetClock(func() time.Time { return now })
 	ticket := createTicket(t, store, "k1")
 	ctx := context.Background()
-	if err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{}`}); err != nil {
+	if _, _, err := store.Apply(ctx, ticket.ID, ticket.State, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{}`}); err != nil {
 		t.Fatal(err)
 	}
 	listed, err := store.TicketsWithOpenPRs(ctx)
@@ -152,7 +152,7 @@ func TestSetPRStateReturnsTheJobAsItNowStands(t *testing.T) {
 	if err != nil || !same || current.PRNumber != 8 || current.PRStateAt == nil || !current.PRStateAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("current = %+v, same = %v, err = %v", current, same, err)
 	}
-	if err := store.SetShipping(ctx, current, Shipped{Shipping: `{"updates":1}`}); err != nil {
+	if _, _, err := store.SetShipping(ctx, current, Shipped{Shipping: `{"updates":1}`}); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := store.Ticket(ctx, ticket.ID); err != nil || got.Shipping != `{"updates":1}` {
@@ -200,7 +200,7 @@ VALUES ('t_legacy','api','owner/repo','Legacy PR','pr_ready','default',12,'alice
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.Apply(t.Context(), "t_legacy", StatePRReady, Transition{
+	if _, _, err := store.Apply(t.Context(), "t_legacy", StatePRReady, Transition{
 		State:     StatePRReady,
 		PRNumber:  12,
 		MergeGate: &MergeGate{Decision: "human_review", Risk: "high", Reason: "Touches auth middleware."},
@@ -236,7 +236,7 @@ func TestMergeGateVerdictsPersistAcrossLevelsAndClearOnRerun(t *testing.T) {
 			store.SetClock(func() time.Time { return now })
 			ticket := createTicket(t, store, "k-"+tc.name)
 
-			if err := store.Apply(ctx, ticket.ID, StateWorking, Transition{
+			if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{
 				State:     StatePRReady,
 				PRNumber:  15,
 				Shipping:  `{}`,
@@ -260,7 +260,7 @@ func TestMergeGateVerdictsPersistAcrossLevelsAndClearOnRerun(t *testing.T) {
 			}
 
 			// Merging the PR keeps the recorded merge-gate verdict.
-			if err := store.SetShipping(ctx, got, Shipped{Merged: true, At: now.Add(time.Minute), Message: "Merged"}); err != nil {
+			if _, _, err := store.SetShipping(ctx, got, Shipped{Merged: true, At: now.Add(time.Minute), Message: "Merged"}); err != nil {
 				t.Fatal(err)
 			}
 			merged, err := store.Ticket(ctx, ticket.ID)

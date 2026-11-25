@@ -1,5 +1,6 @@
 server:
   listen: 127.0.0.1:7331
+  # public_url: https://machinist.example.com
   # Relative paths are read from this file's directory. Machinist writes its
   # state under .machinist/, which init adds to .gitignore.
   database: .machinist/tickets.db
@@ -34,3 +35,8 @@ github:
 #     ENG: owner/name
 #   poll_interval: 60s
 #   max_jobs_per_hour: 20
+
+# Post one JSON message to a webhook (such as a Slack incoming webhook) when a
+# job opens a pull request that waits for a person, or fails.
+# notify:
+#   webhook: https://hooks.slack.com/services/...

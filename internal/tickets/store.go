@@ -1201,15 +1201,30 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 	return nil
 }
 
-// Apply moves a ticket that is still in the expected state.
-func (s *Store) Apply(ctx context.Context, ticketID, from string, transition Transition) error {
-	return s.inTx(ctx, func(tx *sql.Tx) error {
+// Apply moves a ticket that is still in the expected state. It returns the
+// updated ticket and true if the transition was applied.
+func (s *Store) Apply(ctx context.Context, ticketID, from string, transition Transition) (Ticket, bool, error) {
+	var updated Ticket
+	var applied bool
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		ticket, err := loadTicket(ctx, tx, ticketID)
 		if err != nil || ticket.State != from {
 			return err
 		}
-		return applyTransition(ctx, tx, ticket, transition, s.now())
+		if err = applyTransition(ctx, tx, ticket, transition, s.now()); err != nil {
+			return err
+		}
+		updated, err = loadTicket(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		applied = true
+		return nil
 	})
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	return updated, applied, nil
 }
 
 // TicketsAwaitingRun lists working tickets with no queued or running agent run.
@@ -1416,9 +1431,12 @@ func (s *Store) ExpireLeases(ctx context.Context) (int64, error) {
 
 // CompleteRun records a run's end. For an agent run on a working ticket, decide
 // picks the next state. Input that arrived during the run returns a ticket with
-// an open pull request to working.
-func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decide func(Ticket, string) Transition) error {
-	return s.inTx(ctx, func(tx *sql.Tx) error {
+// an open pull request to working. It returns the updated ticket and true when
+// a transition was applied.
+func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decide func(Ticket, string) Transition) (Ticket, bool, error) {
+	var updated Ticket
+	var transitioned bool
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		run, err := loadRun(ctx, tx, completion.RunID)
 		if err != nil {
 			return err
@@ -1486,8 +1504,20 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 				transition.MergeGate = nil
 			}
 		}
-		return applyTransition(ctx, tx, ticket, transition, now)
+		if err = applyTransition(ctx, tx, ticket, transition, now); err != nil {
+			return err
+		}
+		updated, err = loadTicket(ctx, tx, ticket.ID)
+		if err != nil {
+			return err
+		}
+		transitioned = true
+		return nil
 	})
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	return updated, transitioned, nil
 }
 
 // IngestRunEvents stores a run's activity in order and returns the highest

@@ -142,7 +142,7 @@ func TestDeliverTruncatesLongMessages(t *testing.T) {
 	e := newEngine(t)
 	posts := recordPosts(e)
 	ticket := newIssueTicket(t, e)
-	if err := e.Store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: strings.Repeat("é", maxPostBytes)}); err != nil {
+	if _, _, err := e.Store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: strings.Repeat("é", maxPostBytes)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Deliver(t.Context()); err != nil {

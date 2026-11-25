@@ -116,9 +116,11 @@ type Shipped struct {
 // SetShipping records a look at the pull request of a job that waits for its
 // checks. listed is the job as TicketsWithOpenPRs returned it. A job that has
 // changed since, such as one that ran again meanwhile, is left alone, as in
-// SetPRState.
-func (s *Store) SetShipping(ctx context.Context, listed Ticket, shipped Shipped) error {
-	return s.inTx(ctx, func(tx *sql.Tx) error {
+// SetPRState. It returns the updated ticket and true if the ticket changed.
+func (s *Store) SetShipping(ctx context.Context, listed Ticket, shipped Shipped) (Ticket, bool, error) {
+	var updated Ticket
+	var changed bool
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		ticket, err := loadTicket(ctx, tx, listed.ID)
 		if err != nil || ticket.State != StatePRReady || ticket.Shipping == "" || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
 			return err
@@ -139,11 +141,25 @@ func (s *Store) SetShipping(ctx context.Context, listed Ticket, shipped Shipped)
 			}
 			_, err = tx.ExecContext(ctx, `UPDATE tickets SET shipping=?,updated_at=? WHERE id=?`, nullableString(shipped.Shipping), stamp(now), ticket.ID)
 		}
-		if err != nil || shipped.Message == "" {
+		if err != nil {
 			return err
 		}
-		return insertMessage(ctx, tx, ticket, shipped.Message, nil, now)
+		if shipped.Message != "" {
+			if err = insertMessage(ctx, tx, ticket, shipped.Message, nil, now); err != nil {
+				return err
+			}
+		}
+		updated, err = loadTicket(ctx, tx, ticket.ID)
+		if err != nil {
+			return err
+		}
+		changed = true
+		return nil
 	})
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	return updated, changed, nil
 }
 
 // StillShipping reports whether listed is still waiting to ship on the same

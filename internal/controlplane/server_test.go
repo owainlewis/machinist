@@ -334,3 +334,59 @@ func TestGitHubAnswerPreservesTransientErrorsAndStripsRefusals(t *testing.T) {
 		t.Fatalf("refusal error = %T (%q), want plain detail", got, got)
 	}
 }
+
+func TestControlPlanePostsWebhookNotificationOnFailure(t *testing.T) {
+	fakegh.Install(t, testConfig().GitHub.Handle)
+	received := make(chan map[string]any, 1)
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhook.Close()
+
+	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	loaded := testConfig()
+	loaded.Server.PublicURL = "https://machinist.example.com"
+	loaded.Notify.Webhook = webhook.URL
+	server, err := New(loaded, store, testFactory(), "v1.2.3", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := store.CreateToken(t.Context(), "runner-1", tickets.RoleAll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := httptest.NewServer(server.Handler())
+	defer web.Close()
+	f := &fixture{server: server, store: store, http: web, token: token}
+
+	run := f.queueRun(t)
+	response, body := f.call(t, http.MethodPost, "/api/v1/runs/"+run.RunID+"/complete", f.token, protocol.Completion{
+		State: tickets.RunFailed,
+		Error: "private failure details",
+	})
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("complete = %d: %s", response.StatusCode, body)
+	}
+
+	select {
+	case payload := <-received:
+		wantURL := "https://machinist.example.com/#/jobs/" + run.TicketID
+		if payload["ticket_id"] != run.TicketID || payload["title"] != "T" || payload["repo"] != "owner/repo" || payload["state"] != tickets.StateFailed || payload["created_by"] != "alice" || payload["url"] != wantURL {
+			t.Fatalf("payload = %+v", payload)
+		}
+		text, _ := payload["text"].(string)
+		if !strings.Contains(text, run.TicketID) || !strings.Contains(text, wantURL) || strings.Contains(text, "private failure details") {
+			t.Fatalf("text = %q", text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook did not receive notification")
+	}
+}
