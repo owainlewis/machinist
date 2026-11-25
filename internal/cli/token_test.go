@@ -133,3 +133,49 @@ func TestTokenCommandsRunWithoutLinearCredentials(t *testing.T) {
 		t.Fatalf("revoke: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 }
+
+func TestTokenCreateWithScopeAndRevokeIndividually(t *testing.T) {
+	path := writeConfigFile(t, t.TempDir(), "config.yaml", "server:\n  database: tickets.db\n\ngithub:\n  handle: bot\n")
+	code, outRun, stderr := runToken(t, path, "create", "grokbot", "--scope", "run")
+	if code != 0 {
+		t.Fatalf("create run: code = %d, stderr = %q", code, stderr)
+	}
+	code, outRead, stderr := runToken(t, path, "create", "watcher", "--scope", "read")
+	if code != 0 {
+		t.Fatalf("create read: code = %d, stderr = %q", code, stderr)
+	}
+	if code, _, stderr := runToken(t, path, "create", "bad", "--scope", "admin"); code == 0 || !strings.Contains(stderr, "scope") {
+		t.Fatalf("invalid scope: code = %d, stderr = %q", code, stderr)
+	}
+	if code, _, stderr := runToken(t, path, "create", "bad2", "--runner", "--scope", "run"); code == 0 || !strings.Contains(stderr, "cannot be used together") {
+		t.Fatalf("runner+scope: code = %d, stderr = %q", code, stderr)
+	}
+
+	code, stdout, stderr := runToken(t, path, "list")
+	if code != 0 {
+		t.Fatalf("list: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "SCOPE") || !regexp.MustCompile(`grokbot\s+operator\s+mch_\S+\s+run`).MatchString(stdout) || !regexp.MustCompile(`watcher\s+operator\s+mch_\S+\s+read`).MatchString(stdout) {
+		t.Fatalf("list output = %q", stdout)
+	}
+
+	// Revoking grokbot leaves watcher active.
+	if code, stdout, stderr := runToken(t, path, "revoke", "grokbot"); code != 0 || !strings.Contains(stdout, "revoked grokbot") {
+		t.Fatalf("revoke: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	machinistConfig, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := tickets.Open(machinistConfig.Server.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Authenticate(context.Background(), strings.TrimSpace(outRun)); err == nil {
+		t.Fatal("revoked grokbot token still authenticates")
+	}
+	if auth, err := store.Authenticate(context.Background(), strings.TrimSpace(outRead)); err != nil || auth.Name != "watcher" || auth.Scope != tickets.ScopeRead {
+		t.Fatalf("watcher auth = %+v, err = %v", auth, err)
+	}
+}

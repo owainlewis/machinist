@@ -257,6 +257,8 @@ func TestCreateAndRegenerateTokensFromTheWebApp(t *testing.T) {
 		{"name": "bad/name", "role": "operator"},
 		{"name": "bob", "role": ""},
 		{"name": "bob", "role": "admin"},
+		{"name": "bob", "role": "operator", "scope": "admin"},
+		{"name": "bob", "role": "runner", "scope": "read"},
 	} {
 		if response, data := f.call(t, http.MethodPost, "/api/v1/tokens", f.token, body); response.StatusCode != http.StatusBadRequest {
 			t.Fatalf("create %+v: status = %d: %s", body, response.StatusCode, data)

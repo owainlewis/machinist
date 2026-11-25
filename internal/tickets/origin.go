@@ -16,6 +16,8 @@ const (
 	OriginWeb = "web"
 	// OriginAPI is the run API or the ticket API, called with a token.
 	OriginAPI = "api"
+	// OriginMCP is a job started through the MCP endpoint.
+	OriginMCP = "mcp"
 	// OriginSchedule is an automation, on its schedule or run by hand.
 	OriginSchedule = "schedule"
 )

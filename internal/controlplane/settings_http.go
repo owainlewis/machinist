@@ -168,6 +168,7 @@ func (s *Server) linearSettings(w http.ResponseWriter, _ *http.Request, _ string
 type TokenView struct {
 	Name       string     `json:"name"`
 	Role       string     `json:"role"`
+	Scope      string     `json:"scope,omitempty"`
 	Prefix     string     `json:"prefix,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
@@ -181,6 +182,7 @@ type CreatedToken struct {
 	Token  string      `json:"token"`
 	Name   string      `json:"name"`
 	Role   string      `json:"role"`
+	Scope  string      `json:"scope,omitempty"`
 	Prefix string      `json:"prefix"`
 	Tokens []TokenView `json:"tokens"`
 }
@@ -204,6 +206,7 @@ func (s *Server) tokenViews(ctx context.Context, tokenName string) ([]TokenView,
 		views = append(views, TokenView{
 			Name:       token.Name,
 			Role:       roleName(token.Role),
+			Scope:      token.Scope,
 			Prefix:     token.Prefix,
 			CreatedAt:  token.CreatedAt,
 			LastUsedAt: token.LastUsedAt,
@@ -225,8 +228,9 @@ func (s *Server) listTokens(w http.ResponseWriter, r *http.Request, tokenName st
 
 func (s *Server) createToken(w http.ResponseWriter, r *http.Request, tokenName string) {
 	var request struct {
-		Name string `json:"name"`
-		Role string `json:"role"`
+		Name  string `json:"name"`
+		Role  string `json:"role"`
+		Scope string `json:"scope"`
 	}
 	if !decodeJSON(w, r, maxRequestBytes, &request) {
 		return
@@ -244,7 +248,16 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, tokenName s
 		writeError(w, http.StatusBadRequest, errors.New("token role must be operator or runner"))
 		return
 	}
-	token, err := s.store.CreateToken(r.Context(), name, request.Role)
+	scope := strings.TrimSpace(request.Scope)
+	if scope != tickets.ScopeAll && scope != tickets.ScopeRead && scope != tickets.ScopeRun {
+		writeError(w, http.StatusBadRequest, errors.New("token scope must be read or run"))
+		return
+	}
+	if scope != tickets.ScopeAll && request.Role != tickets.RoleOperator {
+		writeError(w, http.StatusBadRequest, errors.New("runner tokens cannot have a scope"))
+		return
+	}
+	token, err := s.store.CreateScopedToken(r.Context(), name, request.Role, scope)
 	if errors.Is(err, tickets.ErrTokenExists) {
 		writeError(w, http.StatusConflict, err)
 		return
@@ -271,6 +284,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, tokenName s
 		Token:  token,
 		Name:   name,
 		Role:   roleName(request.Role),
+		Scope:  scope,
 		Prefix: prefix,
 		Tokens: views,
 	})
@@ -298,10 +312,11 @@ func (s *Server) regenerateToken(w http.ResponseWriter, r *http.Request, tokenNa
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	var role, prefix string
+	var role, scope, prefix string
 	for _, view := range views {
 		if view.Name == name && view.RevokedAt == nil {
 			role = view.Role
+			scope = view.Scope
 			prefix = view.Prefix
 			break
 		}
@@ -311,6 +326,7 @@ func (s *Server) regenerateToken(w http.ResponseWriter, r *http.Request, tokenNa
 		Token:  token,
 		Name:   name,
 		Role:   role,
+		Scope:  scope,
 		Prefix: prefix,
 		Tokens: views,
 	})
