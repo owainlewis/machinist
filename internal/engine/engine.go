@@ -308,11 +308,28 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 		if transition.State == tickets.StatePRReady && completion.Ship != nil {
 			transition.Shipping = e.startWatch(*completion.Ship)
 		}
+		if completion.Ship != nil && (transition.State == tickets.StatePRReady || transition.State == tickets.StateDone) {
+			transition.MergeGate = mergeGateOf(*completion.Ship)
+		}
 		if transition.MergedAt != nil {
 			transition.Reviews = reviews
 		}
 		return transition
 	})
+}
+
+func mergeGateOf(request protocol.Ship) *tickets.MergeGate {
+	decision := strings.TrimSpace(request.MergeGateDecision)
+	risk := strings.TrimSpace(request.MergeGateRisk)
+	reason := strings.TrimSpace(request.MergeGateReason)
+	if decision == "" && risk == "" && reason == "" {
+		return nil
+	}
+	return &tickets.MergeGate{
+		Decision: decision,
+		Risk:     risk,
+		Reason:   reason,
+	}
 }
 
 // PatchSaved is what a failed job whose change was saved as a patch tells the

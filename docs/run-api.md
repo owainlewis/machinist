@@ -65,6 +65,7 @@ A job looks like this:
 | `tokens` | Tokens the job's runs used, added up. It counts a run once the run ends |
 | `cost_usd` | What the job's runs cost in US dollars, added up as runs end. `null` until a run reports a cost. Some harnesses report tokens but no cost |
 | `pr_number`, `pr_state` | The job's pull request, once it has one |
+| `merge_gate_decision`, `merge_gate_risk`, `merge_gate_reason` | The merge gate's judgment (`approve` or `human_review`, risk `low`/`medium`/`high`, and reason), when a merge gate ran. Left out when no merge gate ran |
 | `created_by` | The token that started the job |
 | `created_at` | When the job was made |
 | `updated_at` | When the job last changed: it started running, opened a pull request, ended, or its pull request merged or closed |

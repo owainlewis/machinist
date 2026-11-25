@@ -358,3 +358,83 @@ func TestATransientMergeFailureAfterBranchUpdateLocksTheNewHead(t *testing.T) {
 		t.Fatalf("message = %q", message)
 	}
 }
+
+func TestMergeGateVerdictPersistsOnTicketFromShipRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		request  *protocol.Ship
+		decision string
+		risk     string
+		reason   string
+		merges   bool
+	}{
+		{
+			name: "low risk approve",
+			request: &protocol.Ship{
+				Verdict:           ship.Accepted,
+				Head:              "sha1",
+				MergeGateDecision: ship.GateApprove,
+				MergeGateRisk:     ship.RiskLow,
+				MergeGateReason:   "Docs-only change.",
+			},
+			decision: ship.GateApprove,
+			risk:     ship.RiskLow,
+			reason:   "Docs-only change.",
+			merges:   true,
+		},
+		{
+			name: "medium risk held",
+			request: &protocol.Ship{
+				Verdict:           ship.Accepted,
+				Hold:              "merge gate requires human review (medium risk): Touches API schema.",
+				Head:              "sha1",
+				MergeGateDecision: ship.GateApprove,
+				MergeGateRisk:     ship.RiskMedium,
+				MergeGateReason:   "Touches API schema.",
+			},
+			decision: ship.GateApprove,
+			risk:     ship.RiskMedium,
+			reason:   "Touches API schema.",
+		},
+		{
+			name: "high risk held",
+			request: &protocol.Ship{
+				Verdict:           ship.Accepted,
+				Hold:              "merge gate requires human review (high risk): Destructive migration.",
+				Head:              "sha1",
+				MergeGateDecision: ship.GateHumanReview,
+				MergeGateRisk:     ship.RiskHigh,
+				MergeGateReason:   "Destructive migration.",
+			},
+			decision: ship.GateHumanReview,
+			risk:     ship.RiskHigh,
+			reason:   "Destructive migration.",
+		},
+		{
+			name:    "no merge gate",
+			request: &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"},
+			merges:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, pull, ticket := handedOver(t, true, tc.request)
+			got := ticketOf(t, e, ticket.ID)
+			if got.MergeGateDecision != tc.decision || got.MergeGateRisk != tc.risk || got.MergeGateReason != tc.reason {
+				t.Fatalf("after handoff: ticket = %+v, want %s/%s/%q", got, tc.decision, tc.risk, tc.reason)
+			}
+
+			pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+			checkPRs(t, e)
+			after := ticketOf(t, e, ticket.ID)
+			if tc.merges && after.State != tickets.StateDone {
+				t.Fatalf("expected merged done state, got %+v", after)
+			}
+			if !tc.merges && after.State != tickets.StatePRReady {
+				t.Fatalf("expected held pr_ready state, got %+v", after)
+			}
+			if after.MergeGateDecision != tc.decision || after.MergeGateRisk != tc.risk || after.MergeGateReason != tc.reason {
+				t.Fatalf("after checks: ticket = %+v, want %s/%s/%q", after, tc.decision, tc.risk, tc.reason)
+			}
+		})
+	}
+}

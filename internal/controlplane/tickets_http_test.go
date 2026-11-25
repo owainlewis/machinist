@@ -688,3 +688,63 @@ func TestRerunConflictsUntilTheCancelledRunStops(t *testing.T) {
 		t.Fatalf("the cancelled run's report landed: %q, %v", report, err)
 	}
 }
+
+func TestTicketAPIMergeGateJSONSerialization(t *testing.T) {
+	f := newFixture(t)
+	ticket := f.assign(t, "gate-json-1")
+
+	// Before any merge gate runs, merge_gate_* keys are omitted for backwards compatibility.
+	for _, path := range []string{"/api/v1/tickets/" + ticket.ID, "/api/v1/tickets", "/api/v1/tickets?view=board"} {
+		response, body := f.call(t, http.MethodGet, path, f.token, nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d: %s", path, response.StatusCode, body)
+		}
+		raw := string(body)
+		for _, field := range []string{"merge_gate_decision", "merge_gate_risk", "merge_gate_reason"} {
+			if strings.Contains(raw, field) {
+				t.Fatalf("GET %s should omit %s when no merge gate ran: %s", path, field, raw)
+			}
+		}
+	}
+
+	// Persist a merge-gate verdict and verify /api/v1/tickets/{id}, list, and board responses expose it.
+	if err := f.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{
+		State:    tickets.StatePRReady,
+		PRNumber: 42,
+		MergeGate: &tickets.MergeGate{
+			Decision: "human_review",
+			Risk:     "high",
+			Reason:   "Alters authentication token handling.",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response, body := f.call(t, http.MethodGet, "/api/v1/tickets/"+ticket.ID, f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET ticket: status = %d: %s", response.StatusCode, body)
+	}
+	var detail struct {
+		Ticket tickets.Ticket `json:"ticket"`
+	}
+	if err := json.Unmarshal(body, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Ticket.MergeGateDecision != "human_review" || detail.Ticket.MergeGateRisk != "high" || detail.Ticket.MergeGateReason != "Alters authentication token handling." {
+		t.Fatalf("detail ticket = %+v", detail.Ticket)
+	}
+
+	for _, path := range []string{"/api/v1/tickets", "/api/v1/tickets?view=board"} {
+		response, body := f.call(t, http.MethodGet, path, f.token, nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d: %s", path, response.StatusCode, body)
+		}
+		var page tickets.TicketPage
+		if err := json.Unmarshal(body, &page); err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Tickets) != 1 || page.Tickets[0].MergeGateDecision != "human_review" || page.Tickets[0].MergeGateRisk != "high" || page.Tickets[0].MergeGateReason != "Alters authentication token handling." {
+			t.Fatalf("GET %s tickets = %+v", path, page.Tickets)
+		}
+	}
+}

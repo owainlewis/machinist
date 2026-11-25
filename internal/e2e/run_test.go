@@ -370,9 +370,12 @@ func (s *system) read(t *testing.T, name string) string {
 }
 
 type jobView struct {
-	ID       string `json:"id"`
-	State    string `json:"state"`
-	PRNumber int    `json:"pr_number"`
+	ID                string `json:"id"`
+	State             string `json:"state"`
+	PRNumber          int    `json:"pr_number"`
+	MergeGateDecision string `json:"merge_gate_decision"`
+	MergeGateRisk     string `json:"merge_gate_risk"`
+	MergeGateReason   string `json:"merge_gate_reason"`
 }
 
 func (s *system) job(t *testing.T, id string) jobView {
@@ -398,7 +401,7 @@ func TestRunOpensAPullRequestInOneGo(t *testing.T) {
 	}
 
 	finished := s.waitForState(t, created.ID, tickets.StateDone)
-	if view := s.job(t, created.ID); view.State != "done" || view.PRNumber != 7 {
+	if view := s.job(t, created.ID); view.State != "done" || view.PRNumber != 7 || view.MergeGateDecision != "approve" || view.MergeGateRisk != "low" || view.MergeGateReason != "Low-risk change covered by tests." {
 		t.Fatalf("job = %+v", view)
 	}
 	runs, err := s.store.Runs(t.Context(), created.ID)
@@ -686,7 +689,13 @@ func TestMergeGateCommentsAndHoldsHighRiskPullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	ticket := s.createTicket(t)
-	s.waitForState(t, ticket.ID, tickets.StatePRReady)
+	held := s.waitForState(t, ticket.ID, tickets.StatePRReady)
+	if held.MergeGateDecision != "human_review" || held.MergeGateRisk != "high" || held.MergeGateReason != "Adds a destructive SQL database migration." {
+		t.Fatalf("persisted merge gate = %+v", held)
+	}
+	if view := s.job(t, ticket.ID); view.MergeGateDecision != "human_review" || view.MergeGateRisk != "high" || view.MergeGateReason != "Adds a destructive SQL database migration." {
+		t.Fatalf("job view = %+v", view)
+	}
 	if merged := s.github.Merged(); len(merged) != 0 {
 		t.Fatalf("high-risk PR must not auto-merge, merged = %v", merged)
 	}

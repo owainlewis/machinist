@@ -59,6 +59,11 @@ type Ship struct {
 	// review. Only that commit, or one the control plane's own branch update
 	// made from it, may merge.
 	Head string `json:"head,omitempty"`
+	// MergeGateDecision, MergeGateRisk and MergeGateReason carry the judgment
+	// from merge-gate.json when the merge-gate step produced a valid verdict.
+	MergeGateDecision string `json:"merge_gate_decision,omitempty"`
+	MergeGateRisk     string `json:"merge_gate_risk,omitempty"`
+	MergeGateReason   string `json:"merge_gate_reason,omitempty"`
 }
 
 const (
