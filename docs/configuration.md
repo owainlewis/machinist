@@ -63,10 +63,32 @@ github:
 | `tls_cert`, `tls_key` | Serve HTTPS, and mark the sign-in cookie Secure |
 | `github.handle` | The bot's login. Use a dedicated account. With a GitHub App, runs commit as the app's bot account instead |
 | `github.repositories` | Repositories Machinist works on. You can also add them on the Settings > Projects page, with no restart. Automations can only name repositories listed here; `linear.projects` and `linear.teams` can also name repositories added on Settings > Projects |
-| `github.auto_merge` | Whether jobs merge their own pull requests once the checks pass and the review accepted the change. On unless set to `false`; when off, every pull request stays open for a person. Steps see it as `MACHINIST_AUTO_MERGE` |
+| `github.auto_merge` | Controls auto-merge for pull requests. On (`true`) by default: the control plane auto-merges low-risk pull requests once checks pass, `review` accepted the change, and the default preset's `merge-gate` step approved them as `low` risk (medium- and high-risk pull requests stay open for a person). Set to `false` to run in **observe mode**: `merge-gate` still evaluates every pull request and posts its judgment comment without merging. Steps see it as `MACHINIST_AUTO_MERGE` |
 | `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
 | `github.app.private_key_file` | The app's private key file. Keep it out of git |
 | `linear.*` | Start jobs from Linear issues. Off unless `linear.projects` or `linear.teams` is set. See [Linear](linear.md) |
+
+### Merge gate, observe mode and per-repository policy
+
+The `default` preset runs a read-only `merge-gate` step after `publish` and before `merge` to
+triage each pull request's blast radius before handing it to the control plane:
+
+- **`github.auto_merge: true` (default):** Enables auto-merge for low-risk approved pull
+  requests. The control plane merges a pull request only when CI checks pass, `review`
+  accepted the change, and `merge-gate` approved it as `low` risk. Medium- and high-risk
+  changes stay open for human review with the gate's judgment posted as a PR comment.
+- **`github.auto_merge: false` (observe mode):** Runs `merge-gate` in **observe mode**. The
+  gate still evaluates every pull request and posts its judgment comment (`approve` or
+  `human_review`, risk level, and reason) on GitHub, while the control plane never merges the
+  pull request. Use observe mode to validate and tune your merge policy before enabling
+  auto-merge.
+- **Per-repository override:** By default, `merge-gate` applies
+  `factory/prompts/merge-policy.md`. Commit `.machinist/merge-policy.md` to a repository's
+  default branch to override the policy for that repository. The gate reads it from
+  `origin/HEAD` rather than the PR branch, so a pull request cannot weaken its own policy.
+
+See [Merge gate and policy](factory.md#merge-gate-and-policy) for step details and
+[Merge policies](merge-policies.md) for starter templates.
 
 ## Runner: runner.yaml
 
