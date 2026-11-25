@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -490,7 +493,12 @@ func TestSandboxRunsStepsAndWritesResult(t *testing.T) {
 	if err := Sandbox(t.Context(), exchange, work, home); err != nil {
 		t.Fatal(err)
 	}
-	result, err := readResultFile(filepath.Join(exchange, "result.json"))
+	exchangeRoot, err := os.OpenRoot(exchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exchangeRoot.Close()
+	result, err := readResultFile(exchangeRoot, "result.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,4 +509,444 @@ func TestSandboxRunsStepsAndWritesResult(t *testing.T) {
 	if err != nil || !strings.Contains(string(events), `"step.started"`) {
 		t.Fatalf("events = %q, err = %v", string(events), err)
 	}
+}
+
+func TestProbeHarnessesScriptExitsZeroWhenPiAbsent(t *testing.T) {
+	runProbeWithPATH := func(t *testing.T, binaries []string) []string {
+		t.Helper()
+		binDir := t.TempDir()
+		for _, name := range binaries {
+			p := filepath.Join(binDir, name)
+			if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		c := Connector{
+			Config: fixtureConfig(),
+			user:   func() (string, int, int) { return "1000:1000", 1000, 1000 },
+			runCmd: func(ctx context.Context, _ []string, _ int, args ...string) ([]byte, error) {
+				if len(args) < 2 || args[len(args)-2] != "-c" {
+					return nil, fmt.Errorf("expected trailing -c <script>, got %v", args)
+				}
+				script := args[len(args)-1]
+				cmd := exec.CommandContext(ctx, "sh", "-c", script)
+				cmd.Env = []string{"PATH=" + binDir}
+				return cmd.CombinedOutput()
+			},
+		}
+		found, err := c.ProbeHarnesses(t.Context())
+		if err != nil {
+			t.Fatalf("ProbeHarnesses failed when pi absent: %v", err)
+		}
+		return found
+	}
+
+	t.Run("claude and codex present, pi absent", func(t *testing.T) {
+		found := runProbeWithPATH(t, []string{"claude", "codex"})
+		if strings.Join(found, ",") != "claude,codex" {
+			t.Fatalf("found = %v, want [claude codex]", found)
+		}
+	})
+
+	t.Run("no harnesses present", func(t *testing.T) {
+		found := runProbeWithPATH(t, nil)
+		if len(found) != 0 {
+			t.Fatalf("found = %v, want empty", found)
+		}
+	})
+}
+
+func TestExchangeReadsRejectSymlinksAndFIFOs(t *testing.T) {
+	outside := t.TempDir()
+	outsideResult := filepath.Join(outside, "secret-result.json")
+	validResultJSON, _ := json.Marshal(runner.RunResult{State: runner.StateSucceeded})
+	if err := os.WriteFile(outsideResult, validResultJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outsideEventsDir := filepath.Join(outside, "runs", fixtureRun)
+	if err := os.MkdirAll(outsideEventsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	validEvent := `{"sequence":1,"time":"2026-01-01T00:00:00Z","type":"step.started","message":"escaped"}` + "\n"
+	outsideEvents := filepath.Join(outsideEventsDir, "events.jsonl")
+	if err := os.WriteFile(outsideEvents, []byte(validEvent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("readResultFile rejects escaping symlink", func(t *testing.T) {
+		exchange := t.TempDir()
+		if err := os.Symlink(outsideResult, filepath.Join(exchange, "result.json")); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(exchange)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		if _, err := readResultFile(root, "result.json"); err == nil {
+			t.Fatal("expected error for escaping symlink result.json")
+		}
+	})
+
+	t.Run("readResultFile rejects intra-root symlink", func(t *testing.T) {
+		exchange := t.TempDir()
+		if err := os.WriteFile(filepath.Join(exchange, "other.json"), validResultJSON, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("other.json", filepath.Join(exchange, "result.json")); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(exchange)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		if _, err := readResultFile(root, "result.json"); err == nil {
+			t.Fatal("expected error for intra-root symlink result.json")
+		}
+	})
+
+	t.Run("readResultFile rejects FIFO without blocking", func(t *testing.T) {
+		exchange := t.TempDir()
+		if err := syscall.Mkfifo(filepath.Join(exchange, "result.json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(exchange)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		done := make(chan error, 1)
+		go func() {
+			_, err := readResultFile(root, "result.json")
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("expected error for FIFO result.json")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("readResultFile blocked on FIFO")
+		}
+	})
+
+	t.Run("forwardEvents rejects escaping directory symlink", func(t *testing.T) {
+		exchange := t.TempDir()
+		if err := os.Symlink(outside, filepath.Join(exchange, "runtime")); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(exchange)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		dst := filepath.Join(t.TempDir(), "events.jsonl")
+		var offset, written int64
+		forwardEvents(root, path.Join("runtime", "runs", fixtureRun, "events.jsonl"), dst, &offset, &written)
+		if _, err := os.Stat(dst); !os.IsNotExist(err) {
+			t.Fatalf("expected no forwarded events for escaping dir symlink, stat err=%v", err)
+		}
+	})
+
+	t.Run("forwardEvents rejects escaping file symlink and intra-root symlink", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			target string
+			setup  func(t *testing.T, exchange string)
+		}{
+			{
+				name:   "external file symlink",
+				target: outsideEvents,
+			},
+			{
+				name:   "intra-root file symlink",
+				target: "real.jsonl",
+				setup: func(t *testing.T, exchange string) {
+					t.Helper()
+					evDir := filepath.Join(exchange, "runtime", "runs", fixtureRun)
+					if err := os.WriteFile(filepath.Join(evDir, "real.jsonl"), []byte(validEvent), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				exchange := t.TempDir()
+				evDir := filepath.Join(exchange, "runtime", "runs", fixtureRun)
+				if err := os.MkdirAll(evDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if tc.setup != nil {
+					tc.setup(t, exchange)
+				}
+				if err := os.Symlink(tc.target, filepath.Join(evDir, "events.jsonl")); err != nil {
+					t.Fatal(err)
+				}
+				root, err := os.OpenRoot(exchange)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer root.Close()
+				dst := filepath.Join(t.TempDir(), "events.jsonl")
+				var offset, written int64
+				forwardEvents(root, path.Join("runtime", "runs", fixtureRun, "events.jsonl"), dst, &offset, &written)
+				if _, err := os.Stat(dst); !os.IsNotExist(err) {
+					t.Fatalf("expected no forwarded events for %s, stat err=%v", tc.name, err)
+				}
+			})
+		}
+	})
+
+	t.Run("forwardEvents rejects FIFO without blocking", func(t *testing.T) {
+		exchange := t.TempDir()
+		evDir := filepath.Join(exchange, "runtime", "runs", fixtureRun)
+		if err := os.MkdirAll(evDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Mkfifo(filepath.Join(evDir, "events.jsonl"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(exchange)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		dst := filepath.Join(t.TempDir(), "events.jsonl")
+		done := make(chan struct{})
+		go func() {
+			var offset, written int64
+			forwardEvents(root, path.Join("runtime", "runs", fixtureRun, "events.jsonl"), dst, &offset, &written)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("forwardEvents blocked on FIFO")
+		}
+		if _, err := os.Stat(dst); !os.IsNotExist(err) {
+			t.Fatalf("expected no forwarded events for FIFO, stat err=%v", err)
+		}
+	})
+}
+
+func TestForwardEventsBoundsOversizedAndNewlineFreeFiles(t *testing.T) {
+	t.Run("newline-free oversized file stops forwarding and saturates cap", func(t *testing.T) {
+		exchange := t.TempDir()
+		evDir := filepath.Join(exchange, "runtime", "runs", fixtureRun)
+		if err := os.MkdirAll(evDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		evPath := filepath.Join(evDir, "events.jsonl")
+		// 2 MiB with no newline exceeds maxEventLineBytes (1 MiB).
+		if err := os.WriteFile(evPath, bytes.Repeat([]byte("a"), 2<<20), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(exchange)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+
+		dst := filepath.Join(t.TempDir(), "events.jsonl")
+		var offset, written int64
+		rel := path.Join("runtime", "runs", fixtureRun, "events.jsonl")
+		forwardEvents(root, rel, dst, &offset, &written)
+
+		if written != runner.MaxEventLogBytes {
+			t.Fatalf("written = %d, want saturated %d", written, runner.MaxEventLogBytes)
+		}
+		if _, err := os.Stat(dst); !os.IsNotExist(err) {
+			t.Fatalf("expected no output file for newline-free garbage, stat err=%v", err)
+		}
+	})
+
+	t.Run("oversized line saturates cap so later smaller lines cannot bypass it", func(t *testing.T) {
+		exchange := t.TempDir()
+		evDir := filepath.Join(exchange, "runtime", "runs", fixtureRun)
+		if err := os.MkdirAll(evDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		evPath := filepath.Join(evDir, "events.jsonl")
+		line1 := `{"sequence":1,"type":"step.started","message":"ok"}` + "\n"                             // 52 bytes
+		line2 := `{"sequence":2,"type":"step.output","message":"` + strings.Repeat("x", 80) + `"}` + "\n" // > 100 bytes
+		line3 := `{"sequence":3,"type":"small"}` + "\n"                                                   // 31 bytes (would fit in 100-52=48)
+		if err := os.WriteFile(evPath, []byte(line1+line2+line3), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(exchange)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+
+		dst := filepath.Join(t.TempDir(), "events.jsonl")
+		const maxBytes = int64(100)
+		var offset, written int64
+		rel := path.Join("runtime", "runs", fixtureRun, "events.jsonl")
+		forwardEventsWithLimit(root, rel, dst, &offset, &written, maxBytes, maxEventLineBytes)
+		// Run a second tick to prove line3 does not bypass the saturated cap.
+		forwardEventsWithLimit(root, rel, dst, &offset, &written, maxBytes, maxEventLineBytes)
+
+		if written != maxBytes {
+			t.Fatalf("written = %d, want %d", written, maxBytes)
+		}
+		got, err := os.ReadFile(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != line1 {
+			t.Fatalf("forwarded = %q, want only %q", string(got), line1)
+		}
+	})
+
+	t.Run("incomplete trailing line within budget is forwarded once completed", func(t *testing.T) {
+		exchange := t.TempDir()
+		evDir := filepath.Join(exchange, "runtime", "runs", fixtureRun)
+		if err := os.MkdirAll(evDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		evPath := filepath.Join(evDir, "events.jsonl")
+		full := `{"sequence":1,"type":"step.started"}` + "\n"
+		if err := os.WriteFile(evPath, []byte(full[:15]), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(exchange)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+
+		dst := filepath.Join(t.TempDir(), "events.jsonl")
+		var offset, written int64
+		rel := path.Join("runtime", "runs", fixtureRun, "events.jsonl")
+		forwardEventsWithLimit(root, rel, dst, &offset, &written, 200, maxEventLineBytes)
+		if offset != 0 || written != 0 {
+			t.Fatalf("partial line advanced offset=%d written=%d", offset, written)
+		}
+		if err := os.WriteFile(evPath, []byte(full), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		forwardEventsWithLimit(root, rel, dst, &offset, &written, 200, maxEventLineBytes)
+		got, err := os.ReadFile(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != full || offset != int64(len(full)) || written != int64(len(full)) {
+			t.Fatalf("got=%q offset=%d written=%d", string(got), offset, written)
+		}
+	})
+}
+
+func TestExecuteCancellationBeforeContainerCreationRemovesOrphan(t *testing.T) {
+	for _, retryFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retryFails=%v", retryFails), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			var (
+				mu               sync.Mutex
+				rmCalls          int
+				containerCreated bool
+				containerRunning bool
+				procKilled       bool
+			)
+			killCh := make(chan struct{})
+			proc := &fakeProc{
+				waitFn: func() error {
+					// Simulates docker run creating the container after the first rm -f
+					// returned "No such container" and remaining attached until killed.
+					<-killCh
+					return errors.New("signal: killed")
+				},
+			}
+			// Intercept Kill via a wrapper so Wait unblocks when proc.Kill() is called.
+			wrapped := &killNotifyProc{
+				fakeProc: proc,
+				onKill: func() {
+					mu.Lock()
+					procKilled = true
+					mu.Unlock()
+					close(killCh)
+				},
+			}
+
+			c := Connector{
+				Config:      fixtureConfig(),
+				cancelGrace: 20 * time.Millisecond,
+				getenv:      func(k string) string { return map[string]string{"GH_TOKEN": "tok"}[k] },
+				runCmd: func(_ context.Context, _ []string, _ int, args ...string) ([]byte, error) {
+					want := "rm -f " + ContainerName(fixtureRun)
+					if strings.Join(args, " ") != want {
+						return nil, fmt.Errorf("unexpected docker args: %v", args)
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					rmCalls++
+					if !containerCreated {
+						// Container is created right after the first rm -f misses it.
+						containerCreated = true
+						containerRunning = true
+						return nil, errors.New("Error response from daemon: No such container: " + ContainerName(fixtureRun))
+					}
+					if retryFails {
+						return nil, errors.New("daemon unreachable")
+					}
+					containerRunning = false
+					return nil, nil
+				},
+				startContainer: func(_ []string, _ ...string) (containerProcess, error) {
+					return wrapped, nil
+				},
+			}
+
+			done := make(chan runner.RunResult, 1)
+			go func() {
+				done <- c.Execute(ctx, fixtureRequest(), t.TempDir())
+			}()
+			time.Sleep(15 * time.Millisecond)
+			cancel()
+			result := <-done
+
+			mu.Lock()
+			defer mu.Unlock()
+			if result.State != runner.StateCancelled {
+				t.Fatalf("result = %+v", result)
+			}
+			if !procKilled {
+				t.Fatal("expected docker CLI process to be killed after cancel grace")
+			}
+			if rmCalls != 2 {
+				t.Fatalf("rmCalls = %d, want 2 (initial + post-kill retry)", rmCalls)
+			}
+			if retryFails {
+				if !containerRunning || !strings.Contains(result.Error, "may still be running") {
+					t.Fatalf("expected unconfirmed cleanup warning, got running=%v err=%q", containerRunning, result.Error)
+				}
+			} else {
+				if containerRunning {
+					t.Fatal("orphan container was left running")
+				}
+				if result.Error != "run cancelled" {
+					t.Fatalf("result.Error = %q, want %q", result.Error, "run cancelled")
+				}
+			}
+		})
+	}
+}
+
+type killNotifyProc struct {
+	*fakeProc
+	onKill func()
+	once   sync.Once
+}
+
+func (k *killNotifyProc) Kill() error {
+	err := k.fakeProc.Kill()
+	k.once.Do(func() {
+		if k.onKill != nil {
+			k.onKill()
+		}
+	})
+	return err
 }

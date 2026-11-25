@@ -11,12 +11,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
@@ -28,11 +30,13 @@ import (
 
 const (
 	defaultSetupAllowance = 2 * time.Minute
+	defaultCancelGrace    = 5 * time.Second
 	cleanupTimeout        = 30 * time.Second
 	runtimeCheckTimeout   = 30 * time.Second
 	probeTimeout          = 30 * time.Second
 	defaultTailInterval   = 100 * time.Millisecond
 	maxResultBytes        = 1<<20 + 2*protocol.MaxPatchBytes
+	maxEventLineBytes     = 1 << 20
 	maxDiagnosticBytes    = 4096
 	defaultNonRootUID     = 1000
 	defaultNonRootGID     = 1000
@@ -84,6 +88,7 @@ type Connector struct {
 	user           func() (string, int, int)
 	tailInterval   time.Duration
 	setupAllowance time.Duration
+	cancelGrace    time.Duration
 }
 
 func (c Connector) getEnv(name string) string {
@@ -217,7 +222,7 @@ func (c Connector) ProbeHarnesses(ctx context.Context) ([]string, error) {
 	defer cancel()
 	user, _, _ := c.containerUser()
 	names := harness.Names()
-	script := fmt.Sprintf(`for h in %s; do command -v "$h" >/dev/null 2>&1 && printf '%%s\n' "$h"; done`, strings.Join(names, " "))
+	script := fmt.Sprintf(`for h in %s; do if command -v "$h" >/dev/null 2>&1; then printf '%%s\n' "$h"; fi; done`, strings.Join(names, " "))
 	args := []string{
 		"run",
 		"--rm",
@@ -410,6 +415,12 @@ func (c Connector) Execute(ctx context.Context, request runner.RunRequest, dataD
 	}
 	defer os.RemoveAll(root)
 
+	exchangeRoot, err := os.OpenRoot(dirs.Exchange)
+	if err != nil {
+		return failure(fmt.Errorf("open exchange root: %w", err))
+	}
+	defer exchangeRoot.Close()
+
 	// Strip GitHubToken before writing request.json so tokens never touch disk.
 	storedRequest := request
 	storedRequest.GitHubToken = ""
@@ -429,15 +440,19 @@ func (c Connector) Execute(ctx context.Context, request runner.RunRequest, dataD
 	if allowance <= 0 {
 		allowance = defaultSetupAllowance
 	}
+	cancelGrace := c.cancelGrace
+	if cancelGrace <= 0 {
+		cancelGrace = defaultCancelGrace
+	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout+allowance)
 	defer cancel()
 
 	containerName := ContainerName(request.RunID)
 	args, cmdEnv := c.BuildRunArgs(containerName, dirs, token, user)
 
-	srcEvents := filepath.Join(dirs.Exchange, "runtime", "runs", request.RunID, "events.jsonl")
+	relEvents := path.Join("runtime", "runs", request.RunID, "events.jsonl")
 	dstEvents := filepath.Join(dataDirectory, "runs", request.RunID, "events.jsonl")
-	stopTail := c.startEventTailer(srcEvents, dstEvents)
+	stopTail := c.startEventTailer(exchangeRoot, relEvents, dstEvents)
 
 	proc, err := c.startRun(cmdEnv, args...)
 	if err != nil {
@@ -456,12 +471,21 @@ func (c Connector) Execute(ctx context.Context, request runner.RunRequest, dataD
 	case waitErr = <-waitDone:
 	case <-runCtx.Done():
 		cancelled = true
-		rmErr := c.removeContainer(containerName)
+		removed, rmErr := c.removeContainer(containerName)
+		killed := false
 		select {
 		case <-waitDone:
-		case <-time.After(5 * time.Second):
+		case <-time.After(cancelGrace):
+			killed = true
 			_ = proc.Kill()
 			<-waitDone
+		}
+		if killed || (!removed && rmErr == nil) {
+			if _, retryErr := c.removeContainer(containerName); retryErr != nil {
+				rmErr = retryErr
+			} else if killed {
+				rmErr = nil
+			}
 		}
 		stopTail()
 		errText := runCtx.Err().Error()
@@ -479,13 +503,13 @@ func (c Connector) Execute(ctx context.Context, request runner.RunRequest, dataD
 	stopTail()
 
 	if !cancelled {
-		result, readErr := readResultFile(filepath.Join(dirs.Exchange, "result.json"))
+		result, readErr := readResultFile(exchangeRoot, "result.json")
 		if readErr == nil {
 			return result
 		}
 		// Container exited without producing result.json (e.g. OOM, image error,
 		// or entrypoint failure). Ensure no container lingers and report cleanly.
-		rmErr := c.removeContainer(containerName)
+		_, rmErr := c.removeContainer(containerName)
 		var parts []string
 		if waitErr != nil {
 			parts = append(parts, fmt.Sprintf("docker run failed: %v", waitErr))
@@ -528,21 +552,65 @@ func (c Connector) prepareRunDirs(root string) (RunDirs, string, error) {
 	return dirs, user, nil
 }
 
-func (c Connector) removeContainer(name string) error {
+func (c Connector) removeContainer(name string) (bool, error) {
 	cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 	_, err := c.command(cleanup, nil, 64<<10, "rm", "-f", name)
 	if err == nil {
-		return nil
+		return true, nil
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "no such container") {
-		return nil
+		return false, nil
 	}
-	return fmt.Errorf("docker container %s may still be running; remove it with docker rm -f %s", name, name)
+	return false, fmt.Errorf("docker container %s may still be running; remove it with docker rm -f %s", name, name)
 }
 
-func readResultFile(path string) (runner.RunResult, error) {
-	file, err := os.Open(path)
+func openRegularFileInRoot(root *os.Root, relPath string) (*os.File, os.FileInfo, error) {
+	file, err := root.OpenFile(relPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	fInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	if !fInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, nil, fmt.Errorf("%s is not a regular file", relPath)
+	}
+	// os.Root blocks symlink escapes outside the root, while still permitting
+	// intra-root symlinks. Verify each path component with Lstat so symlinks
+	// inside the container-writable exchange directory are rejected outright.
+	parts := strings.Split(relPath, "/")
+	for i := range parts {
+		prefix := strings.Join(parts[:i+1], "/")
+		info, err := root.Lstat(prefix)
+		if err != nil {
+			_ = file.Close()
+			return nil, nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			_ = file.Close()
+			return nil, nil, fmt.Errorf("%s traverses a symbolic link", relPath)
+		}
+		if i < len(parts)-1 {
+			if !info.IsDir() {
+				_ = file.Close()
+				return nil, nil, fmt.Errorf("%s parent is not a directory", relPath)
+			}
+		} else {
+			if !info.Mode().IsRegular() || !os.SameFile(info, fInfo) {
+				_ = file.Close()
+				return nil, nil, fmt.Errorf("%s changed or is not a regular file", relPath)
+			}
+		}
+	}
+	return file, fInfo, nil
+}
+
+func readResultFile(exchangeRoot *os.Root, relPath string) (runner.RunResult, error) {
+	file, _, err := openRegularFileInRoot(exchangeRoot, relPath)
 	if err != nil {
 		return runner.RunResult{}, err
 	}
@@ -561,10 +629,11 @@ func readResultFile(path string) (runner.RunResult, error) {
 	return result, nil
 }
 
-// startEventTailer tails complete JSONL lines from src and appends them to dst
-// while the container runs. Calling the returned stop function stops the
-// background ticker and performs one final drain before returning.
-func (c Connector) startEventTailer(src, dst string) func() {
+// startEventTailer tails complete JSONL lines from relSrc inside exchangeRoot
+// and appends them to dst while the container runs. Calling the returned stop
+// function stops the background ticker and performs one final drain before
+// returning.
+func (c Connector) startEventTailer(exchangeRoot *os.Root, relSrc, dst string) func() {
 	interval := c.tailInterval
 	if interval <= 0 {
 		interval = defaultTailInterval
@@ -573,7 +642,7 @@ func (c Connector) startEventTailer(src, dst string) func() {
 	doneCh := make(chan struct{})
 	var offset, written int64
 	drain := func() {
-		forwardEvents(src, dst, &offset, &written)
+		forwardEvents(exchangeRoot, relSrc, dst, &offset, &written)
 	}
 	go func() {
 		defer close(doneCh)
@@ -598,44 +667,71 @@ func (c Connector) startEventTailer(src, dst string) func() {
 	}
 }
 
-func forwardEvents(src, dst string, offset, written *int64) {
-	if *written >= runner.MaxEventLogBytes {
+func forwardEvents(exchangeRoot *os.Root, relSrc, dst string, offset, written *int64) {
+	forwardEventsWithLimit(exchangeRoot, relSrc, dst, offset, written, runner.MaxEventLogBytes, maxEventLineBytes)
+}
+
+func forwardEventsWithLimit(exchangeRoot *os.Root, relSrc, dst string, offset, written *int64, maxBytes, maxLine int64) {
+	if *written >= maxBytes {
 		return
 	}
-	file, err := os.Open(src)
+	file, info, err := openRegularFileInRoot(exchangeRoot, relSrc)
 	if err != nil {
 		return
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || info.Size() <= *offset {
+	if info.Size() <= *offset {
 		return
 	}
 	if _, err := file.Seek(*offset, io.SeekStart); err != nil {
 		return
 	}
-	reader := bufio.NewReaderSize(file, 64<<10)
+	remaining := maxBytes - *written
+	limited := io.LimitReader(file, remaining+1)
+	reader := bufio.NewReaderSize(limited, 64<<10)
 	var batch bytes.Buffer
 	nextOffset := *offset
 	nextWritten := *written
+	capped := false
 	for {
-		line, readErr := reader.ReadBytes('\n')
-		if readErr != nil {
+		lineBudget := maxBytes - nextWritten
+		if lineBudget <= 0 {
+			capped = true
+			break
+		}
+		if maxLine > 0 && lineBudget > maxLine {
+			lineBudget = maxLine
+		}
+		line, complete, exceeded := readBoundedLine(reader, lineBudget)
+		if exceeded {
+			capped = true
+			break
+		}
+		if !complete {
 			// Incomplete trailing line or EOF: retry on the next tick.
 			break
 		}
-		nextOffset += int64(len(line))
 		if !json.Valid(line) {
+			nextOffset += int64(len(line))
 			continue
 		}
-		if nextWritten+int64(len(line)) > runner.MaxEventLogBytes {
+		if nextWritten+int64(len(line)) > maxBytes {
+			capped = true
 			break
 		}
 		batch.Write(line)
+		nextOffset += int64(len(line))
 		nextWritten += int64(len(line))
+		if nextWritten >= maxBytes {
+			capped = true
+			break
+		}
 	}
 	if batch.Len() == 0 {
 		*offset = nextOffset
+		if capped {
+			*written = maxBytes
+		}
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
@@ -649,7 +745,29 @@ func forwardEvents(src, dst string, offset, written *int64) {
 	closeErr := out.Close()
 	if writeErr == nil && closeErr == nil && n == batch.Len() {
 		*offset = nextOffset
-		*written = nextWritten
+		if capped {
+			*written = maxBytes
+		} else {
+			*written = nextWritten
+		}
+	}
+}
+
+func readBoundedLine(r *bufio.Reader, maxLen int64) (line []byte, complete bool, exceeded bool) {
+	for {
+		frag, err := r.ReadSlice('\n')
+		if int64(len(line))+int64(len(frag)) > maxLen {
+			return nil, false, true
+		}
+		line = append(line, frag...)
+		switch {
+		case err == nil:
+			return line, true, false
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return line, false, false
+		}
 	}
 }
 
