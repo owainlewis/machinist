@@ -275,6 +275,9 @@ a.source:hover span { text-decoration: underline; }
 .pipeline li[data-state="running"] .pipeline-node::after { position: absolute; right: 0; bottom: 0; left: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--info), transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: run-sweep 1.6s ease-in-out infinite; content: ""; }
 .pipeline li[data-state="running"] .pipeline-edge { background: linear-gradient(90deg, color-mix(in srgb, var(--success) 50%, var(--border)), var(--info)); }
 .pipeline li[data-state="failed"] .pipeline-node, .pipeline li[data-state="timed_out"] .pipeline-node { border-color: color-mix(in srgb, var(--danger) 60%, var(--border)); background: var(--danger-soft); }
+.pipeline li[data-state="held"] .pipeline-node { border-color: color-mix(in srgb, var(--warning) 48%, var(--border)); background: color-mix(in srgb, var(--warning-soft) 55%, var(--background)); }
+.pipeline li[data-state="succeeded"] + li[data-state="held"] .pipeline-edge { background: linear-gradient(90deg, color-mix(in srgb, var(--success) 50%, var(--border)), var(--warning)); }
+.pipeline li[data-state="held"] .pipeline-meta, .step[data-state="held"] .step-time { color: var(--warning); }
 .pipeline li[data-state="succeeded"] .pipeline-node { border-color: color-mix(in srgb, var(--success) 34%, var(--border)); }
 .pipeline li[data-state="skipped"] .pipeline-name, .pipeline li[data-state="pending"] .pipeline-name { color: var(--muted-foreground); font-weight: 400; }
 .pipeline li[data-state="pending"] .pipeline-node { border-style: dashed; }
