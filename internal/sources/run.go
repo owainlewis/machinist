@@ -57,10 +57,11 @@ func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, er
 		return tickets.Ticket{}, false, err
 	}
 	// A one-off job names no preset and gets the default one.
+	defaultPreset, presets := i.presetConfig()
 	if job.preset == "" {
-		job.preset = i.DefaultPreset
+		job.preset = defaultPreset
 	}
-	if i.Presets == nil || !i.Presets(job.preset) {
+	if presets == nil || !presets(job.preset) {
 		return tickets.Ticket{}, false, invalid("preset %q does not exist", job.preset)
 	}
 	repository, connected, err := i.repository(ctx, job.repo)

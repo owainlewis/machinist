@@ -54,14 +54,15 @@ type RepositoryAccess struct {
 }
 
 func (s *Server) githubSettings(w http.ResponseWriter, r *http.Request, _ string) {
-	settings := GitHubSettings{Handle: s.config.GitHub.Handle, AutoMerge: s.config.GitHub.AutoMerges(), Repositories: []RepositoryAccess{}}
-	if s.config.GitHub.App != nil || s.app != nil {
+	st := s.state()
+	settings := GitHubSettings{Handle: st.config.GitHub.Handle, AutoMerge: st.config.GitHub.AutoMerges(), Repositories: []RepositoryAccess{}}
+	if st.config.GitHub.App != nil || st.app != nil {
 		settings.App = &AppView{}
-		if s.config.GitHub.App != nil {
-			settings.App.ID = s.config.GitHub.App.ID
+		if st.config.GitHub.App != nil {
+			settings.App.ID = st.config.GitHub.App.ID
 		}
-		if s.app != nil {
-			if identity, err := s.app.Identity(r.Context()); err != nil {
+		if st.app != nil {
+			if identity, err := st.app.Identity(r.Context()); err != nil {
 				settings.App.Error = err.Error()
 			} else {
 				settings.App.Name, settings.App.InstallURL = identity.Name, identity.InstallURL()
@@ -134,9 +135,10 @@ type LinearTeam struct {
 }
 
 func (s *Server) linearSettings(w http.ResponseWriter, _ *http.Request, _ string) {
-	linear := s.config.Linear
+	st := s.state()
+	linear := st.config.Linear
 	settings := LinearSettings{
-		Enabled:       s.linear != nil,
+		Enabled:       st.linear != nil,
 		AllowedUsers:  []string{},
 		Teams:         []LinearTeam{},
 		CredentialEnv: []string{config.LinearClientIDEnv, config.LinearClientSecretEnv},
@@ -152,7 +154,7 @@ func (s *Server) linearSettings(w http.ResponseWriter, _ *http.Request, _ string
 		settings.AllowedUsers = append(settings.AllowedUsers, linear.AllowedUsers...)
 		settings.Preset = linear.Preset
 		if settings.Preset == "" {
-			settings.Preset = s.config.Server.DefaultPreset
+			settings.Preset = st.config.Server.DefaultPreset
 		}
 		for team, repository := range linear.Teams {
 			settings.Teams = append(settings.Teams, LinearTeam{Team: team, Repo: repository})
@@ -375,11 +377,12 @@ type AgentView struct {
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, _ *http.Request, _ string) {
+	st := s.state()
 	agents := []AgentView{}
-	if s.factory != nil {
+	if st.factory != nil {
 		usedBy := map[string][]string{}
 		usesBy := map[string][]AgentUse{}
-		for _, preset := range s.presets {
+		for _, preset := range st.presets {
 			for _, step := range preset.Steps {
 				for _, agent := range step.Agents {
 					if !slices.Contains(usedBy[agent.Name], preset.Name) {
@@ -392,7 +395,7 @@ func (s *Server) listAgents(w http.ResponseWriter, _ *http.Request, _ string) {
 				}
 			}
 		}
-		for name, agent := range s.factory.Agents {
+		for name, agent := range st.factory.Agents {
 			agents = append(agents, AgentView{
 				Name:    name,
 				Harness: agent.Harness,

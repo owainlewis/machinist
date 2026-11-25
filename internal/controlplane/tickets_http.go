@@ -144,7 +144,8 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 		writeTicketError(w, err)
 		return
 	}
-	detail := map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": s.presetSteps(ticket.Agent)}
+	loaded := s.factoryForTicket(ticket)
+	detail := map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": presetStepsFrom(loaded, ticket.Agent)}
 	if len(runs) > 0 && runs[len(runs)-1].Status == tickets.RunQueued {
 		runners, _, err := s.store.Fleet(r.Context())
 		if err != nil {
@@ -153,22 +154,42 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 		}
 		// waiting_for names the harnesses no online runner has, which keep
 		// the queued run from starting.
-		if missing := s.waitingFor(s.onlineRunners(runners), ticket.Agent); len(missing) > 0 {
+		if missing := waitingForFrom(loaded, s.onlineRunners(runners), ticket.Agent); len(missing) > 0 {
 			detail["waiting_for"] = missing
 		}
 	}
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// presetSteps lists the steps of a preset, in order, with the agents each
-// runs, so the UI can draw a job's pipeline before its first run starts. A
+// factoryForTicket returns the factory that governs ticket: its pinned
+// pre-reload factory while it is still working in that generation, or the
+// server's current factory otherwise.
+func (s *Server) factoryForTicket(ticket tickets.Ticket) *factory.Factory {
+	if s.engine != nil && ticket.State == tickets.StateWorking {
+		if pinned := s.engine.PinnedFactory(ticket.ID, ticket.UpdatedAt); pinned != nil {
+			return pinned
+		}
+	}
+	return s.state().factory
+}
+
+// presetStepsForTicket lists the steps of a preset, in order, with the agents
+// each runs, so the UI can draw a job's pipeline before its first run starts.
+// A queued ticket pinned before a reload uses the factory it started with. A
 // preset that is gone has none.
-func (s *Server) presetSteps(name string) []stepView {
-	preset, ok := s.factory.Preset(name)
+func (s *Server) presetStepsForTicket(ticket tickets.Ticket) []stepView {
+	return presetStepsFrom(s.factoryForTicket(ticket), ticket.Agent)
+}
+
+func presetStepsFrom(loaded *factory.Factory, name string) []stepView {
+	if loaded == nil {
+		return []stepView{}
+	}
+	preset, ok := loaded.Preset(name)
 	if !ok {
 		return []stepView{}
 	}
-	return stepViews(s.factory, preset)
+	return stepViews(loaded, preset)
 }
 
 func (s *Server) rerunTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
@@ -176,6 +197,9 @@ func (s *Server) rerunTicket(w http.ResponseWriter, r *http.Request, tokenName s
 	if err != nil {
 		writeTicketError(w, err)
 		return
+	}
+	if s.engine != nil {
+		s.engine.UnpinBefore(ticket.ID, ticket.UpdatedAt)
 	}
 	writeJSON(w, http.StatusOK, ticket)
 }
@@ -185,6 +209,9 @@ func (s *Server) cancelTicket(w http.ResponseWriter, r *http.Request, tokenName 
 	if err != nil {
 		writeTicketError(w, err)
 		return
+	}
+	if s.engine != nil {
+		s.engine.UnpinThrough(ticket.ID, ticket.UpdatedAt)
 	}
 	s.writeTicket(w, r, http.StatusOK, ticket)
 }
@@ -422,9 +449,10 @@ func presetViews(loaded *factory.Factory) []presetView {
 }
 
 func (s *Server) listPresets(w http.ResponseWriter, _ *http.Request, _ string) {
-	body := map[string]any{"presets": s.presets, "default": s.config.Server.DefaultPreset}
-	if s.factory != nil && len(s.factory.Updates) > 0 {
-		body["updates"] = s.factory.Updates
+	st := s.state()
+	body := map[string]any{"presets": st.presets, "default": st.config.Server.DefaultPreset}
+	if st.factory != nil && len(st.factory.Updates) > 0 {
+		body["updates"] = st.factory.Updates
 	}
 	writeJSON(w, http.StatusOK, body)
 }

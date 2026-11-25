@@ -41,7 +41,14 @@ func newStartCommand(options *commandOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var cleanupState func()
+			defer func() {
+				if cleanupState != nil {
+					cleanupState()
+				}
+			}()
 			return server.Serve(command.Context(), func(address net.Addr) {
+				cleanupState = writeControlPlaneState(machinistConfig, address)
 				fmt.Fprintf(log, "machinist: control plane listening on %s\n", address)
 			})
 		},

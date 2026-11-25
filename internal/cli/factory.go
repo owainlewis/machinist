@@ -60,7 +60,7 @@ func upgradeFactory(directory string, force bool, output io.Writer) error {
 		}
 	}
 	if changed > 0 {
-		fmt.Fprintln(output, "Restart the control plane to load the updated factory.")
+		fmt.Fprintln(output, "Run machinist reload to load the updated factory.")
 	}
 	if skipped > 0 {
 		noun := "edited files were"

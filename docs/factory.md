@@ -1,8 +1,16 @@
 # Factory files
 
 The factory is a directory of plain files on the control plane, normally `factory/` beside
-`config.yaml`, in the same git repository. It is read at startup. A change needs a restart,
-and an invalid factory stops startup with a message that names the problem.
+`config.yaml`, in the same git repository. It is read at startup and reloaded on demand with
+`machinist reload` — a restart is no longer needed after changing presets, agents, prompts,
+scripts, automations, or reloadable `config.yaml` settings. An invalid factory stops startup,
+or during `machinist reload` leaves the running control plane unchanged and reports the
+problem. Runs already queued or running keep the job they started with.
+
+Only `server.listen`, `server.database`, `server.tls_cert`, and `server.tls_key` in
+`config.yaml` (plus process environment variables such as `GH_TOKEN` and `LINEAR_*`) still
+need a control plane restart; `machinist reload` names any of those settings when they differ
+and does not apply them.
 
 ```text
 factory/
@@ -30,7 +38,7 @@ Run `machinist factory upgrade` from the configuration directory to apply them:
 - Files your team has edited are never overwritten; Machinist prints a diff against the
   shipped version instead. Pass `--force` to overwrite edited files with the shipped copies.
 
-Commit the updated files and `factory/manifest.yaml`, then restart the control plane.
+Commit the updated files and `factory/manifest.yaml`, then run `machinist reload` (no restart needed).
 
 ## Presets
 

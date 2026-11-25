@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
@@ -25,6 +27,20 @@ type Schedule struct {
 	// Interval is the time between checks.
 	Interval time.Duration
 	now      func() time.Time
+	mu       sync.RWMutex
+}
+
+// SetAutomations replaces the scheduled automations atomically.
+func (s *Schedule) SetAutomations(automations []factory.Automation) {
+	s.mu.Lock()
+	s.Automations = slices.Clone(automations)
+	s.mu.Unlock()
+}
+
+func (s *Schedule) automations() []factory.Automation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return slices.Clone(s.Automations)
 }
 
 func NewSchedule(store *tickets.Store, automations []factory.Automation, log io.Writer) *Schedule {
@@ -70,7 +86,7 @@ func (s *Schedule) base(ctx context.Context, automation factory.Automation) (tim
 // last ticket is still active starts nothing, and stays due until it ends.
 func (s *Schedule) Poll(ctx context.Context) error {
 	var failures []error
-	for _, automation := range s.Automations {
+	for _, automation := range s.automations() {
 		if err := s.poll(ctx, automation); err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", automation.Name, err))
 		}
@@ -114,7 +130,7 @@ func (s *Schedule) create(ctx context.Context, automation factory.Automation, by
 // the automation's saved prompt for this run only. If its last ticket is still
 // active, it returns that ticket. The bool reports whether this call created one.
 func (s *Schedule) RunNow(ctx context.Context, name, by, prompt string) (tickets.Ticket, bool, error) {
-	for _, automation := range s.Automations {
+	for _, automation := range s.automations() {
 		if automation.Name == name {
 			return s.create(ctx, automation, by, fmt.Sprintf("manual:%d", s.now().UnixNano()), prompt)
 		}
@@ -142,8 +158,9 @@ type AutomationStatus struct {
 
 // Status lists each automation with its next due time and last ticket.
 func (s *Schedule) Status(ctx context.Context) ([]AutomationStatus, error) {
-	statuses := make([]AutomationStatus, 0, len(s.Automations))
-	for _, automation := range s.Automations {
+	automations := s.automations()
+	statuses := make([]AutomationStatus, 0, len(automations))
+	for _, automation := range automations {
 		status := AutomationStatus{
 			Name:     automation.Name,
 			Repo:     automation.Repo,
