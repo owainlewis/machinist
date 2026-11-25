@@ -248,3 +248,52 @@ func (f *fixture) getJob(t *testing.T, id string) job {
 	}
 	return decodeJob(t, body)
 }
+
+func TestJobAPIMergeGateJSONSerialization(t *testing.T) {
+	f := newFixture(t)
+	created := f.run(t, "linear:ENG-192")
+
+	// Before any merge gate runs, merge_gate_* fields are omitted from JSON.
+	for _, path := range []string{"/machinist/jobs/" + created.ID, "/machinist/jobs"} {
+		response, body := f.call(t, http.MethodGet, path, f.token, nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d: %s", path, response.StatusCode, body)
+		}
+		raw := string(body)
+		for _, field := range []string{"merge_gate_decision", "merge_gate_risk", "merge_gate_reason"} {
+			if strings.Contains(raw, field) {
+				t.Fatalf("GET %s should omit %s when no merge gate ran: %s", path, field, raw)
+			}
+		}
+	}
+
+	// After persisting a merge-gate verdict, both single and list job endpoints include it.
+	if err := f.store.Apply(t.Context(), created.ID, tickets.StateWorking, tickets.Transition{
+		State:    tickets.StatePRReady,
+		PRNumber: 91,
+		MergeGate: &tickets.MergeGate{
+			Decision: "human_review",
+			Risk:     "medium",
+			Reason:   "Modifies control plane HTTP response fields.",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := f.getJob(t, created.ID)
+	if got.MergeGateDecision != "human_review" || got.MergeGateRisk != "medium" || got.MergeGateReason != "Modifies control plane HTTP response fields." {
+		t.Fatalf("job = %+v", got)
+	}
+
+	response, body := f.call(t, http.MethodGet, "/machinist/jobs", f.token, nil)
+	var list struct {
+		Jobs []job `json:"jobs"`
+	}
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &list) != nil || len(list.Jobs) != 1 {
+		t.Fatalf("list = %d: %s", response.StatusCode, body)
+	}
+	listed := list.Jobs[0]
+	if listed.MergeGateDecision != "human_review" || listed.MergeGateRisk != "medium" || listed.MergeGateReason != "Modifies control plane HTTP response fields." {
+		t.Fatalf("listed job = %+v", listed)
+	}
+}

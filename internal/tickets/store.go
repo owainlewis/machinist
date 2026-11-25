@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
   state TEXT NOT NULL, agent TEXT NOT NULL, pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
-  origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT);
+  origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT,
+  merge_gate_decision TEXT NOT NULL DEFAULT '', merge_gate_risk TEXT NOT NULL DEFAULT '', merge_gate_reason TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
   WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
 CREATE INDEX IF NOT EXISTS tickets_created_at ON tickets(created_at DESC, id DESC);
@@ -130,8 +131,14 @@ type Ticket struct {
 	// it change. Both are empty until the job has a pull request.
 	PRState   string     `json:"pr_state,omitempty"`
 	PRStateAt *time.Time `json:"pr_state_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	// MergeGateDecision, MergeGateRisk and MergeGateReason record the merge
+	// gate's judgment when the merge-gate step ran. All three are empty when
+	// no merge gate ran.
+	MergeGateDecision string    `json:"merge_gate_decision,omitempty"`
+	MergeGateRisk     string    `json:"merge_gate_risk,omitempty"`
+	MergeGateReason   string    `json:"merge_gate_reason,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 	// Shipping is what the control plane keeps while it waits for the pull
 	// request's checks, to merge it or report a failed one. It is empty when
 	// nothing waits. The engine owns its contents.
@@ -237,6 +244,15 @@ type Transition struct {
 	PROpenedAt *time.Time
 	// Reviews, when set, are the people's reviews of a pull request that merged.
 	Reviews *Reviews
+	// MergeGate, when set, records the merge gate's judgment on the ticket.
+	MergeGate *MergeGate
+}
+
+// MergeGate is the merge gate's persisted judgment on a ticket's pull request.
+type MergeGate struct {
+	Decision string
+	Risk     string
+	Reason   string
 }
 
 // Reviews are the reviews people submitted on a pull request. Bots' reviews
@@ -326,6 +342,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "tickets", "merge_gate_decision TEXT NOT NULL DEFAULT ''", "merge_gate_risk TEXT NOT NULL DEFAULT ''", "merge_gate_reason TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Reviewer runs are gone. Cancel any a database from before still queues.
 	// Jobs no longer wait for answers, so one left waiting has failed.
 	for _, statement := range []string{
@@ -397,7 +417,7 @@ func nullableString(value string) any {
 	return value
 }
 
-const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,'')`
+const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,'')`
 
 type scanner interface{ Scan(...any) error }
 
@@ -406,7 +426,7 @@ func scanTicket(row scanner) (Ticket, error) {
 	var issue, pr, commits sql.NullInt64
 	var merged, prStateAt sql.NullString
 	var created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping); err != nil {
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
@@ -677,12 +697,14 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 			return err
 		}
 		added = true
-		next := ticket.State
 		if ticket.State == StatePRReady {
-			next = StateWorking
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,updated_at=? WHERE id=?`, next, stamp(now), ticketID); err != nil {
-			return err
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+				return err
+			}
+		} else {
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,updated_at=? WHERE id=?`, ticket.State, stamp(now), ticketID); err != nil {
+				return err
+			}
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)
 		return err
@@ -1077,7 +1099,7 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		// again that it started and how it ends. A pull request that merged or
 		// closed is finished with, so the new run opens and counts its own. An
 		// open one stays, so the new run keeps working on it.
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
 			return err
 		}
 		if ticket.MergedAt != nil || ticket.PRState == PRMerged || ticket.PRState == PRClosed {
@@ -1153,6 +1175,12 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 	}
 	if err := setReviews(ctx, q, ticket.ID, transition.Reviews); err != nil {
 		return err
+	}
+	if transition.MergeGate != nil {
+		if _, err := q.ExecContext(ctx, `UPDATE tickets SET merge_gate_decision=?,merge_gate_risk=?,merge_gate_reason=? WHERE id=?`,
+			transition.MergeGate.Decision, transition.MergeGate.Risk, transition.MergeGate.Reason, ticket.ID); err != nil {
+			return err
+		}
 	}
 	if transition.Report != "" {
 		if err := insertEntry(ctx, q, ticket.ID, EntryReport, ticket.Agent, transition.Report, nil, now); err != nil {
@@ -1455,6 +1483,7 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 			}
 			if waiting > 0 {
 				transition.State = StateWorking
+				transition.MergeGate = nil
 			}
 		}
 		return applyTransition(ctx, tx, ticket, transition, now)

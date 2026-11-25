@@ -121,6 +121,9 @@ func shipRequest(options MergeOptions) (protocol.Ship, Gate, bool) {
 		}
 		return request, Gate{}, false
 	default:
+		request.MergeGateDecision = gate.Decision
+		request.MergeGateRisk = gate.Risk
+		request.MergeGateReason = gate.Reason
 		if blocker := gateBlocker(gate); blocker != "" && request.Hold == "" {
 			request.Hold = blocker
 		}
@@ -133,11 +136,22 @@ func shipRequest(options MergeOptions) (protocol.Ship, Gate, bool) {
 // review at all in a preset without one. The control plane asks it again with
 // its own github.auto_merge, so no step can merge what the settings forbid.
 func Blocker(autoMerge bool, request protocol.Ship) string {
-	switch {
-	case !autoMerge:
+	if !autoMerge {
 		return "auto-merge is off"
-	case request.Hold != "":
+	}
+	if request.Hold != "" {
 		return request.Hold
+	}
+	if request.MergeGateDecision != "" || request.MergeGateRisk != "" {
+		if blocker := gateBlocker(Gate{
+			Decision: request.MergeGateDecision,
+			Risk:     request.MergeGateRisk,
+			Reason:   request.MergeGateReason,
+		}); blocker != "" {
+			return blocker
+		}
+	}
+	switch {
 	case request.Verdict == Accepted:
 		return ""
 	case request.Verdict == "" && request.WithoutReview:
