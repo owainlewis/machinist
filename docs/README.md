@@ -9,6 +9,7 @@ Start with the [quick start](../README.md#quick-start).
 | [Run API](run-api.md) | Start and follow jobs from any system |
 | [Linear](linear.md) | Start a job by assigning a Linear issue to Machinist |
 | [Factory files](factory.md) | Write presets and add automations |
+| [Merge policies](merge-policies.md) | Configure risk-based auto-merge and starter policies |
 
 ## Run it
 
