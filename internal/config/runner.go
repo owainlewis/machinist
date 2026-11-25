@@ -18,6 +18,7 @@ var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // Runner is the configuration of one machine or cluster that runs steps.
 type Runner struct {
 	Kubernetes *Kubernetes `yaml:"kubernetes"`
+	Docker     *Docker     `yaml:"docker"`
 	// Env names the variables passed from the runner's own environment to
 	// every step, such as ANTHROPIC_API_KEY or LINEAR_API_KEY.
 	Env []string `yaml:"env"`
@@ -58,11 +59,38 @@ func (r Runner) Kind() string {
 	if r.Kubernetes != nil {
 		return "kubernetes"
 	}
+	if r.Docker != nil {
+		if r.Docker.Runtime != "" {
+			return fmt.Sprintf("docker (%s)", r.Docker.Runtime)
+		}
+		return "docker"
+	}
 	return "local"
 }
 
 // Harnesses lists what this runner runs: a preset's steps.
 func (r Runner) Harnesses() []string { return []string{"steps"} }
+
+// EffectiveEnv returns the deduplicated list of environment variable names
+// forwarded from the runner host to steps, combining top-level env and
+// docker.env when configured.
+func (r Runner) EffectiveEnv() []string {
+	if r.Docker == nil || len(r.Docker.Env) == 0 {
+		return append([]string(nil), r.Env...)
+	}
+	seen := make(map[string]struct{}, len(r.Env)+len(r.Docker.Env))
+	merged := make([]string, 0, len(r.Env)+len(r.Docker.Env))
+	for _, list := range [][]string{r.Env, r.Docker.Env} {
+		for _, name := range list {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			merged = append(merged, name)
+		}
+	}
+	return merged
+}
 
 func applyRunnerDefaults(runner Runner) (Runner, error) {
 	address, err := url.Parse(runner.ControlPlane)
@@ -94,8 +122,20 @@ func applyRunnerDefaults(runner Runner) (Runner, error) {
 			return Runner{}, fmt.Errorf("env: invalid environment variable name %q", name)
 		}
 	}
+	if runner.Kubernetes != nil && runner.Docker != nil {
+		return Runner{}, errors.New("cannot configure both docker and kubernetes")
+	}
 	if runner.Login && runner.Kubernetes != nil {
 		return Runner{}, errors.New("login: Kubernetes runners do not support login")
+	}
+	if runner.Login && runner.Docker != nil {
+		return Runner{}, errors.New("login: Docker runners do not support login")
+	}
+	if runner.Docker != nil {
+		runner.Docker.applyDefaults()
+		if err := runner.Docker.Validate(); err != nil {
+			return Runner{}, err
+		}
 	}
 	if runner.Kubernetes != nil && runner.Kubernetes.Kubeconfig != "" {
 		runner.Kubernetes.Kubeconfig, err = resolveConfigPath(runner.Kubernetes.Kubeconfig, runner.configDir)

@@ -15,6 +15,18 @@ env: [ANTHROPIC_API_KEY]
 # This is for your own machine only.
 # login: true
 
+# Add this block to run each job in a hardened, ephemeral Docker container.
+# Set runtime: runsc to run containers under gVisor on Linux.
+# docker:
+#   image: ghcr.io/owainlewis/machinist-runner:latest
+#   runtime: ""
+#   network: ""
+#   proxy_url: ""
+#   memory: "4g"
+#   cpus: 2
+#   pids_limit: 512
+#   env: [ANTHROPIC_API_KEY]
+
 # Add this block to make this a Kubernetes runner. Every variable in the
 # Secret reaches the steps.
 # kubernetes:

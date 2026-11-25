@@ -138,6 +138,7 @@ See [Runners](runners.md) for each type.
 | `slots` | How many runs at once |
 | `env` | Variables passed from the runner's environment to every step. See [Runners](runners.md#what-steps-can-use) |
 | `login` | Give steps the OS user's home, so a tool can use its login. Local runners only |
+| `docker.*` | Makes this a hardened Docker container runner (with optional `runtime: runsc` for gVisor) |
 | `kubernetes.*` | Makes this a Kubernetes runner |
 
 ## Tokens

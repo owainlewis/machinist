@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -78,6 +79,110 @@ func TestKubernetesRunnerValidatesItsConfiguration(t *testing.T) {
 	if exitCode := Execute(t.Context(), []string{"runner", "start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), "explicit context") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
+}
+
+func installFakeDockerCLI(t *testing.T, runtimes string) {
+	t.Helper()
+	bin := t.TempDir()
+	script := `#!/bin/sh
+case "$1" in
+  info)
+    printf '%s' '` + runtimes + `'
+    exit 0
+    ;;
+  run)
+    if echo "$*" | grep -q -- "--entrypoint sh"; then
+      printf 'claude\n'
+      exit 0
+    fi
+    # Find exchange mount and write a succeeded result.json for runner check.
+    exchange=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "-v" ]; then
+        case "$arg" in
+          *:/exchange:rw) exchange="${arg%:/exchange:rw}" ;;
+        esac
+      fi
+      prev="$arg"
+    done
+    if [ -n "$exchange" ]; then
+      printf '{"State":"succeeded"}' > "$exchange/result.json"
+    fi
+    exit 0
+    ;;
+  rm)
+    exit 0
+    ;;
+esac
+exit 1
+`
+	dockerPath := filepath.Join(bin, "docker")
+	if err := os.WriteFile(dockerPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestDockerRunnerStartAndCheckValidateRuntimeAndDefaults(t *testing.T) {
+	t.Setenv("GH_TOKEN", "fixture")
+	t.Setenv("ANTHROPIC_API_KEY", "fixture-key")
+
+	t.Run("missing runsc fails on start and check", func(t *testing.T) {
+		installFakeDockerCLI(t, `{"runc":{"path":"runc"}}`)
+		dir := t.TempDir()
+		writeConfigFile(t, dir, "runner.token", "token\n")
+		path := writeConfigFile(t, dir, "runner.yaml", "control_plane: http://127.0.0.1:1\ntoken_file: runner.token\ndocker:\n  image: ghcr.io/owainlewis/machinist-runner:latest\n  runtime: runsc\n  env: [ANTHROPIC_API_KEY]\n")
+		for _, args := range [][]string{
+			{"runner", "start", "--config=" + path},
+			{"runner", "check", "--repo=owner/repo", "--config=" + path},
+		} {
+			var stderr bytes.Buffer
+			if exitCode := Execute(t.Context(), args, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test"); exitCode != 2 || !strings.Contains(stderr.String(), `"runsc" is not installed`) {
+				t.Fatalf("args=%v exit=%d stderr=%q", args, exitCode, stderr.String())
+			}
+		}
+	})
+
+	t.Run("vanilla docker starts and checks with linux runc note", func(t *testing.T) {
+		installFakeDockerCLI(t, `{"runc":{"path":"runc"}}`)
+		dir := t.TempDir()
+		writeConfigFile(t, dir, "runner.token", "token\n")
+		path := writeConfigFile(t, dir, "runner.yaml", "control_plane: http://127.0.0.1:1\ntoken_file: runner.token\ndocker:\n  image: ghcr.io/owainlewis/machinist-runner:latest\n  env: [ANTHROPIC_API_KEY]\n")
+
+		var stdout, stderr bytes.Buffer
+		if exitCode := Execute(t.Context(), []string{"runner", "check", "--repo=owner/repo", "--config=" + path}, strings.NewReader(""), &stdout, &stderr, "test"); exitCode != 0 {
+			t.Fatalf("check exit=%d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "ok: a step reached owner/repo, with 1 variables from env") {
+			t.Fatalf("check stdout=%q", stdout.String())
+		}
+		if runtime.GOOS == "linux" && (!strings.Contains(stderr.String(), "runc") || !strings.Contains(stderr.String(), "runsc")) {
+			t.Fatalf("expected Linux runc note in stderr, got %q", stderr.String())
+		}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		startErr := &cancelOnConnect{cancel: cancel}
+		if exitCode := Execute(ctx, []string{"runner", "start", "--config=" + path}, strings.NewReader(""), &bytes.Buffer{}, startErr, "test"); exitCode != 0 {
+			t.Fatalf("start exit=%d stderr=%q", exitCode, startErr.String())
+		}
+	})
+
+	t.Run("installed runsc succeeds on check", func(t *testing.T) {
+		installFakeDockerCLI(t, `{"runc":{"path":"runc"},"runsc":{"path":"/usr/bin/runsc"}}`)
+		dir := t.TempDir()
+		writeConfigFile(t, dir, "runner.token", "token\n")
+		path := writeConfigFile(t, dir, "runner.yaml", "control_plane: http://127.0.0.1:1\ntoken_file: runner.token\ndocker:\n  image: ghcr.io/owainlewis/machinist-runner:latest\n  runtime: runsc\n  env: [ANTHROPIC_API_KEY]\n")
+
+		var stdout, stderr bytes.Buffer
+		if exitCode := Execute(t.Context(), []string{"runner", "check", "--repo=owner/repo", "--config=" + path}, strings.NewReader(""), &stdout, &stderr, "test"); exitCode != 0 {
+			t.Fatalf("check exit=%d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
+		}
+		if strings.Contains(stderr.String(), "default runtime (runc)") {
+			t.Fatalf("unexpected runc note when runsc is configured: %q", stderr.String())
+		}
+	})
 }
 
 func TestRunnerStartReadsTokenFileAndStopsOnCancellation(t *testing.T) {

@@ -43,6 +43,6 @@ func Check(ctx context.Context, executor Executor, runnerConfig config.Runner, r
 		fmt.Fprintf(output, "failed: %s\n", result.Error)
 		return errors.New("runner check failed")
 	}
-	fmt.Fprintf(output, "ok: a step reached %s, with %d variables from env\n", repository, len(runnerConfig.Env))
+	fmt.Fprintf(output, "ok: a step reached %s, with %d variables from env\n", repository, len(runnerConfig.EffectiveEnv()))
 	return nil
 }
