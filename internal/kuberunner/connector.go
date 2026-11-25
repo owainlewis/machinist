@@ -45,12 +45,16 @@ func (c Connector) command(ctx context.Context, input io.Reader, limit int, args
 	cmd := exec.CommandContext(ctx, "kubectl", append(flags, args...)...)
 	cmd.Stdin = input
 	var out bytes.Buffer
-	cmd.Stdout = &limitedWriter{writer: &out, remaining: limit}
+	limited := &limitedWriter{writer: &out, remaining: limit}
+	cmd.Stdout = limited
 	var diagnostics commandDiagnostics
 	cmd.Stderr = &diagnostics
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("kubernetes command interrupted: %w", ctx.Err())
+		}
+		if limited.exceeded {
+			return nil, errOutputLimit
 		}
 		return nil, diagnostics.failure(err)
 	}
@@ -201,7 +205,13 @@ func (t *eventTailer) sync(ctx context.Context) {
 	remaining := int(t.limit - t.offset)
 	// tail -c +N is 1-indexed: byte offset 0 is +1.
 	chunk, err := t.connector.command(ctx, nil, remaining, "exec", t.pod, "-c", "agent", "--", "tail", "-c", fmt.Sprintf("+%d", t.offset+1), t.remote)
-	if err != nil || len(chunk) == 0 {
+	if err != nil {
+		if errors.Is(err, errOutputLimit) {
+			t.offset = t.limit
+		}
+		return
+	}
+	if len(chunk) == 0 {
 		return
 	}
 	// Append only complete lines so the daemon's spool never holds a torn write,

@@ -401,7 +401,7 @@ func TestConnectorTailsEventsWhileJobRuns(t *testing.T) {
 			}
 			out := []byte(remoteContent[start-1:])
 			if len(out) > limit {
-				return nil, errors.New("sandbox output limit exceeded")
+				return nil, errOutputLimit
 			}
 			return out, nil
 		}
@@ -503,7 +503,7 @@ func TestEventTailerIgnoresTransientErrorsAndRespectsMaxLog(t *testing.T) {
 	limited := Connector{Config: configuration(), run: func(_ context.Context, _ io.Reader, limit int, _ ...string) ([]byte, error) {
 		calls++
 		if limit < len(line1) {
-			return nil, errors.New("sandbox output limit exceeded")
+			return nil, errOutputLimit
 		}
 		return []byte(line1), nil
 	}}
@@ -514,4 +514,103 @@ func TestEventTailerIgnoresTransientErrorsAndRespectsMaxLog(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("tailer called kubectl %d times after reaching limit, want 1", calls)
 	}
+}
+
+func TestEventTailerStopsWhenRemoteExceedsLimit(t *testing.T) {
+	line1 := "{\"sequence\":1,\"type\":\"step.started\",\"message\":\"name=first\"}\n"
+	line2 := "{\"sequence\":2,\"type\":\"step.started\",\"message\":\"name=second\"}\n"
+
+	t.Run("incremental overflow stops polling", func(t *testing.T) {
+		dataDir := t.TempDir()
+		localEvents := filepath.Join(dataDir, "runs", fixtureRun, "events.jsonl")
+		remoteContent := line1
+		calls := 0
+		c := Connector{Config: configuration(), run: func(_ context.Context, _ io.Reader, limit int, args ...string) ([]byte, error) {
+			calls++
+			var start int
+			if _, err := fmt.Sscanf(args[len(args)-2], "+%d", &start); err != nil || start < 1 {
+				return nil, fmt.Errorf("bad offset %q", args[len(args)-2])
+			}
+			if start-1 >= len(remoteContent) {
+				return nil, nil
+			}
+			out := []byte(remoteContent[start-1:])
+			if len(out) > limit {
+				return nil, errOutputLimit
+			}
+			return out, nil
+		}}
+
+		tailer := c.newEventTailer("test-pod", fixtureRun, dataDir)
+		// Allow line1, then overflow remaining bytes when line2 arrives.
+		tailer.limit = int64(len(line1) + len(line2)/2)
+
+		tailer.sync(t.Context())
+		remoteContent += line2
+		tailer.sync(t.Context())
+		tailer.sync(t.Context())
+
+		if calls != 2 {
+			t.Fatalf("tailer called kubectl %d times, want 2", calls)
+		}
+		if tailer.offset != tailer.limit {
+			t.Fatalf("offset = %d, want %d", tailer.offset, tailer.limit)
+		}
+		body, err := os.ReadFile(localEvents)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != line1 {
+			t.Fatalf("events = %q, want %q", string(body), line1)
+		}
+	})
+
+	t.Run("command reports output limit even on nonzero exit or sigpipe", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			script string
+		}{
+			{
+				name:   "nonzero",
+				script: "#!/bin/sh\nprintf 'x\\n' >> \"$CALL_LOG\"\nprintf '%s' '{\"sequence\":1,\"type\":\"step.started\"}\n'\nexit 1\n",
+			},
+			{
+				name:   "sigpipe",
+				script: "#!/bin/sh\nprintf 'x\\n' >> \"$CALL_LOG\"\ndd if=/dev/zero bs=4096 count=64 2>/dev/null\n",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				bin := t.TempDir()
+				callLog := filepath.Join(bin, "calls.log")
+				if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(tc.script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+				t.Setenv("CALL_LOG", callLog)
+
+				c := Connector{Config: configuration()}
+				_, err := c.command(t.Context(), nil, 16, "exec", "test-pod", "-c", "agent", "--", "tail", "-c", "+1", "/exchange/runtime/runs/x/events.jsonl")
+				if !errors.Is(err, errOutputLimit) {
+					t.Fatalf("command error = %v, want errOutputLimit", err)
+				}
+
+				// Reset call log and verify eventTailer stops after one overflow.
+				if err := os.WriteFile(callLog, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				tailer := c.newEventTailer("test-pod", fixtureRun, t.TempDir())
+				tailer.limit = 16
+				tailer.sync(t.Context())
+				tailer.sync(t.Context())
+
+				raw, err := os.ReadFile(callLog)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := strings.Count(string(raw), "\n"); got != 1 {
+					t.Fatalf("kubectl invoked %d times, want 1", got)
+				}
+			})
+		}
+	})
 }

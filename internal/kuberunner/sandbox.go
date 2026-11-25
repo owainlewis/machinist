@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -193,14 +192,18 @@ func runRequest(ctx context.Context, request runner.RunRequest, exchange, root, 
 	return runner.RunSteps(ctx, request, workspace, filepath.Join(exchange, "runtime"))
 }
 
+var errOutputLimit = errors.New("sandbox output limit exceeded")
+
 type limitedWriter struct {
 	writer    io.Writer
 	remaining int
+	exceeded  bool
 }
 
 func (w *limitedWriter) Write(p []byte) (int, error) {
-	if len(p) > w.remaining {
-		return 0, fmt.Errorf("sandbox output limit exceeded")
+	if w.exceeded || len(p) > w.remaining {
+		w.exceeded = true
+		return 0, errOutputLimit
 	}
 	n, e := w.writer.Write(p)
 	w.remaining -= n
