@@ -35,6 +35,11 @@ type job struct {
 	PRNumber  int               `json:"pr_number,omitempty"`
 	// PRState is open, merged or closed, once the job has a pull request.
 	PRState string `json:"pr_state,omitempty"`
+	// MergeGateDecision, MergeGateRisk and MergeGateReason are the merge
+	// gate's judgment, once the merge-gate step ran.
+	MergeGateDecision string `json:"merge_gate_decision,omitempty"`
+	MergeGateRisk     string `json:"merge_gate_risk,omitempty"`
+	MergeGateReason   string `json:"merge_gate_reason,omitempty"`
 	// CurrentStep is the preset step a running job is on, or empty.
 	CurrentStep string `json:"current_step"`
 	// Tokens and CostUSD add up what the job's ended runs reported. CostUSD is
@@ -79,19 +84,22 @@ func (s *Server) job(r *http.Request, ticket tickets.Ticket) (job, error) {
 		key = strings.TrimPrefix(key, "run:")
 	}
 	view := job{
-		ID:        ticket.ID,
-		Key:       key,
-		Source:    ticket.Origin,
-		SourceURL: ticket.SourceURL,
-		Preset:    ticket.Agent,
-		Vars:      map[string]string{"repo": ticket.Repo},
-		Title:     ticket.Title,
-		State:     jobState(ticket, runs),
-		PRNumber:  ticket.PRNumber,
-		PRState:   ticket.PRState,
-		CreatedBy: ticket.CreatedBy,
-		CreatedAt: ticket.CreatedAt,
-		UpdatedAt: ticket.UpdatedAt,
+		ID:                ticket.ID,
+		Key:               key,
+		Source:            ticket.Origin,
+		SourceURL:         ticket.SourceURL,
+		Preset:            ticket.Agent,
+		Vars:              map[string]string{"repo": ticket.Repo},
+		Title:             ticket.Title,
+		State:             jobState(ticket, runs),
+		PRNumber:          ticket.PRNumber,
+		PRState:           ticket.PRState,
+		MergeGateDecision: ticket.MergeGateDecision,
+		MergeGateRisk:     ticket.MergeGateRisk,
+		MergeGateReason:   ticket.MergeGateReason,
+		CreatedBy:         ticket.CreatedBy,
+		CreatedAt:         ticket.CreatedAt,
+		UpdatedAt:         ticket.UpdatedAt,
 	}
 	if view.State == JobRunning {
 		if view.CurrentStep, err = s.store.CurrentStep(r.Context(), ticket.ID); err != nil {

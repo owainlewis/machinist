@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,6 +31,7 @@ const (
 
 type Server struct {
 	Listen        string `yaml:"listen"`
+	PublicURL     string `yaml:"public_url"`
 	Database      string `yaml:"database"`
 	Factory       string `yaml:"factory"`
 	DefaultPreset string `yaml:"default_preset"`
@@ -137,10 +139,17 @@ const (
 	minLinearPoll            = 10 * time.Second
 )
 
+// Notify posts a JSON message to a webhook when a job needs a person: when its
+// pull request waits for a person or the job fails.
+type Notify struct {
+	Webhook string `yaml:"webhook"`
+}
+
 type Config struct {
 	Server Server `yaml:"server"`
 	GitHub GitHub `yaml:"github"`
 	Linear Linear `yaml:"linear"`
+	Notify Notify `yaml:"notify"`
 	path   string
 }
 
@@ -183,6 +192,10 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv)
+	if err != nil {
+		return Config{}, err
+	}
+	machinistConfig.Notify, err = applyNotifyDefaults(machinistConfig.Notify)
 	if err != nil {
 		return Config{}, err
 	}
@@ -242,6 +255,14 @@ func DecodeStrict(path string, body []byte, target any) error {
 func applyServerDefaults(server Server) (Server, error) {
 	if server.Listen == "" {
 		server.Listen = defaultListen
+	}
+	server.PublicURL = strings.TrimSpace(server.PublicURL)
+	if server.PublicURL != "" {
+		parsed, err := url.Parse(server.PublicURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return Server{}, errors.New("public_url must be an http or https URL")
+		}
+		server.PublicURL = strings.TrimRight(server.PublicURL, "/")
 	}
 	if server.DefaultPreset == "" {
 		server.DefaultPreset = defaultPreset
@@ -333,6 +354,18 @@ func applyLinearDefaults(linear Linear, getenv func(string) string) (Linear, err
 		linear.MaxJobsPerHour = defaultLinearJobsPerHour
 	}
 	return linear, nil
+}
+
+func applyNotifyDefaults(notify Notify) (Notify, error) {
+	notify.Webhook = strings.TrimSpace(notify.Webhook)
+	if notify.Webhook == "" {
+		return notify, nil
+	}
+	parsed, err := url.Parse(notify.Webhook)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return Notify{}, errors.New("notify.webhook must be an http or https URL")
+	}
+	return notify, nil
 }
 
 func applyAppDefaults(app *GitHubApp, base string) error {

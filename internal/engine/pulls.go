@@ -208,7 +208,7 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		// What an older Machinist kept cannot be read, so leave the pull
 		// request for a person rather than guess.
 		fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d: stopped waiting for checks: %v\n", ticket.ID, number, err)
-		return e.Store.SetShipping(ctx, ticket, tickets.Shipped{})
+		return e.setShipping(ctx, ticket, tickets.Shipped{})
 	}
 	watchForLook := watch
 	autoMergeTurnedOff := !e.AutoMerge && watchForLook.Hold == ""
@@ -232,7 +232,7 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 				look.Watch.Hold = watch.Hold
 			}
 			if body, marshalErr := json.Marshal(look.Watch); marshalErr == nil {
-				_ = e.Store.SetShipping(ctx, ticket, tickets.Shipped{Shipping: string(body), At: e.now()})
+				_ = e.setShipping(ctx, ticket, tickets.Shipped{Shipping: string(body), At: e.now()})
 			}
 		}
 		return err
@@ -270,5 +270,5 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 	case ship.CheckFailed:
 		shipped.Failed = true
 	}
-	return e.Store.SetShipping(ctx, ticket, shipped)
+	return e.setShipping(ctx, ticket, shipped)
 }

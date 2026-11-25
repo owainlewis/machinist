@@ -56,6 +56,7 @@ func TestLoadConfigReadsEveryKeyAndResolvesPaths(t *testing.T) {
 	path := filepath.Join(directory, "config.yaml")
 	writeTestFile(t, path, `server:
   listen: 10.0.0.5:7331
+  public_url: https://machinist.example.com/
   database: data/tickets.db
   factory: factory
   default_preset: maintainer
@@ -67,13 +68,16 @@ github:
   handle: machinist-bot
   repositories: [owner/one, owner/two]
   auto_merge: false
+
+notify:
+  webhook: https://hooks.slack.com/services/T000/B000/secret
 `)
 	loaded, err := LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := loaded.Server
-	if server.Listen != "10.0.0.5:7331" || server.DefaultPreset != "maintainer" || server.RunDeadline() != 15*time.Minute {
+	if server.Listen != "10.0.0.5:7331" || server.PublicURL != "https://machinist.example.com" || server.DefaultPreset != "maintainer" || server.RunDeadline() != 15*time.Minute {
 		t.Fatalf("server = %+v", server)
 	}
 	for got, want := range map[string]string{server.Database: "data/tickets.db", server.Factory: "factory", server.TLSCert: "tls.crt", server.TLSKey: "tls.key"} {
@@ -83,6 +87,9 @@ github:
 	}
 	if loaded.GitHub.Handle != "machinist-bot" || strings.Join(loaded.GitHub.Repositories, ",") != "owner/one,owner/two" || loaded.GitHub.AutoMerges() {
 		t.Fatalf("github = %+v", loaded.GitHub)
+	}
+	if loaded.Notify.Webhook != "https://hooks.slack.com/services/T000/B000/secret" {
+		t.Fatalf("notify = %+v", loaded.Notify)
 	}
 }
 
@@ -109,6 +116,11 @@ func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 		{"server:\n  run_timeout: soon\n", "run_timeout"},
 		{"server:\n  run_timeout: -1m\n", "run_timeout"},
 		{"server:\n  tls_cert: tls.crt\n", "tls_cert and tls_key"},
+		{"server:\n  public_url: machinist.example.com\n", "public_url"},
+		{"server:\n  public_url: ftp://machinist.example.com\n", "public_url"},
+		{"notify:\n  webhook: hooks.slack.com/services/a/b/c\n", "notify.webhook"},
+		{"notify:\n  webhook: ftp://hooks.example.com/hook\n", "notify.webhook"},
+		{"notify:\n  email: ops@example.com\n", "unknown key email"},
 		{"server: [", "parse config"},
 		{"server:\n  run_timeout: [1]\n", "parse config"},
 		{"github:\n  handle: one\n---\ngithub:\n  handle: two\n", "only one YAML document"},

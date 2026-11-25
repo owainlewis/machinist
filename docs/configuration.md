@@ -40,6 +40,7 @@ each run, and needs no `GH_TOKEN`.
 ```yaml
 server:
   listen: 127.0.0.1:7331
+  # public_url: https://machinist.example.com
   database: .machinist/tickets.db
   factory: factory
   default_preset: default
@@ -51,11 +52,15 @@ github:
   handle: machinist-bot
   repositories: [owner/name]
   auto_merge: true
+
+# notify:
+#   webhook: https://hooks.slack.com/services/...
 ```
 
 | Key | Meaning |
 | --- | --- |
 | `listen` | Address for the UI, API and runners. Keep it private. On a loopback address, requests whose Host is not `localhost`, `127.0.0.1` or `[::1]` get 421, which blocks DNS rebinding |
+| `public_url` | Base URL of the web app, such as `https://machinist.example.com`. Used to link to jobs in webhook notifications (`<public_url>/#/jobs/<id>`). Without it, notifications have no link |
 | `database` | The SQLite file. Back this up |
 | `factory` | The factory directory |
 | `default_preset` | The preset a job uses when it names none |
@@ -63,10 +68,33 @@ github:
 | `tls_cert`, `tls_key` | Serve HTTPS, and mark the sign-in cookie Secure |
 | `github.handle` | The bot's login. Use a dedicated account. With a GitHub App, runs commit as the app's bot account instead |
 | `github.repositories` | Repositories Machinist works on. You can also add them on the Settings > Projects page, with no restart. Automations can only name repositories listed here; `linear.projects` and `linear.teams` can also name repositories added on Settings > Projects |
-| `github.auto_merge` | Whether jobs merge their own pull requests once the checks pass and the review accepted the change. On unless set to `false`; when off, every pull request stays open for a person. Steps see it as `MACHINIST_AUTO_MERGE` |
+| `github.auto_merge` | Controls auto-merge for pull requests. On (`true`) by default: the control plane auto-merges low-risk pull requests once checks pass, `review` accepted the change, and the default preset's `merge-gate` step approved them as `low` risk (medium- and high-risk pull requests stay open for a person). Set to `false` to run in **observe mode**: `merge-gate` still evaluates every pull request and posts its judgment comment without merging. Steps see it as `MACHINIST_AUTO_MERGE` |
 | `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
 | `github.app.private_key_file` | The app's private key file. Keep it out of git |
 | `linear.*` | Start jobs from Linear issues. Off unless `linear.projects` or `linear.teams` is set. See [Linear](linear.md) |
+| `notify.webhook` | Optional HTTP or HTTPS URL that receives one JSON `POST` when a job opens a pull request that waits for a person, or fails. Includes a Slack-compatible `text` field plus `ticket_id`, `title`, `repo`, `state`, `created_by`, and `url` (when `server.public_url` is set). Prompts and agent output are never sent. Failed posts are logged and not retried |
+
+### Merge gate, observe mode and per-repository policy
+
+The `default` preset runs a read-only `merge-gate` step after `publish` and before `merge` to
+triage each pull request's blast radius before handing it to the control plane:
+
+- **`github.auto_merge: true` (default):** Enables auto-merge for low-risk approved pull
+  requests. The control plane merges a pull request only when CI checks pass, `review`
+  accepted the change, and `merge-gate` approved it as `low` risk. Medium- and high-risk
+  changes stay open for human review with the gate's judgment posted as a PR comment.
+- **`github.auto_merge: false` (observe mode):** Runs `merge-gate` in **observe mode**. The
+  gate still evaluates every pull request and posts its judgment comment (`approve` or
+  `human_review`, risk level, and reason) on GitHub, while the control plane never merges the
+  pull request. Use observe mode to validate and tune your merge policy before enabling
+  auto-merge.
+- **Per-repository override:** By default, `merge-gate` applies
+  `factory/prompts/merge-policy.md`. Commit `.machinist/merge-policy.md` to a repository's
+  default branch to override the policy for that repository. The gate reads it from
+  `origin/HEAD` rather than the PR branch, so a pull request cannot weaken its own policy.
+
+See [Merge gate and policy](factory.md#merge-gate-and-policy) for step details and
+[Merge policies](merge-policies.md) for starter templates.
 
 ## Runner: runner.yaml
 

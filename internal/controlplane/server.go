@@ -75,6 +75,10 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 			return found.Name, found.Email, err
 		}
 	}
+	var notifier engine.Notifier
+	if machinistConfig.Notify.Webhook != "" {
+		notifier = engine.NewWebhookNotifier(machinistConfig.Notify.Webhook, machinistConfig.Server.PublicURL, log)
+	}
 	ticketEngine := engine.New(engine.Options{
 		Store:      store,
 		Factory:    loaded,
@@ -87,6 +91,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		},
 		Reviews:     humanReviews(client),
 		Post:        client.PostComment,
+		Notify:      notifier,
 		GitHubToken: tokens,
 		Identity:    identity,
 		Log:         log,

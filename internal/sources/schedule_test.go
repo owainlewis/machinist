@@ -180,7 +180,7 @@ func TestStatusShowsNextDueAndLastTicket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: "Could not reach the API"}); err != nil {
+	if _, _, err := c.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: "Could not reach the API"}); err != nil {
 		t.Fatal(err)
 	}
 	statuses, err = c.schedule.Status(t.Context())

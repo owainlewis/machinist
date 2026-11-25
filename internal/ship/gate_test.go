@@ -43,13 +43,21 @@ func TestReadGateValidation(t *testing.T) {
 
 func TestMergeWithLowRiskApprovedGateCommentsAndAllowsAutoMerge(t *testing.T) {
 	directory := control(t, accepted)
-	writeGate(t, directory, `{"decision":"approve","risk":"low","reason":"Small unit test addition with no production logic changes."}`)
+	reason := "Small unit test addition with no production logic changes."
+	writeGate(t, directory, `{"decision":"approve","risk":"low","reason":"`+reason+`"}`)
 	gh := &stepGH{state: "OPEN"}
 	if err := Merge(t.Context(), MergeOptions{Control: directory, Branch: "machinist/t_1", AutoMerge: true, RequireGate: true, GH: gh.run}); err != nil {
 		t.Fatal(err)
 	}
-	if request := handedOver(t, directory); request == nil || *request != (protocol.Ship{Verdict: Accepted, Head: "sha1"}) {
-		t.Fatalf("ship.json = %+v", request)
+	want := protocol.Ship{
+		Verdict:           Accepted,
+		Head:              "sha1",
+		MergeGateDecision: GateApprove,
+		MergeGateRisk:     RiskLow,
+		MergeGateReason:   reason,
+	}
+	if request := handedOver(t, directory); request == nil || *request != want {
+		t.Fatalf("ship.json = %+v, want %+v", request, want)
 	}
 	if result := readFile(t, directory, "result.md"); result != "Merges once its checks pass: https://github.com/o/r/pull/7" {
 		t.Fatalf("result.md = %q", result)
@@ -61,15 +69,24 @@ func TestMergeWithLowRiskApprovedGateCommentsAndAllowsAutoMerge(t *testing.T) {
 
 func TestMergeWithHighRiskGateCommentsAndBlocksAutoMerge(t *testing.T) {
 	directory := control(t, accepted)
-	writeGate(t, directory, `{"decision":"human_review","risk":"high","reason":"Adds a destructive SQL migration dropping legacy_tokens."}`)
+	reason := "Adds a destructive SQL migration dropping legacy_tokens."
+	writeGate(t, directory, `{"decision":"human_review","risk":"high","reason":"`+reason+`"}`)
 	gh := &stepGH{state: "OPEN"}
 	if err := Merge(t.Context(), MergeOptions{Control: directory, Branch: "machinist/t_1", AutoMerge: true, RequireGate: true, GH: gh.run}); err != nil {
 		t.Fatal(err)
 	}
 	request := handedOver(t, directory)
-	wantHold := "merge gate requires human review (high risk): Adds a destructive SQL migration dropping legacy_tokens."
-	if request == nil || request.Hold != wantHold {
-		t.Fatalf("ship.json = %+v, want hold %q", request, wantHold)
+	wantHold := "merge gate requires human review (high risk): " + reason
+	want := protocol.Ship{
+		Verdict:           Accepted,
+		Hold:              wantHold,
+		Head:              "sha1",
+		MergeGateDecision: GateHumanReview,
+		MergeGateRisk:     RiskHigh,
+		MergeGateReason:   reason,
+	}
+	if request == nil || *request != want {
+		t.Fatalf("ship.json = %+v, want %+v", request, want)
 	}
 	if result := readFile(t, directory, "result.md"); !strings.Contains(result, "Left open: "+wantHold) {
 		t.Fatalf("result.md = %q", result)
@@ -90,8 +107,8 @@ func TestMergeFailsClosedOnMediumRiskOrMissingRequiredGate(t *testing.T) {
 	if err := Merge(t.Context(), MergeOptions{Control: dir, Branch: "machinist/t_1", AutoMerge: true, RequireGate: true, GH: gh.run}); err != nil {
 		t.Fatal(err)
 	}
-	if req := handedOver(t, dir); req == nil || !strings.Contains(req.Hold, "medium risk") {
-		t.Fatalf("medium risk must block auto-merge: %+v", req)
+	if req := handedOver(t, dir); req == nil || !strings.Contains(req.Hold, "medium risk") || req.MergeGateDecision != GateApprove || req.MergeGateRisk != RiskMedium || req.MergeGateReason != "Changes API response schema." {
+		t.Fatalf("medium risk must block auto-merge and record gate judgment: %+v", req)
 	}
 
 	// Missing merge-gate.json when RequireGate is true must block auto-merge.
@@ -100,7 +117,42 @@ func TestMergeFailsClosedOnMediumRiskOrMissingRequiredGate(t *testing.T) {
 	if err := Merge(t.Context(), MergeOptions{Control: dir2, Branch: "machinist/t_1", AutoMerge: true, RequireGate: true, GH: gh2.run}); err != nil {
 		t.Fatal(err)
 	}
-	if req := handedOver(t, dir2); req == nil || req.Hold != ErrNoGate.Error() {
-		t.Fatalf("missing required gate must hold: %+v", req)
+	if req := handedOver(t, dir2); req == nil || req.Hold != ErrNoGate.Error() || req.MergeGateDecision != "" || req.MergeGateRisk != "" || req.MergeGateReason != "" {
+		t.Fatalf("missing required gate must hold without gate verdict: %+v", req)
+	}
+}
+
+func TestBlockerEnforcesMergeGateFields(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		request protocol.Ship
+		want    string
+	}{
+		{
+			name:    "low risk approve allows auto-merge",
+			request: protocol.Ship{Verdict: Accepted, MergeGateDecision: GateApprove, MergeGateRisk: RiskLow, MergeGateReason: "Safe."},
+			want:    "",
+		},
+		{
+			name:    "low risk approve still needs accepted review",
+			request: protocol.Ship{Verdict: RevisionNeeded, MergeGateDecision: GateApprove, MergeGateRisk: RiskLow, MergeGateReason: "Safe."},
+			want:    "the review still asks for changes",
+		},
+		{
+			name:    "medium risk blocks even without Hold",
+			request: protocol.Ship{Verdict: Accepted, MergeGateDecision: GateApprove, MergeGateRisk: RiskMedium, MergeGateReason: "Schema change."},
+			want:    "merge gate requires human review (medium risk): Schema change.",
+		},
+		{
+			name:    "high risk human_review blocks even without Hold",
+			request: protocol.Ship{Verdict: Accepted, MergeGateDecision: GateHumanReview, MergeGateRisk: RiskHigh, MergeGateReason: "Auth change."},
+			want:    "merge gate requires human review (high risk): Auth change.",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := Blocker(true, test.request); got != test.want {
+				t.Fatalf("Blocker(true, %+v) = %q, want %q", test.request, got, test.want)
+			}
+		})
 	}
 }

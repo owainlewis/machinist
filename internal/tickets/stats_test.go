@@ -23,7 +23,7 @@ func timedRun(t *testing.T, store *Store, at *time.Time, ticket Ticket, status, 
 	}
 	*at = at.Add(time.Duration(runMinutes) * time.Minute)
 	tokens := int64(10)
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: status, Tokens: &tokens}, func(Ticket, string) Transition {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: status, Tokens: &tokens}, func(Ticket, string) Transition {
 		return Transition{State: state}
 	}); err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func runWithStatus(t *testing.T, store *Store, ticket Ticket, status string, tra
 		t.Fatalf("claim = %v, err = %v", claim, err)
 	}
 	tokens, cost := protocol.Totals(stages)
-	if err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: status, Tokens: tokens, Cost: cost, Stages: stages}, func(Ticket, string) Transition {
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: claim.Run.ID, Status: status, Tokens: tokens, Cost: cost, Stages: stages}, func(Ticket, string) Transition {
 		return transition
 	}); err != nil {
 		t.Fatal(err)
