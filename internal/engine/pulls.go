@@ -191,7 +191,7 @@ func (e *Engine) checkPR(ctx context.Context, listed tickets.Ticket) error {
 // runner waits on CI.
 func (e *Engine) startWatch(request protocol.Ship) string {
 	// A Watch is strings, a time and numbers, so it always encodes.
-	body, _ := json.Marshal(ship.NewWatch(e.AutoMerge, request, e.now()))
+	body, _ := json.Marshal(ship.NewWatch(e.autoMerge(), request, e.now()))
 	return string(body)
 }
 
@@ -211,7 +211,7 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		return e.setShipping(ctx, ticket, tickets.Shipped{})
 	}
 	watchForLook := watch
-	autoMergeTurnedOff := !e.AutoMerge && watchForLook.Hold == ""
+	autoMergeTurnedOff := !e.autoMerge() && watchForLook.Hold == ""
 	if autoMergeTurnedOff {
 		// Re-check github.auto_merge on every look so turning it off and
 		// restarting the control plane stops in-flight pull requests from

@@ -74,6 +74,36 @@ github:
 | `linear.*` | Start jobs from Linear issues. Off unless `linear.projects` or `linear.teams` is set. See [Linear](linear.md) |
 | `notify.webhook` | Optional HTTP or HTTPS URL that receives one JSON `POST` when a job opens a pull request that waits for a person, or fails. Includes a Slack-compatible `text` field plus `ticket_id`, `title`, `repo`, `state`, `created_by`, and `url` (when `server.public_url` is set). Prompts and agent output are never sent. Failed posts are logged and not retried |
 
+### Reloading without a restart
+
+A restart is no longer needed after editing `config.yaml` or the factory directory. Run
+`machinist reload` from the configuration directory (or pass `--config`) to ask the running
+control plane to re-read `config.yaml` and the factory without interrupting queued or running
+jobs:
+
+```sh
+machinist reload
+```
+
+`machinist reload` prints what changed. If anything in `config.yaml` or the factory is
+invalid, the control plane rejects the reload, keeps what it had, and returns the error. Runs
+already queued or running keep the job definition they started with; new jobs use the reloaded
+configuration and factory.
+
+To reload a remote control plane, pass `--url` and `--token` (or set `MACHINIST_URL` and
+`MACHINIST_TOKEN`), or call `POST /api/v1/reload` with a full operator token.
+
+These settings still need a control plane restart to take effect (when they differ during a
+reload, `machinist reload` names them and does not apply them):
+
+- `server.listen`
+- `server.database`
+- `server.tls_cert`
+- `server.tls_key`
+
+Environment variables read by the control plane process (`GH_TOKEN`, `LINEAR_CLIENT_ID`,
+`LINEAR_CLIENT_SECRET`, `LINEAR_API_TOKEN`) also need a restart when changed.
+
 ### Merge gate, observe mode and per-repository policy
 
 The `default` preset runs a read-only `merge-gate` step after `publish` and before `merge` to

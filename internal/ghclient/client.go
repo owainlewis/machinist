@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -70,6 +71,7 @@ func (e *Error) Unwrap() error { return e.Err }
 type Client struct {
 	executable string
 	timeout    time.Duration
+	mu         sync.RWMutex
 	token      func(ctx context.Context, repository string) (string, error)
 }
 
@@ -78,17 +80,22 @@ func New() *Client { return &Client{executable: "gh", timeout: commandTimeout} }
 // WithToken gives each command a token for the repository it works on, in
 // place of the process's GH_TOKEN.
 func (c *Client) WithToken(token func(ctx context.Context, repository string) (string, error)) *Client {
+	c.mu.Lock()
 	c.token = token
+	c.mu.Unlock()
 	return c
 }
 
 // environment is the process's own, with GH_TOKEN replaced by a token for
 // repository when the client has a token source.
 func (c *Client) environment(ctx context.Context, repository string) ([]string, error) {
-	if c.token == nil || repository == "" {
+	c.mu.RLock()
+	tokenFn := c.token
+	c.mu.RUnlock()
+	if tokenFn == nil || repository == "" {
 		return nil, nil
 	}
-	token, err := c.token(ctx, repository)
+	token, err := tokenFn(ctx, repository)
 	if err != nil {
 		return nil, &Error{Kind: ErrorAuth, Operation: "get a token for " + repository, Detail: sanitize([]byte(err.Error())), Err: err}
 	}

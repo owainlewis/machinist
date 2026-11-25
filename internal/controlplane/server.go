@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
@@ -36,6 +37,8 @@ const (
 
 // Server is the one control plane of a deployment. It never starts an agent.
 type Server struct {
+	mu       sync.RWMutex
+	reloadMu sync.Mutex
 	config   config.Config
 	store    *tickets.Store
 	engine   *engine.Engine
@@ -45,12 +48,75 @@ type Server struct {
 	version  string
 	log      io.Writer
 	// linear takes work from Linear, when it is on.
-	linear  *sources.Poller
-	now     func() time.Time
-	presets []presetView
-	factory *factory.Factory
+	linear        *sources.Poller
+	linearChanged chan struct{}
+	now           func() time.Time
+	presets       []presetView
+	factory       *factory.Factory
 	// app is the GitHub App, or nil when there is none.
-	app githubApp
+	app        githubApp
+	appKeyHash [32]byte
+}
+
+type serverState struct {
+	config     config.Config
+	factory    *factory.Factory
+	presets    []presetView
+	app        githubApp
+	appKeyHash [32]byte
+	linear     *sources.Poller
+}
+
+func (s *Server) state() serverState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return serverState{
+		config:     s.config,
+		factory:    s.factory,
+		presets:    s.presets,
+		app:        s.app,
+		appKeyHash: s.appKeyHash,
+		linear:     s.linear,
+	}
+}
+
+func (s *Server) notifyLinear() {
+	if s.linearChanged == nil {
+		return
+	}
+	select {
+	case s.linearChanged <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Server) runLinear(ctx context.Context) {
+	for {
+		poller := s.state().linear
+		if poller == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.linearChanged:
+				continue
+			}
+		}
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() {
+			poller.Run(pollCtx)
+			close(done)
+		}()
+		select {
+		case <-ctx.Done():
+			cancelPoll()
+			<-done
+			return
+		case <-s.linearChanged:
+			cancelPoll()
+			<-done
+		}
+	}
 }
 
 func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Factory, version string, log io.Writer) (*Server, error) {
@@ -60,7 +126,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if err := loaded.Validate(machinistConfig.Server.DefaultPreset, machinistConfig.GitHub.Repositories); err != nil {
 		return nil, err
 	}
-	app, err := loadApp(machinistConfig, loaded)
+	app, appKeyHash, err := loadAppWithHash(machinistConfig, loaded)
 	if err != nil {
 		return nil, err
 	}
@@ -111,18 +177,20 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		return nil, err
 	}
 	server := &Server{
-		linear:   linear,
-		now:      time.Now,
-		config:   machinistConfig,
-		store:    store,
-		engine:   ticketEngine,
-		client:   client,
-		intake:   intake,
-		schedule: sources.NewSchedule(store, loaded.Automations, log),
-		version:  version,
-		presets:  presetViews(loaded),
-		factory:  loaded,
-		log:      log,
+		linear:        linear,
+		linearChanged: make(chan struct{}, 1),
+		now:           time.Now,
+		config:        machinistConfig,
+		store:         store,
+		engine:        ticketEngine,
+		client:        client,
+		intake:        intake,
+		schedule:      sources.NewSchedule(store, loaded.Automations, log),
+		version:       version,
+		presets:       presetViews(loaded),
+		factory:       loaded,
+		appKeyHash:    appKeyHash,
+		log:           log,
 	}
 	if app != nil {
 		server.app = app
@@ -367,6 +435,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/tokens/{name}", s.requireToken(s.revokeToken))
 	mux.HandleFunc("GET /api/v1/automations", s.requireScope(tickets.ScopeRead, s.listAutomations))
 	mux.HandleFunc("POST /api/v1/automations/{name}/run", s.requireScope(tickets.ScopeRun, s.runAutomation))
+	mux.HandleFunc("POST /api/v1/reload", s.requireToken(s.reload))
 	mux.Handle("/", http.FileServer(http.FS(mustSub(webAssets, "web/dist"))))
 	var handler http.Handler = mux
 	if isLoopbackListen(s.config.Server.Listen) {
@@ -423,9 +492,7 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	go func() { s.schedule.Run(engineContext); close(scheduleDone) }()
 	linearDone := make(chan struct{})
 	go func() {
-		if s.linear != nil {
-			s.linear.Run(engineContext)
-		}
+		s.runLinear(engineContext)
 		close(linearDone)
 	}()
 

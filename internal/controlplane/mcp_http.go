@@ -784,7 +784,7 @@ func (s *Server) mcpJobDetail(ctx context.Context, ticket tickets.Ticket) (mcpJo
 			}
 		}
 	}
-	detail.Steps = buildMCPSteps(s.presetSteps(ticket.Agent), latestRun, startedSteps)
+	detail.Steps = buildMCPSteps(s.presetStepsForTicket(ticket.ID, ticket.Agent), latestRun, startedSteps)
 	return detail, nil
 }
 

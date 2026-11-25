@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/owainlewis/machinist/internal/ghclient"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -33,6 +34,29 @@ type Intake struct {
 	Repositories  []string
 	// Presets reports whether a preset exists.
 	Presets func(name string) bool
+	mu      sync.RWMutex
+}
+
+// Update replaces the reloadable intake settings atomically.
+func (i *Intake) Update(defaultPreset string, repositories []string, presets func(name string) bool) {
+	i.mu.Lock()
+	i.DefaultPreset = defaultPreset
+	i.Repositories = slices.Clone(repositories)
+	i.Presets = presets
+	i.mu.Unlock()
+}
+
+// ConfigRepositories returns a copy of the repositories listed in config.yaml.
+func (i *Intake) ConfigRepositories() []string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return slices.Clone(i.Repositories)
+}
+
+func (i *Intake) presetConfig() (string, func(name string) bool) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.DefaultPreset, i.Presets
 }
 
 func invalid(format string, arguments ...any) error {
@@ -61,7 +85,7 @@ func (i *Intake) repository(ctx context.Context, name string) (string, bool, err
 // Connected lists the repositories Machinist works on: the ones in
 // config.yaml, then the ones added in the web app.
 func (i *Intake) Connected(ctx context.Context) ([]string, error) {
-	repositories := slices.Clone(i.Repositories)
+	repositories := i.ConfigRepositories()
 	projects, err := i.Store.Projects(ctx)
 	if err != nil {
 		return nil, err
@@ -93,7 +117,8 @@ func (i *Intake) Assign(ctx context.Context, request AssignRequest, by string) (
 		return tickets.Ticket{}, false, invalid("send either issue_number, or both title and body")
 	}
 	key := "api:" + request.RequestID
-	ticket := tickets.NewTicket{Source: "api", Origin: tickets.OriginAPI, Repo: repository, Title: request.Title, Body: request.Body, Agent: i.DefaultPreset, CreatedBy: by, SourceKey: key}
+	defaultPreset, _ := i.presetConfig()
+	ticket := tickets.NewTicket{Source: "api", Origin: tickets.OriginAPI, Repo: repository, Title: request.Title, Body: request.Body, Agent: defaultPreset, CreatedBy: by, SourceKey: key}
 	if request.IssueNumber > 0 {
 		if existing, found, err := i.existing(ctx, key, repository, request.IssueNumber); err != nil || found {
 			return existing, false, err

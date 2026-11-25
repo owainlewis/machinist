@@ -1227,6 +1227,25 @@ func (s *Store) Apply(ctx context.Context, ticketID, from string, transition Tra
 	return updated, applied, nil
 }
 
+// QueuedTicketIDs returns the IDs of working tickets that do not currently
+// have a running agent run (either awaiting QueueRun or already queued).
+func (s *Store) QueuedTicketIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tickets WHERE state=? AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.ticket_id=tickets.id AND runs.kind=? AND runs.status=?) ORDER BY rowid`, StateWorking, RunKindAgent, RunRunning)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // TicketsAwaitingRun lists working tickets with no queued or running agent run.
 func (s *Store) TicketsAwaitingRun(ctx context.Context) ([]Ticket, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets t WHERE state=? AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.ticket_id=t.id AND r.kind=? AND r.status IN (?,?)) ORDER BY created_at`, StateWorking, RunKindAgent, RunQueued, RunRunning)
@@ -1855,6 +1874,14 @@ func (s *Store) RevokeToken(ctx context.Context, name string) error {
 		return ErrNotFound
 	}
 	_, err = s.db.ExecContext(ctx, `DELETE FROM runners WHERE name=?`, name)
+	return err
+}
+
+// DeleteToken removes a token record completely. Short-lived CLI commands such
+// as machinist reload use it to clean up one-shot tokens without cluttering
+// machinist token list.
+func (s *Store) DeleteToken(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM tokens WHERE name=?`, name)
 	return err
 }
 

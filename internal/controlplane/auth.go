@@ -107,7 +107,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, value 
 		MaxAge:   int(maxAge.Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   s.config.Server.TLSCert != "" || (r != nil && r.TLS != nil),
+		Secure:   s.state().config.Server.TLSCert != "" || (r != nil && r.TLS != nil),
 	})
 }
 

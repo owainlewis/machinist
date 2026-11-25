@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
@@ -89,8 +91,22 @@ type Options struct {
 	Log        io.Writer
 }
 
+// runConfig is an immutable snapshot of the reloadable engine settings a run
+// uses. Runs already queued before a reload keep the runConfig they started
+// with.
+type runConfig struct {
+	factory     *factory.Factory
+	runTimeout  time.Duration
+	handle      string
+	autoMerge   bool
+	githubToken TokenMinter
+	identity    IdentityFinder
+}
+
 type Engine struct {
 	Options
+	mu          sync.RWMutex
+	pinned      map[string]*runConfig
 	now         func() time.Time
 	sleep       func(context.Context, time.Duration) bool
 	deliverNext time.Time
@@ -101,6 +117,83 @@ func New(options Options) *Engine {
 		options.Log = io.Discard
 	}
 	return &Engine{Options: options, now: time.Now}
+}
+
+func (e *Engine) snapshotLocked() *runConfig {
+	return &runConfig{
+		factory:     e.Factory,
+		runTimeout:  e.RunTimeout,
+		handle:      e.Handle,
+		autoMerge:   e.AutoMerge,
+		githubToken: e.GitHubToken,
+		identity:    e.Identity,
+	}
+}
+
+func (e *Engine) configForTicket(ticketID string) *runConfig {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if cfg, ok := e.pinned[ticketID]; ok {
+		return cfg
+	}
+	return e.snapshotLocked()
+}
+
+func (e *Engine) takeConfigForTicket(ticketID string) *runConfig {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if cfg, ok := e.pinned[ticketID]; ok {
+		delete(e.pinned, ticketID)
+		return cfg
+	}
+	return e.snapshotLocked()
+}
+
+// PinnedFactory returns the factory a ticket was pinned to during a reload,
+// or nil if the ticket uses the current factory.
+func (e *Engine) PinnedFactory(ticketID string) *factory.Factory {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if cfg, ok := e.pinned[ticketID]; ok {
+		return cfg.factory
+	}
+	return nil
+}
+
+func (e *Engine) autoMerge() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.AutoMerge
+}
+
+func (e *Engine) githubToken() TokenMinter {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.GitHubToken
+}
+
+// Reload swaps the engine's factory and reloadable config atomically while
+// pinning every currently queued or awaiting-run ticket to the configuration
+// it started with.
+func (e *Engine) Reload(queuedTicketIDs []string, loaded *factory.Factory, runTimeout time.Duration, handle string, autoMerge bool, tokens TokenMinter, identity IdentityFinder) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	previous := e.snapshotLocked()
+	nextPinned := make(map[string]*runConfig, len(queuedTicketIDs))
+	for _, id := range queuedTicketIDs {
+		if existing, ok := e.pinned[id]; ok {
+			nextPinned[id] = existing
+		} else {
+			nextPinned[id] = previous
+		}
+	}
+	e.pinned = nextPinned
+	e.Factory = loaded
+	e.RunTimeout = runTimeout
+	e.Handle = handle
+	e.AutoMerge = autoMerge
+	e.GitHubToken = tokens
+	e.Identity = identity
 }
 
 // Run advances tickets and posts messages until ctx ends. Posting has its own
@@ -153,7 +246,8 @@ func (e *Engine) advance(ctx context.Context, ticket tickets.Ticket) error {
 		message := fmt.Sprintf("Stopped after %d attempts, because the runner was lost each time.", maxAttempts)
 		return e.apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: message})
 	}
-	if _, ok := e.Factory.Preset(ticket.Agent); !ok {
+	cfg := e.configForTicket(ticket.ID)
+	if _, ok := cfg.factory.Preset(ticket.Agent); !ok {
 		return e.apply(ctx, ticket.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: missingPresetMessage(ticket.Agent)})
 	}
 	// The ticket can leave working between the listing and here. Then there is nothing to run.
@@ -175,30 +269,39 @@ func missingPresetMessage(preset string) string {
 func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []string, probed bool) (*runner.RunRequest, error) {
 	var accept func(tickets.Ticket) bool
 	if probed {
+		e.mu.RLock()
+		current := e.snapshotLocked()
+		pinned := maps.Clone(e.pinned)
+		e.mu.RUnlock()
 		accept = func(ticket tickets.Ticket) bool {
-			preset, ok := e.Factory.Preset(ticket.Agent)
+			cfg := pinned[ticket.ID]
+			if cfg == nil {
+				cfg = current
+			}
+			preset, ok := cfg.factory.Preset(ticket.Agent)
 			// A job whose preset is gone is claimed so that it fails.
-			return !ok || HasAll(harnesses, e.Factory.Needs(preset))
+			return !ok || HasAll(harnesses, cfg.factory.Needs(preset))
 		}
 	}
 	claim, err := e.Store.ClaimRun(ctx, runnerName, harnesses, e.now().Add(LeaseDuration), accept)
 	if err != nil || claim == nil {
 		return nil, err
 	}
-	preset, ok := e.Factory.Preset(claim.Ticket.Agent)
+	cfg := e.takeConfigForTicket(claim.Ticket.ID)
+	preset, ok := cfg.factory.Preset(claim.Ticket.Agent)
 	if !ok {
 		message := missingPresetMessage(claim.Ticket.Agent)
 		return nil, e.completeRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
 			return tickets.Transition{State: tickets.StateFailed, Message: message}
 		})
 	}
-	timeout := e.RunTimeout
+	timeout := cfg.runTimeout
 	if preset.Timeout > 0 {
 		timeout = preset.Timeout
 	}
 	token := ""
-	if e.GitHubToken != nil {
-		token, err = e.GitHubToken(ctx, claim.Ticket.Repo)
+	if cfg.githubToken != nil {
+		token, err = cfg.githubToken(ctx, claim.Ticket.Repo)
 		if err != nil {
 			message := sentence(fmt.Sprintf("Machinist could not get a GitHub token from the GitHub App: %v", err))
 			return nil, e.completeRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
@@ -206,9 +309,9 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 			})
 		}
 	}
-	gitName, gitEmail := e.Handle, BotEmail(e.Handle)
-	if e.Identity != nil {
-		gitName, gitEmail, err = e.Identity(ctx)
+	gitName, gitEmail := cfg.handle, BotEmail(cfg.handle)
+	if cfg.identity != nil {
+		gitName, gitEmail, err = cfg.identity(ctx)
 		if err != nil {
 			message := sentence(fmt.Sprintf("Machinist could not look up the GitHub App's bot account: %v", err))
 			return nil, e.completeRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
@@ -226,9 +329,9 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 		Preset:        preset.Name,
 		Repository:    claim.Ticket.Repo,
 		Branch:        claim.Ticket.Branch(),
-		Vars:          map[string]string{"repo": claim.Ticket.Repo, "auto_merge": strconv.FormatBool(e.AutoMerge)},
+		Vars:          map[string]string{"repo": claim.Ticket.Repo, "auto_merge": strconv.FormatBool(cfg.autoMerge)},
 		Prompt:        tickets.RenderLog(claim.Entries),
-		Files:         e.Factory.Files,
+		Files:         cfg.factory.Files,
 		Steps:         steps,
 		TimeoutMillis: timeout.Milliseconds(),
 		GitName:       gitName,
@@ -243,7 +346,8 @@ var ErrNoGitHubApp = errors.New("the control plane has no GitHub App, so runs us
 // RunToken makes a new token for an active run's repository, and nothing
 // else, so a run can last longer than one token.
 func (e *Engine) RunToken(ctx context.Context, runID string) (string, error) {
-	if e.GitHubToken == nil {
+	githubToken := e.githubToken()
+	if githubToken == nil {
 		return "", ErrNoGitHubApp
 	}
 	run, err := e.Store.Run(ctx, runID)
@@ -257,7 +361,7 @@ func (e *Engine) RunToken(ctx context.Context, runID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return e.GitHubToken(ctx, ticket.Repo)
+	return githubToken(ctx, ticket.Repo)
 }
 
 // Heartbeat renews a run's lease and reports whether the runner should stop it.

@@ -68,14 +68,15 @@ type Setup struct {
 }
 
 func (s *Server) setup(ctx context.Context) (Setup, error) {
+	st := s.state()
 	setup := Setup{Checks: []SetupCheck{}}
 	github := SetupCheck{Name: "GitHub", Required: true}
-	if s.app == nil {
+	if st.app == nil {
 		github.OK = true
 		github.Detail = "No GitHub App is set, so runs use the runner's own GH_TOKEN."
 		github.Fix = "Set up a GitHub App so each run gets a short-lived token and commits as the app."
 		github.Link = docs + "github-app.md"
-	} else if identity, err := s.app.Identity(ctx); err != nil {
+	} else if identity, err := st.app.Identity(ctx); err != nil {
 		github.Detail = "Machinist cannot reach the GitHub App: " + err.Error()
 		github.Fix = "Check github.app.id and the private key file in config.yaml."
 	} else {
@@ -107,7 +108,7 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 		runnerCheck.Fix = "Start one with machinist runner start, and check it with machinist runner check."
 	}
 	setup.Checks = append(setup.Checks, runnerCheck)
-	if check, ok := s.harnessCheck(runners); ok {
+	if check, ok := s.harnessCheck(st.factory, runners); ok {
 		setup.Checks = append(setup.Checks, check)
 	}
 
@@ -136,8 +137,8 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 	}
 	setup.Checks = append(setup.Checks, projects)
 
-	linear := SetupCheck{Name: "Linear", OK: s.linear != nil}
-	if s.linear != nil {
+	linear := SetupCheck{Name: "Linear", OK: st.linear != nil}
+	if st.linear != nil {
 		linear.Detail = "On. Issues assigned to the Machinist app start jobs."
 	} else {
 		linear.Detail = "Off. This is optional."
@@ -146,9 +147,9 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 	}
 	setup.Checks = append(setup.Checks, linear)
 
-	if check, ok := s.factoryCheck(); ok {
+	if check, ok := factoryCheck(st.factory); ok {
 		setup.Checks = append(setup.Checks, check)
-		setup.FactoryUpdates = append([]factory.FileUpdate(nil), s.factory.Updates...)
+		setup.FactoryUpdates = append([]factory.FileUpdate(nil), st.factory.Updates...)
 	}
 
 	setup.Ready = !slices.ContainsFunc(setup.Checks, func(check SetupCheck) bool { return check.Required && !check.OK })
@@ -157,12 +158,13 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 
 // projects lists every connected repository, and asks the GitHub App about each.
 func (s *Server) projects(ctx context.Context) ([]ProjectView, error) {
+	app := s.state().app
 	added, err := s.store.Projects(ctx)
 	if err != nil {
 		return nil, err
 	}
 	views := []ProjectView{}
-	for _, repository := range s.intake.Repositories {
+	for _, repository := range s.intake.ConfigRepositories() {
 		views = append(views, ProjectView{Repo: repository, Source: "config"})
 	}
 	for _, project := range added {
@@ -171,9 +173,9 @@ func (s *Server) projects(ctx context.Context) ([]ProjectView, error) {
 		}
 		views = append(views, ProjectView{Repo: project.Repo, Source: "app", AddedBy: project.AddedBy})
 	}
-	if s.app != nil {
+	if app != nil {
 		for index := range views {
-			if err := s.app.Installed(ctx, views[index].Repo); err != nil {
+			if err := app.Installed(ctx, views[index].Repo); err != nil {
 				views[index].Problem = err.Error()
 			}
 		}
@@ -203,8 +205,8 @@ func (s *Server) addProject(w http.ResponseWriter, r *http.Request, tokenName st
 		writeError(w, http.StatusBadRequest, fmt.Errorf("%q is not a repository name like owner/name", request.Repo))
 		return
 	}
-	if s.app != nil {
-		if err := s.app.Installed(r.Context(), repository); err != nil {
+	if app := s.state().app; app != nil {
+		if err := app.Installed(r.Context(), repository); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -220,7 +222,7 @@ var errConfigProject = errors.New("this repository is listed in config.yaml; rem
 
 func (s *Server) removeProject(w http.ResponseWriter, r *http.Request, tokenName string) {
 	repository := r.PathValue("owner") + "/" + r.PathValue("name")
-	if slices.ContainsFunc(s.intake.Repositories, func(listed string) bool { return strings.EqualFold(listed, repository) }) {
+	if slices.ContainsFunc(s.intake.ConfigRepositories(), func(listed string) bool { return strings.EqualFold(listed, repository) }) {
 		writeError(w, http.StatusConflict, errConfigProject)
 		return
 	}
@@ -239,20 +241,20 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request, tokenName
 // harnessCheck says whether an online runner has the harnesses each preset's
 // agents need. A runner that did not report harnesses, such as a Kubernetes
 // runner, may have any of them. There is no check while no runner is online.
-func (s *Server) harnessCheck(runners []tickets.Runner) (SetupCheck, bool) {
+func (s *Server) harnessCheck(loaded *factory.Factory, runners []tickets.Runner) (SetupCheck, bool) {
 	online := s.onlineRunners(runners)
-	if len(online) == 0 || s.factory == nil {
+	if len(online) == 0 || loaded == nil {
 		return SetupCheck{}, false
 	}
 	check := SetupCheck{Name: "Agents", OK: true, Detail: "Every preset can run on an online runner."}
-	names := make([]string, 0, len(s.factory.Presets))
-	for name := range s.factory.Presets {
+	names := make([]string, 0, len(loaded.Presets))
+	for name := range loaded.Presets {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	var stuck []string
 	for _, name := range names {
-		needs := s.factory.Needs(s.factory.Presets[name])
+		needs := loaded.Needs(loaded.Presets[name])
 		if len(missingHarnesses(online, needs)) > 0 {
 			stuck = append(stuck, fmt.Sprintf("%s needs %s", name, strings.Join(needs, " and ")))
 		}
@@ -268,12 +270,12 @@ func (s *Server) harnessCheck(runners []tickets.Runner) (SetupCheck, bool) {
 
 // factoryCheck reports shipped factory files that are out of date, edited
 // against an older shipped version, or missing.
-func (s *Server) factoryCheck() (SetupCheck, bool) {
-	if s.factory == nil || len(s.factory.Updates) == 0 {
+func factoryCheck(loaded *factory.Factory) (SetupCheck, bool) {
+	if loaded == nil || len(loaded.Updates) == 0 {
 		return SetupCheck{}, false
 	}
-	names := make([]string, len(s.factory.Updates))
-	for i, update := range s.factory.Updates {
+	names := make([]string, len(loaded.Updates))
+	for i, update := range loaded.Updates {
 		switch update.Status {
 		case factory.FileEdited:
 			names[i] = update.Path + " (edited)"

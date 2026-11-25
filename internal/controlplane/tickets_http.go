@@ -144,7 +144,7 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 		writeTicketError(w, err)
 		return
 	}
-	detail := map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": s.presetSteps(ticket.Agent)}
+	detail := map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": s.presetStepsForTicket(ticket.ID, ticket.Agent)}
 	if len(runs) > 0 && runs[len(runs)-1].Status == tickets.RunQueued {
 		runners, _, err := s.store.Fleet(r.Context())
 		if err != nil {
@@ -160,15 +160,29 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// presetSteps lists the steps of a preset, in order, with the agents each
-// runs, so the UI can draw a job's pipeline before its first run starts. A
+// presetStepsForTicket lists the steps of a preset, in order, with the agents
+// each runs, so the UI can draw a job's pipeline before its first run starts.
+// A queued ticket pinned before a reload uses the factory it started with. A
 // preset that is gone has none.
-func (s *Server) presetSteps(name string) []stepView {
-	preset, ok := s.factory.Preset(name)
+func (s *Server) presetStepsForTicket(ticketID, name string) []stepView {
+	loaded := s.state().factory
+	if s.engine != nil {
+		if pinned := s.engine.PinnedFactory(ticketID); pinned != nil {
+			loaded = pinned
+		}
+	}
+	return presetStepsFrom(loaded, name)
+}
+
+func presetStepsFrom(loaded *factory.Factory, name string) []stepView {
+	if loaded == nil {
+		return []stepView{}
+	}
+	preset, ok := loaded.Preset(name)
 	if !ok {
 		return []stepView{}
 	}
-	return stepViews(s.factory, preset)
+	return stepViews(loaded, preset)
 }
 
 func (s *Server) rerunTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
@@ -422,9 +436,10 @@ func presetViews(loaded *factory.Factory) []presetView {
 }
 
 func (s *Server) listPresets(w http.ResponseWriter, _ *http.Request, _ string) {
-	body := map[string]any{"presets": s.presets, "default": s.config.Server.DefaultPreset}
-	if s.factory != nil && len(s.factory.Updates) > 0 {
-		body["updates"] = s.factory.Updates
+	st := s.state()
+	body := map[string]any{"presets": st.presets, "default": st.config.Server.DefaultPreset}
+	if st.factory != nil && len(st.factory.Updates) > 0 {
+		body["updates"] = st.factory.Updates
 	}
 	writeJSON(w, http.StatusOK, body)
 }

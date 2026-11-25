@@ -101,14 +101,15 @@ func (s *Server) onlineRunners(runners []tickets.Runner) []tickets.Runner {
 // runner is online, or when the preset is gone, since such a job is claimed
 // only to fail.
 func (s *Server) waitingFor(online []tickets.Runner, presetName string) []string {
-	if s.factory == nil {
+	loaded := s.state().factory
+	if loaded == nil {
 		return nil
 	}
-	preset, ok := s.factory.Preset(presetName)
+	preset, ok := loaded.Preset(presetName)
 	if !ok {
 		return nil
 	}
-	return missingHarnesses(online, s.factory.Needs(preset))
+	return missingHarnesses(online, loaded.Needs(preset))
 }
 
 // missingHarnesses names the harnesses in needs that the closest online runner
@@ -249,13 +250,17 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, tokenName stri
 
 // currentAgents names the agents a running job's current step runs.
 func (s *Server) currentAgents(presetName, step string) []protocol.Agent {
-	preset, ok := s.factory.Preset(presetName)
+	loaded := s.state().factory
+	if loaded == nil {
+		return nil
+	}
+	preset, ok := loaded.Preset(presetName)
 	if !ok {
 		return nil
 	}
 	for _, candidate := range preset.Steps {
 		if candidate.Name == step {
-			return s.factory.StepAgents(preset.EffectiveStep(candidate))
+			return loaded.StepAgents(preset.EffectiveStep(candidate))
 		}
 	}
 	return nil
