@@ -2,14 +2,19 @@ package agentrunner
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -91,6 +96,18 @@ func fakeKubectl(args []string) int {
 			return fail(err.Error())
 		}
 		_, _ = os.Stdout.Write(body)
+	case strings.Contains(line, "-- tail -c +"):
+		start, err := strconv.ParseInt(strings.TrimPrefix(args[len(args)-2], "+"), 10, 64)
+		if err != nil || start < 1 {
+			return fail("bad tail offset")
+		}
+		body, err := os.ReadFile(exchangePath(state, args[len(args)-1]))
+		if err != nil {
+			return fail(err.Error())
+		}
+		if offset := start - 1; offset < int64(len(body)) {
+			_, _ = os.Stdout.Write(body[offset:])
+		}
 	case strings.HasPrefix(line, "delete job"):
 		stopFakeJob(state)
 		_ = os.WriteFile(clusterPath(state, "deleted"), nil, 0o600)
@@ -376,6 +393,152 @@ func TestConformance(t *testing.T) {
 		result := executor.Execute(t.Context(), request)
 		if result.State != runner.StateTimedOut || result.Report != nil {
 			t.Fatalf("result = %+v", result)
+		}
+	})
+
+	eachRunner(t, "live progress", func(t *testing.T, executor Executor, _, data, output string) {
+		var mu sync.Mutex
+		var received []protocol.RunEvent
+		var lastSeq int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var batch protocol.RunEventBatch
+			if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			for _, raw := range batch.Events {
+				var event protocol.RunEvent
+				if err := json.Unmarshal(raw, &event); err != nil {
+					mu.Unlock()
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				received = append(received, event)
+				lastSeq = event.Sequence
+			}
+			cursor := lastSeq
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(protocol.RunEventPage{Cursor: cursor})
+		}))
+		t.Cleanup(server.Close)
+
+		daemon := &Daemon{
+			config:        config.Runner{DataDirectory: data},
+			client:        NewClient(server.URL, "token"),
+			log:           io.Discard,
+			eventInterval: 20 * time.Millisecond,
+		}
+		request := conformanceRequest(
+			runner.Step{Name: "build", Run: fmt.Sprintf("printf '→ building workspace\\n'; : > %q; while [ ! -f %q ]; do sleep 0.05; done; printf '→ build done\\n'", filepath.Join(output, "started"), filepath.Join(output, "release"))},
+			runner.Step{Name: "verify", Run: "printf '→ running checks\\n'"},
+		)
+		stopEvents := daemon.streamRunEvents(t.Context(), request.RunID)
+		defer stopEvents()
+
+		finished := make(chan runner.RunResult, 1)
+		go func() {
+			finished <- executor.Execute(t.Context(), request)
+		}()
+
+		// Wait until step 1 has printed its live action and blocked on the release gate.
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			if _, err := os.Stat(filepath.Join(output, "started")); err == nil {
+				break
+			}
+			select {
+			case result := <-finished:
+				t.Fatalf("run finished before step started: %+v", result)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("step did not start in time")
+			}
+		}
+
+		// While the run is still executing, the control plane must receive step 1's
+		// start event and live output.
+		hasLiveEvents := func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			var sawStep, sawAction bool
+			for _, event := range received {
+				if event.Type == "step.started" && event.Message == "name=build" {
+					sawStep = true
+				}
+				if event.Type == "process.output" && event.Encoding == "base64" {
+					decoded, err := base64.StdEncoding.DecodeString(event.Data)
+					if err == nil && strings.Contains(string(decoded), "→ building workspace") {
+						sawAction = true
+					}
+				}
+			}
+			return sawStep && sawAction
+		}
+		for deadline := time.Now().Add(20 * time.Second); !hasLiveEvents(); time.Sleep(20 * time.Millisecond) {
+			select {
+			case result := <-finished:
+				t.Fatalf("run finished before live events arrived: %+v", result)
+			default:
+			}
+			if time.Now().After(deadline) {
+				mu.Lock()
+				snapshot := append([]protocol.RunEvent(nil), received...)
+				mu.Unlock()
+				_ = os.WriteFile(filepath.Join(output, "release"), nil, 0o600)
+				<-finished
+				t.Fatalf("did not receive live progress while run was in progress; received = %+v", snapshot)
+			}
+		}
+
+		// Confirm the run is still in progress when live events were observed.
+		select {
+		case result := <-finished:
+			t.Fatalf("run had already finished before release: %+v", result)
+		default:
+		}
+
+		// Let the run finish and flush any trailing events.
+		if err := os.WriteFile(filepath.Join(output, "release"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var result runner.RunResult
+		select {
+		case result = <-finished:
+		case <-time.After(30 * time.Second):
+			t.Fatal("run did not finish after release")
+		}
+		if result.State != runner.StateSucceeded {
+			t.Fatalf("result = %+v", result)
+		}
+		stopEvents()
+		if err := daemon.flushRunEvents(t.Context(), request.RunID); err != nil {
+			t.Fatal(err)
+		}
+
+		mu.Lock()
+		all := append([]protocol.RunEvent(nil), received...)
+		mu.Unlock()
+		var sawVerify, sawDone, sawChecks bool
+		for i, event := range all {
+			if event.Sequence != int64(i+1) {
+				t.Fatalf("event %d had sequence %d (possible duplicate or gap): %+v", i+1, event.Sequence, all)
+			}
+			if event.Type == "step.started" && event.Message == "name=verify" {
+				sawVerify = true
+			}
+			if event.Type == "process.output" && event.Encoding == "base64" {
+				decoded, _ := base64.StdEncoding.DecodeString(event.Data)
+				if strings.Contains(string(decoded), "→ build done") {
+					sawDone = true
+				}
+				if strings.Contains(string(decoded), "→ running checks") {
+					sawChecks = true
+				}
+			}
+		}
+		if !sawVerify || !sawDone || !sawChecks {
+			t.Fatalf("missing trailing events: verify=%v buildDone=%v checks=%v", sawVerify, sawDone, sawChecks)
 		}
 	})
 }

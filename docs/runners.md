@@ -67,8 +67,8 @@ named on the Runners page and on the job's page, with the harnesses they wait fo
 
 ## Kubernetes runner
 
-The runner is a process in the cluster that starts one gVisor Job per job run. Activity
-appears when the run ends.
+The runner is a process in the cluster that starts one gVisor Job per job run, streaming
+activity while it runs.
 
 ```yaml
 control_plane: http://machinist-control-plane.machinist-system.svc:7341
