@@ -1173,3 +1173,106 @@ func TestUnpostedMessagesOnlyIncludesIssueTickets(t *testing.T) {
 		t.Fatalf("entries = %+v, err = %v", entries, err)
 	}
 }
+
+func TestTokenScopesAndRevocation(t *testing.T) {
+	store := openStore(t)
+	readToken, err := store.CreateScopedToken(t.Context(), "watcher", RoleOperator, ScopeRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runToken, err := store.CreateScopedToken(t.Context(), "grokbot", RoleOperator, ScopeRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullToken, err := store.CreateToken(t.Context(), "alice", RoleOperator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerToken, err := store.CreateToken(t.Context(), "vm-1", RoleRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Invalid scope or scope on non-operator role is rejected.
+	if _, err := store.CreateScopedToken(t.Context(), "bad1", RoleOperator, "admin"); err == nil {
+		t.Fatal("unknown scope accepted")
+	}
+	if _, err := store.CreateScopedToken(t.Context(), "bad2", RoleRunner, ScopeRead); err == nil {
+		t.Fatal("runner token with scope accepted")
+	}
+
+	// Authenticate returns role and scope.
+	if auth, err := store.Authenticate(t.Context(), readToken); err != nil || auth.Name != "watcher" || auth.Role != RoleOperator || auth.Scope != ScopeRead {
+		t.Fatalf("read auth = %+v, err = %v", auth, err)
+	}
+	if auth, err := store.Authenticate(t.Context(), runToken); err != nil || auth.Name != "grokbot" || auth.Role != RoleOperator || auth.Scope != ScopeRun {
+		t.Fatalf("run auth = %+v, err = %v", auth, err)
+	}
+	if auth, err := store.Authenticate(t.Context(), fullToken); err != nil || auth.Name != "alice" || auth.Role != RoleOperator || auth.Scope != ScopeAll {
+		t.Fatalf("full auth = %+v, err = %v", auth, err)
+	}
+	if auth, err := store.Authenticate(t.Context(), runnerToken); err != nil || auth.Name != "vm-1" || auth.Role != RoleRunner || auth.Scope != ScopeAll {
+		t.Fatalf("runner auth = %+v, err = %v", auth, err)
+	}
+
+	// AllowsScope enforces least privilege while preserving full access for existing tokens.
+	for _, tc := range []struct {
+		role, scope, want string
+		ok                bool
+	}{
+		{RoleAll, ScopeAll, ScopeRead, true},
+		{RoleAll, ScopeAll, ScopeRun, true},
+		{RoleAll, ScopeAll, ScopeAll, true},
+		{RoleOperator, ScopeAll, ScopeRead, true},
+		{RoleOperator, ScopeAll, ScopeRun, true},
+		{RoleOperator, ScopeAll, ScopeAll, true},
+		{RoleOperator, ScopeRun, ScopeRead, true},
+		{RoleOperator, ScopeRun, ScopeRun, true},
+		{RoleOperator, ScopeRun, ScopeAll, false},
+		{RoleOperator, ScopeRead, ScopeRead, true},
+		{RoleOperator, ScopeRead, ScopeRun, false},
+		{RoleOperator, ScopeRead, ScopeAll, false},
+		{RoleRunner, ScopeAll, ScopeRead, false},
+		{RoleRunner, ScopeAll, ScopeRun, false},
+		{RoleRunner, ScopeAll, ScopeAll, false},
+	} {
+		if got := AllowsScope(tc.role, tc.scope, tc.want); got != tc.ok {
+			t.Fatalf("AllowsScope(%q, %q, %q) = %v, want %v", tc.role, tc.scope, tc.want, got, tc.ok)
+		}
+	}
+
+	// Regenerating keeps the scope.
+	freshRun, err := store.RegenerateToken(t.Context(), "grokbot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth, err := store.Authenticate(t.Context(), freshRun); err != nil || auth.Name != "grokbot" || auth.Scope != ScopeRun {
+		t.Fatalf("regenerated auth = %+v, err = %v", auth, err)
+	}
+
+	// Revoking one token does not revoke others.
+	if err := store.RevokeToken(t.Context(), "grokbot"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Authenticate(t.Context(), freshRun); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked token auth = %v", err)
+	}
+	if _, err := store.Authenticate(t.Context(), readToken); err != nil {
+		t.Fatalf("other token failed after revoking grokbot: %v", err)
+	}
+
+	// ListTokens reports each token's scope.
+	listed, err := store.ListTokens(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes := map[string]string{}
+	for _, info := range listed {
+		if info.RevokedAt == nil {
+			scopes[info.Name] = info.Scope
+		}
+	}
+	if scopes["watcher"] != ScopeRead || scopes["alice"] != ScopeAll {
+		t.Fatalf("active scopes = %+v", scopes)
+	}
+}

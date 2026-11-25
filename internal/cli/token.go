@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -24,13 +25,19 @@ func openTokenStore(options *commandOptions) (*tickets.Store, error) {
 func newTokenCommand(options *commandOptions) *cobra.Command {
 	root := &cobra.Command{Use: "token", Short: "Manage tokens for developers and runners"}
 	var runner bool
+	var scope string
 	create := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a token and print it once",
-		Long: "Create a token and print it once. A token is for a person, to sign in and use the API, unless --runner " +
-			"makes it a runner's, which can only take runs and report on them.",
+		Long: "Create a token and print it once. By default a token has full operator access, to sign in and use the API " +
+			"and MCP. Use --scope read or --scope run to limit it to reading or running jobs, or --runner for a runner's " +
+			"token, which can only take runs and report on them.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			scope = strings.TrimSpace(scope)
+			if runner && scope != "" {
+				return errors.New("--runner and --scope cannot be used together")
+			}
 			store, err := openTokenStore(options)
 			if err != nil {
 				return err
@@ -40,7 +47,7 @@ func newTokenCommand(options *commandOptions) *cobra.Command {
 			if runner {
 				role = tickets.RoleRunner
 			}
-			token, err := store.CreateToken(command.Context(), args[0], role)
+			token, err := store.CreateScopedToken(command.Context(), args[0], role, scope)
 			if err != nil {
 				return err
 			}
@@ -49,6 +56,7 @@ func newTokenCommand(options *commandOptions) *cobra.Command {
 		},
 	}
 	create.Flags().BoolVar(&runner, "runner", false, "make a runner's token, which can only take runs and report on them")
+	create.Flags().StringVar(&scope, "scope", "", "limit an operator token's access: read or run")
 	root.AddCommand(create)
 	root.AddCommand(&cobra.Command{
 		Use:   "list",
@@ -65,9 +73,9 @@ func newTokenCommand(options *commandOptions) *cobra.Command {
 				return err
 			}
 			table := tabwriter.NewWriter(options.stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(table, "NAME\tROLE\tPREFIX\tCREATED\tLAST USED\tREVOKED")
+			fmt.Fprintln(table, "NAME\tROLE\tPREFIX\tSCOPE\tCREATED\tLAST USED\tREVOKED")
 			for _, token := range tokens {
-				fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n", token.Name, displayRole(token.Role), displayPrefix(token.Prefix), token.CreatedAt.Format(time.RFC3339), displayTime(token.LastUsedAt), displayTime(token.RevokedAt))
+				fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", token.Name, displayRole(token.Role), displayPrefix(token.Prefix), displayScope(token.Role, token.Scope), token.CreatedAt.Format(time.RFC3339), displayTime(token.LastUsedAt), displayTime(token.RevokedAt))
 			}
 			return table.Flush()
 		},
@@ -102,6 +110,18 @@ func displayRole(role string) string {
 		return "any"
 	}
 	return role
+}
+
+// displayScope names a token's scope. Runner tokens have no scope; operator
+// tokens without a scope have full access.
+func displayScope(role, scope string) string {
+	if role == tickets.RoleRunner {
+		return "-"
+	}
+	if scope == tickets.ScopeAll {
+		return "full"
+	}
+	return scope
 }
 
 // displayPrefix shows a token's recognisable prefix, or "No prefix" for
