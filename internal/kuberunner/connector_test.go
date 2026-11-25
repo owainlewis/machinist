@@ -352,3 +352,166 @@ func TestARunLongerThanItsAppTokenStartsNothing(t *testing.T) {
 		t.Fatalf("without a run token: result = %+v", result)
 	}
 }
+
+func TestConnectorTailsEventsWhileJobRuns(t *testing.T) {
+	line1 := "{\"sequence\":1,\"type\":\"step.started\",\"message\":\"name=build\"}\n"
+	line2Part1 := "{\"sequence\":2,\"type\":\"process.output\""
+	line2Part2 := ",\"stream\":\"stdout\",\"encoding\":\"base64\",\"data\":\"aGkK\"}\n"
+	line3 := "{\"sequence\":3,\"type\":\"step.started\",\"message\":\"name=test\"}\n"
+	line4 := "{\"sequence\":4,\"type\":\"run.completed\"}\n"
+
+	dataDir := t.TempDir()
+	localEvents := filepath.Join(dataDir, "runs", fixtureRun, "events.jsonl")
+	remoteContent := line1 + line2Part1
+	deleted := false
+	waits := 0
+	var seenLive1, seenLive2 string
+
+	c := Connector{Config: configuration()}
+	fakeCluster(&c, &deleted, true, func(context.Context) error {
+		waits++
+		switch waits {
+		case 1:
+			return errors.New("still running")
+		case 2:
+			body, _ := os.ReadFile(localEvents)
+			seenLive1 = string(body)
+			remoteContent += line2Part2 + line3
+			return errors.New("still running")
+		default:
+			body, _ := os.ReadFile(localEvents)
+			seenLive2 = string(body)
+			remoteContent += line4
+			return nil
+		}
+	})
+	base := c.run
+	var tailOffsets []string
+	c.run = func(ctx context.Context, input io.Reader, limit int, args ...string) ([]byte, error) {
+		line := strings.Join(args, " ")
+		if strings.Contains(line, "-- tail -c +") {
+			offsetArg := args[len(args)-2]
+			tailOffsets = append(tailOffsets, offsetArg)
+			var start int
+			if _, err := fmt.Sscanf(offsetArg, "+%d", &start); err != nil || start < 1 {
+				return nil, fmt.Errorf("bad offset %q", offsetArg)
+			}
+			if start-1 >= len(remoteContent) {
+				return nil, nil
+			}
+			out := []byte(remoteContent[start-1:])
+			if len(out) > limit {
+				return nil, errors.New("sandbox output limit exceeded")
+			}
+			return out, nil
+		}
+		return base(ctx, input, limit, args...)
+	}
+
+	result := c.Execute(t.Context(), fixtureRequest(), dataDir)
+	if result.State != runner.StateSucceeded || !deleted {
+		t.Fatalf("result = %+v, deleted = %v", result, deleted)
+	}
+	if seenLive1 != line1 {
+		t.Fatalf("live events after poll 1 = %q, want %q", seenLive1, line1)
+	}
+	wantLive2 := line1 + line2Part1 + line2Part2 + line3
+	if seenLive2 != wantLive2 {
+		t.Fatalf("live events after poll 2 = %q, want %q", seenLive2, wantLive2)
+	}
+	finalBody, err := os.ReadFile(localEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFinal := wantLive2 + line4
+	if string(finalBody) != wantFinal {
+		t.Fatalf("final events = %q, want %q", string(finalBody), wantFinal)
+	}
+	wantOffsets := []string{
+		"+1",
+		fmt.Sprintf("+%d", len(line1)+1),
+		fmt.Sprintf("+%d", len(wantLive2)+1),
+	}
+	if strings.Join(tailOffsets, ",") != strings.Join(wantOffsets, ",") {
+		t.Fatalf("tail offsets = %v, want %v", tailOffsets, wantOffsets)
+	}
+}
+
+func TestEventTailerIgnoresTransientErrorsAndRespectsMaxLog(t *testing.T) {
+	line1 := "{\"sequence\":1,\"type\":\"step.started\",\"message\":\"name=first\"}\n"
+	line2 := "{\"sequence\":2,\"type\":\"step.started\",\"message\":\"name=second\"}\n"
+	dataDir := t.TempDir()
+	localEvents := filepath.Join(dataDir, "runs", fixtureRun, "events.jsonl")
+	remoteContent := ""
+	deleted := false
+	waits := 0
+	tailCalls := 0
+
+	c := Connector{Config: configuration()}
+	fakeCluster(&c, &deleted, true, func(context.Context) error {
+		waits++
+		switch waits {
+		case 1:
+			// events.jsonl does not exist yet
+			return errors.New("still running")
+		case 2:
+			remoteContent = line1
+			return errors.New("still running")
+		case 3:
+			// transient exec error on tail
+			return errors.New("still running")
+		default:
+			remoteContent = line1 + line2
+			return nil
+		}
+	})
+	base := c.run
+	c.run = func(ctx context.Context, input io.Reader, limit int, args ...string) ([]byte, error) {
+		line := strings.Join(args, " ")
+		if strings.Contains(line, "-- tail -c +") {
+			tailCalls++
+			if tailCalls == 1 {
+				return nil, errors.New("tail: cannot open: No such file or directory")
+			}
+			if tailCalls == 3 {
+				return nil, &commandFailure{cause: errors.New("connection reset"), hint: "retry"}
+			}
+			var start int
+			_, _ = fmt.Sscanf(args[len(args)-2], "+%d", &start)
+			if start-1 >= len(remoteContent) {
+				return nil, nil
+			}
+			return []byte(remoteContent[start-1:]), nil
+		}
+		return base(ctx, input, limit, args...)
+	}
+
+	result := c.Execute(t.Context(), fixtureRequest(), dataDir)
+	if result.State != runner.StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+	body, err := os.ReadFile(localEvents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != line1+line2 {
+		t.Fatalf("events = %q, want %q", string(body), line1+line2)
+	}
+
+	// Verify the cumulative byte limit stops reading once reached.
+	calls := 0
+	limited := Connector{Config: configuration(), run: func(_ context.Context, _ io.Reader, limit int, _ ...string) ([]byte, error) {
+		calls++
+		if limit < len(line1) {
+			return nil, errors.New("sandbox output limit exceeded")
+		}
+		return []byte(line1), nil
+	}}
+	tailer := limited.newEventTailer("test-pod", fixtureRun, t.TempDir())
+	tailer.limit = int64(len(line1))
+	tailer.sync(t.Context())
+	tailer.sync(t.Context())
+	if calls != 1 {
+		t.Fatalf("tailer called kubectl %d times after reaching limit, want 1", calls)
+	}
+}

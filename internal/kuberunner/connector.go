@@ -153,7 +153,8 @@ func (c Connector) runJob(ctx context.Context, name string, request runner.RunRe
 	if err = c.sendToken(ctx, pod, token); err != nil {
 		return result, fmt.Errorf("%w%s", err, c.prepareLog(ctx, pod))
 	}
-	if err = c.awaitResult(ctx, pod); err != nil {
+	events := c.newEventTailer(pod, request.RunID, dataDirectory)
+	if err = c.awaitResult(ctx, pod, events); err != nil {
 		return result, fmt.Errorf("%w%s", err, c.prepareLog(ctx, pod))
 	}
 	// The result carries a saved patch, base64 in JSON, besides the rest.
@@ -164,20 +165,63 @@ func (c Connector) runJob(ctx context.Context, name string, request runner.RunRe
 	if err = json.Unmarshal(body, &result); err != nil {
 		return result, fmt.Errorf("read sandbox result: %w", err)
 	}
-	c.saveEvents(ctx, pod, request.RunID, dataDirectory)
+	events.sync(ctx)
 	return result, nil
 }
 
-// saveEvents copies the activity log where the daemon sends it from. Activity is
-// a display aid, so a run that cannot copy it still reports its result.
-func (c Connector) saveEvents(ctx context.Context, pod, runID, dataDirectory string) {
-	events, err := c.command(ctx, nil, MaxLog, "exec", pod, "-c", "agent", "--", "cat", "/exchange/runtime/runs/"+runID+"/events.jsonl")
+// eventTailer copies new complete lines from the sandbox's event log into the
+// runner's spool, where the daemon forwards them to the control plane.
+// Activity is a display aid, so a copy failure never stops or fails the run.
+type eventTailer struct {
+	connector Connector
+	pod       string
+	remote    string
+	local     string
+	offset    int64
+	limit     int64
+}
+
+func (c Connector) newEventTailer(pod, runID, dataDirectory string) *eventTailer {
+	if dataDirectory == "" {
+		return nil
+	}
+	return &eventTailer{
+		connector: c,
+		pod:       pod,
+		remote:    "/exchange/runtime/runs/" + runID + "/events.jsonl",
+		local:     filepath.Join(dataDirectory, "runs", runID, "events.jsonl"),
+		limit:     MaxLog,
+	}
+}
+
+func (t *eventTailer) sync(ctx context.Context) {
+	if t == nil || t.offset >= t.limit || ctx.Err() != nil {
+		return
+	}
+	remaining := int(t.limit - t.offset)
+	// tail -c +N is 1-indexed: byte offset 0 is +1.
+	chunk, err := t.connector.command(ctx, nil, remaining, "exec", t.pod, "-c", "agent", "--", "tail", "-c", fmt.Sprintf("+%d", t.offset+1), t.remote)
+	if err != nil || len(chunk) == 0 {
+		return
+	}
+	// Append only complete lines so the daemon's spool never holds a torn write,
+	// and retry any trailing fragment on the next poll.
+	end := bytes.LastIndexByte(chunk, '\n')
+	if end < 0 {
+		return
+	}
+	complete := chunk[:end+1]
+	if err := os.MkdirAll(filepath.Dir(t.local), 0o700); err != nil {
+		return
+	}
+	file, err := os.OpenFile(t.local, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return
 	}
-	directory := filepath.Join(dataDirectory, "runs", runID)
-	if os.MkdirAll(directory, 0o700) == nil {
-		_ = os.WriteFile(filepath.Join(directory, "events.jsonl"), events, 0o600)
+	n, _ := file.Write(complete)
+	_ = file.Close()
+	if n > 0 {
+		t.offset += int64(n)
 	}
 }
 
@@ -311,9 +355,10 @@ func (c Connector) sendToken(ctx context.Context, pod, token string) error {
 	}
 }
 
-// awaitResult waits for the sandbox to finish. A failed Kubernetes call says
-// nothing about the agent, so only a gone or stopped Pod ends the wait.
-func (c Connector) awaitResult(ctx context.Context, pod string) error {
+// awaitResult waits for the sandbox to finish, copying new event lines while
+// it runs. A failed Kubernetes call says nothing about the agent, so only a
+// gone or stopped Pod ends the wait.
+func (c Connector) awaitResult(ctx context.Context, pod string, events *eventTailer) error {
 	for {
 		if _, err := c.command(ctx, nil, 128, "exec", pod, "-c", "agent", "--", "test", "-f", "/exchange/done"); err == nil {
 			return nil
@@ -321,6 +366,7 @@ func (c Connector) awaitResult(ctx context.Context, pod string) error {
 		if err := c.podStopped(ctx, pod); err != nil {
 			return err
 		}
+		events.sync(ctx)
 		if err := wait(ctx); err != nil {
 			return err
 		}
