@@ -17,10 +17,10 @@ const eventPage = 128;
 // merged or closed, and since when.
 function PullRequest({ ticket, link }) {
   const state = prState(ticket);
-  return <>
+  return <span className="job-pr-value">
     <a href={link} target="_blank" rel="noreferrer">#{ticket.pr_number}</a>
     {state && <> · {state}{ticket.pr_state_at && <> <time dateTime={ticket.pr_state_at}>{relativeTime(ticket.pr_state_at)}</time></>}</>}
-  </>;
+  </span>;
 }
 
 export function useRunEvents(run) {
@@ -58,6 +58,7 @@ export function useRunEvents(run) {
 
 const stepIcons = {
   succeeded: [Check, "text-success"],
+  held: [CircleAlert, "text-warning"],
   running: [LoaderCircle, "text-info state-working"],
   failed: [CircleAlert, "text-danger"],
   timed_out: [CircleAlert, "text-danger"],
@@ -67,7 +68,7 @@ const stepIcons = {
   unknown: [Minus, "text-faint"],
 };
 
-const stateWords = { succeeded: "Passed", running: "Running", failed: "Failed", timed_out: "Timed out", cancelled: "Cancelled", skipped: "Skipped", pending: "Waiting", unknown: "" };
+const stateWords = { succeeded: "Passed", held: "Held", running: "Running", failed: "Failed", timed_out: "Timed out", cancelled: "Cancelled", skipped: "Skipped", pending: "Waiting", unknown: "" };
 
 // Pipeline draws the preset's steps left to right, joined in the order they
 // run. Each node shows how far the latest attempt got. Choosing one opens its
@@ -77,12 +78,13 @@ function Pipeline({ nodes, onChoose, now = Date.now() }) {
     <ol>{nodes.map((step, index) => {
       const [Icon, tone] = stepIcons[step.state] || stepIcons.unknown;
       const empty = !step.output && !step.error;
+      const meta = step.state === "held" ? stateWords.held : step.state !== "skipped" && stepTime(step, now) || stateWords[step.state];
       return <li key={step.name} data-state={step.state}>
         {index > 0 && <span className="pipeline-edge" aria-hidden="true" />}
         <button type="button" className="pipeline-node" disabled={empty} onClick={() => onChoose(step.name)} aria-label={`${step.name}: ${stateWords[step.state] || step.state}`}>
           <Icon className={`size-4 shrink-0 ${tone}`} aria-hidden="true" />
           <span className="pipeline-name">{step.name}</span>
-          <span className="pipeline-meta">{step.state !== "skipped" && stepTime(step, now) || stateWords[step.state]}</span>
+          <span className="pipeline-meta">{meta}</span>
           <AgentBadges agents={step.agents} step={step.name} compact className="pipeline-agents" />
         </button>
       </li>;
@@ -121,20 +123,28 @@ function Step({ step, chosen, now }) {
       <span className="step-name">{step.name}</span>
       <span className="step-error">{step.error}</span>
       <span className="step-spend" title={spendTitle(step.cost_unknown)}>{spend(step)}</span>
-      <span className="step-time">{step.state === "skipped" ? "Skipped" : stepTime(step, now)}</span>
+      <span className="step-time">{step.state === "skipped" ? "Skipped" : step.state === "held" ? "Held" : stepTime(step, now)}</span>
       <ChevronRight className="step-chevron size-4" aria-hidden="true" />
     </button>
     {open && !empty && <StepOutput text={step.output || step.error} />}
   </li>;
 }
 
-function Run({ run, number, presetSteps, waitingFor }) {
+// When the merge gate holds a pull request for human review (pr_ready), the
+// merge step exited 0 by leaving the PR open rather than merging it. Marking
+// that step as held avoids showing a misleading green checkmark on merge.
+function markHeldMerge(list, held) {
+  if (!held) return list;
+  return list.map(step => step.name === "merge" && step.state === "succeeded" ? { ...step, state: "held" } : step);
+}
+
+function Run({ run, number, presetSteps, waitingFor, held = false }) {
   const { events, error, loaded } = useRunEvents(run);
-  const list = steps(events, run.stages || [], run.status);
+  const list = markHeldMerge(steps(events, run.stages || [], run.status), held);
   const now = useNow(run.status === "running");
   const current = run.status === "running" ? list.find(step => step.state === "running") : null;
   const action = current ? latestAction(current.output) : "";
-  const nodes = presetSteps ? pipeline(presetSteps, list, run.status) : [];
+  const nodes = presetSteps ? markHeldMerge(pipeline(presetSteps, list, run.status), held) : [];
   // chosen counts each choice, so choosing the same step twice still opens it.
   const [chosen, setChosen] = useState({ name: "", times: 0 });
   const choose = name => setChosen(previous => ({ name, times: previous.times + 1 }));
@@ -252,7 +262,7 @@ export function JobView({ detail, onChange }) {
     </section>}
     {result && !failure && isFinished(state) && <section className="panel" aria-labelledby="job-result"><h2 id="job-result" className="label">Result</h2><p className="prose"><Linked text={result} /></p></section>}
     {prompt && <details className="panel prompt"><summary className="label">Prompt</summary><p className="prose">{prompt}</p></details>}
-    {attempts.length ? attempts.map(({ run, number }, index) => <Run key={run.id} run={run} number={number} presetSteps={index === 0 ? presetSteps : null} waitingFor={index === 0 ? waitingFor : []} />) : <>
+    {attempts.length ? attempts.map(({ run, number }, index) => <Run key={run.id} run={run} number={number} presetSteps={index === 0 ? presetSteps : null} waitingFor={index === 0 ? waitingFor : []} held={index === 0 && state === "needs_you"} />) : <>
       {presetSteps.length > 0 && <Pipeline nodes={pipeline(presetSteps, [], "")} onChoose={() => {}} />}
       <p className="page-note">Waiting for a runner.</p>
     </>}

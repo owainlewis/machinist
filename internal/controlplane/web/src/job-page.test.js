@@ -97,15 +97,33 @@ test("pr_ready stands out as Needs you, and active jobs offer Cancel instead of 
   assert.doesNotMatch(running, />Run again<\/button>/);
 
   const needsYou = page({
-    ticket: { ...ticket, state: "pr_ready", pr_number: 12, pr_state: "open" },
-    runs: [{ id: "run_1", status: "succeeded", started_at: now, ended_at: now, report: { summary: "Left open: auto-merge is off." } }],
+    ticket: { ...ticket, state: "pr_ready", pr_number: 12, pr_state: "open", pr_state_at: now },
+    steps: [{ name: "merge-gate", agents: [] }, { name: "merge", agents: [] }],
+    runs: [{
+      id: "run_1",
+      status: "succeeded",
+      started_at: now,
+      ended_at: now,
+      report: { summary: "Left open: merge gate requires human review." },
+      stages: [
+        { name: "merge-gate", state: "succeeded", duration_millis: 12000 },
+        { name: "merge", state: "succeeded", duration_millis: 1000 },
+      ],
+    }],
   });
   assert.match(needsYou, /class="pill pill-warning"[^>]*>.*<span>Needs you<\/span><\/span>/);
+  assert.match(needsYou, /data-state="held"[^>]*>.*merge.*Held/);
+  assert.match(needsYou, /class="job-pr-value">.*#12<\/a> · Open <time/);
   assert.match(needsYou, />Run again<\/button>/);
   assert.doesNotMatch(needsYou, />Cancel<\/button>/);
 
-  const done = page({ ticket: { ...ticket, state: "done" }, runs: [{ id: "run_1", status: "succeeded", started_at: now, ended_at: now }] });
+  const done = page({
+    ticket: { ...ticket, state: "done" },
+    steps: [{ name: "merge", agents: [] }],
+    runs: [{ id: "run_1", status: "succeeded", started_at: now, ended_at: now, stages: [{ name: "merge", state: "succeeded", duration_millis: 1000 }] }],
+  });
   assert.match(done, /class="pill pill-success"[^>]*>.*<span>Done<\/span><\/span>/);
+  assert.doesNotMatch(done, /data-state="held"/);
   assert.match(done, />Run again<\/button>/);
   assert.doesNotMatch(done, />Cancel<\/button>/);
 });
