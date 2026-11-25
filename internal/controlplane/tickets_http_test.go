@@ -340,6 +340,16 @@ func TestAutomationRoutes(t *testing.T) {
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"next_due"`) || strings.Contains(string(body), "last_ticket") {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
+	var listed struct {
+		Automations []sources.AutomationStatus `json:"automations"`
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Automations) != 1 || listed.Automations[0].Name != "nightly" || listed.Automations[0].Repo != "owner/repo" || listed.Automations[0].Agent != "default" || listed.Automations[0].Schedule != "0 9 * * *" || listed.Automations[0].Timezone != "UTC" || listed.Automations[0].Prompt != "Do the nightly work" {
+		t.Fatalf("automations = %+v", listed.Automations)
+	}
+
 	response, body = f.call(t, http.MethodPost, "/api/v1/automations/nightly/run", f.token, nil)
 	if response.StatusCode != http.StatusCreated {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
@@ -348,6 +358,10 @@ func TestAutomationRoutes(t *testing.T) {
 	if first.Source != "schedule:nightly" || first.CreatedBy != "runner-1" {
 		t.Fatalf("ticket = %+v", first)
 	}
+	entries, err := f.store.Entries(t.Context(), first.ID)
+	if err != nil || len(entries) != 1 || entries[0].Body != "Do the nightly work" {
+		t.Fatalf("entries = %+v, err = %v", entries, err)
+	}
 	response, body = f.call(t, http.MethodPost, "/api/v1/automations/nightly/run", f.token, nil)
 	if response.StatusCode != http.StatusOK || decodeTicket(t, body).ID != first.ID {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
@@ -355,9 +369,74 @@ func TestAutomationRoutes(t *testing.T) {
 	if response, _ := f.call(t, http.MethodPost, "/api/v1/automations/missing/run", f.token, nil); response.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d", response.StatusCode)
 	}
+	if err := f.store.Apply(t.Context(), first.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Checked 3 PRs"}); err != nil {
+		t.Fatal(err)
+	}
 	response, body = f.call(t, http.MethodGet, "/api/v1/automations", f.token, nil)
-	if !strings.Contains(string(body), first.ID) {
+	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Automations) != 1 || listed.Automations[0].LastTicket == nil || listed.Automations[0].LastTicket.ID != first.ID || listed.Automations[0].LastTicket.State != tickets.StateDone || listed.Automations[0].LastTicket.Outcome != "Checked 3 PRs" {
+		t.Fatalf("automations = %+v", listed.Automations)
+	}
+
+	// An edited prompt overrides this run only without changing the saved prompt.
+	response, body = f.call(t, http.MethodPost, "/api/v1/automations/nightly/run", f.token, map[string]string{"prompt": "  Focus only on flaky tests  "})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("edited run status = %d: %s", response.StatusCode, body)
+	}
+	edited := decodeTicket(t, body)
+	if edited.ID == first.ID {
+		t.Fatalf("expected a new ticket, got %s", edited.ID)
+	}
+	entries, err = f.store.Entries(t.Context(), edited.ID)
+	if err != nil || len(entries) != 1 || entries[0].Body != "Focus only on flaky tests" {
+		t.Fatalf("edited entries = %+v, err = %v", entries, err)
+	}
+	response, body = f.call(t, http.MethodGet, "/api/v1/automations", f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if listed.Automations[0].Prompt != "Do the nightly work" {
+		t.Fatalf("saved prompt changed to %q", listed.Automations[0].Prompt)
+	}
+
+	// End the edited run, then confirm an empty JSON object falls back to the saved prompt.
+	if _, err := f.store.Cancel(t.Context(), edited.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	response, body = f.call(t, http.MethodPost, "/api/v1/automations/nightly/run", f.token, map[string]any{})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("empty object run status = %d: %s", response.StatusCode, body)
+	}
+	fallback := decodeTicket(t, body)
+	entries, err = f.store.Entries(t.Context(), fallback.ID)
+	if err != nil || len(entries) != 1 || entries[0].Body != "Do the nightly work" {
+		t.Fatalf("fallback entries = %+v, err = %v", entries, err)
+	}
+
+	// Reject a blank prompt override or malformed JSON body.
+	if response, body := f.call(t, http.MethodPost, "/api/v1/automations/nightly/run", f.token, map[string]string{"prompt": "   "}); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("blank prompt status = %d: %s", response.StatusCode, body)
+	}
+	badReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost, f.http.URL+"/api/v1/automations/nightly/run", strings.NewReader("{bad"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	badReq.Header.Set("Authorization", "Bearer "+f.token)
+	badResp, err := http.DefaultClient.Do(badReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badResp.Body.Close()
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed json status = %d", badResp.StatusCode)
 	}
 }
 
