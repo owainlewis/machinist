@@ -70,16 +70,18 @@ function NowDoing({ job, now }) {
 }
 
 function JobCard({ ticket, state, showState, progress, now }) {
+  const hasFooter = showState || Boolean(ticket.pr_number);
   return <li className="board-card" data-state={state}>
-    <a className="board-card-title" href={jobHref(ticket.id)}>{ticket.title || ticket.id}</a>
-    {state === "running" && progress && (progress.step || progress.action) && <NowDoing job={progress} now={now} />}
-    <div className="board-card-meta">
-      <Source source={ticket.source} compact />
-      <span>{ticket.repo}</span>
-      <PRChip ticket={ticket} />
+    <div className="board-card-top">
+      <span className="board-card-repo"><Source source={ticket.source} compact /><span>{ticket.repo}</span></span>
       <time dateTime={ticket.updated_at}>{relativeTime(ticket.updated_at)}</time>
     </div>
-    {showState && <State value={state} />}
+    <a className="board-card-title" href={jobHref(ticket.id)}>{ticket.title || ticket.id}</a>
+    {state === "running" && progress && (progress.step || progress.action) && <NowDoing job={progress} now={now} />}
+    {hasFooter && <div className="board-card-foot">
+      {showState && <State value={state} />}
+      <PRChip ticket={ticket} />
+    </div>}
   </li>;
 }
 

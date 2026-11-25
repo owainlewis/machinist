@@ -84,6 +84,7 @@ export const listPageSize = 50;
 export const boardColumns = [
   { key: "queued", label: "Queued" },
   { key: "running", label: "Running" },
+  { key: "needs_you", label: "Review" },
   { key: "done", label: "Done" },
 ];
 
@@ -91,11 +92,13 @@ export function boardOf(tickets = [], running = new Set(), { doneLimit = boardDo
   const columns = Object.fromEntries(boardColumns.map(column => [column.key, []]));
   for (const ticket of tickets) {
     const state = jobState(ticket, running.has(ticket.id));
-    columns[isFinished(state) ? "done" : state].push({ ticket, state });
+    const bucket = state === "queued" || state === "running" || state === "needs_you" ? state : "done";
+    columns[bucket].push({ ticket, state });
   }
   const at = (job, field) => Date.parse(job.ticket[field]) || 0;
   columns.queued.sort((a, b) => at(a, "created_at") - at(b, "created_at"));
   columns.running.sort((a, b) => at(b, "updated_at") - at(a, "updated_at"));
+  columns.needs_you.sort((a, b) => at(b, "updated_at") - at(a, "updated_at"));
   columns.done.sort((a, b) => at(b, "updated_at") - at(a, "updated_at"));
   const doneTotal = columns.done.length;
   if (doneLimit > 0 && columns.done.length > doneLimit) {

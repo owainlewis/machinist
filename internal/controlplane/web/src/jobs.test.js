@@ -32,7 +32,7 @@ test("helpers", () => {
   assert.equal(formatDuration(undefined), "");
 });
 
-test("the board puts each job in Queued, Running or Done", () => {
+test("the board puts each job in Queued, Running, Review or Done", () => {
   const at = minutes => new Date(Date.UTC(2026, 10, 19, 12, minutes)).toISOString();
   const tickets = [
     { id: "q_new", state: "working", created_at: at(5), updated_at: at(5) },
@@ -46,7 +46,8 @@ test("the board puts each job in Queued, Running or Done", () => {
   const board = boardOf(tickets, new Set(["r"]));
   assert.deepEqual(board.queued.map(job => job.ticket.id), ["q_old", "q_new"], "the next to run is on top");
   assert.deepEqual(board.running.map(job => job.ticket.id), ["r"]);
-  assert.deepEqual(board.done.map(job => [job.ticket.id, job.state]), [["bad", "failed"], ["ok", "done"], ["review", "needs_you"], ["stop", "cancelled"]]);
+  assert.deepEqual(board.needs_you.map(job => [job.ticket.id, job.state]), [["review", "needs_you"]]);
+  assert.deepEqual(board.done.map(job => [job.ticket.id, job.state]), [["bad", "failed"], ["ok", "done"], ["stop", "cancelled"]]);
 });
 
 test("each running job carries the step it is on and its last action", () => {
