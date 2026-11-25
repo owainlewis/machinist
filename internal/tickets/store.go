@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
 CREATE INDEX IF NOT EXISTS runs_ticket_status ON runs(ticket_id, status);
 CREATE TABLE IF NOT EXISTS tokens (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT,
-  role TEXT NOT NULL DEFAULT '', prefix TEXT NOT NULL DEFAULT '');
+  role TEXT NOT NULL DEFAULT '', prefix TEXT NOT NULL DEFAULT '', scope TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_token_per_name ON tokens(name) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS runners (
   name TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT '', harnesses TEXT NOT NULL DEFAULT '', slots INTEGER NOT NULL DEFAULT 1, last_contact TEXT NOT NULL);
@@ -310,7 +310,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if err = addColumns(db, "tokens", "role TEXT NOT NULL DEFAULT ''", "prefix TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err = addColumns(db, "tokens", "role TEXT NOT NULL DEFAULT ''", "prefix TEXT NOT NULL DEFAULT ''", "scope TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -1636,8 +1636,37 @@ const (
 	RoleRunner   = "runner"
 )
 
+// The scopes an operator token can be limited to. ScopeAll (empty) keeps full
+// operator access, including sign-in, settings and token management. ScopeRead
+// can read jobs, automations and output. ScopeRun can also start and cancel
+// jobs.
+const (
+	ScopeAll  = ""
+	ScopeRead = "read"
+	ScopeRun  = "run"
+)
+
 // Allows reports whether a token with this role may act as want.
 func Allows(role, want string) bool { return role == RoleAll || role == want }
+
+// AllowsScope reports whether a token with role and scope may perform an
+// operator action requiring wantScope (ScopeAll, ScopeRun or ScopeRead).
+func AllowsScope(role, scope, wantScope string) bool {
+	if !Allows(role, RoleOperator) {
+		return false
+	}
+	if scope == ScopeAll {
+		return true
+	}
+	switch wantScope {
+	case ScopeRead:
+		return scope == ScopeRead || scope == ScopeRun
+	case ScopeRun:
+		return scope == ScopeRun
+	default:
+		return false
+	}
+}
 
 // TokenPrefix starts every new API token so a person can recognise it in a
 // config file or clipboard. tokenPrefixDisplayLength keeps TokenPrefix plus
@@ -1657,9 +1686,15 @@ func newToken() (token, prefix string, err error) {
 	return token, token[:tokenPrefixDisplayLength], nil
 }
 
-// CreateToken stores a new token with a role and returns its only plaintext
-// copy.
+// CreateToken stores a new token with a role and full scope, returning its
+// only plaintext copy.
 func (s *Store) CreateToken(ctx context.Context, name, role string) (string, error) {
+	return s.CreateScopedToken(ctx, name, role, ScopeAll)
+}
+
+// CreateScopedToken stores a new token with a role and optional scope,
+// returning its only plaintext copy.
+func (s *Store) CreateScopedToken(ctx context.Context, name, role, scope string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", errors.New("token name is required")
@@ -1671,6 +1706,14 @@ func (s *Store) CreateToken(ctx context.Context, name, role string) (string, err
 	case RoleAll, RoleOperator, RoleRunner:
 	default:
 		return "", fmt.Errorf("unknown token role %q", role)
+	}
+	switch scope {
+	case ScopeAll, ScopeRead, ScopeRun:
+	default:
+		return "", fmt.Errorf("unknown token scope %q; must be read or run", scope)
+	}
+	if scope != ScopeAll && role != RoleOperator {
+		return "", fmt.Errorf("scope %q can only be set on an operator token", scope)
 	}
 	id, err := randomHex(8)
 	if err != nil {
@@ -1689,7 +1732,7 @@ func (s *Store) CreateToken(ctx context.Context, name, role string) (string, err
 		if taken > 0 {
 			return ErrTokenExists
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at,role,prefix) VALUES(?,?,?,?,?,?)`, id, name, hashToken(token), stamp(s.now()), role, prefix)
+		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at,role,prefix,scope) VALUES(?,?,?,?,?,?,?)`, id, name, hashToken(token), stamp(s.now()), role, prefix, scope)
 		return err
 	})
 	if err != nil {
@@ -1699,7 +1742,7 @@ func (s *Store) CreateToken(ctx context.Context, name, role string) (string, err
 }
 
 // RegenerateToken atomically revokes an active token and creates a new one
-// with the same name and role, returning its only plaintext copy.
+// with the same name, role and scope, returning its only plaintext copy.
 func (s *Store) RegenerateToken(ctx context.Context, name string) (string, error) {
 	id, err := randomHex(8)
 	if err != nil {
@@ -1710,8 +1753,8 @@ func (s *Store) RegenerateToken(ctx context.Context, name string) (string, error
 		return "", err
 	}
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		var role string
-		err := tx.QueryRowContext(ctx, `SELECT role FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&role)
+		var role, scope string
+		err := tx.QueryRowContext(ctx, `SELECT role,scope FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&role, &scope)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -1725,7 +1768,7 @@ func (s *Store) RegenerateToken(ctx context.Context, name string) (string, error
 		if _, err := tx.ExecContext(ctx, `DELETE FROM runners WHERE name=?`, name); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at,role,prefix) VALUES(?,?,?,?,?,?)`, id, name, hashToken(token), now, role, prefix)
+		_, err = tx.ExecContext(ctx, `INSERT INTO tokens(id,name,token_hash,created_at,role,prefix,scope) VALUES(?,?,?,?,?,?,?)`, id, name, hashToken(token), now, role, prefix, scope)
 		return err
 	})
 	if err != nil {
@@ -1738,6 +1781,7 @@ func (s *Store) RegenerateToken(ctx context.Context, name string) (string, error
 type TokenInfo struct {
 	Name       string
 	Role       string
+	Scope      string
 	Prefix     string
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
@@ -1746,7 +1790,7 @@ type TokenInfo struct {
 
 // ListTokens returns every token, oldest first.
 func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,role,prefix,created_at,last_used_at,revoked_at FROM tokens ORDER BY created_at,id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name,role,scope,prefix,created_at,last_used_at,revoked_at FROM tokens ORDER BY created_at,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1756,7 +1800,7 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
 		var info TokenInfo
 		var created string
 		var used, revoked sql.NullString
-		if err := rows.Scan(&info.Name, &info.Role, &info.Prefix, &created, &used, &revoked); err != nil {
+		if err := rows.Scan(&info.Name, &info.Role, &info.Scope, &info.Prefix, &created, &used, &revoked); err != nil {
 			return nil, err
 		}
 		info.CreatedAt = *parseTime(sql.NullString{String: created, Valid: true})
@@ -1785,30 +1829,45 @@ func (s *Store) RevokeToken(ctx context.Context, name string) error {
 }
 
 // tokenUseInterval is how stale last_used_at may get before a request
-// records a new use. Every authenticated request calls TokenName, so writing
+// records a new use. Every authenticated request calls Authenticate, so writing
 // each time would turn the web UI's polling and runner heartbeats into
 // writes that compete with run event ingestion.
 const tokenUseInterval = time.Minute
 
-// TokenName returns the name and role of a valid token and records its use,
-// at most once per tokenUseInterval.
-func (s *Store) TokenName(ctx context.Context, token string) (name, role string, err error) {
+// TokenAuth is the identity and permissions of an authenticated token.
+type TokenAuth struct {
+	Name  string
+	Role  string
+	Scope string
+}
+
+// Authenticate returns the name, role and scope of a valid token and records
+// its use, at most once per tokenUseInterval.
+func (s *Store) Authenticate(ctx context.Context, token string) (TokenAuth, error) {
 	now := s.now()
 	hash := hashToken(token)
 	// Stamps are fixed-width UTC, so they compare as strings.
 	cutoff := stamp(now.Add(-tokenUseInterval))
+	var auth TokenAuth
 	var stale bool
-	err = s.db.QueryRowContext(ctx, `SELECT name,role,coalesce(last_used_at,'')<? FROM tokens WHERE token_hash=? AND revoked_at IS NULL`, cutoff, hash).Scan(&name, &role, &stale)
+	err := s.db.QueryRowContext(ctx, `SELECT name,role,scope,coalesce(last_used_at,'')<? FROM tokens WHERE token_hash=? AND revoked_at IS NULL`, cutoff, hash).Scan(&auth.Name, &auth.Role, &auth.Scope, &stale)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", ErrNotFound
+		return TokenAuth{}, ErrNotFound
 	}
 	if err != nil || !stale {
-		return name, role, err
+		return auth, err
 	}
 	// The guard repeats the staleness check so that concurrent requests
 	// write once between them.
 	_, err = s.db.ExecContext(ctx, `UPDATE tokens SET last_used_at=? WHERE token_hash=? AND revoked_at IS NULL AND coalesce(last_used_at,'')<?`, stamp(now), hash, cutoff)
-	return name, role, err
+	return auth, err
+}
+
+// TokenName returns the name and role of a valid token and records its use,
+// at most once per tokenUseInterval.
+func (s *Store) TokenName(ctx context.Context, token string) (name, role string, err error) {
+	auth, err := s.Authenticate(ctx, token)
+	return auth.Name, auth.Role, err
 }
 
 // addColumns adds columns that a database from an older Machinist lacks.

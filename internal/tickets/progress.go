@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/owainlewis/machinist/internal/harness"
@@ -114,4 +116,103 @@ func (s *Store) CurrentStep(ctx context.Context, ticketID string) (string, error
 		return "", nil
 	}
 	return step, err
+}
+
+// RunProgress is where a run is (or got to): the current or last step name,
+// when that step started, and the latest action line its agent reported.
+type RunProgress struct {
+	Step          string
+	StepStartedAt *time.Time
+	Action        string
+}
+
+// RunProgress returns the recorded progress of a run, or the zero value when
+// none has been recorded yet.
+func (s *Store) RunProgress(ctx context.Context, runID string) (RunProgress, error) {
+	var p RunProgress
+	var started sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT step,step_started_at,action FROM run_progress WHERE run=?`, runID).Scan(&p.Step, &started, &p.Action)
+	if err == sql.ErrNoRows {
+		return RunProgress{}, nil
+	}
+	p.StepStartedAt = parseTime(started)
+	return p, err
+}
+
+// EventStepName extracts the step name from a step.started or legacy
+// stage.started run event.
+func EventStepName(event protocol.RunEvent) (string, bool) {
+	switch event.Type {
+	case "step.started":
+		if name, ok := strings.CutPrefix(event.Message, "name="); ok && name != "" {
+			return name, true
+		}
+		return "step", true
+	case "stage.started":
+		rest, ok := strings.CutPrefix(event.Message, "name=")
+		if !ok {
+			return "stage", true
+		}
+		if idx := strings.LastIndex(rest, " kind="); idx >= 0 {
+			rest = rest[:idx]
+		}
+		if rest == "" {
+			return "stage", true
+		}
+		return rest, true
+	default:
+		return "", false
+	}
+}
+
+// RunStartedSteps returns the names of the steps that have started in a run,
+// in order.
+func (s *Store) RunStartedSteps(ctx context.Context, runID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT body FROM run_activity_events WHERE run=? AND (body LIKE '%"step.started"%' OR body LIKE '%"stage.started"%') ORDER BY sequence`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var steps []string
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			return nil, err
+		}
+		var event protocol.RunEvent
+		if json.Unmarshal([]byte(body), &event) != nil {
+			continue
+		}
+		if name, ok := EventStepName(event); ok {
+			steps = append(steps, name)
+		}
+	}
+	return steps, rows.Err()
+}
+
+// RunStepAt returns the step name that was active at sequence atSeq (inclusive),
+// or empty when no step had started by then.
+func (s *Store) RunStepAt(ctx context.Context, runID string, atSeq int64) (string, error) {
+	if atSeq <= 0 {
+		return "", nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT body FROM run_activity_events WHERE run=? AND sequence<=? AND (body LIKE '%"step.started"%' OR body LIKE '%"stage.started"%') ORDER BY sequence DESC`, runID, atSeq)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			return "", err
+		}
+		var event protocol.RunEvent
+		if json.Unmarshal([]byte(body), &event) != nil {
+			continue
+		}
+		if name, ok := EventStepName(event); ok {
+			return name, nil
+		}
+	}
+	return "", rows.Err()
 }

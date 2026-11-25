@@ -154,10 +154,17 @@ To stop a job, `POST /machinist/jobs/{id}/cancel`. To run an ended job again,
 Jobs run headless, from start to finish, and never stop to ask a question. When the agent
 has to guess, it says so under **Assumptions** in the pull request.
 
-Every job uses the `default` preset unless it names another: clone, have an agent make the
-change, review it and fix what the review found, then open one pull request. It merges
-once its checks pass when `github.auto_merge` is on, as it is by default. Add a preset to `factory/presets/` only when a kind of job
-needs different steps.
+Every job uses the `default` preset unless it names another: `checkout`, `implement`,
+`review`, `revise`, `publish`, `merge-gate` (risk triage against the merge policy), and
+`merge`. When `github.auto_merge` is on (the default), low-risk pull requests approved by
+both `review` and `merge-gate` merge once their checks pass; medium- or high-risk changes
+stay open for human review. Commit `.machinist/merge-policy.md` to a repository's default
+branch to override the default policy (`factory/prompts/merge-policy.md`) for that
+repository, or set `github.auto_merge: false` to run `merge-gate` in **observe mode**
+(evaluating PRs and posting its judgment comment without merging). See
+[Merge gate and policy](docs/factory.md#merge-gate-and-policy) and
+[Merge policies](docs/merge-policies.md). Add a preset to `factory/presets/` only when a
+kind of job needs different steps.
 
 ### Start jobs from Linear
 
@@ -178,13 +185,17 @@ The Go tests run whole jobs end to end with fake `claude` and `gh` commands and 
 Git remote. See [Development](docs/development.md).
 
 The default preset has a second agent review the change, fixes what the review found and
-reviews it again, then opens a pull request. The `machinist merge` step hands it to the
-control plane, which merges it once the repository's checks pass and the review accepted the
-change, so no runner waits on CI. That rule is code, so no agent
-decides what merges. Set `github.auto_merge: false` to leave every pull request open for a
-person. How the pull request is written is in `factory/agents/publish.md`.
-Branch protection still decides what can merge. See [Security](SECURITY.md) for what a step
-can do.
+reviews it again, opens a pull request, and runs a read-only `merge-gate` step to triage
+blast radius against `prompts/merge-policy.md` or a repository's `.machinist/merge-policy.md`
+on its default branch (see [Merge gate and policy](docs/factory.md#merge-gate-and-policy)).
+The `machinist merge` step posts the merge-gate judgment as a pull request comment and hands
+the pull request to the control plane, which merges it once the repository's checks pass, the
+review accepted the change, and the merge gate approved it as low risk, so no runner waits on
+CI. That merge rule is code, and `merge-gate` runs without GitHub credentials. Set
+`github.auto_merge: false` to run in **observe mode**: `merge-gate` still evaluates every
+pull request and comments its judgment while leaving every pull request open for a person.
+How the pull request is written is in `factory/agents/publish.md`. Branch protection still
+decides what can merge. See [Security](SECURITY.md) for what a step can do.
 
 ## How it fits together
 
@@ -199,7 +210,8 @@ of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
 | [Documentation](docs/README.md) | The full list |
 | [Vision](VISION.md) | What Machinist is for, where it is, and what comes next |
 | [Run API](docs/run-api.md) | Starting jobs from any system |
-| [Factory files](docs/factory.md) | Presets and automations |
+| [Factory files](docs/factory.md) | Presets, merge gate and automations |
+| [Merge policies](docs/merge-policies.md) | Risk-based merge policies and starter templates |
 | [Runners](docs/runners.md) | Adding local and Kubernetes runners |
 | [Credentials](docs/credentials.md) | Which credential to use, and why |
 | [Configuration](docs/configuration.md) | Every setting |
