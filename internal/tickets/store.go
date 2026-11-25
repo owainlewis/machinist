@@ -898,8 +898,8 @@ func (s *Store) ListTicketsPage(ctx context.Context, filter TicketFilter) (Ticke
 	}, nil
 }
 
-// ListBoardTickets returns every matching active (queued or running) ticket
-// uncapped, plus at most doneLimit of the most recently updated finished tickets.
+// ListBoardTickets returns every matching active (queued, running, or in-review)
+// ticket uncapped, plus at most doneLimit of the most recently updated finished tickets.
 func (s *Store) ListBoardTickets(ctx context.Context, filter TicketFilter, doneLimit int) (TicketPage, error) {
 	if doneLimit <= 0 {
 		doneLimit = DefaultBoardDoneLimit
@@ -915,7 +915,7 @@ func (s *Store) ListBoardTickets(ctx context.Context, filter TicketFilter, doneL
 	defer tx.Rollback()
 
 	where, args := ticketWhere(filter)
-	activeRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state='working' AND (`+where+`) ORDER BY created_at ASC, id ASC`, args...)
+	activeRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state IN ('working','pr_ready') AND (`+where+`) ORDER BY created_at ASC, id ASC`, args...)
 	if err != nil {
 		return TicketPage{}, err
 	}
@@ -926,12 +926,12 @@ func (s *Store) ListBoardTickets(ctx context.Context, filter TicketFilter, doneL
 	}
 
 	var doneTotal int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE state<>'working' AND (`+where+`)`, args...).Scan(&doneTotal); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE state NOT IN ('working','pr_ready') AND (`+where+`)`, args...).Scan(&doneTotal); err != nil {
 		return TicketPage{}, err
 	}
 
 	doneArgs := append(append([]any{}, args...), doneLimit)
-	doneRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state<>'working' AND (`+where+`) ORDER BY updated_at DESC, id DESC LIMIT ?`, doneArgs...)
+	doneRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state NOT IN ('working','pr_ready') AND (`+where+`) ORDER BY updated_at DESC, id DESC LIMIT ?`, doneArgs...)
 	if err != nil {
 		return TicketPage{}, err
 	}

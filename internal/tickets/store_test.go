@@ -793,12 +793,21 @@ func TestListBoardTicketsCapsDoneTo20AndKeepsActiveUncapped(t *testing.T) {
 	}
 	store.now = advance
 
-	// Create 22 active tickets FIRST (older than all finished tickets) to prove active jobs
-	// are never dropped regardless of how many finished jobs follow or exceed 20.
+	// Create 22 active tickets FIRST (older than all finished tickets) plus 2 in-review
+	// (pr_ready) tickets to prove neither queued/running nor in-review jobs are dropped
+	// when finished jobs exceed 20.
 	activeIDs := map[string]bool{}
 	for i := range 22 {
 		ticket := createTicket(t, store, fmt.Sprintf("api:active:%d", i))
 		activeIDs[ticket.ID] = true
+	}
+	reviewIDs := map[string]bool{}
+	for i := range 2 {
+		ticket := createTicket(t, store, fmt.Sprintf("api:review:%d", i))
+		if err := store.Apply(t.Context(), ticket.ID, StateWorking, Transition{State: StatePRReady}); err != nil {
+			t.Fatal(err)
+		}
+		reviewIDs[ticket.ID] = true
 	}
 
 	// Create 25 finished tickets afterward.
@@ -824,11 +833,12 @@ func TestListBoardTicketsCapsDoneTo20AndKeepsActiveUncapped(t *testing.T) {
 	if page.DoneTotal == nil || *page.DoneTotal != 25 || page.DoneLimit == nil || *page.DoneLimit != 20 || !page.HasMore {
 		t.Fatalf("done metadata = total=%v limit=%v has_more=%v", page.DoneTotal, page.DoneLimit, page.HasMore)
 	}
-	if page.Total != 47 || len(page.Tickets) != 42 {
-		t.Fatalf("total=%d len=%d, want total=47 len=42 (22 active + 20 done)", page.Total, len(page.Tickets))
+	if page.Total != 49 || len(page.Tickets) != 44 {
+		t.Fatalf("total=%d len=%d, want total=49 len=44 (22 active + 2 review + 20 done)", page.Total, len(page.Tickets))
 	}
 
 	gotActive := 0
+	gotReview := 0
 	gotDone := make([]string, 0, 20)
 	for _, ticket := range page.Tickets {
 		if ticket.State == StateWorking {
@@ -836,12 +846,17 @@ func TestListBoardTicketsCapsDoneTo20AndKeepsActiveUncapped(t *testing.T) {
 				t.Fatalf("unexpected active ticket %s", ticket.ID)
 			}
 			gotActive++
+		} else if ticket.State == StatePRReady {
+			if !reviewIDs[ticket.ID] {
+				t.Fatalf("unexpected review ticket %s", ticket.ID)
+			}
+			gotReview++
 		} else {
 			gotDone = append(gotDone, ticket.ID)
 		}
 	}
-	if gotActive != 22 {
-		t.Fatalf("active count = %d, want 22", gotActive)
+	if gotActive != 22 || gotReview != 2 {
+		t.Fatalf("active=%d review=%d, want 22 and 2", gotActive, gotReview)
 	}
 	if len(gotDone) != 20 {
 		t.Fatalf("done count = %d, want 20", len(gotDone))

@@ -102,8 +102,8 @@ test("Board caps Done to 20 cards, keeps Queued and Running uncapped, and jumps 
 
     if (view === "board") {
       const doneLimit = Number(parsed.searchParams.get("done_limit") || 20);
-      const active = matching.filter(t => t.state === "working");
-      const done = matching.filter(t => t.state !== "working");
+      const active = matching.filter(t => t.state === "working" || t.state === "pr_ready");
+      const done = matching.filter(t => t.state !== "working" && t.state !== "pr_ready");
       const capped = done.slice(0, doneLimit);
       return {
         ok: true,
