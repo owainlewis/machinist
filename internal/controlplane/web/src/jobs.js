@@ -84,7 +84,7 @@ export const listPageSize = 50;
 export const boardColumns = [
   { key: "queued", label: "Queued" },
   { key: "running", label: "Running" },
-  { key: "needs_you", label: "In review" },
+  { key: "needs_you", label: "Review" },
   { key: "done", label: "Done" },
 ];
 

@@ -32,7 +32,7 @@ test("helpers", () => {
   assert.equal(formatDuration(undefined), "");
 });
 
-test("the board puts each job in Queued, Running, In review or Done", () => {
+test("the board puts each job in Queued, Running, Review or Done", () => {
   const at = minutes => new Date(Date.UTC(2026, 10, 19, 12, minutes)).toISOString();
   const tickets = [
     { id: "q_new", state: "working", created_at: at(5), updated_at: at(5) },
