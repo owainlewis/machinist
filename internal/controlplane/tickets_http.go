@@ -1,8 +1,10 @@
 package controlplane
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -318,7 +320,26 @@ func (s *Server) listAutomations(w http.ResponseWriter, r *http.Request, _ strin
 }
 
 func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName string) {
-	ticket, created, err := s.schedule.RunNow(r.Context(), r.PathValue("name"), tokenName)
+	var request struct {
+		Prompt *string `json:"prompt"`
+	}
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+		err := json.NewDecoder(r.Body).Decode(&request)
+		if err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+	}
+	var prompt string
+	if request.Prompt != nil {
+		prompt = strings.TrimSpace(*request.Prompt)
+		if prompt == "" {
+			writeError(w, http.StatusBadRequest, errors.New("prompt cannot be empty"))
+			return
+		}
+	}
+	ticket, created, err := s.schedule.RunNow(r.Context(), r.PathValue("name"), tokenName, prompt)
 	if err != nil {
 		writeTicketError(w, err)
 		return

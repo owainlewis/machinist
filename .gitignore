@@ -1,6 +1,7 @@
 /bin/
 /.factory/
-/.machinist/
+/.machinist/*
+!/.machinist/merge-policy.md
 *.tmp
 __pycache__/
 *.py[cod]

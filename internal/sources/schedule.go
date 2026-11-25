@@ -90,29 +90,33 @@ func (s *Schedule) poll(ctx context.Context, automation factory.Automation) erro
 	if occurrence.After(s.now()) {
 		return nil
 	}
-	_, _, err = s.create(ctx, automation, schedulerName, occurrence.UTC().Format(time.RFC3339))
+	_, _, err = s.create(ctx, automation, schedulerName, occurrence.UTC().Format(time.RFC3339), "")
 	return err
 }
 
-func (s *Schedule) create(ctx context.Context, automation factory.Automation, by, occurrence string) (tickets.Ticket, bool, error) {
+func (s *Schedule) create(ctx context.Context, automation factory.Automation, by, occurrence, prompt string) (tickets.Ticket, bool, error) {
+	if prompt == "" {
+		prompt = automation.Prompt
+	}
 	return s.Store.CreateTicket(ctx, tickets.NewTicket{
 		Source:    source(automation),
 		Origin:    tickets.OriginSchedule,
 		Repo:      automation.Repo,
 		Title:     automation.Name,
-		Body:      automation.Prompt,
+		Body:      prompt,
 		Agent:     automation.Preset,
 		CreatedBy: by,
 		SourceKey: "schedule:" + automation.Name + ":" + occurrence,
 	})
 }
 
-// RunNow starts an automation by hand. If its last ticket is still active, it
-// returns that ticket. The bool reports whether this call created one.
-func (s *Schedule) RunNow(ctx context.Context, name, by string) (tickets.Ticket, bool, error) {
+// RunNow starts an automation by hand. When prompt is non-empty, it overrides
+// the automation's saved prompt for this run only. If its last ticket is still
+// active, it returns that ticket. The bool reports whether this call created one.
+func (s *Schedule) RunNow(ctx context.Context, name, by, prompt string) (tickets.Ticket, bool, error) {
 	for _, automation := range s.Automations {
 		if automation.Name == name {
-			return s.create(ctx, automation, by, fmt.Sprintf("manual:%d", s.now().UnixNano()))
+			return s.create(ctx, automation, by, fmt.Sprintf("manual:%d", s.now().UnixNano()), prompt)
 		}
 	}
 	return tickets.Ticket{}, false, tickets.ErrNotFound
@@ -132,6 +136,7 @@ type AutomationStatus struct {
 	Schedule   string      `json:"schedule"`
 	Timezone   string      `json:"timezone"`
 	NextDue    time.Time   `json:"next_due"`
+	Prompt     string      `json:"prompt"`
 	LastTicket *LastTicket `json:"last_ticket,omitempty"`
 }
 
@@ -139,7 +144,14 @@ type AutomationStatus struct {
 func (s *Schedule) Status(ctx context.Context) ([]AutomationStatus, error) {
 	statuses := make([]AutomationStatus, 0, len(s.Automations))
 	for _, automation := range s.Automations {
-		status := AutomationStatus{Name: automation.Name, Repo: automation.Repo, Agent: automation.Preset, Schedule: automation.Cron.Expression(), Timezone: automation.Cron.Timezone()}
+		status := AutomationStatus{
+			Name:     automation.Name,
+			Repo:     automation.Repo,
+			Agent:    automation.Preset,
+			Schedule: automation.Cron.Expression(),
+			Timezone: automation.Cron.Timezone(),
+			Prompt:   automation.Prompt,
+		}
 		base, found, err := s.base(ctx, automation)
 		if err != nil {
 			return nil, err

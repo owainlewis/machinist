@@ -127,29 +127,56 @@ func TestRepeatedPollCreatesOneTicket(t *testing.T) {
 
 func TestRunNowReturnsTheActiveTicket(t *testing.T) {
 	c := newSchedule(t, "0 9 * * *")
-	first, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice")
+	first, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice", "")
 	if err != nil || !created || first.CreatedBy != "alice" {
 		t.Fatalf("ticket = %+v, created = %v, err = %v", first, created, err)
 	}
-	again, created, err := c.schedule.RunNow(t.Context(), "nightly", "bob")
+	again, created, err := c.schedule.RunNow(t.Context(), "nightly", "bob", "")
 	if err != nil || created || again.ID != first.ID {
 		t.Fatalf("ticket = %+v, created = %v, err = %v", again, created, err)
 	}
-	if _, _, err := c.schedule.RunNow(t.Context(), "missing", "alice"); !errors.Is(err, tickets.ErrNotFound) {
+	if _, _, err := c.schedule.RunNow(t.Context(), "missing", "alice", ""); !errors.Is(err, tickets.ErrNotFound) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunNowPromptOverrideAppliesOnlyToThatRun(t *testing.T) {
+	c := newSchedule(t, "0 9 * * *")
+	custom, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice", "ONE-OFF PROMPT")
+	if err != nil || !created {
+		t.Fatalf("ticket = %+v, created = %v, err = %v", custom, created, err)
+	}
+	entries, err := c.store.Entries(t.Context(), custom.ID)
+	if err != nil || len(entries) != 1 || entries[0].Body != "ONE-OFF PROMPT" {
+		t.Fatalf("entries = %+v, err = %v", entries, err)
+	}
+	endAll(t, c)
+	c.now = c.now.Add(time.Second)
+
+	statuses, err := c.schedule.Status(t.Context())
+	if err != nil || len(statuses) != 1 || statuses[0].Prompt != "THE PROMPT" {
+		t.Fatalf("statuses = %+v, err = %v", statuses, err)
+	}
+	saved, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice", "")
+	if err != nil || !created {
+		t.Fatalf("ticket = %+v, created = %v, err = %v", saved, created, err)
+	}
+	entries, err = c.store.Entries(t.Context(), saved.ID)
+	if err != nil || len(entries) != 1 || entries[0].Body != "THE PROMPT" {
+		t.Fatalf("entries = %+v, err = %v", entries, err)
 	}
 }
 
 func TestStatusShowsNextDueAndLastTicket(t *testing.T) {
 	c := newSchedule(t, "0 9 * * *")
 	statuses, err := c.schedule.Status(t.Context())
-	if err != nil || len(statuses) != 1 || statuses[0].LastTicket != nil || statuses[0].Schedule != "0 9 * * *" || statuses[0].Timezone != "UTC" {
+	if err != nil || len(statuses) != 1 || statuses[0].LastTicket != nil || statuses[0].Schedule != "0 9 * * *" || statuses[0].Timezone != "UTC" || statuses[0].Prompt != "THE PROMPT" {
 		t.Fatalf("statuses = %+v, err = %v", statuses, err)
 	}
 	if want := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC); !statuses[0].NextDue.Equal(want) {
 		t.Fatalf("next = %v", statuses[0].NextDue)
 	}
-	ticket, _, err := c.schedule.RunNow(t.Context(), "nightly", "alice")
+	ticket, _, err := c.schedule.RunNow(t.Context(), "nightly", "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}

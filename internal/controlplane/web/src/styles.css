@@ -666,3 +666,55 @@ a.source:hover span { text-decoration: underline; }
 .runner-jobs .agent-badges { flex: none; }
 .runner-job-step { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
+/* Automations table, empty state, and run-prompt modal. */
+.automations { width: 100%; border-collapse: collapse; }
+.automations th { border-bottom: 1px solid var(--border); padding: 9px 14px; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; text-align: left; white-space: nowrap; }
+.automations td { padding: 12px 14px; vertical-align: middle; white-space: nowrap; }
+.automations tbody tr + tr td { border-top: 1px solid var(--border-subtle); }
+.automations tbody tr { transition: background-color .12s ease; }
+.automations tbody tr:hover { background: var(--surface-raised); }
+.automation-name strong { font-size: 13.5px; font-weight: 600; letter-spacing: -.008em; }
+.automation-detail { color: var(--muted-foreground); font-size: 12.5px; }
+.automation-schedule code { border-radius: 5px; background: var(--muted); padding: 2px 6px; color: var(--foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.automation-tz { margin-left: 6px; color: var(--faint); font-size: 12px; }
+.automation-due { font-size: 12.5px; }
+.automation-due time { display: block; color: var(--foreground); font-weight: 500; }
+.automation-due-at { display: block; color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.automation-last-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.automation-last-run { display: inline-flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; }
+.automation-last-run:hover { color: var(--foreground); }
+.automation-last-run:hover time { text-decoration: underline; }
+.automation-outcome { max-width: 240px; overflow: hidden; color: var(--faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.automation-never { color: var(--faint); font-size: 12.5px; }
+.automation-action, .automation-action-col { text-align: right; }
+
+.automations-empty { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
+.automations-empty-head { display: flex; align-items: center; gap: 8px; color: var(--foreground); }
+.automations-empty-head svg { color: var(--muted-foreground); }
+.automations-empty code { border-radius: 5px; background: var(--muted); padding: 1px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.automations-example-block { display: flex; flex-direction: column; gap: 6px; max-width: 560px; }
+.automations-example { font-size: 12.5px; line-height: 1.55; }
+
+.modal-backdrop { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: rgb(0 0 0 / .62); padding: 16px; backdrop-filter: blur(4px); }
+.modal { display: flex; width: min(100%, 620px); max-height: calc(100vh - 32px); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--specular), 0 24px 60px rgb(0 0 0 / .55); }
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding: 16px 20px; }
+.modal-head h2 { margin: 0; font-size: 16px; line-height: 1.3; font-weight: 600; letter-spacing: -.015em; }
+.modal-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; margin-top: 4px; color: var(--muted-foreground); font-size: 12.5px; }
+.modal-meta code { border-radius: 5px; background: var(--muted); padding: 1px 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--foreground); }
+.modal-body { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; padding: 18px 20px; }
+.modal-body .field-hint code { border-radius: 5px; background: var(--muted); padding: 1px 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.automation-prompt-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+.automation-prompt-head .field-label { margin-bottom: 0; }
+.automation-prompt-edited { display: inline-flex; align-items: center; gap: 8px; }
+.automation-reset { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.automation-prompt-input { min-height: 180px; resize: vertical; font-size: 13.5px; line-height: 1.6; }
+.modal-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--border-subtle); padding-top: 14px; }
+.modal-foot .field-hint { margin: 0; }
+.modal-foot-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+@media (max-width: 767px) {
+  .jobs-page .page-head { flex-wrap: wrap; }
+  .jobs-page .page-actions { flex-wrap: wrap; }
+  .modal-head, .modal-body { padding: 14px 16px; }
+}
+
