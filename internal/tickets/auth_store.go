@@ -5,18 +5,38 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
+)
+
+var (
+	// ErrInviteConflict is returned when creating an invite for a target that
+	// already belongs to an active or disabled user.
+	ErrInviteConflict = errors.New("a user matching this target already exists")
+	// ErrUserDisabled is returned when a disabled user attempts to sign in.
+	ErrUserDisabled = errors.New("user account is disabled")
+	// ErrNotInvited is returned when an unknown GitHub account has no matching invite.
+	ErrNotInvited = errors.New("not invited")
 )
 
 const (
 	// SessionPrefix prefixes opaque random session cookie values.
 	SessionPrefix = "mses_"
+	// OAuthCookiePrefix prefixes opaque random OAuth transaction cookie values.
+	OAuthCookiePrefix = "moauth_"
+	// InvitePrefix prefixes opaque one-time invite URL fragment secrets.
+	InvitePrefix = "minv_"
 
 	// SessionIdleTTL is the sliding idle expiration for browser sessions.
 	SessionIdleTTL = 7 * 24 * time.Hour
 	// SessionAbsoluteTTL is the hard lifetime cap for browser sessions.
 	SessionAbsoluteTTL = 30 * 24 * time.Hour
+	// OAuthTransactionTTL is how long an OAuth login handshake remains valid.
+	OAuthTransactionTTL = 10 * time.Minute
+	// InviteTTL is how long an invite link remains valid.
+	InviteTTL = 7 * 24 * time.Hour
 	// sessionPruneRetention keeps revoked/expired sessions briefly before pruning.
 	sessionPruneRetention = 30 * 24 * time.Hour
 
@@ -61,6 +81,64 @@ func ValidUserRole(role string) bool {
 	return role == UserRoleAdmin || role == UserRoleMember || role == UserRoleViewer
 }
 
+// User is a human team member authenticated via GitHub OAuth.
+type User struct {
+	ID          string     `json:"id"`
+	Role        string     `json:"role"`
+	GitHubID    string     `json:"-"`
+	GitHubLogin string     `json:"github_login"`
+	Email       string     `json:"email"`
+	Name        string     `json:"name"`
+	AvatarURL   string     `json:"avatar_url"`
+	InvitedBy   string     `json:"invited_by,omitempty"`
+	DisabledAt  *time.Time `json:"disabled_at"`
+	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at,omitempty"`
+}
+
+// Invite is a pending or completed targeted team invitation.
+type Invite struct {
+	ID          string     `json:"id"`
+	Role        string     `json:"role"`
+	GitHubLogin string     `json:"github_login,omitempty"`
+	Email       string     `json:"email,omitempty"`
+	CreatedBy   string     `json:"created_by"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	AcceptedBy  string     `json:"accepted_by,omitempty"`
+	AcceptedAt  *time.Time `json:"accepted_at,omitempty"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// OAuthTransaction stores server-side state for an in-flight OAuth handshake.
+type OAuthTransaction struct {
+	Provider     string
+	State        string
+	PKCEVerifier string
+	ReturnTo     string
+	InviteID     string
+	ExpiresAt    time.Time
+	CreatedAt    time.Time
+}
+
+// GitHubProfile holds the verified identity returned by GitHub's OAuth APIs.
+type GitHubProfile struct {
+	ID             string
+	Login          string
+	Name           string
+	AvatarURL      string
+	PrimaryEmail   string
+	VerifiedEmails []string
+}
+
+// GitHubLoginResult describes the outcome of resolving a GitHub OAuth login.
+type GitHubLoginResult struct {
+	User     User
+	Outcome  string // "existing", "bootstrapped", "invited", "denied_disabled", "denied_not_invited"
+	InviteID string
+}
+
 // Session is a browser session persisted in the sessions table.
 type Session struct {
 	ID            string     `json:"id"`
@@ -100,6 +178,19 @@ func truncateField(s string, maxBytes int) string {
 	return s[:maxBytes]
 }
 
+// sanitizeAvatarURL keeps only https:// URLs <= 512 bytes.
+func sanitizeAvatarURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 512 {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return ""
+	}
+	return raw
+}
+
 // CreateTokenSession creates a browser session backed by an existing operator token.
 // It returns the opaque cookie secret (mses_<64 hex>) once.
 func (s *Store) CreateTokenSession(ctx context.Context, tokenID, userAgent, ipAddress string) (string, Session, error) {
@@ -133,6 +224,48 @@ func (s *Store) CreateTokenSession(ctx context.Context, tokenID, userAgent, ipAd
 		ID:            id,
 		AuthMethod:    AuthMethodToken,
 		TokenID:       tokenID,
+		UserAgent:     ua,
+		IPAddress:     ip,
+		CreatedAt:     now,
+		LastSeenAt:    now,
+		IdleExpiresAt: idleExp,
+		ExpiresAt:     absExp,
+	}, nil
+}
+
+// CreateUserSession creates a browser session backed by a human user account.
+// It returns the opaque cookie secret (mses_<64 hex>) once.
+func (s *Store) CreateUserSession(ctx context.Context, userID, userAgent, ipAddress string) (string, Session, error) {
+	if strings.TrimSpace(userID) == "" {
+		return "", Session{}, errors.New("user ID is required")
+	}
+	idHex, err := randomHex(16)
+	if err != nil {
+		return "", Session{}, err
+	}
+	secretHex, err := randomHex(32)
+	if err != nil {
+		return "", Session{}, err
+	}
+	id := "ses_" + idHex
+	secret := SessionPrefix + secretHex
+	now := s.now().UTC()
+	idleExp := now.Add(SessionIdleTTL)
+	absExp := now.Add(SessionAbsoluteTTL)
+	ua := truncateField(userAgent, 512)
+	ip := truncateField(ipAddress, 128)
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO sessions(id,token_hash,auth_method,user_id,token_id,user_agent,ip_address,created_at,last_seen_at,idle_expires_at,expires_at)
+		 VALUES(?,?,?,?,NULL,?,?,?,?,?,?)`,
+		id, hashToken(secret), AuthMethodGitHub, userID, ua, ip, stamp(now), stamp(now), stamp(idleExp), stamp(absExp),
+	)
+	if err != nil {
+		return "", Session{}, err
+	}
+	return secret, Session{
+		ID:            id,
+		AuthMethod:    AuthMethodGitHub,
+		UserID:        userID,
 		UserAgent:     ua,
 		IPAddress:     ip,
 		CreatedAt:     now,
@@ -258,6 +391,35 @@ func (s *Store) RevokeSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// RevokeSessionForOwner revokes sessionID only if it belongs to the specified
+// userID (for GitHub sessions) or tokenID (for token sessions).
+func (s *Store) RevokeSessionForOwner(ctx context.Context, sessionID, userID, tokenID string) error {
+	var (
+		res sql.Result
+		err error
+	)
+	now := stamp(s.now())
+	switch {
+	case userID != "":
+		res, err = s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL`, now, sessionID, userID)
+	case tokenID != "":
+		res, err = s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE id=? AND token_id=? AND revoked_at IS NULL`, now, sessionID, tokenID)
+	default:
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // RevokeSessionBySecret marks the session matching secret as revoked.
 func (s *Store) RevokeSessionBySecret(ctx context.Context, secret string) error {
 	if !strings.HasPrefix(secret, SessionPrefix) {
@@ -335,6 +497,484 @@ func scanSessions(rows *sql.Rows) ([]Session, error) {
 		out = append(out, sess)
 	}
 	return out, rows.Err()
+}
+
+// CreateOAuthTransaction persists a short-lived server-side OAuth handshake
+// state and returns the opaque cookie secret (moauth_<64 hex>).
+func (s *Store) CreateOAuthTransaction(ctx context.Context, provider, state, pkceVerifier, returnTo, inviteID string) (string, error) {
+	secretHex, err := randomHex(32)
+	if err != nil {
+		return "", err
+	}
+	secret := OAuthCookiePrefix + secretHex
+	now := s.now().UTC()
+	exp := now.Add(OAuthTransactionTTL)
+	if returnTo == "" {
+		returnTo = "/"
+	}
+	var inviteArg any
+	if inviteID != "" {
+		inviteArg = inviteID
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO oauth_transactions(id_hash, provider, state, pkce_verifier, return_to, invite_id, expires_at, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		hashToken(secret), provider, state, pkceVerifier, returnTo, inviteArg, stamp(exp), stamp(now),
+	)
+	if err != nil {
+		return "", err
+	}
+	return secret, nil
+}
+
+// ConsumeOAuthTransaction atomically reads and deletes an unexpired OAuth
+// transaction by its cookie secret, preventing callback replay.
+func (s *Store) ConsumeOAuthTransaction(ctx context.Context, secret string) (OAuthTransaction, error) {
+	if !strings.HasPrefix(secret, OAuthCookiePrefix) {
+		return OAuthTransaction{}, ErrNotFound
+	}
+	hash := hashToken(secret)
+	nowStamp := stamp(s.now().UTC())
+	var out OAuthTransaction
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var (
+			inviteID   sql.NullString
+			expiresStr string
+			createdStr string
+		)
+		err := tx.QueryRowContext(ctx, `
+			SELECT provider, state, pkce_verifier, return_to, invite_id, expires_at, created_at
+			FROM oauth_transactions
+			WHERE id_hash = ? AND expires_at > ?`,
+			hash, nowStamp,
+		).Scan(&out.Provider, &out.State, &out.PKCEVerifier, &out.ReturnTo, &inviteID, &expiresStr, &createdStr)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_transactions WHERE id_hash = ?`, hash); err != nil {
+			return err
+		}
+		out.InviteID = inviteID.String
+		out.ExpiresAt = *parseTime(sql.NullString{String: expiresStr, Valid: true})
+		out.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
+		return nil
+	})
+	if err != nil {
+		return OAuthTransaction{}, err
+	}
+	return out, nil
+}
+
+// CreateInvite creates a targeted invite for either a GitHub handle OR an email
+// address (never both, never neither). If an active or disabled user already
+// matches the target, ErrInviteConflict is returned. Any prior pending invite
+// for the same target is atomically revoked.
+func (s *Store) CreateInvite(ctx context.Context, role, githubLogin, email, createdBy string) (Invite, string, error) {
+	if !ValidUserRole(role) {
+		return Invite{}, "", fmt.Errorf("invalid role %q; must be admin, member, or viewer", role)
+	}
+	githubLogin = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(githubLogin), "@"))
+	email = strings.ToLower(strings.TrimSpace(email))
+	if (githubLogin == "" && email == "") || (githubLogin != "" && email != "") {
+		return Invite{}, "", errors.New("specify exactly one of github_login or email")
+	}
+	if githubLogin != "" && strings.ContainsAny(githubLogin, " \t\r\n/") {
+		return Invite{}, "", errors.New("invalid github_login")
+	}
+	if email != "" && (!strings.Contains(email, "@") || strings.ContainsAny(email, " \t\r\n")) {
+		return Invite{}, "", errors.New("invalid email address")
+	}
+	if strings.TrimSpace(createdBy) == "" {
+		createdBy = "cli"
+	}
+
+	idHex, err := randomHex(16)
+	if err != nil {
+		return Invite{}, "", err
+	}
+	secretHex, err := randomHex(32)
+	if err != nil {
+		return Invite{}, "", err
+	}
+	id := "inv_" + idHex
+	secret := InvitePrefix + secretHex
+	now := s.now().UTC()
+	exp := now.Add(InviteTTL)
+	nowStamp := stamp(now)
+	expStamp := stamp(exp)
+
+	err = s.inTx(ctx, func(tx *sql.Tx) error {
+		var existing int
+		if githubLogin != "" {
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE LOWER(github_login) = ?`, githubLogin).Scan(&existing); err != nil {
+				return err
+			}
+		} else {
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE LOWER(email) = ?`, email).Scan(&existing); err != nil {
+				return err
+			}
+		}
+		if existing > 0 {
+			return ErrInviteConflict
+		}
+		// Revoke any prior pending invite for the same target.
+		if githubLogin != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE invites SET revoked_at=? WHERE github_login=? AND accepted_at IS NULL AND revoked_at IS NULL`, nowStamp, githubLogin); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `UPDATE invites SET revoked_at=? WHERE email=? AND accepted_at IS NULL AND revoked_at IS NULL`, nowStamp, email); err != nil {
+				return err
+			}
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO invites(id, role, github_login, email, token_hash, created_by, expires_at, created_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, role, githubLogin, email, hashToken(secret), createdBy, expStamp, nowStamp,
+		)
+		return err
+	})
+	if err != nil {
+		return Invite{}, "", err
+	}
+	return Invite{
+		ID:          id,
+		Role:        role,
+		GitHubLogin: githubLogin,
+		Email:       email,
+		CreatedBy:   createdBy,
+		ExpiresAt:   exp,
+		CreatedAt:   now,
+	}, secret, nil
+}
+
+// ListPendingInvites returns unexpired, unaccepted, unrevoked invites, newest first.
+func (s *Store) ListPendingInvites(ctx context.Context) ([]Invite, error) {
+	nowStamp := stamp(s.now().UTC())
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, role, github_login, email, created_by, expires_at, created_at
+		FROM invites
+		WHERE accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+		ORDER BY created_at DESC, id DESC`,
+		nowStamp,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	invites := []Invite{}
+	for rows.Next() {
+		var inv Invite
+		var expStr, createdStr string
+		if err := rows.Scan(&inv.ID, &inv.Role, &inv.GitHubLogin, &inv.Email, &inv.CreatedBy, &expStr, &createdStr); err != nil {
+			return nil, err
+		}
+		inv.ExpiresAt = *parseTime(sql.NullString{String: expStr, Valid: true})
+		inv.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
+		invites = append(invites, inv)
+	}
+	return invites, rows.Err()
+}
+
+// RevokeInvite revokes a pending invite by ID.
+func (s *Store) RevokeInvite(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE invites SET revoked_at=? WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL`, stamp(s.now().UTC()), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RegenerateInvite rotates an unexpired pending invite's secret and extends
+// its expiry by InviteTTL, returning the updated Invite and new one-time secret.
+func (s *Store) RegenerateInvite(ctx context.Context, id string) (Invite, string, error) {
+	secretHex, err := randomHex(32)
+	if err != nil {
+		return Invite{}, "", err
+	}
+	secret := InvitePrefix + secretHex
+	now := s.now().UTC()
+	exp := now.Add(InviteTTL)
+	var inv Invite
+	err = s.inTx(ctx, func(tx *sql.Tx) error {
+		var createdStr string
+		err := tx.QueryRowContext(ctx, `
+			SELECT id, role, github_login, email, created_by, created_at
+			FROM invites
+			WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL`,
+			id,
+		).Scan(&inv.ID, &inv.Role, &inv.GitHubLogin, &inv.Email, &inv.CreatedBy, &createdStr)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE invites SET token_hash=?, expires_at=? WHERE id=?`, hashToken(secret), stamp(exp), id); err != nil {
+			return err
+		}
+		inv.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
+		inv.ExpiresAt = exp
+		return nil
+	})
+	if err != nil {
+		return Invite{}, "", err
+	}
+	return inv, secret, nil
+}
+
+// ValidateInviteSecret checks a one-time invite secret from /#/invite#<secret>.
+func (s *Store) ValidateInviteSecret(ctx context.Context, secret string) (Invite, error) {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return Invite{}, ErrNotFound
+	}
+	nowStamp := stamp(s.now().UTC())
+	var inv Invite
+	var expStr, createdStr string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, role, github_login, email, created_by, expires_at, created_at
+		FROM invites
+		WHERE token_hash=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
+		hashToken(secret), nowStamp,
+	).Scan(&inv.ID, &inv.Role, &inv.GitHubLogin, &inv.Email, &inv.CreatedBy, &expStr, &createdStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Invite{}, ErrNotFound
+	}
+	if err != nil {
+		return Invite{}, err
+	}
+	inv.ExpiresAt = *parseTime(sql.NullString{String: expStr, Valid: true})
+	inv.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
+	return inv, nil
+}
+
+// ResolveGitHubLogin resolves a verified GitHub OAuth profile inside a single
+// transaction locked on auth_state:
+//  1. Existing user by immutable github_id -> disabled check or profile refresh.
+//  2. One-time bootstrap_admin if auth_state.bootstrapped_at IS NULL.
+//  3. Matching pending unexpired invite (specific inviteID if set, else auto-match).
+//  4. Otherwise denied (ErrNotInvited).
+func (s *Store) ResolveGitHubLogin(ctx context.Context, profile GitHubProfile, bootstrapAdmin, inviteID string) (GitHubLoginResult, error) {
+	if strings.TrimSpace(profile.ID) == "" || strings.TrimSpace(profile.Login) == "" {
+		return GitHubLoginResult{}, errors.New("github profile requires id and login")
+	}
+	login := strings.TrimSpace(profile.Login)
+	loginLower := strings.ToLower(login)
+	displayName := truncateField(profile.Name, 256)
+	avatarURL := sanitizeAvatarURL(profile.AvatarURL)
+	primaryEmail := strings.ToLower(strings.TrimSpace(profile.PrimaryEmail))
+	verifiedEmails := make([]string, 0, len(profile.VerifiedEmails))
+	for _, em := range profile.VerifiedEmails {
+		em = strings.ToLower(strings.TrimSpace(em))
+		if em != "" && !slices.Contains(verifiedEmails, em) {
+			verifiedEmails = append(verifiedEmails, em)
+		}
+	}
+	if primaryEmail != "" && !slices.Contains(verifiedEmails, primaryEmail) {
+		primaryEmail = ""
+	}
+	if primaryEmail == "" && len(verifiedEmails) > 0 {
+		primaryEmail = verifiedEmails[0]
+	}
+
+	now := s.now().UTC()
+	nowStamp := stamp(now)
+	var result GitHubLoginResult
+	var retErr error
+
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		// Serialize bootstrap/invite provisioning on the singleton auth_state row.
+		if _, err := tx.ExecContext(ctx, `UPDATE auth_state SET id = id WHERE id = 1`); err != nil {
+			return err
+		}
+
+		// 1. Existing user lookup strictly by immutable numeric github_id.
+		var (
+			u          User
+			disabled   sql.NullString
+			createdStr string
+			updatedStr string
+		)
+		err := tx.QueryRowContext(ctx, `
+			SELECT id, role, github_id, github_login, email, name, avatar_url, invited_by, disabled_at, created_at, updated_at
+			FROM users WHERE github_id = ?`,
+			profile.ID,
+		).Scan(&u.ID, &u.Role, &u.GitHubID, &u.GitHubLogin, &u.Email, &u.Name, &u.AvatarURL, &u.InvitedBy, &disabled, &createdStr, &updatedStr)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			u.DisabledAt = parseTime(disabled)
+			u.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
+			u.UpdatedAt = *parseTime(sql.NullString{String: updatedStr, Valid: true})
+			if u.DisabledAt != nil {
+				result = GitHubLoginResult{User: u, Outcome: "denied_disabled"}
+				retErr = ErrUserDisabled
+				return nil
+			}
+			// Active user: refresh profile fields (never overwrite role or consume invite).
+			emailToStore := u.Email
+			if primaryEmail != "" {
+				emailToStore = primaryEmail
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE users SET github_login=?, email=?, name=?, avatar_url=?, updated_at=?
+				WHERE id=?`,
+				login, emailToStore, displayName, avatarURL, nowStamp, u.ID,
+			); err != nil {
+				return err
+			}
+			u.GitHubLogin = login
+			u.Email = emailToStore
+			u.Name = displayName
+			u.AvatarURL = avatarURL
+			u.UpdatedAt = now
+			result = GitHubLoginResult{User: u, Outcome: "existing"}
+			return nil
+		}
+
+		// 2. One-time bootstrap check via auth_state.bootstrapped_at.
+		var bootstrappedAt sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT bootstrapped_at FROM auth_state WHERE id = 1`).Scan(&bootstrappedAt); err != nil {
+			return err
+		}
+		if !bootstrappedAt.Valid && bootstrapAdmin != "" && strings.EqualFold(bootstrapAdmin, "github:"+loginLower) {
+			idHex, err := randomHex(16)
+			if err != nil {
+				return err
+			}
+			u = User{
+				ID:          "usr_" + idHex,
+				Role:        UserRoleAdmin,
+				GitHubID:    profile.ID,
+				GitHubLogin: login,
+				Email:       primaryEmail,
+				Name:        displayName,
+				AvatarURL:   avatarURL,
+				InvitedBy:   "bootstrap",
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE auth_state SET bootstrapped_at=? WHERE id=1 AND bootstrapped_at IS NULL`, nowStamp); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO users(id, role, github_id, github_login, email, name, avatar_url, invited_by, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				u.ID, u.Role, u.GitHubID, u.GitHubLogin, u.Email, u.Name, u.AvatarURL, u.InvitedBy, nowStamp, nowStamp,
+			); err != nil {
+				return err
+			}
+			result = GitHubLoginResult{User: u, Outcome: "bootstrapped"}
+			return nil
+		}
+
+		// 3. Pending unexpired invite matching.
+		var matched *Invite
+		if inviteID != "" {
+			var inv Invite
+			err := tx.QueryRowContext(ctx, `
+				SELECT id, role, github_login, email, created_by
+				FROM invites
+				WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
+				inviteID, nowStamp,
+			).Scan(&inv.ID, &inv.Role, &inv.GitHubLogin, &inv.Email, &inv.CreatedBy)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if err == nil && inviteMatchesProfile(inv, loginLower, verifiedEmails) {
+				matched = &inv
+			}
+		} else {
+			rows, err := tx.QueryContext(ctx, `
+				SELECT id, role, github_login, email, created_by
+				FROM invites
+				WHERE accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+				ORDER BY created_at DESC, id DESC`,
+				nowStamp,
+			)
+			if err != nil {
+				return err
+			}
+			for rows.Next() {
+				var inv Invite
+				if err := rows.Scan(&inv.ID, &inv.Role, &inv.GitHubLogin, &inv.Email, &inv.CreatedBy); err != nil {
+					rows.Close()
+					return err
+				}
+				if inviteMatchesProfile(inv, loginLower, verifiedEmails) {
+					found := inv
+					matched = &found
+					break
+				}
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return err
+			}
+			rows.Close()
+		}
+
+		if matched == nil {
+			result = GitHubLoginResult{Outcome: "denied_not_invited"}
+			retErr = ErrNotInvited
+			return nil
+		}
+
+		idHex, err := randomHex(16)
+		if err != nil {
+			return err
+		}
+		u = User{
+			ID:          "usr_" + idHex,
+			Role:        matched.Role,
+			GitHubID:    profile.ID,
+			GitHubLogin: login,
+			Email:       primaryEmail,
+			Name:        displayName,
+			AvatarURL:   avatarURL,
+			InvitedBy:   matched.CreatedBy,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO users(id, role, github_id, github_login, email, name, avatar_url, invited_by, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			u.ID, u.Role, u.GitHubID, u.GitHubLogin, u.Email, u.Name, u.AvatarURL, u.InvitedBy, nowStamp, nowStamp,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE invites SET accepted_by=?, accepted_at=? WHERE id=?`, u.ID, nowStamp, matched.ID); err != nil {
+			return err
+		}
+		result = GitHubLoginResult{User: u, Outcome: "invited", InviteID: matched.ID}
+		return nil
+	})
+	if err != nil {
+		return GitHubLoginResult{}, err
+	}
+	return result, retErr
+}
+
+func inviteMatchesProfile(inv Invite, loginLower string, verifiedEmails []string) bool {
+	if inv.GitHubLogin != "" {
+		return strings.EqualFold(inv.GitHubLogin, loginLower)
+	}
+	if inv.Email != "" {
+		return slices.Contains(verifiedEmails, strings.ToLower(inv.Email))
+	}
+	return false
 }
 
 // PruneExpiredAuth removes expired OAuth transactions and aged expired/revoked sessions.
