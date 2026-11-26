@@ -23,16 +23,22 @@ test("Runners shows each runner and when it last made contact", async context =>
 });
 
 test("Runners shows where each runner runs, its slots and what it is doing", async context => {
-  const { RunnersPage } = await load(context);
+  const { RunnersPage, runnerKindLabel } = await load(context);
+  assert.equal(runnerKindLabel("local"), "Local");
+  assert.equal(runnerKindLabel("kubernetes"), "Kubernetes");
+  assert.equal(runnerKindLabel("docker"), "Docker");
+  assert.equal(runnerKindLabel("docker (runsc)"), "Docker (runsc)");
   const runners = [
     { name: "cluster", kind: "kubernetes", slots: 4, last_contact: ago(5), jobs: [
       { run_id: "r1", ticket_id: "t_1", title: "Add dark mode", kind: "agent", started_at: ago(120) },
       { run_id: "r2", ticket_id: "t_2", title: "Fix login", kind: "agent", started_at: ago(30) },
     ] },
     { name: "mac-mini", kind: "local", slots: 1, last_contact: ago(5), jobs: [] },
+    { name: "docker-box", kind: "docker", slots: 2, last_contact: ago(5), jobs: [] },
+    { name: "gvisor-box", kind: "docker (runsc)", slots: 2, last_contact: ago(5), jobs: [] },
   ];
   const html = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners, queue: { waiting: 3, oldest_queued_at: ago(250) } }));
-  for (const want of [/Kubernetes/, /Local/, /2 of 4 slots busy/, /0 of 1 slot busy/, /2 of 2 online, 2 of 5 slots busy/, /href="#\/jobs\/t_1"/, /Add dark mode/, /Fix login/, /3 runs are waiting for a runner, the oldest for 4m 1\ds/]) assert.match(html, want);
+  for (const want of [/Kubernetes/, /Local/, /Docker<\/span>/, /Docker \(runsc\)/, /2 of 4 slots busy/, /0 of 1 slot busy/, /4 of 4 online, 2 of 9 slots busy/, /href="#\/jobs\/t_1"/, /Add dark mode/, /Fix login/, /3 runs are waiting for a runner, the oldest for 4m 1\ds/]) assert.match(html, want);
   assert.doesNotMatch(html, /cannot start/);
 });
 

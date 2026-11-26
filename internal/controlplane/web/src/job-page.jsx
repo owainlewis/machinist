@@ -1,10 +1,11 @@
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowUpRight, Ban, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Ban, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { harnessList, waitingForRunner } from "./agents.js";
 import { State, relativeTime, useNow } from "./display.jsx";
-import { failureReason, formatDuration, isFinished, jobState, linkParts, noPullRequest, prLink, prState, sourceLink, sourceLinkText } from "./jobs.js";
+import { failureReason, formatDuration, isFinished, jobState, linkParts, mergeGate, noPullRequest, prLink, prState, sourceLink, sourceLinkText } from "./jobs.js";
+import { RiskBadge } from "./risk-badge.jsx";
 import { Source } from "./source-mark.jsx";
 import { latestAction, noStepsNote, pipeline, pollEvents, runSpend, spend, spendTitle, stepTime, steps } from "./step-log.js";
 import { Button } from "@/components/ui/button";
@@ -229,6 +230,28 @@ function CancelJob({ ticketID, onDone }) {
   </div>;
 }
 
+// MergeGatePanel shows the merge gate's decision, risk badge, and explanation
+// when the ticket carries a persisted merge-gate verdict.
+function MergeGatePanel({ ticket }) {
+  const gate = mergeGate(ticket);
+  if (!gate) return null;
+  const approved = gate.decision?.value === "approve";
+  const DecisionIcon = approved ? ShieldCheck : ShieldAlert;
+  return <section className="panel merge-gate" data-decision={gate.decision?.value || undefined} data-risk={gate.risk?.level || undefined} aria-labelledby="job-merge-gate">
+    <div className="merge-gate-head">
+      <h2 id="job-merge-gate" className="label">Merge gate</h2>
+      <div className="merge-gate-verdict">
+        {gate.decision && <span className={`merge-gate-decision${approved ? " merge-gate-decision-approved" : " merge-gate-decision-review"}`}>
+          <DecisionIcon className="size-3.5" aria-hidden="true" />
+          <span>{gate.decision.label}</span>
+        </span>}
+        <RiskBadge ticket={ticket} />
+      </div>
+    </div>
+    {gate.reason && <p className="prose merge-gate-reason"><Linked text={gate.reason} /></p>}
+  </section>;
+}
+
 export function JobView({ detail, onChange }) {
   const { ticket, entries = [], runs = [], steps: presetSteps = [], waiting_for: waitingFor = [] } = detail;
   const state = jobState(ticket, runs.some(run => run.status === "running"));
@@ -260,6 +283,7 @@ export function JobView({ detail, onChange }) {
       <h2 id="job-failure" className="label"><CircleAlert className="size-3.5" aria-hidden="true" />Why it failed</h2>
       <p className="prose"><Linked text={failure} /></p>
     </section>}
+    <MergeGatePanel ticket={ticket} />
     {result && !failure && isFinished(state) && <section className="panel" aria-labelledby="job-result"><h2 id="job-result" className="label">Result</h2><p className="prose"><Linked text={result} /></p></section>}
     {prompt && <details className="panel prompt"><summary className="label">Prompt</summary><p className="prose">{prompt}</p></details>}
     {attempts.length ? attempts.map(({ run, number }, index) => <Run key={run.id} run={run} number={number} presetSteps={index === 0 ? presetSteps : null} waitingFor={index === 0 ? waitingFor : []} held={index === 0 && state === "needs_you"} />) : <>

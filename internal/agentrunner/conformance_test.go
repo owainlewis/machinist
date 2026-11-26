@@ -20,19 +20,24 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/dockerrunner"
 	"github.com/owainlewis/machinist/internal/kuberunner"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 )
 
-// TestMain lets this test binary stand in for kubectl and for the process a
-// Kubernetes Job runs, so the suite exercises the real connector and sandbox.
+// TestMain lets this test binary stand in for kubectl/docker and for the
+// sandbox process they run, so the suite exercises the real connectors and sandboxes.
 func TestMain(m *testing.M) {
 	switch os.Getenv("MACHINIST_TEST_ROLE") {
 	case "kubectl":
 		os.Exit(fakeKubectl(os.Args[1:]))
 	case "sandbox":
 		os.Exit(fakeSandbox())
+	case "docker":
+		os.Exit(fakeDocker(os.Args[1:]))
+	case "docker-sandbox":
+		os.Exit(fakeDockerSandbox())
 	}
 	os.Exit(m.Run())
 }
@@ -252,7 +257,197 @@ func buildKubernetes(t *testing.T, data string) Executor {
 	return executor
 }
 
-var runnerTypes = []runnerType{{"local", buildLocal}, {"kubernetes", buildKubernetes}}
+func fakeDocker(args []string) int {
+	state := os.Getenv("FAKE_DOCKER_STATE")
+	fail := func(message string) int { fmt.Fprintln(os.Stderr, message); return 1 }
+	if len(args) == 0 {
+		return fail("fake docker: missing subcommand")
+	}
+	switch args[0] {
+	case "info":
+		runtimes := os.Getenv("FAKE_DOCKER_RUNTIMES")
+		if runtimes == "" {
+			runtimes = `{"runc":{"path":"runc"},"runsc":{"path":"/usr/bin/runsc"}}`
+		}
+		fmt.Print(runtimes)
+		return 0
+	case "rm":
+		name := args[len(args)-1]
+		stopFakeDockerContainer(state, name)
+		return 0
+	case "run":
+		return runFakeDocker(state, args[1:])
+	default:
+		return fail("fake docker: unknown subcommand: " + args[0])
+	}
+}
+
+func runFakeDocker(state string, args []string) int {
+	fail := func(message string) int { fmt.Fprintln(os.Stderr, message); return 1 }
+	var name, entrypoint string
+	mounts := map[string]string{}
+	env := []string{"PATH=" + os.Getenv("PATH")}
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			break
+		}
+		switch arg {
+		case "--rm", "--read-only":
+			i++
+		case "--name":
+			name = args[i+1]
+			i += 2
+		case "--entrypoint":
+			entrypoint = args[i+1]
+			i += 2
+		case "-v":
+			parts := strings.Split(args[i+1], ":")
+			if len(parts) >= 2 {
+				mounts[parts[1]] = parts[0]
+			}
+			i += 2
+		case "-e":
+			spec := args[i+1]
+			if strings.Contains(spec, "=") {
+				env = append(env, spec)
+			} else if val, ok := os.LookupEnv(spec); ok {
+				env = append(env, spec+"="+val)
+			}
+			i += 2
+		case "--label", "--user", "-w":
+			i += 2
+		default:
+			if strings.Contains(arg, "=") {
+				i++
+			} else {
+				i += 2
+			}
+		}
+	}
+	// Remaining args: <image> [cmd...]
+	if i >= len(args) {
+		return fail("fake docker: missing image")
+	}
+	cmdArgs := args[i+1:]
+	if entrypoint == "sh" && len(cmdArgs) >= 2 && cmdArgs[0] == "-c" {
+		if probed := os.Getenv("FAKE_DOCKER_HARNESSES"); probed != "" {
+			for _, h := range strings.Split(probed, ",") {
+				fmt.Println(strings.TrimSpace(h))
+			}
+			return 0
+		}
+		cmd := exec.Command("sh", cmdArgs...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return 1
+		}
+		return 0
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return fail(err.Error())
+	}
+	env = append(env,
+		"MACHINIST_TEST_ROLE=docker-sandbox",
+		"FAKE_DOCKER_EXCHANGE="+mounts[dockerrunner.ExchangeDirectory],
+		"FAKE_DOCKER_WORK="+filepath.Dir(mounts[dockerrunner.WorkDirectory+"/workspace"]),
+		"FAKE_DOCKER_HOME="+mounts[dockerrunner.HomeDirectory],
+	)
+	proc := exec.Command(binary)
+	proc.Env = env
+	proc.Stdout = os.Stdout
+	proc.Stderr = os.Stderr
+	proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := proc.Start(); err != nil {
+		return fail(err.Error())
+	}
+	pidFile := filepath.Join(state, "pid-"+name)
+	_ = os.WriteFile(pidFile, []byte(strconv.Itoa(proc.Process.Pid)), 0o600)
+	err = proc.Wait()
+	_ = os.Remove(pidFile)
+	if err != nil {
+		return 1
+	}
+	return 0
+}
+
+func stopFakeDockerContainer(state, name string) {
+	pidFile := filepath.Join(state, "pid-"+name)
+	body, err := os.ReadFile(pidFile)
+	if err != nil {
+		return
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(body)))
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if syscall.Kill(-pid, 0) != nil {
+			_ = os.Remove(pidFile)
+			return
+		}
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	_ = os.Remove(pidFile)
+}
+
+func fakeDockerSandbox() int {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+	defer stop()
+	err := dockerrunner.Sandbox(
+		ctx,
+		os.Getenv("FAKE_DOCKER_EXCHANGE"),
+		os.Getenv("FAKE_DOCKER_WORK"),
+		os.Getenv("FAKE_DOCKER_HOME"),
+	)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+func installFakeDocker(t *testing.T, runtimes, harnesses string) string {
+	t.Helper()
+	bin := t.TempDir()
+	state := t.TempDir()
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\nMACHINIST_TEST_ROLE=docker FAKE_DOCKER_STATE=%q FAKE_DOCKER_RUNTIMES=%q FAKE_DOCKER_HARNESSES=%q exec %q \"$@\"\n", state, runtimes, harnesses, binary)
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return state
+}
+
+func buildDocker(t *testing.T, data string) Executor {
+	t.Helper()
+	installFakeDocker(t, "", "claude,codex")
+	t.Setenv("GH_TOKEN", "fixture-github")
+	t.Setenv("ANTHROPIC_API_KEY", "fixture-anthropic")
+	t.Setenv("MACHINIST_PARENT_SECRET", "must-not-leak")
+	executor, err := NewDocker(t.Context(), config.Runner{
+		DataDirectory: data,
+		Slots:         1,
+		Docker: &config.Docker{
+			Image: "ghcr.io/owainlewis/machinist-runner:latest",
+			Env:   []string{"ANTHROPIC_API_KEY"},
+		},
+	}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return executor
+}
+
+var runnerTypes = []runnerType{{"local", buildLocal}, {"kubernetes", buildKubernetes}, {"docker", buildDocker}}
 
 func conformanceRequest(steps ...runner.Step) runner.RunRequest {
 	return runner.RunRequest{

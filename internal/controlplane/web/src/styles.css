@@ -184,6 +184,13 @@ a.source:hover span { text-decoration: underline; }
 .pr-chip[data-state]:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent); }
 .pr-chip-state { font-weight: 400; opacity: .85; }
 
+/* Merge gate risk badge: subtle emerald (low), amber (medium), rose (high) pill. */
+.risk-badge { display: inline-flex; flex-shrink: 0; align-items: center; gap: 5px; border-radius: 999px; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border); padding: 1px 8px 1px 7px; color: var(--muted-foreground); font-size: 11.5px; line-height: 17px; font-weight: 500; white-space: nowrap; }
+.risk-badge-dot { width: 5.5px; height: 5.5px; flex: none; border-radius: 999px; background: currentColor; }
+.risk-badge[data-risk="low"] { background: var(--success-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 24%, transparent); color: var(--success); }
+.risk-badge[data-risk="medium"] { background: var(--warning-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 24%, transparent); color: var(--warning); }
+.risk-badge[data-risk="high"] { background: var(--danger-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 24%, transparent); color: var(--danger); }
+
 /* Filters above the jobs: quick chips by state, and the source. */
 .job-filters { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
 .quick-filters { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -254,6 +261,17 @@ a.source:hover span { text-decoration: underline; }
 .job-actions .pill { margin-top: 0; }
 .job-failure { border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); background: var(--danger-soft); }
 .job-failure .label { display: flex; align-items: center; gap: 6px; color: var(--danger); }
+.merge-gate { display: flex; flex-direction: column; gap: 8px; }
+.merge-gate[data-risk="low"] { border-color: color-mix(in srgb, var(--success) 26%, var(--border)); }
+.merge-gate[data-risk="medium"] { border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
+.merge-gate[data-risk="high"] { border-color: color-mix(in srgb, var(--danger) 34%, var(--border)); }
+.merge-gate-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
+.merge-gate-head .label + * { margin-top: 0; }
+.merge-gate-verdict { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.merge-gate-decision { display: inline-flex; align-items: center; gap: 5px; color: var(--foreground); font-size: 12.5px; line-height: 18px; font-weight: 500; }
+.merge-gate-decision-approved svg { color: var(--success); }
+.merge-gate-decision-review svg { color: var(--warning); }
+.merge-gate-reason { margin: 0; }
 .job-page .prose a { color: var(--info); overflow-wrap: anywhere; }
 .job-page .prose a:hover { text-decoration: underline; }
 .run-again, .cancel-job { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
@@ -480,7 +498,7 @@ a.source:hover span { text-decoration: underline; }
   .source-filter { width: 100%; }
 }
 @media (max-width: 767px) {
-  .jobs .job-pr { display: none; }
+  .jobs .job-pr, .jobs .job-risk { display: none; }
 }
 
 @media (max-width: 767px) {
