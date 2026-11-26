@@ -15,6 +15,7 @@ import (
 func (f *fixture) signedInRun(t *testing.T, key string) job {
 	t.Helper()
 	f.connect(t)
+	cookie := f.signInCookie(t, f.token)
 	encoded, err := json.Marshal(runRequest(key))
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +24,8 @@ func (f *fixture) signedInRun(t *testing.T, key string) job {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.token})
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
 	response, err := f.http.Client().Do(request)
 	if err != nil {
 		t.Fatal(err)

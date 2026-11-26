@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"mime"
 	"net"
 	"net/http"
 	"slices"
@@ -54,8 +55,10 @@ type Server struct {
 	presets       []presetView
 	factory       *factory.Factory
 	// app is the GitHub App, or nil when there is none.
-	app        githubApp
-	appKeyHash [32]byte
+	app         githubApp
+	appKeyHash  [32]byte
+	csrf        *http.CrossOriginProtection
+	authLimiter *ipRateLimiter
 }
 
 type serverState struct {
@@ -192,12 +195,19 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		factory:       loaded,
 		appKeyHash:    appKeyHash,
 		log:           log,
+		csrf:          http.NewCrossOriginProtection(),
+		authLimiter:   newIPRateLimiter(authRateLimitMaxEntries, authRateLimitPerSec, authRateLimitBurst, time.Now),
 	}
 	if app != nil {
 		server.app = app
 	}
 	if warning := factory.WarningLine(loaded.Updates); warning != "" {
 		fmt.Fprintf(log, "machinist: warning: %s\n", warning)
+	}
+	if store != nil && publicAuthActive(machinistConfig) {
+		if hasLegacy, err := store.HasActiveRoleAllToken(context.Background()); err == nil && hasLegacy {
+			fmt.Fprintf(log, "machinist: warning: active legacy role-less token(s) exist and will be rejected on this public deployment; replace them with typed operator or --runner tokens\n")
+		}
 	}
 	return server, nil
 }
@@ -399,7 +409,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("/mcp", s.handleMCP)
 	mux.HandleFunc("POST /api/v1/session", s.signIn)
-	mux.HandleFunc("DELETE /api/v1/session", s.requireToken(s.signOut))
+	mux.HandleFunc("DELETE /api/v1/session", s.requireScope(tickets.ScopeRead, s.signOut))
 	mux.HandleFunc("POST /api/v1/tickets", s.requireScope(tickets.ScopeRun, s.createTicket))
 	mux.HandleFunc("GET /api/v1/tickets", s.requireScope(tickets.ScopeRead, s.listTickets))
 	mux.HandleFunc("GET /api/v1/tickets/{id}", s.requireScope(tickets.ScopeRead, s.getTicket))
@@ -438,12 +448,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/automations/{name}/run", s.requireScope(tickets.ScopeRun, s.runAutomation))
 	mux.HandleFunc("POST /api/v1/reload", s.requireToken(s.reload))
 	mux.Handle("/", http.FileServer(http.FS(mustSub(webAssets, "web/dist"))))
-	var handler http.Handler = mux
+	var handler http.Handler = s.csrfMiddleware(mux)
 	cfg := s.state().config
-	if isLoopbackListen(cfg.Server.Listen) {
-		handler = loopbackHostOnly(handler)
+	loopback := isLoopbackListen(cfg.Server.Listen)
+	if cfg.Server.PublicURL != "" {
+		handler = canonicalHostOnly(cfg.Server.PublicURL, handler)
 	}
-	return securityHeaders(handler)
+	if loopback {
+		handler = loopbackHostOnly(publicURLHost(cfg.Server.PublicURL), handler)
+	}
+	return s.securityHeaders(handler)
 }
 
 func mustSub(files fs.FS, directory string) fs.FS {
@@ -454,16 +468,24 @@ func mustSub(files fs.FS, directory string) fs.FS {
 	return sub
 }
 
-func securityHeaders(next http.Handler) http.Handler {
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' blob:; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' blob: https://avatars.githubusercontent.com; font-src 'self'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		if isHTTPS(s.state().config, r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
+	if isPublicNonLoopback(s.state().config.Server.PublicURL) {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"version": s.version})
 }
 
@@ -498,6 +520,11 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 		s.runLinear(engineContext)
 		close(linearDone)
 	}()
+	pruneDone := make(chan struct{})
+	go func() {
+		s.runAuthPrune(engineContext)
+		close(pruneDone)
+	}()
 
 	select {
 	case err = <-served:
@@ -510,10 +537,28 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	<-engineDone
 	<-scheduleDone
 	<-linearDone
+	<-pruneDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
+}
+
+func (s *Server) runAuthPrune(ctx context.Context) {
+	if s.store == nil {
+		return
+	}
+	_ = s.store.PruneExpiredAuth(ctx)
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = s.store.PruneExpiredAuth(ctx)
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -527,6 +572,13 @@ func writeError(w http.ResponseWriter, status int, err error) {
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, target any) bool {
+	if !hasBearerHeader(r) {
+		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			writeError(w, http.StatusUnsupportedMediaType, errors.New("Content-Type must be application/json"))
+			return false
+		}
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	if err := json.NewDecoder(r.Body).Decode(target); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))

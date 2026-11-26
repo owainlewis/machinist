@@ -206,6 +206,10 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if auth.Role == tickets.RoleAll && publicAuthActive(s.state().config) {
+		writeError(w, http.StatusForbidden, errors.New("legacy unscoped role-less tokens are disabled on public deployments; create a typed operator token"))
+		return
+	}
 	if !tickets.AllowsScope(auth.Role, auth.Scope, tickets.ScopeRead) {
 		writeError(w, http.StatusForbidden, fmt.Errorf("token %q is a %s token and cannot use MCP", auth.Name, auth.Role))
 		return

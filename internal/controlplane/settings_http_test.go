@@ -317,12 +317,13 @@ func TestCreateAndRegenerateTokensFromTheWebApp(t *testing.T) {
 		t.Fatalf("missing regenerate status = %d", missing.StatusCode)
 	}
 
-	// Regenerating your own token via session cookie rotates the cookie so the browser stays signed in.
+	// Regenerating your own token via session cookie rotates the DB session cookie so the browser stays signed in.
+	initialCookie := f.signInCookie(t, created.Token)
 	req, err := http.NewRequest(http.MethodPost, f.http.URL+"/api/v1/tokens/bob/regenerate", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: created.Token})
+	req.AddCookie(initialCookie)
 	cookieResp, err := f.http.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -336,14 +337,14 @@ func TestCreateAndRegenerateTokensFromTheWebApp(t *testing.T) {
 		t.Fatalf("self regen = %d, %+v", cookieResp.StatusCode, selfRegen)
 	}
 	cookie := findCookie(cookieResp)
-	if cookie == nil || cookie.Value != selfRegen.Token {
-		t.Fatalf("rotated cookie = %+v, want %q", cookie, selfRegen.Token)
+	if cookie == nil || !strings.HasPrefix(cookie.Value, tickets.SessionPrefix) || cookie.Value == initialCookie.Value || cookie.Value == selfRegen.Token {
+		t.Fatalf("rotated cookie = %+v, want fresh opaque session secret", cookie)
 	}
 	if got := f.withCookie(t, http.MethodGet, "/api/v1/tokens", cookie.Value); got.StatusCode != http.StatusOK {
 		t.Fatalf("rotated cookie did not work: %d", got.StatusCode)
 	}
-	if got := f.withCookie(t, http.MethodGet, "/api/v1/tokens", created.Token); got.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("old cookie still worked: %d", got.StatusCode)
+	if got := f.withCookie(t, http.MethodGet, "/api/v1/tokens", initialCookie.Value); got.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old session cookie still worked: %d", got.StatusCode)
 	}
 }
 

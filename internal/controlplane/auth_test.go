@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/tickets"
 )
 
 func TestEveryRouteRequiresAValidToken(t *testing.T) {
@@ -44,6 +45,19 @@ func TestEveryRouteRequiresAValidToken(t *testing.T) {
 	}
 }
 
+func (f *fixture) signInCookie(t *testing.T, token string) *http.Cookie {
+	t.Helper()
+	response, body := f.call(t, http.MethodPost, "/api/v1/session", "", map[string]string{"token": token})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("sign in failed: %d: %s", response.StatusCode, body)
+	}
+	cookie := findCookie(response)
+	if cookie == nil {
+		t.Fatalf("sign in returned no session cookie: %v", response.Cookies())
+	}
+	return cookie
+}
+
 func (f *fixture) withCookie(t *testing.T, method, path, value string) *http.Response {
 	t.Helper()
 	request, err := http.NewRequest(method, f.http.URL+path, nil)
@@ -61,25 +75,29 @@ func (f *fixture) withCookie(t *testing.T, method, path, value string) *http.Res
 
 func findCookie(response *http.Response) *http.Cookie {
 	for _, cookie := range response.Cookies() {
-		if cookie.Name == sessionCookie {
+		if cookie.Name == sessionCookie || cookie.Name == secureSessionCookie {
 			return cookie
 		}
 	}
 	return nil
 }
 
-func TestSignInSetsAStrictCookie(t *testing.T) {
+func TestSignInSetsAnOpaqueSessionCookie(t *testing.T) {
 	f := newFixture(t)
 	response, body := f.call(t, http.MethodPost, "/api/v1/session", "", map[string]string{"token": f.token})
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "runner-1") {
 		t.Fatalf("status = %d: %s", response.StatusCode, body)
 	}
 	cookie := findCookie(response)
-	if cookie == nil || cookie.Value != f.token || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Secure || cookie.Path != "/" {
+	if cookie == nil || cookie.Name != sessionCookie || !strings.HasPrefix(cookie.Value, tickets.SessionPrefix) || cookie.Value == f.token || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Secure || cookie.Path != "/" {
 		t.Fatalf("cookie = %+v", cookie)
 	}
 	if got := f.withCookie(t, http.MethodGet, "/api/v1/tickets", cookie.Value); got.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", got.StatusCode)
+	}
+	// Stuffing the raw bearer token directly into the session cookie must not work.
+	if got := f.withCookie(t, http.MethodGet, "/api/v1/tickets", f.token); got.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("raw token in cookie = %d, want 401", got.StatusCode)
 	}
 }
 
@@ -87,8 +105,8 @@ func TestSignInCookieIsSecureUnderTLS(t *testing.T) {
 	f := newFixture(t)
 	f.server.config.Server.TLSCert = "cert.pem"
 	response, _ := f.call(t, http.MethodPost, "/api/v1/session", "", map[string]string{"token": f.token})
-	if cookie := findCookie(response); cookie == nil || !cookie.Secure {
-		t.Fatalf("cookie = %+v", cookie)
+	if cookie := findCookie(response); cookie == nil || !cookie.Secure || cookie.Name != secureSessionCookie {
+		t.Fatalf("cookie = %+v, want Secure __Host- cookie", cookie)
 	}
 }
 
@@ -101,6 +119,7 @@ func TestSessionCookieIsSecureWhenRequestUsesTLSWithoutConfigTLSCert(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 	response, err := tlsServer.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -110,15 +129,15 @@ func TestSessionCookieIsSecureWhenRequestUsesTLSWithoutConfigTLSCert(t *testing.
 		t.Fatalf("sign-in status = %d", response.StatusCode)
 	}
 	cookie := findCookie(response)
-	if cookie == nil || !cookie.Secure {
-		t.Fatalf("sign-in cookie over TLS = %+v, want Secure=true", cookie)
+	if cookie == nil || !cookie.Secure || cookie.Name != secureSessionCookie {
+		t.Fatalf("sign-in cookie over TLS = %+v, want Secure __Host- cookie", cookie)
 	}
 
 	signOutReq, err := http.NewRequest(http.MethodDelete, tlsServer.URL+"/api/v1/session", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signOutReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.token})
+	signOutReq.AddCookie(&http.Cookie{Name: secureSessionCookie, Value: cookie.Value})
 	signOutResp, err := tlsServer.Client().Do(signOutReq)
 	if err != nil {
 		t.Fatal(err)
@@ -128,8 +147,8 @@ func TestSessionCookieIsSecureWhenRequestUsesTLSWithoutConfigTLSCert(t *testing.
 		t.Fatalf("sign-out status = %d", signOutResp.StatusCode)
 	}
 	cleared := findCookie(signOutResp)
-	if cleared == nil || !cleared.Secure || cleared.MaxAge >= 0 {
-		t.Fatalf("sign-out cookie over TLS = %+v, want Secure=true and cleared", cleared)
+	if cleared == nil || !cleared.Secure || cleared.Name != secureSessionCookie || cleared.MaxAge >= 0 {
+		t.Fatalf("sign-out cookie over TLS = %+v, want Secure __Host- cookie and cleared", cleared)
 	}
 }
 
@@ -141,21 +160,27 @@ func TestSignInRejectsABadToken(t *testing.T) {
 	}
 }
 
-func TestSignOutClearsTheCookie(t *testing.T) {
+func TestSignOutClearsAndRevokesTheSession(t *testing.T) {
 	f := newFixture(t)
-	response := f.withCookie(t, http.MethodDelete, "/api/v1/session", f.token)
+	signedIn := f.signInCookie(t, f.token)
+	response := f.withCookie(t, http.MethodDelete, "/api/v1/session", signedIn.Value)
 	cookie := findCookie(response)
 	if response.StatusCode != http.StatusNoContent || cookie == nil || cookie.Value != "" || cookie.MaxAge >= 0 {
 		t.Fatalf("status = %d, cookie = %+v", response.StatusCode, cookie)
+	}
+	// Reusing the revoked session cookie must fail.
+	if got := f.withCookie(t, http.MethodGet, "/api/v1/tickets", signedIn.Value); got.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked session still worked: %d", got.StatusCode)
 	}
 }
 
 func TestRevokingATokenEndsItsSignIn(t *testing.T) {
 	f := newFixture(t)
+	signedIn := f.signInCookie(t, f.token)
 	if err := f.store.RevokeToken(t.Context(), "runner-1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.withCookie(t, http.MethodGet, "/api/v1/tickets", f.token); got.StatusCode != http.StatusUnauthorized {
+	if got := f.withCookie(t, http.MethodGet, "/api/v1/tickets", signedIn.Value); got.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d", got.StatusCode)
 	}
 	if response, _ := f.call(t, http.MethodGet, "/api/v1/tickets", f.token, nil); response.StatusCode != http.StatusUnauthorized {

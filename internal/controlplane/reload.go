@@ -82,9 +82,12 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 	restartNeeded := restartSettingsDiff(prev.config, nextConfig)
 	effectiveConfig := nextConfig
 	effectiveConfig.Server.Listen = prev.config.Server.Listen
+	effectiveConfig.Server.PublicURL = prev.config.Server.PublicURL
+	effectiveConfig.Server.TrustedProxyHops = prev.config.Server.TrustedProxyHops
 	effectiveConfig.Server.Database = prev.config.Server.Database
 	effectiveConfig.Server.TLSCert = prev.config.Server.TLSCert
 	effectiveConfig.Server.TLSKey = prev.config.Server.TLSKey
+	effectiveConfig.Auth = prev.config.Auth
 
 	nextFactory, err := factory.Load(effectiveConfig.Server.Factory)
 	if err != nil {
@@ -201,6 +204,12 @@ func restartSettingsDiff(prev, next config.Config) []string {
 	if next.Server.Listen != prev.Server.Listen {
 		needed = append(needed, "server.listen")
 	}
+	if next.Server.PublicURL != prev.Server.PublicURL {
+		needed = append(needed, "server.public_url")
+	}
+	if next.Server.TrustedProxyHops != prev.Server.TrustedProxyHops {
+		needed = append(needed, "server.trusted_proxy_hops")
+	}
 	if next.Server.Database != prev.Server.Database {
 		needed = append(needed, "server.database")
 	}
@@ -210,7 +219,32 @@ func restartSettingsDiff(prev, next config.Config) []string {
 	if next.Server.TLSKey != prev.Server.TLSKey {
 		needed = append(needed, "server.tls_key")
 	}
+	if authRestartDiff(prev.Auth, next.Auth) {
+		needed = append(needed, "auth")
+	}
 	return needed
+}
+
+func authRestartDiff(prev, next config.Auth) bool {
+	if prev.TokenSigninEnabled() != next.TokenSigninEnabled() {
+		return true
+	}
+	if prev.AllowTokenOnlyPublic != next.AllowTokenOnlyPublic {
+		return true
+	}
+	if prev.BootstrapAdmin != next.BootstrapAdmin {
+		return true
+	}
+	if prev.GitHub.Enabled != next.GitHub.Enabled {
+		return true
+	}
+	if (prev.DisableTokenSignin == nil) != (next.DisableTokenSignin == nil) {
+		return true
+	}
+	if prev.DisableTokenSignin != nil && *prev.DisableTokenSignin != *next.DisableTokenSignin {
+		return true
+	}
+	return false
 }
 
 func diffReload(prevCfg config.Config, prevKeyHash [32]byte, prevFac *factory.Factory, nextCfg config.Config, nextKeyHash [32]byte, nextFac *factory.Factory) []string {
