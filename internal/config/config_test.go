@@ -450,3 +450,31 @@ func TestPortFallbackSafetyAndNotifyWebhookEnv(t *testing.T) {
 		t.Fatal("expected error for invalid NOTIFY_WEBHOOK_URL scheme")
 	}
 }
+
+func TestCloudRunConfigExampleLoads(t *testing.T) {
+	t.Setenv("K_SERVICE", "machinist")
+	t.Setenv("PORT", "8080")
+	t.Setenv(DatabaseURLEnv, "postgres://machinist:pass@/machinist?host=/cloudsql/proj:us-central1:inst")
+	t.Setenv(GitHubOAuthClientIDEnv, "client-id")
+	t.Setenv(GitHubOAuthClientSecretEnv, "client-secret")
+
+	loaded, err := LoadConfig(filepath.Join("..", "..", "deploy", "cloudrun", "config.example.yaml"))
+	if err != nil {
+		t.Fatalf("LoadConfig(deploy/cloudrun/config.example.yaml): %v", err)
+	}
+	if loaded.Server.Listen != ":8080" {
+		t.Fatalf("Listen = %q, want :8080", loaded.Server.Listen)
+	}
+	if loaded.Server.TrustedProxyHops != 1 {
+		t.Fatalf("TrustedProxyHops = %d, want 1", loaded.Server.TrustedProxyHops)
+	}
+	if !IsPostgresURL(loaded.Server.Database) {
+		t.Fatalf("Database = %q, want postgres URL", loaded.Server.Database)
+	}
+	if !loaded.Auth.GitHub.Enabled {
+		t.Fatal("expected auth.github.enabled = true")
+	}
+	if loaded.GitHub.App == nil || loaded.GitHub.App.PrivateKeyFile != "/secrets/github-app.pem" {
+		t.Fatalf("GitHub.App = %+v", loaded.GitHub.App)
+	}
+}

@@ -1,0 +1,11 @@
+# Example team config image layering your immutable config.yaml and factory/
+# directory onto an official versioned Machinist base image.
+#
+# Never bake secrets (DATABASE_URL, GitHub OAuth credentials, GitHub App PEM,
+# Linear secrets, or webhook URLs) into this image — inject them via GCP Secret
+# Manager on Cloud Run.
+
+FROM ghcr.io/owainlewis/machinist:v0.6.0
+
+COPY --chmod=0644 config.yaml /srv/machinist/config.yaml
+COPY --chmod=0755 factory/ /srv/machinist/factory/
