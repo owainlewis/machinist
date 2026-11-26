@@ -256,3 +256,40 @@ export function prChip(ticket) {
   const state = prStateLabels[ticket.pr_state] ? ticket.pr_state : "";
   return { number: ticket.pr_number, state, label: prState(ticket), href: prLink(ticket) };
 }
+
+const mergeGateRiskLabels = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
+const mergeGateDecisionLabels = {
+  approve: "Approved",
+  human_review: "Human review",
+};
+
+// mergeGateRisk returns the normalized risk level and display label when the
+// ticket carries a known merge-gate risk ("low", "medium", or "high").
+export function mergeGateRisk(ticket) {
+  const level = typeof ticket?.merge_gate_risk === "string" ? ticket.merge_gate_risk.trim().toLowerCase() : "";
+  if (!mergeGateRiskLabels[level]) return null;
+  return { level, label: mergeGateRiskLabels[level] };
+}
+
+// mergeGateDecision returns the normalized decision value and display label
+// when the ticket carries a known merge-gate decision ("approve" or "human_review").
+export function mergeGateDecision(ticket) {
+  const value = typeof ticket?.merge_gate_decision === "string" ? ticket.merge_gate_decision.trim().toLowerCase() : "";
+  if (!mergeGateDecisionLabels[value]) return null;
+  return { value, label: mergeGateDecisionLabels[value] };
+}
+
+// mergeGate returns the structured merge-gate verdict on a ticket, or null when
+// no merge-gate fields are present.
+export function mergeGate(ticket) {
+  const decision = mergeGateDecision(ticket);
+  const risk = mergeGateRisk(ticket);
+  const reason = typeof ticket?.merge_gate_reason === "string" ? ticket.merge_gate_reason.trim() : "";
+  if (!decision && !risk && !reason) return null;
+  return { decision, risk, reason };
+}

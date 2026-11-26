@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardDoneLimit, boardOf, failureReason, filterJobs, formatDuration, isFinished, linkParts, listPageSize, jobState, newestFirst, noPullRequest, orderSources, paginationOf, prChip, prLink, prState, prSummary, quickCounts, runningJobs, runningTickets, sourceLabel, sourceLink, sourceLinkText, sourcesOf, stateLabels, ticketsPath } from "./jobs.js";
+import { boardDoneLimit, boardOf, failureReason, filterJobs, formatDuration, isFinished, linkParts, listPageSize, jobState, mergeGate, mergeGateDecision, mergeGateRisk, newestFirst, noPullRequest, orderSources, paginationOf, prChip, prLink, prState, prSummary, quickCounts, runningJobs, runningTickets, sourceLabel, sourceLink, sourceLinkText, sourcesOf, stateLabels, ticketsPath } from "./jobs.js";
 
 test("ticket states read as the UI's job states, keeping pr_ready distinct from done", () => {
   assert.equal(jobState({ state: "working" }), "queued");
@@ -201,4 +201,39 @@ test("paginationOf computes page bounds and navigation flags beyond 200 jobs", (
   assert.deepEqual(paginationOf({ total: 230, offset: 200, count: 30, pageSize: 50 }), { page: 5, totalPages: 5, start: 201, end: 230, total: 230, hasPrev: true, hasNext: false });
   assert.deepEqual(paginationOf({ total: 0, offset: 0, count: 0, pageSize: 50 }), { page: 1, totalPages: 1, start: 0, end: 0, total: 0, hasPrev: false, hasNext: false });
   assert.deepEqual(orderSources(["linear", "web", "", "api", "linear"]), ["web", "api", "linear"]);
+});
+
+test("merge gate helpers normalize risk levels, decisions, and absent verdicts", () => {
+  assert.deepEqual(mergeGateRisk({ merge_gate_risk: "low" }), { level: "low", label: "Low" });
+  assert.deepEqual(mergeGateRisk({ merge_gate_risk: "medium" }), { level: "medium", label: "Medium" });
+  assert.deepEqual(mergeGateRisk({ merge_gate_risk: " HIGH " }), { level: "high", label: "High" });
+  assert.equal(mergeGateRisk({ merge_gate_risk: "unknown" }), null);
+  assert.equal(mergeGateRisk({}), null);
+
+  assert.deepEqual(mergeGateDecision({ merge_gate_decision: "approve" }), { value: "approve", label: "Approved" });
+  assert.deepEqual(mergeGateDecision({ merge_gate_decision: "human_review" }), { value: "human_review", label: "Human review" });
+  assert.equal(mergeGateDecision({ merge_gate_decision: "other" }), null);
+  assert.equal(mergeGateDecision({}), null);
+
+  assert.deepEqual(mergeGate({
+    merge_gate_decision: "human_review",
+    merge_gate_risk: "high",
+    merge_gate_reason: "  Touches auth middleware. ",
+  }), {
+    decision: { value: "human_review", label: "Human review" },
+    risk: { level: "high", label: "High" },
+    reason: "Touches auth middleware.",
+  });
+  assert.deepEqual(mergeGate({ merge_gate_risk: "medium" }), {
+    decision: null,
+    risk: { level: "medium", label: "Medium" },
+    reason: "",
+  });
+  assert.deepEqual(mergeGate({ merge_gate_reason: "Held by policy." }), {
+    decision: null,
+    risk: null,
+    reason: "Held by policy.",
+  });
+  assert.equal(mergeGate({}), null);
+  assert.equal(mergeGate({ merge_gate_decision: "", merge_gate_risk: "  ", merge_gate_reason: "  " }), null);
 });

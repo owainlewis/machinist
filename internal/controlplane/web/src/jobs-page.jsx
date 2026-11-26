@@ -8,10 +8,11 @@ import { AutomationsView } from "./automations-view.jsx";
 import { State, relativeTime, useNow } from "./display.jsx";
 import {
   boardColumns, boardDoneLimit, boardOf, filterJobs, formatDuration, jobState, listPageSize,
-  newestFirst, orderSources, paginationOf, quickCounts, quickFilters, runningJobs, sourceLabel,
-  sourcesOf, ticketsPath,
+  mergeGateRisk, newestFirst, orderSources, paginationOf, quickCounts, quickFilters, runningJobs,
+  sourceLabel, sourcesOf, ticketsPath,
 } from "./jobs.js";
 import { PRChip } from "./pr-chip.jsx";
+import { RiskBadge } from "./risk-badge.jsx";
 import { jobHref } from "./routes.js";
 import { Source } from "./source-mark.jsx";
 import { createStatusLoader } from "./status-loader.js";
@@ -33,6 +34,7 @@ function JobRow({ ticket, running }) {
     <td className="job-detail">{ticket.repo}</td>
     <td className="job-detail job-preset">{ticket.agent}</td>
     <td className="job-pr"><PRChip ticket={ticket} /></td>
+    <td className="job-risk"><RiskBadge ticket={ticket} /></td>
     <td><State value={jobState(ticket, running)} /></td>
     <td className="job-updated"><time dateTime={ticket.updated_at}>{relativeTime(ticket.updated_at)}</time></td>
   </tr>;
@@ -42,7 +44,7 @@ function JobList({ jobs, running, pagination, onPrev, onNext }) {
   const showPagination = pagination && (pagination.totalPages > 1 || pagination.hasPrev || pagination.hasNext);
   return <>
     <div className="list-card"><table className="jobs">
-      <thead><tr><th scope="col">Job</th><th scope="col" className="job-detail job-source">Source</th><th scope="col" className="job-detail">Repository</th><th scope="col" className="job-detail job-preset">Preset</th><th scope="col" className="job-pr">PR</th><th scope="col">Status</th><th scope="col" className="job-updated">Updated</th></tr></thead>
+      <thead><tr><th scope="col">Job</th><th scope="col" className="job-detail job-source">Source</th><th scope="col" className="job-detail">Repository</th><th scope="col" className="job-detail job-preset">Preset</th><th scope="col" className="job-pr">PR</th><th scope="col" className="job-risk">Risk</th><th scope="col">Status</th><th scope="col" className="job-updated">Updated</th></tr></thead>
       <tbody>{jobs.map(ticket => <JobRow key={ticket.id} ticket={ticket} running={running.has(ticket.id)} />)}</tbody>
     </table></div>
     {showPagination && <nav className="pagination" aria-label="Jobs pages">
@@ -74,7 +76,7 @@ function NowDoing({ job, now }) {
 }
 
 function JobCard({ ticket, state, showState, progress, now }) {
-  const hasFooter = showState || Boolean(ticket.pr_number);
+  const hasFooter = showState || Boolean(ticket.pr_number) || Boolean(mergeGateRisk(ticket));
   return <li className="board-card" data-state={state}>
     <div className="board-card-top">
       <span className="board-card-repo"><Source source={ticket.source} compact /><span>{ticket.repo}</span></span>
@@ -85,6 +87,7 @@ function JobCard({ ticket, state, showState, progress, now }) {
     {hasFooter && <div className="board-card-foot">
       {showState && <State value={state} />}
       <PRChip ticket={ticket} />
+      <RiskBadge ticket={ticket} />
     </div>}
   </li>;
 }
