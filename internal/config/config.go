@@ -65,9 +65,14 @@ func RedactDatabaseURL(dsn string) string {
 				parsed.User = url.User(parsed.User.Username())
 			}
 		}
-		if q := parsed.Query(); q.Has("password") {
-			q.Set("password", "REDACTED")
-			parsed.RawQuery = q.Encode()
+		if parsed.RawQuery != "" {
+			q, qErr := url.ParseQuery(parsed.RawQuery)
+			if qErr != nil {
+				parsed.RawQuery = "redacted=true"
+			} else if q.Has("password") {
+				q.Set("password", "REDACTED")
+				parsed.RawQuery = q.Encode()
+			}
 		}
 		return parsed.String()
 	}
