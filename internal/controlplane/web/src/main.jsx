@@ -20,6 +20,7 @@ import "./styles.css";
 
 const pollMillis = 2000;
 const emptyStatus = { runners: [], queue: null };
+const defaultAuthStatus = { methods: [], token_signin_enabled: true };
 const navigation = [["dashboard", ChartColumn, "Dashboard"], ["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"], ["settings", Settings2, "Settings"]];
 
 // followRedirect moves an old address, such as #/setup, to where it lives now,
@@ -36,7 +37,8 @@ async function loadStatus() {
 }
 
 function App() {
-  const [session, setSession] = useState({ checked: false, signedIn: false });
+  const [session, setSession] = useState({ checked: false, signedIn: false, me: null });
+  const [authStatus, setAuthStatus] = useState(defaultAuthStatus);
   const [status, setStatus] = useState(emptyStatus);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
@@ -45,7 +47,7 @@ function App() {
   const signedOut = useCallback(() => {
     clearSettingsCache();
     setSetup(null);
-    setSession({ checked: true, signedIn: false });
+    setSession({ checked: true, signedIn: false, me: null });
     setStatus(emptyStatus);
     setLoaded(false);
   }, []);
@@ -64,11 +66,20 @@ function App() {
 
   const checkSession = useCallback(async () => {
     try {
-      await api("/api/v1/repositories");
-      setSession({ checked: true, signedIn: true });
+      const found = await api("/api/v1/auth/status");
+      setAuthStatus({
+        methods: Array.isArray(found.methods) ? found.methods : [],
+        token_signin_enabled: Boolean(found.token_signin_enabled),
+      });
+      if (!found.authenticated) {
+        signedOut();
+        return;
+      }
+      const me = await api("/api/v1/me");
+      setSession({ checked: true, signedIn: true, me });
     } catch (failure) {
       if (failure instanceof SignedOutError) signedOut();
-      else { setSession({ checked: true, signedIn: false }); setError(failure.message); }
+      else { setSession({ checked: true, signedIn: false, me: null }); setError(failure.message); }
     }
   }, [signedOut]);
   useEffect(() => { checkSession(); }, [checkSession]);
@@ -112,7 +123,7 @@ function App() {
   }
 
   if (!session.checked) return null;
-  if (!session.signedIn) return <SignIn onSignedIn={checkSession} />;
+  if (!session.signedIn) return <SignIn authStatus={authStatus} onSignedIn={checkSession} />;
   const active = route.view === "job" || route.view === "new" ? "jobs" : route.view;
   return <div className="app-shell">
     <aside className="app-sidebar">

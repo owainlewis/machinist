@@ -55,10 +55,14 @@ type Server struct {
 	presets       []presetView
 	factory       *factory.Factory
 	// app is the GitHub App, or nil when there is none.
-	app         githubApp
-	appKeyHash  [32]byte
-	csrf        *http.CrossOriginProtection
-	authLimiter *ipRateLimiter
+	app             githubApp
+	appKeyHash      [32]byte
+	csrf            *http.CrossOriginProtection
+	authLimiter     *ipRateLimiter
+	auditLog        *auditLogger
+	githubOAuthBase string
+	githubAPIBase   string
+	oauthHTTPClient *http.Client
 }
 
 type serverState struct {
@@ -126,6 +130,9 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if machinistConfig.GitHub.Handle == "" {
 		return nil, errors.New("github.handle is required")
 	}
+	if err := validateAuthStartup(machinistConfig); err != nil {
+		return nil, err
+	}
 	if err := loaded.Validate(machinistConfig.Server.DefaultPreset, machinistConfig.GitHub.Repositories); err != nil {
 		return nil, err
 	}
@@ -181,22 +188,26 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		return nil, err
 	}
 	server := &Server{
-		linear:        linear,
-		linearChanged: make(chan struct{}, 1),
-		now:           time.Now,
-		config:        machinistConfig,
-		store:         store,
-		engine:        ticketEngine,
-		client:        client,
-		intake:        intake,
-		schedule:      sources.NewSchedule(store, loaded.Automations, log),
-		version:       version,
-		presets:       presetViews(loaded),
-		factory:       loaded,
-		appKeyHash:    appKeyHash,
-		log:           log,
-		csrf:          http.NewCrossOriginProtection(),
-		authLimiter:   newIPRateLimiter(authRateLimitMaxEntries, authRateLimitPerSec, authRateLimitBurst, time.Now),
+		linear:          linear,
+		linearChanged:   make(chan struct{}, 1),
+		now:             time.Now,
+		config:          machinistConfig,
+		store:           store,
+		engine:          ticketEngine,
+		client:          client,
+		intake:          intake,
+		schedule:        sources.NewSchedule(store, loaded.Automations, log),
+		version:         version,
+		presets:         presetViews(loaded),
+		factory:         loaded,
+		appKeyHash:      appKeyHash,
+		log:             log,
+		csrf:            http.NewCrossOriginProtection(),
+		authLimiter:     newIPRateLimiter(authRateLimitMaxEntries, authRateLimitPerSec, authRateLimitBurst, time.Now),
+		auditLog:        newAuditLogger(log),
+		githubOAuthBase: defaultGitHubOAuthBase,
+		githubAPIBase:   defaultGitHubAPIBase,
+		oauthHTTPClient: &http.Client{Timeout: 10 * time.Second},
 	}
 	if app != nil {
 		server.app = app
@@ -210,6 +221,25 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		}
 	}
 	return server, nil
+}
+
+// validateAuthStartup enforces fail-closed public deployment guardrails:
+//   - Non-loopback server.public_url requires auth.github.enabled: true unless
+//     auth.allow_token_only_public: true is explicitly set.
+//   - auth.github.enabled: true requires server.public_url and OAuth env secrets.
+func validateAuthStartup(cfg config.Config) error {
+	if isPublicNonLoopback(cfg.Server.PublicURL) && !cfg.Auth.GitHub.Enabled && !cfg.Auth.AllowTokenOnlyPublic {
+		return fmt.Errorf("refusing to start on non-loopback server.public_url %q without auth.github.enabled: true (set auth.allow_token_only_public: true only if you intentionally want token-only public auth)", cfg.Server.PublicURL)
+	}
+	if cfg.Auth.GitHub.Enabled {
+		if cfg.Server.PublicURL == "" {
+			return errors.New("server.public_url is required when auth.github.enabled is true")
+		}
+		if err := cfg.Auth.CheckCredentials(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // linearPoller checks the Linear section against the factory and the
@@ -407,9 +437,16 @@ func (s *Server) SetPollInterval(interval time.Duration) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
+	mux.HandleFunc("GET /api/v1/auth/status", s.authStatus)
+	mux.HandleFunc("GET /auth/github/start", s.githubOAuthStart)
+	mux.HandleFunc("GET /auth/github/callback", s.githubOAuthCallback)
+	mux.HandleFunc("POST /api/v1/invites/prepare", s.prepareInvite)
 	mux.HandleFunc("/mcp", s.handleMCP)
 	mux.HandleFunc("POST /api/v1/session", s.signIn)
 	mux.HandleFunc("DELETE /api/v1/session", s.requireScope(tickets.ScopeRead, s.signOut))
+	mux.HandleFunc("GET /api/v1/me", s.requireScope(tickets.ScopeRead, s.getMe))
+	mux.HandleFunc("GET /api/v1/me/sessions", s.requireScope(tickets.ScopeRead, s.listMySessions))
+	mux.HandleFunc("DELETE /api/v1/me/sessions/{id}", s.requireScope(tickets.ScopeRead, s.revokeMySession))
 	mux.HandleFunc("POST /api/v1/tickets", s.requireScope(tickets.ScopeRun, s.createTicket))
 	mux.HandleFunc("GET /api/v1/tickets", s.requireScope(tickets.ScopeRead, s.listTickets))
 	mux.HandleFunc("GET /api/v1/tickets/{id}", s.requireScope(tickets.ScopeRead, s.getTicket))

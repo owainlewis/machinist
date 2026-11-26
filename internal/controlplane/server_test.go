@@ -357,6 +357,7 @@ func TestControlPlanePostsWebhookNotificationOnFailure(t *testing.T) {
 
 	loaded := testConfig()
 	loaded.Server.PublicURL = "https://machinist.example.com"
+	loaded.Auth.AllowTokenOnlyPublic = true
 	loaded.Notify.Webhook = webhook.URL
 	server, err := New(loaded, store, testFactory(), "v1.2.3", io.Discard)
 	if err != nil {
