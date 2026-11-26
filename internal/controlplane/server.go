@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -213,6 +214,13 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if app != nil {
 		server.app = app
 	}
+	if log != nil {
+		if config.IsPostgresURL(machinistConfig.Server.Database) {
+			fmt.Fprintf(log, "machinist: storage backend: postgres (%s)\n", config.RedactDatabaseURL(machinistConfig.Server.Database))
+		} else if machinistConfig.Server.Database != "" {
+			fmt.Fprintf(log, "machinist: storage backend: sqlite (%s)\n", machinistConfig.Server.Database)
+		}
+	}
 	if warning := factory.WarningLine(loaded.Updates); warning != "" {
 		fmt.Fprintf(log, "machinist: warning: %s\n", warning)
 	}
@@ -229,6 +237,9 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 //     auth.allow_token_only_public: true is explicitly set.
 //   - auth.github.enabled: true requires server.public_url and OAuth env secrets.
 func validateAuthStartup(cfg config.Config) error {
+	if svc := strings.TrimSpace(os.Getenv("K_SERVICE")); svc != "" && !config.IsPostgresURL(cfg.Server.Database) {
+		return fmt.Errorf("refusing to start on Cloud Run (K_SERVICE=%q) with SQLite database; set %s to a PostgreSQL connection URL", svc, config.DatabaseURLEnv)
+	}
 	if isPublicNonLoopback(cfg.Server.PublicURL) && !cfg.Auth.GitHub.Enabled && !cfg.Auth.AllowTokenOnlyPublic {
 		return fmt.Errorf("refusing to start on non-loopback server.public_url %q without auth.github.enabled: true (set auth.allow_token_only_public: true only if you intentionally want token-only public auth)", cfg.Server.PublicURL)
 	}

@@ -75,11 +75,7 @@ func TestHealthzOmitsVersionOnPublicNonLoopback(t *testing.T) {
 
 func TestCanonicalHostAndLoopbackProxyHost(t *testing.T) {
 	fakegh.Install(t, testConfig().GitHub.Handle)
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openTestStore(t)
 
 	// 1. Loopback listener behind local Caddy/nginx proxy: allows BOTH loopback and public_url host.
 	cfg := testConfig()
@@ -238,11 +234,7 @@ func TestRunnerRoutesIgnoreSessionCookies(t *testing.T) {
 
 func TestRoleAllRejectedOnPublicDeploymentsWithWarning(t *testing.T) {
 	fakegh.Install(t, testConfig().GitHub.Handle)
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openTestStore(t)
 
 	legacyToken, err := store.CreateToken(t.Context(), "legacy", tickets.RoleAll)
 	if err != nil {
@@ -430,5 +422,23 @@ func TestRunnerPollStillRequiresTypedTokenWithBearer(t *testing.T) {
 	resp, _ := f.call(t, http.MethodPost, "/api/v1/runners/poll", runnerTok, protocol.PollRequest{})
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("runner poll = %d, want 204", resp.StatusCode)
+	}
+}
+
+func TestCloudRunRefusesSQLiteDatabase(t *testing.T) {
+	t.Setenv("K_SERVICE", "machinist-prod")
+	cfg := testConfig()
+	cfg.Server.Database = filepath.Join(t.TempDir(), "tickets.db")
+	if _, err := New(cfg, nil, testFactory(), "v1.0.0", io.Discard); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("expected Cloud Run SQLite guardrail error, got: %v", err)
+	}
+	// With a PostgreSQL URL, the SQLite guardrail passes.
+	cfg.Server.Database = "postgres://machinist:secret@db.example.com:5432/machinist?sslmode=require"
+	var logs bytes.Buffer
+	if _, err := New(cfg, nil, testFactory(), "v1.0.0", &logs); err != nil {
+		t.Fatalf("unexpected error with postgres URL: %v", err)
+	}
+	if strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), "storage backend: postgres") {
+		t.Fatalf("unexpected startup log: %q", logs.String())
 	}
 }

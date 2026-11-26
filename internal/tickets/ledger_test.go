@@ -82,7 +82,7 @@ func TestLedgerAveragesMergedHumanTickets(t *testing.T) {
 
 // markMerged records a merged PR the way the GitHub follow-ups used to.
 func markMerged(store *Store, ticketID string, humanCommits int, mergedAt time.Time) error {
-	_, err := store.db.Exec(`UPDATE tickets SET state=?,human_commits=?,merged_at=? WHERE id=?`, StateDone, humanCommits, stamp(mergedAt), ticketID)
+	_, err := store.q().ExecContext(context.Background(), `UPDATE tickets SET state=?,human_commits=?,merged_at=? WHERE id=?`, StateDone, humanCommits, stamp(mergedAt), ticketID)
 	return err
 }
 
@@ -124,7 +124,7 @@ func TestTicketElapsedCountsOnlyTimeRunsSpentRunning(t *testing.T) {
 	queue()
 	complete(508*time.Second, 1004*time.Second)
 	// The pull request changes hours later, which updates the ticket.
-	if _, err := store.db.Exec(`UPDATE tickets SET updated_at=? WHERE id=?`, stamp(created.Add(3*time.Hour)), ticket.ID); err != nil {
+	if _, err := store.q().ExecContext(t.Context(), `UPDATE tickets SET updated_at=? WHERE id=?`, stamp(created.Add(3*time.Hour)), ticket.ID); err != nil {
 		t.Fatal(err)
 	}
 	if figures, err := store.TicketFigures(ctx, ticket.ID); err != nil || figures.Elapsed != 496*time.Second {

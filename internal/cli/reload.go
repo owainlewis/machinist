@@ -60,9 +60,13 @@ func controlPlaneURL(listen string, tls bool) string {
 // database path so local commands such as machinist reload can still reach it
 // even after server.listen or server.database is edited in config.yaml.
 func writeControlPlaneState(machinistConfig config.Config, addr net.Addr) func() {
+	dbPath := machinistConfig.Server.Database
+	if config.IsPostgresURL(dbPath) {
+		dbPath = ""
+	}
 	state := controlPlaneState{
 		URL:      controlPlaneURL(addr.String(), machinistConfig.Server.TLSCert != ""),
-		Database: machinistConfig.Server.Database,
+		Database: dbPath,
 	}
 	encoded, err := json.Marshal(state)
 	if err != nil {
@@ -74,8 +78,8 @@ func writeControlPlaneState(machinistConfig config.Config, addr net.Addr) func()
 	if machinistConfig.Path() != "" {
 		candidates = append(candidates, filepath.Join(filepath.Dir(machinistConfig.Path()), config.StateDir, controlPlaneStateFile))
 	}
-	if machinistConfig.Server.Database != "" {
-		dbState := filepath.Join(filepath.Dir(machinistConfig.Server.Database), controlPlaneStateFile)
+	if dbPath != "" {
+		dbState := filepath.Join(filepath.Dir(dbPath), controlPlaneStateFile)
 		if len(candidates) == 0 || dbState != candidates[0] {
 			candidates = append(candidates, dbState)
 		}
@@ -122,7 +126,7 @@ func findControlPlaneState(configPath string) (controlPlaneState, bool) {
 			return state, true
 		}
 	}
-	if cfg, err := config.LoadConfig(configPath); err == nil && cfg.Server.Database != "" {
+	if cfg, err := config.LoadConfig(configPath); err == nil && cfg.Server.Database != "" && !config.IsPostgresURL(cfg.Server.Database) {
 		if state, ok := readControlPlaneStateFile(filepath.Join(filepath.Dir(cfg.Server.Database), controlPlaneStateFile)); ok {
 			return state, true
 		}

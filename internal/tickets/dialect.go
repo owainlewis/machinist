@@ -3,8 +3,11 @@ package tickets
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strconv"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type dbDialect int
@@ -172,8 +175,10 @@ func isUniqueViolation(err error) bool {
 		strings.Contains(msg, "constraint failed: UNIQUE")
 }
 
-// isPostgresUniqueViolation is extended with *pgconn.PgError (SQLSTATE 23505)
-// in Slice 2.2 when pgx/v5 is added.
 func isPostgresUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return true
+	}
 	return strings.Contains(err.Error(), "SQLSTATE 23505")
 }

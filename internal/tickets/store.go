@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/protocol"
 	_ "modernc.org/sqlite"
 )
@@ -162,7 +163,14 @@ CREATE TABLE IF NOT EXISTS oauth_transactions (
   return_to TEXT NOT NULL DEFAULT '/',
   invite_id TEXT REFERENCES invites(id),
   expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL);`
+  created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS leader_leases (
+  name TEXT PRIMARY KEY,
+  holder_id TEXT NOT NULL,
+  lease_expires_at TEXT NOT NULL);`
 
 type Store struct {
 	db      *sql.DB
@@ -361,6 +369,13 @@ type querier interface {
 }
 
 func Open(path string) (*Store, error) {
+	if config.IsPostgresURL(path) {
+		return openPostgres(path)
+	}
+	return openSQLite(path)
+}
+
+func openSQLite(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/fakegh"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -197,5 +199,37 @@ github:
 	stderr.Reset()
 	if code := Execute(t.Context(), []string{"reload", "--url=http://" + boundAddr, "--token=" + opToken}, strings.NewReader(""), &stdout, &stderr, "test"); code == 0 || !strings.Contains(stderr.String(), "could not reach control plane") {
 		t.Fatalf("stopped reload: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestWriteControlPlaneStateOmitsPostgresURL(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("server:\n  database: postgres://user:supersecret@db.example.com:5432/machinist\ngithub:\n  handle: bot\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	cleanup := writeControlPlaneState(loaded, ln.Addr())
+	defer cleanup()
+
+	statePath := filepath.Join(dir, config.StateDir, controlPlaneStateFile)
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	if strings.Contains(string(raw), "supersecret") || strings.Contains(string(raw), "postgres://") {
+		t.Fatalf("control-plane.json leaked postgres DSN: %s", string(raw))
+	}
+	if state, ok := findControlPlaneState(cfgPath); !ok || state.Database != "" {
+		t.Fatalf("findControlPlaneState = (%+v, %v), want empty database", state, ok)
 	}
 }

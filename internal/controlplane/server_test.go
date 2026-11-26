@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,11 +36,7 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	github := fakegh.Install(t, testConfig().GitHub.Handle)
 	t.Helper()
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openTestStore(t)
 	server, err := New(testConfig(), store, testFactory(), "v1.2.3", io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -175,11 +170,7 @@ func TestHeartbeatKeepsABusyRunnerInTheList(t *testing.T) {
 
 func TestServeStopsOnCancellation(t *testing.T) {
 	fakegh.Install(t, testConfig().GitHub.Handle)
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openTestStore(t)
 	server, err := New(testConfig(), store, testFactory(), "v", io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -291,11 +282,7 @@ func TestHumanReviewsLeaveOutBotsAndStartAtTheFirstPerson(t *testing.T) {
 }
 
 func TestNewLogsFactoryWarningWhenOutdated(t *testing.T) {
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openTestStore(t)
 
 	loaded := testFactory()
 	loaded.Updates = []factory.FileUpdate{
@@ -349,11 +336,7 @@ func TestControlPlanePostsWebhookNotificationOnFailure(t *testing.T) {
 	}))
 	defer webhook.Close()
 
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openTestStore(t)
 
 	loaded := testConfig()
 	loaded.Server.PublicURL = "https://machinist.example.com"

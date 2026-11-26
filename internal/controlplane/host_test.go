@@ -4,22 +4,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/owainlewis/machinist/internal/fakegh"
-	"github.com/owainlewis/machinist/internal/tickets"
 )
 
 func handlerListeningOn(t *testing.T, listen string) http.Handler {
 	t.Helper()
 	fakegh.Install(t, testConfig().GitHub.Handle)
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openTestStore(t)
 	loaded := testConfig()
 	loaded.Server.Listen = listen
 	server, err := New(loaded, store, testFactory(), "v1.2.3", io.Discard)

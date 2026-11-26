@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -96,11 +95,7 @@ type oauthFixture struct {
 func newOAuthFixture(t *testing.T, bootstrapAdmin string) *oauthFixture {
 	t.Helper()
 	fakegh.Install(t, testConfig().GitHub.Handle)
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openTestStore(t)
 
 	gh := newFakeGitHubOAuth(t)
 	logs := &bytes.Buffer{}
@@ -175,11 +170,7 @@ func (of *oauthFixture) doOAuthLogin(t *testing.T, returnTo string, preCookie *h
 
 func TestFailClosedPublicStartupValidation(t *testing.T) {
 	fakegh.Install(t, testConfig().GitHub.Handle)
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openTestStore(t)
 
 	// 1. Non-loopback public_url without auth.github.enabled fails closed.
 	cfg := testConfig()
