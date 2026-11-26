@@ -13,7 +13,7 @@ import { createStatusLoader } from "./status-loader.js";
 
 const pollMillis = 2000;
 
-function AutomationRow({ automation, running, now, onRun }) {
+function AutomationRow({ automation, running, now, canRun, onRun }) {
   const last = automation.last_ticket;
   const lastState = last ? jobState(last, running.has(last.id)) : "";
   const dueAt = formatDueAt(automation.next_due, automation.timezone);
@@ -41,10 +41,10 @@ function AutomationRow({ automation, running, now, onRun }) {
         : <span className="automation-never">Never</span>}
     </td>
     <td className="automation-action">
-      <Button type="button" variant="outline" size="sm" onClick={() => onRun(automation)} aria-label={`Run ${automation.name}`}>
+      {canRun && <Button type="button" variant="outline" size="sm" onClick={() => onRun(automation)} aria-label={`Run ${automation.name}`}>
         <Play className="size-3.5" aria-hidden="true" />
         Run
-      </Button>
+      </Button>}
     </td>
   </tr>;
 }
@@ -184,7 +184,8 @@ function RunAutomationDialog({ automation, running, onClose, onSignedOut }) {
   </div>;
 }
 
-export function AutomationsView({ running = new Set(), onSignedOut }) {
+export function AutomationsView({ running = new Set(), role = "admin", onSignedOut }) {
+  const canRun = role !== "viewer";
   const [automations, setAutomations] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
@@ -249,6 +250,7 @@ export function AutomationsView({ running = new Set(), onSignedOut }) {
             automation={automation}
             running={running}
             now={now}
+            canRun={canRun}
             onRun={setSelected}
           />)}
         </tbody>

@@ -222,7 +222,7 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   await eventually(() => assert.equal(heading(), "Overview"));
   assert.equal(marked(), "Overview");
   assert.equal(document.querySelector('nav[aria-label="Primary"] a[aria-current="page"]').textContent, "Settings");
-  assert.deepEqual([...document.querySelectorAll(".settings-nav a")].map(link => link.getAttribute("href")), ["#/settings/overview", "#/settings/projects", "#/settings/github", "#/settings/linear", "#/settings/tokens", "#/settings/presets"]);
+  assert.deepEqual([...document.querySelectorAll(".settings-nav a")].map(link => link.getAttribute("href")), ["#/settings/overview", "#/settings/projects", "#/settings/github", "#/settings/linear", "#/settings/tokens", "#/settings/team", "#/settings/presets", "#/settings/account"]);
   await eventually(() => assert.match(document.querySelector(".page-sub").textContent, /1 of 3 required steps/));
   assert.ok(document.querySelector('[aria-label="Settings need attention"]'));
   assert.ok(document.querySelector('a[aria-label="Open Projects settings"][href="#/settings/projects"]'));

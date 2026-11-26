@@ -252,7 +252,8 @@ function MergeGatePanel({ ticket }) {
   </section>;
 }
 
-export function JobView({ detail, onChange }) {
+export function JobView({ detail, role = "admin", onChange }) {
+  const canRun = role !== "viewer";
   const { ticket, entries = [], runs = [], steps: presetSteps = [], waiting_for: waitingFor = [] } = detail;
   const state = jobState(ticket, runs.some(run => run.status === "running"));
   const pr = prLink(ticket);
@@ -267,7 +268,7 @@ export function JobView({ detail, onChange }) {
       <h1>{ticket.title || ticket.id}</h1>
       <div className="job-actions">
         <State value={state} />
-        {isFinished(state) ? <RunAgain ticketID={ticket.id} onDone={onChange} /> : <CancelJob ticketID={ticket.id} onDone={onChange} />}
+        {canRun && (isFinished(state) ? <RunAgain ticketID={ticket.id} onDone={onChange} /> : <CancelJob ticketID={ticket.id} onDone={onChange} />)}
       </div>
     </header>
     <dl className="job-facts">
@@ -307,7 +308,7 @@ export function pollJob(detail) {
 }
 
 // The app keys this by job, so a reply for a job someone has left never shows under another.
-export function JobPage({ jobID, onSignedOut }) {
+export function JobPage({ jobID, role = "admin", onSignedOut }) {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
   const loop = useRef(null);
@@ -361,5 +362,5 @@ export function JobPage({ jobID, onSignedOut }) {
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
     {error ? <p className="form-error" role="alert">{error}</p> : <p className="page-note" role="status">Loading job</p>}
   </div>;
-  return <>{error && <p className="form-error page-banner" role="alert">{error}</p>}<JobView detail={detail} onChange={refresh} /></>;
+  return <>{error && <p className="form-error page-banner" role="alert">{error}</p>}<JobView detail={detail} role={role} onChange={refresh} /></>;
 }

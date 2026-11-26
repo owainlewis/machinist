@@ -135,7 +135,7 @@ function JobFilters({ counts, sources, source, quick, onSource, onQuick }) {
   </div>;
 }
 
-export function JobsPage({ tickets, runners = [], loaded, error, onSignedOut, pageSize = listPageSize }) {
+export function JobsPage({ tickets, runners = [], loaded, error, role = "admin", onSignedOut, pageSize = listPageSize }) {
   const controlled = tickets !== undefined;
   const [view, setView] = useState(savedView);
   const [source, setSource] = useState("");
@@ -264,6 +264,7 @@ export function JobsPage({ tickets, runners = [], loaded, error, onSignedOut, pa
     hasAnyJobs = Boolean(source || quick) || fetched.total > 0 || fetched.tickets.length > 0 || totalFromCounts > 0 || sources.length > 0;
   }
 
+  const canRun = role !== "viewer";
   const shownCount = view === "board" ? boardTickets.length : listJobs.length;
 
   return <div className="page jobs-page">
@@ -275,15 +276,15 @@ export function JobsPage({ tickets, runners = [], loaded, error, onSignedOut, pa
           <button type="button" aria-pressed={view === "list"} onClick={() => choose("list")}><List className="size-3.5" aria-hidden="true" />List</button>
           <button type="button" aria-pressed={view === "automations"} onClick={() => choose("automations")}><CalendarClock className="size-3.5" aria-hidden="true" />Automations</button>
         </div>
-        <Button asChild><a href="#/new"><Plus className="size-4" aria-hidden="true" />New job</a></Button>
+        {canRun && <Button asChild><a href="#/new"><Plus className="size-4" aria-hidden="true" />New job</a></Button>}
       </div>
     </header>
     {view === "automations"
-      ? <AutomationsView running={running} onSignedOut={onSignedOut} />
+      ? <AutomationsView running={running} role={role} onSignedOut={onSignedOut} />
       : <>
         {pageError && <p className="form-error" role="alert">{pageError}</p>}
         {!isLoaded && !pageError && <p className="page-note" role="status">Loading jobs</p>}
-        {isLoaded && !hasAnyJobs && !pageError && <p className="empty">No jobs yet. <a href="#/new">Start one</a>, or send <code>POST /machinist/run</code>.</p>}
+        {isLoaded && !hasAnyJobs && !pageError && <p className="empty">No jobs yet.{canRun && <> <a href="#/new">Start one</a>, or send <code>POST /machinist/run</code>.</>}</p>}
         {hasAnyJobs && <JobFilters counts={counts} sources={sources} source={source} quick={quick} onSource={changeSource} onQuick={changeQuick} />}
         {hasAnyJobs && isLoaded && viewReady && shownCount === 0 && <p className="empty">No jobs match these filters. <button type="button" className="link-button" onClick={() => { changeSource(""); changeQuick(""); }}>Show all jobs</button></p>}
         {viewReady && shownCount > 0 && (view === "board"

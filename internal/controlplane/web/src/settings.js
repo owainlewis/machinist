@@ -7,8 +7,23 @@ export const settingsPages = [
   ["github", "GitHub"],
   ["linear", "Linear"],
   ["tokens", "Tokens"],
+  ["team", "Team"],
   ["presets", "Presets and agents"],
+  ["account", "My Account"],
 ];
+
+const adminOnlySettings = new Set(["overview", "projects", "github", "linear", "tokens", "team"]);
+
+// visibleSettingsPages filters Settings tabs by RBAC role.
+export function visibleSettingsPages(role = "admin") {
+  if (role === "admin") return settingsPages;
+  return settingsPages.filter(([name]) => !adminOnlySettings.has(name));
+}
+
+// defaultSettingsPage chooses the default Settings tab for a role.
+export function defaultSettingsPage(role = "admin") {
+  return role === "admin" ? "overview" : "account";
+}
 
 // checkLink is the page that holds more about a setup check, and what its
 // link is called. Most are Settings pages. Runners have a page of their own.
