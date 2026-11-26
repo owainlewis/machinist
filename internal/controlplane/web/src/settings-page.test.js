@@ -55,7 +55,9 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   ];
   const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
   globalThis.fetch = async (url, options = {}) => {
+    if (url === "/api/v1/auth/status") return reply(200, { authenticated: signedIn, methods: [], token_signin_enabled: true });
     if (!signedIn) return reply(401, { error: "a token is required" });
+    if (url === "/api/v1/me") return reply(200, { auth_method: "token", role: "admin", version: "v1.0.0", token_name: "alice" });
     if (url === "/api/v1/repositories") return reply(200, { repositories: [], name: "alice" });
     if (url === "/api/v1/setup") return reply(200, setup());
     if (url === "/api/v1/projects" && options.method === "POST") {
@@ -724,6 +726,8 @@ test("Settings: mutations on cached Projects and Tokens tabs are not overwritten
 
   globalThis.fetch = async (url, options = {}) => {
     const method = options.method || "GET";
+    if (url === "/api/v1/auth/status") return reply(200, { authenticated: true, methods: [], token_signin_enabled: true });
+    if (url === "/api/v1/me") return reply(200, { auth_method: "token", role: "admin", version: "v1.0.0", token_name: "alice" });
     if (url === "/api/v1/repositories") return reply(200, { repositories: [], name: "alice" });
     if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
     if (url === "/api/v1/settings/github") return reply(200, {

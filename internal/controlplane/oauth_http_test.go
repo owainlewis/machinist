@@ -118,6 +118,7 @@ func newOAuthFixture(t *testing.T, bootstrapAdmin string) *oauthFixture {
 	srv.githubOAuthBase = gh.server.URL
 	srv.githubAPIBase = gh.server.URL
 	srv.oauthHTTPClient = gh.server.Client()
+	srv.authLimiter = newIPRateLimiter(1000, 1000, 1000, nil)
 
 	return &oauthFixture{server: srv, store: store, h: srv.Handler(), gh: gh, logs: logs}
 }
@@ -399,8 +400,8 @@ func TestOAuthCallbackRejectsReplayAndStateMismatch(t *testing.T) {
 	badReq.AddCookie(oauthC)
 	badRec := httptest.NewRecorder()
 	of.h.ServeHTTP(badRec, badReq)
-	if badRec.Code != http.StatusFound || badRec.Header.Get("Location") != "/#/sign-in?error=oauth_failed" {
-		t.Fatalf("wrong state = %d loc=%q", badRec.Code, badRec.Header.Get("Location"))
+	if badRec.Code != http.StatusFound || badRec.Header().Get("Location") != "/#/sign-in?error=oauth_failed" {
+		t.Fatalf("wrong state = %d loc=%q", badRec.Code, badRec.Header().Get("Location"))
 	}
 
 	// Replaying with the original state must also fail because the transaction was consumed.
@@ -409,7 +410,7 @@ func TestOAuthCallbackRejectsReplayAndStateMismatch(t *testing.T) {
 	replayReq.AddCookie(oauthC)
 	replayRec := httptest.NewRecorder()
 	of.h.ServeHTTP(replayRec, replayReq)
-	if replayRec.Code != http.StatusFound || replayRec.Header.Get("Location") != "/#/sign-in?error=oauth_failed" {
-		t.Fatalf("replay = %d loc=%q", replayRec.Code, replayRec.Header.Get("Location"))
+	if replayRec.Code != http.StatusFound || replayRec.Header().Get("Location") != "/#/sign-in?error=oauth_failed" {
+		t.Fatalf("replay = %d loc=%q", replayRec.Code, replayRec.Header().Get("Location"))
 	}
 }

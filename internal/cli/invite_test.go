@@ -19,7 +19,7 @@ func TestInviteCLICreateListRevoke(t *testing.T) {
 	runCLI := func(args ...string) (string, string, int) {
 		var stdout, stderr bytes.Buffer
 		full := append([]string{"--config", cfgPath}, args...)
-		code := Run(full, strings.NewReader(""), &stdout, &stderr, "v1")
+		code := Execute(t.Context(), full, strings.NewReader(""), &stdout, &stderr, "v1")
 		return stdout.String(), stderr.String(), code
 	}
 

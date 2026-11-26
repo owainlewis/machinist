@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { act } from "react";
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 
@@ -25,8 +26,6 @@ async function mountSignIn(context, { url, authStatus, fetchImpl }) {
     }
   });
   globalThis.IS_REACT_ACT_ENVIRONMENT = false;
-  const React = await server.ssrLoadModule("react");
-  const { createRoot } = await server.ssrLoadModule("react-dom/client");
   const { SignIn } = await server.ssrLoadModule("/src/sign-in.jsx");
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   root = createRoot(document.getElementById("root"));

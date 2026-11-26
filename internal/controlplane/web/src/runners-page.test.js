@@ -19,6 +19,8 @@ test("Runners: removing an offline runner asks first, then drops it from the fle
   const removed = [];
   const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
   globalThis.fetch = async (url, options = {}) => {
+    if (url === "/api/v1/auth/status") return reply(200, { authenticated: true, methods: [], token_signin_enabled: true });
+    if (url === "/api/v1/me") return reply(200, { auth_method: "token", role: "admin", version: "v1.0.0", token_name: "alice" });
     if (url === "/api/v1/repositories") return reply(200, { repositories: [], name: "alice" });
     if (url === "/api/v1/setup") return reply(200, { ready: true, checks: [], projects: [] });
     if (url === "/api/v1/tickets") return reply(200, { tickets: [] });

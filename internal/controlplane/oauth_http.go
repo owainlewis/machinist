@@ -215,7 +215,7 @@ func (s *Server) prepareInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	inv, err := s.store.ValidateInviteSecret(r.Context(), req.Token)
 	if errors.Is(err, tickets.ErrNotFound) {
-		writeError(w, http.StatusNotFound, errors.New("This invite link is invalid or has expired."))
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "This invite link is invalid or has expired."})
 		return
 	}
 	if err != nil {
