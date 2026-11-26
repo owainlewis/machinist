@@ -341,8 +341,11 @@ func TestRateLimiterAndClientIPExtraction(t *testing.T) {
 	// Bounded LRU eviction & burst enforcement.
 	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 	limiter := newIPRateLimiter(2, authRateLimitPerSec, 2, func() time.Time { return now })
-	if !limiter.Allow("1.1.1.1") || !limiter.Allow("1.1.1.1") {
-		t.Fatal("first 2 requests within burst should pass")
+	if !limiter.Allow("1.1.1.1") {
+		t.Fatal("1st request within burst should pass")
+	}
+	if !limiter.Allow("1.1.1.1") {
+		t.Fatal("2nd request within burst should pass")
 	}
 	if limiter.Allow("1.1.1.1") {
 		t.Fatal("3rd request exceeding burst should be rejected")
