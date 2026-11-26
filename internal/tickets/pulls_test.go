@@ -448,3 +448,252 @@ func TestStewardRequeueIgnoresStaleGeneration(t *testing.T) {
 		t.Fatalf("ticket = %+v, err = %v", got, err)
 	}
 }
+
+func TestTicketsWithOpenPRsIncludesFailedAndCancelledOpenPRs(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	now := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
+	nextTicket := func(key string) Ticket {
+		now = now.Add(time.Second)
+		return createTicket(t, store, key)
+	}
+
+	// pr_ready with open PR: included.
+	prReady := nextTicket("k-pr-ready")
+	if _, _, err := store.Apply(ctx, prReady.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 10}); err != nil {
+		t.Fatal(err)
+	}
+
+	// failed after shipping check failed (pr_state = 'open'): included.
+	failedOpen := nextTicket("k-failed-open")
+	if _, _, err := store.Apply(ctx, failedOpen.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 11, Shipping: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	failedListed, err := store.Ticket(ctx, failedOpen.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SetShipping(ctx, failedListed, Shipped{Failed: true, Message: "check failed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// failed with PR number and unset pr_state: included.
+	failedUnset := nextTicket("k-failed-unset")
+	if _, _, err := store.Apply(ctx, failedUnset.ID, StateWorking, Transition{State: StateFailed, PRNumber: 12, Message: "run failed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// cancelled with open PR: included.
+	cancelledOpen := nextTicket("k-cancelled-open")
+	if _, _, err := store.Apply(ctx, cancelledOpen.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 13}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Cancel(ctx, cancelledOpen.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	// failed without PR: excluded.
+	failedNoPR := nextTicket("k-failed-no-pr")
+	if _, _, err := store.Apply(ctx, failedNoPR.ID, StateWorking, Transition{State: StateFailed, Message: "no pr"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// cancelled without PR: excluded.
+	cancelledNoPR := nextTicket("k-cancelled-no-pr")
+	if _, err := store.Cancel(ctx, cancelledNoPR.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	// working with existing PR (rerun): excluded.
+	workingWithPR := nextTicket("k-working-pr")
+	if _, _, err := store.Apply(ctx, workingWithPR.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 14}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Rerun(ctx, workingWithPR.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	// done with merged PR: excluded.
+	doneMerged := nextTicket("k-done-merged")
+	mergedAt := now
+	if _, _, err := store.Apply(ctx, doneMerged.ID, StateWorking, Transition{State: StateDone, PRNumber: 15, MergedAt: &mergedAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	open, err := store.TicketsWithOpenPRs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotIDs := make([]string, len(open))
+	for i, ticket := range open {
+		gotIDs[i] = ticket.ID
+	}
+	wantIDs := []string{prReady.ID, failedOpen.ID, failedUnset.ID, cancelledOpen.ID}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("TicketsWithOpenPRs() = %v, want %v", gotIDs, wantIDs)
+	}
+	for i := range wantIDs {
+		if gotIDs[i] != wantIDs[i] {
+			t.Fatalf("TicketsWithOpenPRs()[%d] = %s, want %s (all: %v)", i, gotIDs[i], wantIDs[i], gotIDs)
+		}
+	}
+}
+
+func TestSetPRStateReconcilesFailedAndCancelledJobs(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("failed merged transitions to done with reviews and leaves open list", func(t *testing.T) {
+		store := openStore(t)
+		now := time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
+		store.SetClock(func() time.Time { return now })
+
+		ticket := createTicket(t, store, "k-failed-merged")
+		if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 710, Shipping: `{}`}); err != nil {
+			t.Fatal(err)
+		}
+		ready, err := store.Ticket(ctx, ticket.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.SetShipping(ctx, ready, Shipped{Failed: true, Message: "CI failed"}); err != nil {
+			t.Fatal(err)
+		}
+
+		open, err := store.TicketsWithOpenPRs(ctx)
+		if err != nil || len(open) != 1 || open[0].ID != ticket.ID || open[0].State != StateFailed {
+			t.Fatalf("open = %+v, err = %v", open, err)
+		}
+
+		opened := now.Add(-2 * time.Hour)
+		reviewed := now.Add(-time.Hour)
+		merged := now.Add(30 * time.Minute)
+		updated, same, err := store.SetPRState(ctx, open[0], PRUpdate{
+			Number:   710,
+			State:    PRMerged,
+			At:       merged,
+			OpenedAt: opened,
+			Reviews:  &Reviews{Count: 2, First: &reviewed},
+		})
+		if err != nil || !same {
+			t.Fatalf("SetPRState: same = %v, err = %v", same, err)
+		}
+		if updated.State != StateDone || updated.PRState != PRMerged || updated.PRStateAt == nil || !updated.PRStateAt.Equal(merged) || updated.MergedAt == nil || !updated.MergedAt.Equal(merged) || updated.Shipping != "" {
+			t.Fatalf("updated = %+v", updated)
+		}
+		stats, err := store.Stats(ctx, 7, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.Cycle.Merged != 1 || stats.Cycle.Reviewed != 1 || stats.Touches.Reviews != 2 {
+			t.Fatalf("stats: cycle = %+v, touches = %+v", stats.Cycle, stats.Touches)
+		}
+		remaining, err := store.TicketsWithOpenPRs(ctx)
+		if err != nil || len(remaining) != 0 {
+			t.Fatalf("remaining = %+v, err = %v", remaining, err)
+		}
+	})
+
+	t.Run("failed closed stays failed and leaves open list", func(t *testing.T) {
+		store := openStore(t)
+		now := time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
+		store.SetClock(func() time.Time { return now })
+
+		ticket := createTicket(t, store, "k-failed-closed")
+		if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 65, Shipping: `{}`}); err != nil {
+			t.Fatal(err)
+		}
+		ready, err := store.Ticket(ctx, ticket.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.SetShipping(ctx, ready, Shipped{Failed: true, Message: "CI failed"}); err != nil {
+			t.Fatal(err)
+		}
+
+		open, err := store.TicketsWithOpenPRs(ctx)
+		if err != nil || len(open) != 1 {
+			t.Fatalf("open = %+v, err = %v", open, err)
+		}
+
+		closed := now.Add(15 * time.Minute)
+		updated, same, err := store.SetPRState(ctx, open[0], PRUpdate{Number: 65, State: PRClosed, At: closed})
+		if err != nil || !same {
+			t.Fatalf("SetPRState: same = %v, err = %v", same, err)
+		}
+		if updated.State != StateFailed || updated.PRState != PRClosed || updated.PRStateAt == nil || !updated.PRStateAt.Equal(closed) || updated.MergedAt != nil {
+			t.Fatalf("updated = %+v", updated)
+		}
+		remaining, err := store.TicketsWithOpenPRs(ctx)
+		if err != nil || len(remaining) != 0 {
+			t.Fatalf("remaining = %+v, err = %v", remaining, err)
+		}
+		// A repeat call against the already-closed PR is ignored.
+		if _, same, err := store.SetPRState(ctx, open[0], PRUpdate{Number: 65, State: PRClosed, At: closed}); err != nil || same {
+			t.Fatalf("repeat SetPRState: same = %v, err = %v", same, err)
+		}
+	})
+
+	for name, prState := range map[string]string{
+		"cancelled merged": PRMerged,
+		"cancelled closed": PRClosed,
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := openStore(t)
+			now := time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
+			store.SetClock(func() time.Time { return now })
+
+			ticket := createTicket(t, store, "k-"+name)
+			if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 77}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Cancel(ctx, ticket.ID, "alice"); err != nil {
+				t.Fatal(err)
+			}
+
+			open, err := store.TicketsWithOpenPRs(ctx)
+			if err != nil || len(open) != 1 || open[0].State != StateCancelled {
+				t.Fatalf("open = %+v, err = %v", open, err)
+			}
+
+			at := now.Add(20 * time.Minute)
+			updated, same, err := store.SetPRState(ctx, open[0], PRUpdate{Number: 77, State: prState, At: at})
+			if err != nil || !same {
+				t.Fatalf("SetPRState: same = %v, err = %v", same, err)
+			}
+			wantMerged := prState == PRMerged
+			if updated.State != StateCancelled || updated.PRState != prState || updated.PRStateAt == nil || !updated.PRStateAt.Equal(at) || (updated.MergedAt != nil) != wantMerged {
+				t.Fatalf("updated = %+v", updated)
+			}
+			if wantMerged && !updated.MergedAt.Equal(at) {
+				t.Fatalf("merged_at = %v, want %v", updated.MergedAt, at)
+			}
+			remaining, err := store.TicketsWithOpenPRs(ctx)
+			if err != nil || len(remaining) != 0 {
+				t.Fatalf("remaining = %+v, err = %v", remaining, err)
+			}
+		})
+	}
+
+	t.Run("cancelled while listed as pr_ready is treated as changed", func(t *testing.T) {
+		store := openStore(t)
+		now := time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
+		store.SetClock(func() time.Time { return now })
+
+		ticket := createTicket(t, store, "k-race-cancel")
+		if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 88, Shipping: `{}`}); err != nil {
+			t.Fatal(err)
+		}
+		open, err := store.TicketsWithOpenPRs(ctx)
+		if err != nil || len(open) != 1 {
+			t.Fatalf("open = %+v, err = %v", open, err)
+		}
+		if _, err := store.Cancel(ctx, ticket.ID, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		got, same, err := store.SetPRState(ctx, open[0], PRUpdate{Number: 88, State: PROpen, At: now.Add(time.Minute)})
+		if err != nil || same || got.State != StateCancelled {
+			t.Fatalf("got = %+v, same = %v, err = %v", got, same, err)
+		}
+	})
+}

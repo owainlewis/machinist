@@ -178,8 +178,10 @@ func (e *Engine) checkPR(ctx context.Context, listed tickets.Ticket) error {
 		return nil
 	}
 	// The job as it now stands, so a cancel or rerun is seen and a look
-	// is recorded against its newest pull request result.
-	if ticket.Shipping != "" {
+	// is recorded against its newest pull request result. Terminal jobs
+	// (failed or cancelled) only reconcile PR state and never run shipping
+	// checks, auto-merge, or PR Steward.
+	if ticket.State == tickets.StatePRReady && ticket.Shipping != "" {
 		if err := e.lookAt(ctx, ticket, pr.Number); err != nil {
 			return fmt.Errorf("job %s (%s): pull request #%d: %w", ticket.ID, listed.Repo, pr.Number, err)
 		}
@@ -201,7 +203,7 @@ func (e *Engine) startWatch(request protocol.Ship) string {
 // fails the job when a check failed. A check still running waits for the
 // next look.
 func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) error {
-	if e.PullRequests == nil {
+	if e.PullRequests == nil || ticket.State != tickets.StatePRReady {
 		return nil
 	}
 	var watch ship.Watch

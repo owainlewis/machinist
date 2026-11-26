@@ -8,9 +8,12 @@ import (
 )
 
 // TicketsWithOpenPRs lists the jobs whose pull request was open when
-// Machinist last looked. Once it merges or closes, the job leaves this list.
+// Machinist last looked, including failed and cancelled jobs whose pull
+// request has not yet merged or closed. Once it merges or closes, the job
+// leaves this list.
 func (s *Store) TicketsWithOpenPRs(ctx context.Context) ([]Ticket, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state=? AND COALESCE(pr_number,0)>0 ORDER BY created_at`, StatePRReady)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state IN (?,?,?) AND COALESCE(pr_number,0)>0 AND COALESCE(pr_state,'') IN ('',?) ORDER BY created_at`,
+		StatePRReady, StateFailed, StateCancelled, PROpen)
 	if err != nil {
 		return nil, err
 	}
@@ -24,6 +27,14 @@ func (s *Store) TicketsWithOpenPRs(ctx context.Context) ([]Ticket, error) {
 		found = append(found, ticket)
 	}
 	return found, rows.Err()
+}
+
+func tracksOpenPR(state string) bool {
+	return state == StatePRReady || state == StateFailed || state == StateCancelled
+}
+
+func openPRState(prState string) bool {
+	return prState == "" || prState == PROpen
 }
 
 // PRUpdate is what GitHub says about a job's pull request.
@@ -40,10 +51,14 @@ type PRUpdate struct {
 }
 
 // SetPRState records what GitHub says about a job's pull request. listed is
-// the job as TicketsWithOpenPRs returned it. A merged or closed pull request
-// ends the job as done. A job that has changed since it was listed, such as
-// one run again that opened a new pull request meanwhile, is left alone:
-// every new pull request result sets pr_state_at, so it marks the generation.
+// the job as TicketsWithOpenPRs returned it. For a pr_ready job, a merged or
+// closed pull request ends the job as done. For a failed job, a merged pull
+// request transitions the job to done, while a closed pull request keeps it
+// failed and marks pr_state closed. For a cancelled job, a merged or closed
+// pull request updates pr_state (and merged_at/reviews if merged) while
+// keeping the job cancelled. A job that has changed since it was listed, such
+// as one cancelled or run again meanwhile, is left alone: every new pull
+// request result sets pr_state_at, so it marks the generation.
 //
 // It returns the job as it now stands, and false when the job had changed,
 // so the caller acts on nothing it listed. The job returned carries any new
@@ -58,7 +73,7 @@ func (s *Store) SetPRState(ctx context.Context, listed Ticket, update PRUpdate) 
 			return err
 		}
 		current = ticket
-		if ticket.State != StatePRReady || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
+		if !tracksOpenPR(ticket.State) || ticket.State != listed.State || !openPRState(ticket.PRState) || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
 			return nil
 		}
 		same = true
@@ -76,12 +91,19 @@ func (s *Store) SetPRState(ctx context.Context, listed Ticket, update PRUpdate) 
 				}
 			}
 		} else {
+			nextState := ticket.State
+			switch {
+			case ticket.State == StatePRReady:
+				nextState = StateDone
+			case ticket.State == StateFailed && update.State == PRMerged:
+				nextState = StateDone
+			}
 			var merged any
 			if update.State == PRMerged {
 				merged = stamp(update.At)
 			}
 			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=?,pr_state=?,pr_state_at=?,merged_at=COALESCE(?,merged_at),shipping=NULL,updated_at=? WHERE id=?`,
-				StateDone, update.Number, update.State, stamp(update.At), merged, stamp(s.now()), ticketID); err != nil {
+				nextState, update.Number, update.State, stamp(update.At), merged, stamp(s.now()), ticketID); err != nil {
 				return err
 			}
 			if err = setReviews(ctx, tx, ticketID, update.Reviews); err != nil {
