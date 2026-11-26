@@ -25,11 +25,11 @@ type Usage struct {
 func (s *Store) Usage(ctx context.Context, days int) (Usage, error) {
 	today := s.now().UTC().Truncate(24 * time.Hour)
 	first := today.AddDate(0, 0, 1-days)
-	rows, err := s.db.QueryContext(ctx, `SELECT substr(ended_at,1,10),
-  SUM(status='succeeded'),
-  SUM(status IN ('failed','timed_out','interrupted')),
-  SUM(status='cancelled'),
-  COALESCE(SUM(tokens),0),
+	rows, err := s.q().QueryContext(ctx, `SELECT substr(ended_at,1,10),
+  SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END),
+  SUM(CASE WHEN status IN ('failed','timed_out','interrupted') THEN 1 ELSE 0 END),
+  SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END),
+  CAST(COALESCE(SUM(tokens),0) AS BIGINT),
   COALESCE(SUM(cost),0)
   FROM runs WHERE ended_at>=? GROUP BY 1`, stamp(first))
 	if err != nil {

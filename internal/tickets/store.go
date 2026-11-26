@@ -68,9 +68,11 @@ CREATE TABLE IF NOT EXISTS tickets (
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
   origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT,
   merge_gate_decision TEXT NOT NULL DEFAULT '', merge_gate_risk TEXT NOT NULL DEFAULT '', merge_gate_reason TEXT NOT NULL DEFAULT '',
-  steward_retries INTEGER NOT NULL DEFAULT 0);
+  steward_retries INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
   WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_schedule ON tickets(source)
+  WHERE source LIKE 'schedule:%' AND state='working';
 CREATE INDEX IF NOT EXISTS tickets_created_at ON tickets(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS tickets_updated_at ON tickets(updated_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS ticket_entries (
@@ -80,7 +82,7 @@ CREATE INDEX IF NOT EXISTS ticket_entries_ticket ON ticket_entries(ticket_id, id
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, kind TEXT NOT NULL, reviewer TEXT NOT NULL DEFAULT '', harness TEXT NOT NULL, runner TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL, lease_expires_at TEXT, tokens INTEGER, cost REAL, report TEXT, queued_at TEXT, started_at TEXT, ended_at TEXT,
-  cancel_requested_at TEXT);
+  cancel_requested_at TEXT, seq INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_agent_run ON runs(ticket_id) WHERE kind='agent' AND status IN ('queued','running');
 CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
 CREATE INDEX IF NOT EXISTS runs_ticket_status ON runs(ticket_id, status);
@@ -100,13 +102,14 @@ CREATE TABLE IF NOT EXISTS run_stages (
   tokens INTEGER, cost REAL, duration_millis INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', agents TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(run, position));
 CREATE TABLE IF NOT EXISTS projects (repo TEXT PRIMARY KEY COLLATE NOCASE, added_by TEXT NOT NULL, added_at TEXT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_repo_lower ON projects(LOWER(repo));
 CREATE TABLE IF NOT EXISTS run_patches (run TEXT PRIMARY KEY, body BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS human_touches (ticket_id TEXT NOT NULL, kind TEXT NOT NULL, author TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS human_touches_ticket ON human_touches(ticket_id, at);
 CREATE TABLE IF NOT EXISTS auth_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   bootstrapped_at TEXT);
-INSERT OR IGNORE INTO auth_state (id, bootstrapped_at) VALUES (1, NULL);
+INSERT INTO auth_state (id, bootstrapped_at) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING;
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'viewer')),
@@ -164,8 +167,9 @@ CREATE TABLE IF NOT EXISTS oauth_transactions (
   created_at TEXT NOT NULL);`
 
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db      *sql.DB
+	dialect dbDialect
+	now     func() time.Time
 }
 
 type Ticket struct {
@@ -418,9 +422,22 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "tickets", "seq INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = addColumns(db, "runs", "seq INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Backfill monotonic seq for upgraded SQLite databases and create seq indexes.
 	// Reviewer runs are gone. Cancel any a database from before still queues.
 	// Jobs no longer wait for answers, so one left waiting has failed.
 	for _, statement := range []string{
+		`UPDATE tickets SET seq = rowid WHERE seq = 0`,
+		`UPDATE runs SET seq = rowid WHERE seq = 0`,
+		`CREATE INDEX IF NOT EXISTS idx_runs_queued_seq ON runs(status, kind, seq, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_tickets_source_seq ON tickets(source, seq DESC)`,
 		`UPDATE runs SET status='cancelled' WHERE status='queued' AND kind<>'agent'`,
 		`UPDATE tickets SET state='failed' WHERE state='needs_you'`,
 	} {
@@ -433,7 +450,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, now: time.Now}, nil
+	return &Store{db: db, dialect: dialectSQLite, now: time.Now}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -441,13 +458,13 @@ func (s *Store) Close() error { return s.db.Close() }
 // SetClock replaces the store's clock. Tests use it.
 func (s *Store) SetClock(now func() time.Time) { s.now = now }
 
-func (s *Store) inTx(ctx context.Context, work func(*sql.Tx) error) error {
+func (s *Store) inTx(ctx context.Context, work func(querier) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := work(tx); err != nil {
+	if err := work(txQuerier{tx: tx, dialect: s.dialect}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -520,8 +537,12 @@ func loadTicket(ctx context.Context, q querier, id string) (Ticket, error) {
 	return scanTicket(q.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE id=?`, id))
 }
 
+func (s *Store) loadTicketForUpdate(ctx context.Context, q querier, id string) (Ticket, error) {
+	return scanTicket(q.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE id=?`+s.forUpdate(), id))
+}
+
 func (s *Store) Ticket(ctx context.Context, id string) (Ticket, error) {
-	return loadTicket(ctx, s.db, id)
+	return loadTicket(ctx, s.q(), id)
 }
 
 const runColumns = `id,ticket_id,kind,reviewer,harness,runner,status,tokens,cost,report,started_at,ended_at,
@@ -558,12 +579,16 @@ func loadRun(ctx context.Context, q querier, id string) (Run, error) {
 	return scanRun(q.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id))
 }
 
-func (s *Store) Run(ctx context.Context, id string) (Run, error) { return loadRun(ctx, s.db, id) }
+func (s *Store) loadRunForUpdate(ctx context.Context, q querier, id string) (Run, error) {
+	return scanRun(q.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`+s.forUpdate(), id))
+}
+
+func (s *Store) Run(ctx context.Context, id string) (Run, error) { return loadRun(ctx, s.q(), id) }
 
 // RunPatch is the change a run saved as a patch. ErrNotFound means it saved none.
 func (s *Store) RunPatch(ctx context.Context, runID string) ([]byte, error) {
 	var body []byte
-	err := s.db.QueryRowContext(ctx, `SELECT body FROM run_patches WHERE run=?`, runID).Scan(&body)
+	err := s.q().QueryRowContext(ctx, `SELECT body FROM run_patches WHERE run=?`, runID).Scan(&body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -572,7 +597,7 @@ func (s *Store) RunPatch(ctx context.Context, runID string) ([]byte, error) {
 
 // Runs lists a ticket's runs with their stages, oldest first.
 func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+runColumns+` FROM runs WHERE ticket_id=? ORDER BY rowid`, ticketID)
+	rows, err := s.q().QueryContext(ctx, `SELECT `+runColumns+` FROM runs WHERE ticket_id=? ORDER BY seq, id`, ticketID)
 	if err != nil {
 		return nil, err
 	}
@@ -588,7 +613,7 @@ func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	stages, err := s.db.QueryContext(ctx, `SELECT run,name,kind,state,outcome,tokens,cost,cost_unknown,duration_millis,error,agents FROM run_stages
+	stages, err := s.q().QueryContext(ctx, `SELECT run,name,kind,state,outcome,tokens,cost,cost_unknown,duration_millis,error,agents FROM run_stages
 	  WHERE run IN (SELECT id FROM runs WHERE ticket_id=?) ORDER BY run,position`, ticketID)
 	if err != nil {
 		return nil, err
@@ -600,10 +625,12 @@ func (s *Store) Runs(ctx context.Context, ticketID string) ([]Run, error) {
 		var stage protocol.StageResult
 		var tokens sql.NullInt64
 		var cost sql.NullFloat64
+		var costUnknown int
 		var agents string
-		if err := stages.Scan(&run, &stage.Name, &stage.Kind, &stage.State, &stage.Outcome, &tokens, &cost, &stage.CostUnknown, &stage.DurationMillis, &stage.Error, &agents); err != nil {
+		if err := stages.Scan(&run, &stage.Name, &stage.Kind, &stage.State, &stage.Outcome, &tokens, &cost, &costUnknown, &stage.DurationMillis, &stage.Error, &agents); err != nil {
 			return nil, err
 		}
+		stage.CostUnknown = costUnknown != 0
 		if agents != "" {
 			// A stage's agents are a display aid, so an unreadable list shows none.
 			_ = json.Unmarshal([]byte(agents), &stage.Agents)
@@ -646,7 +673,7 @@ func loadEntries(ctx context.Context, q querier, ticketID string) ([]Entry, erro
 
 // Entries lists a ticket's log, oldest first.
 func (s *Store) Entries(ctx context.Context, ticketID string) ([]Entry, error) {
-	return loadEntries(ctx, s.db, ticketID)
+	return loadEntries(ctx, s.q(), ticketID)
 }
 
 func insertEntry(ctx context.Context, q querier, ticketID, kind, author, body string, sourceKey any, now time.Time) error {
@@ -677,6 +704,28 @@ func ticketForSourceKey(ctx context.Context, q querier, key string) (Ticket, err
 	return loadTicket(ctx, q, id)
 }
 
+func (s *Store) findExistingTicket(ctx context.Context, q querier, request NewTicket) (Ticket, error) {
+	existing, err := ticketForSourceKey(ctx, q, request.SourceKey)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		return existing, err
+	}
+	if request.IssueNumber != 0 {
+		existing, err = scanTicket(q.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND issue_number=? AND state IN ('working','pr_ready')`, request.Repo, request.IssueNumber))
+		if err == nil || !errors.Is(err, ErrNotFound) {
+			return existing, err
+		}
+	}
+	if strings.HasPrefix(request.Source, sourceSchedulePrefix) {
+		// An automation runs one ticket at a time. Machinist no longer
+		// follows pull requests, so an open one does not hold the schedule.
+		existing, err = scanTicket(q.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? AND state=? LIMIT 1`, request.Source, StateWorking))
+		if err == nil || !errors.Is(err, ErrNotFound) {
+			return existing, err
+		}
+	}
+	return Ticket{}, ErrNotFound
+}
+
 // CreateTicket returns the existing ticket for a repeated source key or for an
 // issue that already has an active ticket. The bool reports whether it created one.
 func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bool, error) {
@@ -690,8 +739,8 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 	id = "t_" + id
 	var ticket Ticket
 	created := false
-	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		existing, err := ticketForSourceKey(ctx, tx, request.SourceKey)
+	err = s.inTx(ctx, func(tx querier) error {
+		existing, err := s.findExistingTicket(ctx, tx, request)
 		if err == nil {
 			ticket = existing
 			return nil
@@ -699,34 +748,16 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 		if !errors.Is(err, ErrNotFound) {
 			return err
 		}
-		if request.IssueNumber != 0 {
-			existing, err = scanTicket(tx.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND issue_number=? AND state IN ('working','pr_ready')`, request.Repo, request.IssueNumber))
-			if err == nil {
-				ticket = existing
-				return nil
-			}
-			if !errors.Is(err, ErrNotFound) {
-				return err
-			}
-		}
-		if strings.HasPrefix(request.Source, sourceSchedulePrefix) {
-			// An automation runs one ticket at a time. Machinist no longer
-			// follows pull requests, so an open one does not hold the schedule.
-			existing, err = scanTicket(tx.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? AND state=? LIMIT 1`, request.Source, StateWorking))
-			if err == nil {
-				ticket = existing
-				return nil
-			}
-			if !errors.Is(err, ErrNotFound) {
-				return err
-			}
-		}
 		now := s.now()
 		origin := request.Origin
 		if origin == "" {
 			origin = originOf(request.Source, request.SourceKey)
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, id, request.Source, origin, SourceURL(request.SourceURL), request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.CreatedBy, stamp(now), stamp(now)); err != nil {
+		insertQuery := `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,created_by,created_at,updated_at,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM tickets))`
+		if s.dialect == dialectPostgres {
+			insertQuery = `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
+		}
+		if _, err = tx.ExecContext(ctx, insertQuery, id, request.Source, origin, SourceURL(request.SourceURL), request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.CreatedBy, stamp(now), stamp(now)); err != nil {
 			return err
 		}
 		if err = insertEntry(ctx, tx, id, EntryRequest, request.CreatedBy, request.Body, request.SourceKey, now); err != nil {
@@ -741,6 +772,11 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 		ticket, err = loadTicket(ctx, tx, id)
 		return err
 	})
+	if err != nil && isUniqueViolation(err) {
+		if existing, lookupErr := s.findExistingTicket(ctx, s.q(), request); lookupErr == nil {
+			return existing, false, nil
+		}
+	}
 	return ticket, created, err
 }
 
@@ -749,9 +785,9 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Ticket, bool, error) {
 	var ticket Ticket
 	added := false
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
+	err := s.inTx(ctx, func(tx querier) error {
 		var err error
-		if ticket, err = loadTicket(ctx, tx, ticketID); err != nil {
+		if ticket, err = s.loadTicketForUpdate(ctx, tx, ticketID); err != nil {
 			return err
 		}
 		if !activeState(ticket.State) {
@@ -781,12 +817,17 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 		ticket, err = loadTicket(ctx, tx, ticketID)
 		return err
 	})
+	if err != nil && isUniqueViolation(err) && input.SourceKey != "" {
+		if existing, lookupErr := s.Ticket(ctx, ticketID); lookupErr == nil {
+			return existing, false, nil
+		}
+	}
 	return ticket, added, err
 }
 
 // TicketBySourceKey finds the ticket that a piece of intake went to.
 func (s *Store) TicketBySourceKey(ctx context.Context, key string) (Ticket, error) {
-	return ticketForSourceKey(ctx, s.db, key)
+	return ticketForSourceKey(ctx, s.q(), key)
 }
 
 // TicketFilter picks the tickets a list shows. An empty field matches all.
@@ -954,42 +995,44 @@ func (s *Store) ListTicketsPage(ctx context.Context, filter TicketFilter) (Ticke
 		orderBy = "updated_at DESC, id DESC"
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return TicketPage{}, err
-	}
-	defer tx.Rollback()
-
 	where, args := ticketWhere(filter)
-	var total int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE `+where, args...).Scan(&total); err != nil {
-		return TicketPage{}, err
-	}
+	var page TicketPage
+	err := s.inTxReadOnly(ctx, func(tx querier) error {
+		var total int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE `+where, args...).Scan(&total); err != nil {
+			return err
+		}
 
-	pageArgs := append(append([]any{}, args...), limit, offset)
-	rows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE `+where+` ORDER BY `+orderBy+` LIMIT ? OFFSET ?`, pageArgs...)
-	if err != nil {
-		return TicketPage{}, err
-	}
-	found, err := scanTickets(rows)
-	rows.Close()
-	if err != nil {
-		return TicketPage{}, err
-	}
+		pageArgs := append(append([]any{}, args...), limit, offset)
+		rows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE `+where+` ORDER BY `+orderBy+` LIMIT ? OFFSET ?`, pageArgs...)
+		if err != nil {
+			return err
+		}
+		found, err := scanTickets(rows)
+		rows.Close()
+		if err != nil {
+			return err
+		}
 
-	counts, sources, err := ticketSummary(ctx, tx, filter.Repo, filter.Source)
+		counts, sources, err := ticketSummary(ctx, tx, filter.Repo, filter.Source)
+		if err != nil {
+			return err
+		}
+		page = TicketPage{
+			Tickets: found,
+			Total:   total,
+			Limit:   limit,
+			Offset:  offset,
+			HasMore: offset+len(found) < total,
+			Counts:  counts,
+			Sources: sources,
+		}
+		return nil
+	})
 	if err != nil {
 		return TicketPage{}, err
 	}
-	return TicketPage{
-		Tickets: found,
-		Total:   total,
-		Limit:   limit,
-		Offset:  offset,
-		HasMore: offset+len(found) < total,
-		Counts:  counts,
-		Sources: sources,
-	}, nil
+	return page, nil
 }
 
 // ListBoardTickets returns every matching active (queued, running, or in-review)
@@ -1002,58 +1045,60 @@ func (s *Store) ListBoardTickets(ctx context.Context, filter TicketFilter, doneL
 		doneLimit = MaxTicketLimit
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return TicketPage{}, err
-	}
-	defer tx.Rollback()
-
 	where, args := ticketWhere(filter)
-	activeRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state IN ('working','pr_ready') AND (`+where+`) ORDER BY created_at ASC, id ASC`, args...)
-	if err != nil {
-		return TicketPage{}, err
-	}
-	active, err := scanTickets(activeRows)
-	activeRows.Close()
-	if err != nil {
-		return TicketPage{}, err
-	}
+	var page TicketPage
+	err := s.inTxReadOnly(ctx, func(tx querier) error {
+		activeRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state IN ('working','pr_ready') AND (`+where+`) ORDER BY created_at ASC, id ASC`, args...)
+		if err != nil {
+			return err
+		}
+		active, err := scanTickets(activeRows)
+		activeRows.Close()
+		if err != nil {
+			return err
+		}
 
-	var doneTotal int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE state NOT IN ('working','pr_ready') AND (`+where+`)`, args...).Scan(&doneTotal); err != nil {
-		return TicketPage{}, err
-	}
+		var doneTotal int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE state NOT IN ('working','pr_ready') AND (`+where+`)`, args...).Scan(&doneTotal); err != nil {
+			return err
+		}
 
-	doneArgs := append(append([]any{}, args...), doneLimit)
-	doneRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state NOT IN ('working','pr_ready') AND (`+where+`) ORDER BY updated_at DESC, id DESC LIMIT ?`, doneArgs...)
+		doneArgs := append(append([]any{}, args...), doneLimit)
+		doneRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state NOT IN ('working','pr_ready') AND (`+where+`) ORDER BY updated_at DESC, id DESC LIMIT ?`, doneArgs...)
+		if err != nil {
+			return err
+		}
+		done, err := scanTickets(doneRows)
+		doneRows.Close()
+		if err != nil {
+			return err
+		}
+
+		counts, sources, err := ticketSummary(ctx, tx, filter.Repo, filter.Source)
+		if err != nil {
+			return err
+		}
+
+		combined := make([]Ticket, 0, len(active)+len(done))
+		combined = append(combined, active...)
+		combined = append(combined, done...)
+		page = TicketPage{
+			Tickets:   combined,
+			Total:     len(active) + doneTotal,
+			Limit:     doneLimit,
+			Offset:    0,
+			HasMore:   doneTotal > len(done),
+			DoneTotal: &doneTotal,
+			DoneLimit: &doneLimit,
+			Counts:    counts,
+			Sources:   sources,
+		}
+		return nil
+	})
 	if err != nil {
 		return TicketPage{}, err
 	}
-	done, err := scanTickets(doneRows)
-	doneRows.Close()
-	if err != nil {
-		return TicketPage{}, err
-	}
-
-	counts, sources, err := ticketSummary(ctx, tx, filter.Repo, filter.Source)
-	if err != nil {
-		return TicketPage{}, err
-	}
-
-	combined := make([]Ticket, 0, len(active)+len(done))
-	combined = append(combined, active...)
-	combined = append(combined, done...)
-	return TicketPage{
-		Tickets:   combined,
-		Total:     len(active) + doneTotal,
-		Limit:     doneLimit,
-		Offset:    0,
-		HasMore:   doneTotal > len(done),
-		DoneTotal: &doneTotal,
-		DoneLimit: &doneLimit,
-		Counts:    counts,
-		Sources:   sources,
-	}, nil
+	return page, nil
 }
 
 // ListTickets lists the newest tickets that match the filter, newest first.
@@ -1068,7 +1113,7 @@ func (s *Store) ListTickets(ctx context.Context, filter TicketFilter) ([]Ticket,
 // LatestMessage returns the newest thing Machinist said on a ticket.
 func (s *Store) LatestMessage(ctx context.Context, ticketID string) (string, error) {
 	var body string
-	err := s.db.QueryRowContext(ctx, `SELECT body FROM ticket_entries WHERE ticket_id=? AND kind=? ORDER BY id DESC LIMIT 1`, ticketID, EntryMessage).Scan(&body)
+	err := s.q().QueryRowContext(ctx, `SELECT body FROM ticket_entries WHERE ticket_id=? AND kind=? ORDER BY id DESC LIMIT 1`, ticketID, EntryMessage).Scan(&body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -1077,7 +1122,7 @@ func (s *Store) LatestMessage(ctx context.Context, ticketID string) (string, err
 
 // LatestTicketBySource returns the newest ticket from a source.
 func (s *Store) LatestTicketBySource(ctx context.Context, source string) (Ticket, error) {
-	return scanTicket(s.db.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? ORDER BY rowid DESC LIMIT 1`, source))
+	return scanTicket(s.q().QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? ORDER BY seq DESC, id DESC LIMIT 1`, source))
 }
 
 func activeState(state string) bool {
@@ -1089,9 +1134,9 @@ func activeState(state string) bool {
 // ticket runs again before then, so its result never lands on the new run.
 func (s *Store) Cancel(ctx context.Context, ticketID, by string) (Ticket, error) {
 	var ticket Ticket
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
+	err := s.inTx(ctx, func(tx querier) error {
 		var err error
-		if ticket, err = loadTicket(ctx, tx, ticketID); err != nil {
+		if ticket, err = s.loadTicketForUpdate(ctx, tx, ticketID); err != nil {
 			return err
 		}
 		if !activeState(ticket.State) {
@@ -1142,9 +1187,9 @@ func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comme
 // reply runs a ticket again and records it as one human touch of kind.
 func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments []Comment) (Ticket, error) {
 	var ticket Ticket
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
+	err := s.inTx(ctx, func(tx querier) error {
 		var err error
-		if ticket, err = loadTicket(ctx, tx, ticketID); err != nil {
+		if ticket, err = s.loadTicketForUpdate(ctx, tx, ticketID); err != nil {
 			return err
 		}
 		if ticket.State == StateWorking {
@@ -1206,13 +1251,17 @@ func cancelQueuedRuns(ctx context.Context, q querier, ticketID string, now time.
 	return err
 }
 
-func queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness string, now time.Time) (string, error) {
+func (s *Store) queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness string, now time.Time) (string, error) {
 	id, err := randomHex(12)
 	if err != nil {
 		return "", err
 	}
 	id = "run_" + id
-	_, err = q.ExecContext(ctx, `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status,queued_at) VALUES(?,?,?,?,?,?,?)`, id, ticketID, kind, reviewer, harness, RunQueued, stamp(now))
+	insertQuery := `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status,queued_at,seq) VALUES(?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM runs))`
+	if s.dialect == dialectPostgres {
+		insertQuery = `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status,queued_at) VALUES(?,?,?,?,?,?,?)`
+	}
+	_, err = q.ExecContext(ctx, insertQuery, id, ticketID, kind, reviewer, harness, RunQueued, stamp(now))
 	return id, err
 }
 
@@ -1278,8 +1327,8 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 func (s *Store) Apply(ctx context.Context, ticketID, from string, transition Transition) (Ticket, bool, error) {
 	var updated Ticket
 	var applied bool
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		ticket, err := loadTicket(ctx, tx, ticketID)
+	err := s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
 		if err != nil || ticket.State != from {
 			return err
 		}
@@ -1302,7 +1351,7 @@ func (s *Store) Apply(ctx context.Context, ticketID, from string, transition Tra
 // QueuedTickets returns working tickets that do not currently have a running
 // agent run (either awaiting QueueRun or already queued).
 func (s *Store) QueuedTickets(ctx context.Context) ([]Ticket, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state=? AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.ticket_id=tickets.id AND runs.kind=? AND runs.status=?) ORDER BY rowid`, StateWorking, RunKindAgent, RunRunning)
+	rows, err := s.q().QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state=? AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.ticket_id=tickets.id AND runs.kind=? AND runs.status=?) ORDER BY seq, id`, StateWorking, RunKindAgent, RunRunning)
 	if err != nil {
 		return nil, err
 	}
@@ -1312,7 +1361,7 @@ func (s *Store) QueuedTickets(ctx context.Context) ([]Ticket, error) {
 
 // TicketsAwaitingRun lists working tickets with no queued or running agent run.
 func (s *Store) TicketsAwaitingRun(ctx context.Context) ([]Ticket, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets t WHERE state=? AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.ticket_id=t.id AND r.kind=? AND r.status IN (?,?)) ORDER BY created_at`, StateWorking, RunKindAgent, RunQueued, RunRunning)
+	rows, err := s.q().QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets t WHERE state=? AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.ticket_id=t.id AND r.kind=? AND r.status IN (?,?)) ORDER BY created_at`, StateWorking, RunKindAgent, RunQueued, RunRunning)
 	if err != nil {
 		return nil, err
 	}
@@ -1341,19 +1390,19 @@ func turnsSinceHuman(ctx context.Context, q querier, ticketID string) (int, erro
 		return 0, err
 	}
 	var count int
-	err = q.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND kind=? AND rowid>=(SELECT rowid FROM runs WHERE id=?)`, ticketID, RunKindAgent, consumed.String).Scan(&count)
+	err = q.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND kind=? AND seq>=(SELECT seq FROM runs WHERE id=?)`, ticketID, RunKindAgent, consumed.String).Scan(&count)
 	return count, err
 }
 
 // TurnsSinceHuman counts agent runs since the last human input.
 func (s *Store) TurnsSinceHuman(ctx context.Context, ticketID string) (int, error) {
-	return turnsSinceHuman(ctx, s.db, ticketID)
+	return turnsSinceHuman(ctx, s.q(), ticketID)
 }
 
 // LastReport returns the text of the ticket's newest agent report.
 func (s *Store) LastReport(ctx context.Context, ticketID string) (string, error) {
 	var body string
-	err := s.db.QueryRowContext(ctx, `SELECT body FROM ticket_entries WHERE ticket_id=? AND kind=? ORDER BY id DESC LIMIT 1`, ticketID, EntryReport).Scan(&body)
+	err := s.q().QueryRowContext(ctx, `SELECT body FROM ticket_entries WHERE ticket_id=? AND kind=? ORDER BY id DESC LIMIT 1`, ticketID, EntryReport).Scan(&body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -1364,15 +1413,15 @@ func (s *Store) LastReport(ctx context.Context, ticketID string) (string, error)
 // transaction, so a ticket that was cancelled or merged a moment ago gets no run.
 func (s *Store) QueueRun(ctx context.Context, ticketID, harness string) (Run, error) {
 	var run Run
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		ticket, err := loadTicket(ctx, tx, ticketID)
+	err := s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
 		if err != nil {
 			return err
 		}
 		if ticket.State != StateWorking {
 			return ErrNotWorking
 		}
-		id, err := queueRun(ctx, tx, ticketID, RunKindAgent, "", harness, s.now())
+		id, err := s.queueRun(ctx, tx, ticketID, RunKindAgent, "", harness, s.now())
 		if err != nil {
 			return err
 		}
@@ -1384,11 +1433,11 @@ func (s *Store) QueueRun(ctx context.Context, ticketID, harness string) (Run, er
 
 // firstAccepted returns the first run the query lists whose ticket accept
 // allows, or ErrNotFound.
-func firstAccepted(ctx context.Context, tx *sql.Tx, query string, arguments []any, accept func(Ticket) bool) (Run, error) {
+func firstAccepted(ctx context.Context, q querier, query string, arguments []any, accept func(Ticket) bool) (Run, error) {
 	// Page through the queue, so runs this runner cannot take never hide a
 	// run it can behind them.
 	for offset := 0; ; offset += claimPage {
-		runs, err := queryRuns(ctx, tx, query+fmt.Sprintf(" LIMIT %d OFFSET %d", claimPage, offset), arguments)
+		runs, err := queryRuns(ctx, q, query+fmt.Sprintf(" LIMIT %d OFFSET %d", claimPage, offset), arguments)
 		if err != nil {
 			return Run{}, err
 		}
@@ -1396,7 +1445,7 @@ func firstAccepted(ctx context.Context, tx *sql.Tx, query string, arguments []an
 			if accept == nil {
 				return run, nil
 			}
-			ticket, err := loadTicket(ctx, tx, run.TicketID)
+			ticket, err := loadTicket(ctx, q, run.TicketID)
 			if err != nil {
 				return Run{}, err
 			}
@@ -1413,8 +1462,8 @@ func firstAccepted(ctx context.Context, tx *sql.Tx, query string, arguments []an
 // claimPage is how many queued runs a claim reads at a time.
 var claimPage = 500
 
-func queryRuns(ctx context.Context, tx *sql.Tx, query string, arguments []any) ([]Run, error) {
-	rows, err := tx.QueryContext(ctx, query, arguments...)
+func queryRuns(ctx context.Context, q querier, query string, arguments []any) ([]Run, error) {
+	rows, err := q.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -1430,6 +1479,10 @@ func queryRuns(ctx context.Context, tx *sql.Tx, query string, arguments []any) (
 	return runs, errors.Join(rows.Err(), rows.Close())
 }
 
+const maxClaimRetries = 32
+
+var errClaimContended = errors.New("claim contended")
+
 // ClaimRun gives the oldest queued run for these harnesses whose ticket accept
 // allows to a runner, and marks waiting input as read by it. A nil accept
 // allows every ticket. It returns nil when no such run is queued.
@@ -1442,63 +1495,91 @@ func (s *Store) ClaimRun(ctx context.Context, runner string, harnesses []string,
 	for _, harness := range harnesses {
 		arguments = append(arguments, harness)
 	}
-	var claim *Claim
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		run, err := firstAccepted(ctx, tx, `SELECT `+runColumns+` FROM runs WHERE status=? AND kind='agent' AND harness IN (`+placeholders+`) ORDER BY rowid`, arguments, accept)
+	selectQuery := `SELECT ` + runColumns + ` FROM runs WHERE status=? AND kind='agent' AND harness IN (` + placeholders + `) ORDER BY seq ASC, id ASC`
+
+	for range maxClaimRetries {
+		candidate, err := firstAccepted(ctx, s.q(), selectQuery, arguments, accept)
 		if errors.Is(err, ErrNotFound) {
-			return nil
+			return nil, nil
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
-		before, err := loadTicket(ctx, tx, run.TicketID)
-		if err != nil {
-			return err
-		}
-		now := s.now()
-		if _, err = tx.ExecContext(ctx, `UPDATE runs SET status=?,runner=?,lease_expires_at=?,started_at=? WHERE id=?`, RunRunning, runner, stamp(leaseUntil), stamp(now), run.ID); err != nil {
-			return err
-		}
-		// The ticket moves from queued to running, so it has changed.
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET updated_at=? WHERE id=?`, stamp(now), run.TicketID); err != nil {
-			return err
-		}
-		if run.Kind == RunKindAgent {
-			if _, err = tx.ExecContext(ctx, `UPDATE ticket_entries SET consumed_by_run=? WHERE ticket_id=? AND consumed_by_run IS NULL AND kind IN (?,?,?,?)`, run.ID, run.TicketID, EntryRequest, EntryComment, EntryReview, EntryCI); err != nil {
+		var claim *Claim
+		err = s.inTx(ctx, func(tx querier) error {
+			// Global lock order: tickets FOR UPDATE before updating runs.
+			before, err := s.loadTicketForUpdate(ctx, tx, candidate.TicketID)
+			if errors.Is(err, ErrNotFound) {
+				return errClaimContended
+			}
+			if err != nil {
 				return err
 			}
+			now := s.now()
+			res, err := tx.ExecContext(ctx, `UPDATE runs SET status=?,runner=?,lease_expires_at=?,started_at=? WHERE id=? AND status=?`, RunRunning, runner, stamp(leaseUntil), stamp(now), candidate.ID, RunQueued)
+			if err != nil {
+				return err
+			}
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if affected == 0 {
+				return errClaimContended
+			}
+			// The ticket moves from queued to running, so it has changed.
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET updated_at=? WHERE id=?`, stamp(now), candidate.TicketID); err != nil {
+				return err
+			}
+			if candidate.Kind == RunKindAgent {
+				if _, err = tx.ExecContext(ctx, `UPDATE ticket_entries SET consumed_by_run=? WHERE ticket_id=? AND consumed_by_run IS NULL AND kind IN (?,?,?,?)`, candidate.ID, candidate.TicketID, EntryRequest, EntryComment, EntryReview, EntryCI); err != nil {
+					return err
+				}
+			}
+			run, err := loadRun(ctx, tx, candidate.ID)
+			if err != nil {
+				return err
+			}
+			ticket, err := loadTicket(ctx, tx, candidate.TicketID)
+			if err != nil {
+				return err
+			}
+			entries, err := loadEntries(ctx, tx, candidate.TicketID)
+			if err != nil {
+				return err
+			}
+			claim = &Claim{Run: run, Ticket: ticket, Entries: entries, QueuedUpdatedAt: before.UpdatedAt}
+			return nil
+		})
+		if errors.Is(err, errClaimContended) {
+			continue
 		}
-		if run, err = loadRun(ctx, tx, run.ID); err != nil {
-			return err
-		}
-		ticket, err := loadTicket(ctx, tx, run.TicketID)
-		if err != nil {
-			return err
-		}
-		entries, err := loadEntries(ctx, tx, run.TicketID)
-		if err != nil {
-			return err
-		}
-		claim = &Claim{Run: run, Ticket: ticket, Entries: entries, QueuedUpdatedAt: before.UpdatedAt}
-		return nil
-	})
-	return claim, err
+		return claim, err
+	}
+	return nil, nil
 }
 
 // RenewLease extends a running run's lease and reports whether it should stop.
 func (s *Store) RenewLease(ctx context.Context, runID string, leaseUntil time.Time) (bool, error) {
 	cancel := false
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		run, err := loadRun(ctx, tx, runID)
+	err := s.inTx(ctx, func(tx querier) error {
+		var ticketID string
+		if err := tx.QueryRowContext(ctx, `SELECT ticket_id FROM runs WHERE id=?`, runID).Scan(&ticketID); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		// Global lock order: tickets FOR UPDATE -> runs FOR UPDATE.
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		run, err := s.loadRunForUpdate(ctx, tx, runID)
 		if err != nil {
 			return err
 		}
 		if run.Status != RunRunning {
 			return ErrRunNotActive
-		}
-		ticket, err := loadTicket(ctx, tx, run.TicketID)
-		if err != nil {
-			return err
 		}
 		cancel = run.CancelRequested || !activeState(ticket.State) || (run.Kind == RunKindAgent && ticket.State != StateWorking)
 		_, err = tx.ExecContext(ctx, `UPDATE runs SET lease_expires_at=? WHERE id=?`, stamp(leaseUntil), runID)
@@ -1510,7 +1591,7 @@ func (s *Store) RenewLease(ctx context.Context, runID string, leaseUntil time.Ti
 // ExpireLeases marks running runs whose lease has passed as interrupted.
 func (s *Store) ExpireLeases(ctx context.Context) (int64, error) {
 	now := stamp(s.now())
-	result, err := s.db.ExecContext(ctx, `UPDATE runs SET status=?,ended_at=? WHERE status=? AND lease_expires_at<=?`, RunInterrupted, now, RunRunning, now)
+	result, err := s.q().ExecContext(ctx, `UPDATE runs SET status=?,ended_at=? WHERE status=? AND lease_expires_at<=?`, RunInterrupted, now, RunRunning, now)
 	if err != nil {
 		return 0, err
 	}
@@ -1524,17 +1605,24 @@ func (s *Store) ExpireLeases(ctx context.Context) (int64, error) {
 func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decide func(Ticket, string) Transition) (Ticket, bool, error) {
 	var updated Ticket
 	var transitioned bool
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		run, err := loadRun(ctx, tx, completion.RunID)
+	err := s.inTx(ctx, func(tx querier) error {
+		var ticketID string
+		if err := tx.QueryRowContext(ctx, `SELECT ticket_id FROM runs WHERE id=?`, completion.RunID).Scan(&ticketID); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		// Global lock order: tickets FOR UPDATE -> runs FOR UPDATE.
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		run, err := s.loadRunForUpdate(ctx, tx, completion.RunID)
 		if err != nil {
 			return err
 		}
 		if run.Status != RunRunning {
 			return ErrRunNotActive
-		}
-		ticket, err := loadTicket(ctx, tx, run.TicketID)
-		if err != nil {
-			return err
 		}
 		status := completion.Status
 		if run.CancelRequested {
@@ -1556,8 +1644,16 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 			report = string(body)
 		}
 		now := s.now()
-		if _, err = tx.ExecContext(ctx, `UPDATE runs SET status=?,tokens=?,cost=?,report=?,ended_at=? WHERE id=?`, status, completion.Tokens, completion.Cost, report, stamp(now), run.ID); err != nil {
+		res, err := tx.ExecContext(ctx, `UPDATE runs SET status=?,tokens=?,cost=?,report=?,ended_at=? WHERE id=? AND status=?`, status, completion.Tokens, completion.Cost, report, stamp(now), run.ID, RunRunning)
+		if err != nil {
 			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return ErrRunNotActive
 		}
 		if len(completion.Patch) > 0 {
 			if _, err = tx.ExecContext(ctx, `INSERT INTO run_patches(run,body) VALUES(?,?)`, run.ID, completion.Patch); err != nil {
@@ -1574,7 +1670,7 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 				agents = string(body)
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO run_stages(run,position,name,kind,state,outcome,tokens,cost,cost_unknown,duration_millis,error,agents) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-				run.ID, position, stage.Name, stage.Kind, stage.State, stage.Outcome, stage.Tokens, stage.Cost, stage.CostUnknown, stage.DurationMillis, stage.Error, agents); err != nil {
+				run.ID, position, stage.Name, stage.Kind, stage.State, stage.Outcome, stage.Tokens, stage.Cost, boolToInt(stage.CostUnknown), stage.DurationMillis, stage.Error, agents); err != nil {
 				return err
 			}
 		}
@@ -1615,8 +1711,8 @@ func (s *Store) IngestRunEvents(ctx context.Context, runID string, events []json
 		return 0, errors.New("event batch too large")
 	}
 	var cursor int64
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		run, err := loadRun(ctx, tx, runID)
+	err := s.inTx(ctx, func(tx querier) error {
+		run, err := s.loadRunForUpdate(ctx, tx, runID)
 		if err != nil {
 			return err
 		}
@@ -1667,7 +1763,7 @@ func (s *Store) IngestRunEvents(ctx context.Context, runID string, events []json
 // RunEvents returns one page of a run's activity after a cursor.
 func (s *Store) RunEvents(ctx context.Context, runID string, after int64) (protocol.RunEventPage, error) {
 	page := protocol.RunEventPage{Cursor: after, Events: []json.RawMessage{}}
-	rows, err := s.db.QueryContext(ctx, `SELECT sequence,body FROM run_activity_events WHERE run=? AND sequence>? ORDER BY sequence LIMIT 128`, runID, after)
+	rows, err := s.q().QueryContext(ctx, `SELECT sequence,body FROM run_activity_events WHERE run=? AND sequence>? ORDER BY sequence LIMIT 128`, runID, after)
 	if err != nil {
 		return page, err
 	}
@@ -1684,13 +1780,13 @@ func (s *Store) RunEvents(ctx context.Context, runID string, after int64) (proto
 
 // ActiveTicketFor finds the active ticket on an issue or PR number.
 func (s *Store) ActiveTicketFor(ctx context.Context, repo string, number int) (Ticket, error) {
-	return scanTicket(s.db.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND (issue_number=? OR pr_number=?) AND state IN (?,?) ORDER BY created_at DESC LIMIT 1`, repo, number, number, StateWorking, StatePRReady))
+	return scanTicket(s.q().QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND (issue_number=? OR pr_number=?) AND state IN (?,?) ORDER BY created_at DESC LIMIT 1`, repo, number, number, StateWorking, StatePRReady))
 }
 
 // Cursor returns a source's stored position. The bool is false on first use.
 func (s *Store) Cursor(ctx context.Context, source, repo string) (time.Time, bool, error) {
 	var value string
-	err := s.db.QueryRowContext(ctx, `SELECT cursor FROM source_cursors WHERE source=? AND repo=?`, source, repo).Scan(&value)
+	err := s.q().QueryRowContext(ctx, `SELECT cursor FROM source_cursors WHERE source=? AND repo=?`, source, repo).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
@@ -1703,7 +1799,7 @@ func (s *Store) Cursor(ctx context.Context, source, repo string) (time.Time, boo
 
 // SetCursor stores a source's position.
 func (s *Store) SetCursor(ctx context.Context, source, repo string, value time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO source_cursors(source,repo,cursor) VALUES(?,?,?) ON CONFLICT(source,repo) DO UPDATE SET cursor=excluded.cursor`, source, repo, stamp(value))
+	_, err := s.q().ExecContext(ctx, `INSERT INTO source_cursors(source,repo,cursor) VALUES(?,?,?) ON CONFLICT(source,repo) DO UPDATE SET cursor=excluded.cursor`, source, repo, stamp(value))
 	return err
 }
 
@@ -1718,7 +1814,7 @@ type Outbound struct {
 // UnpostedMessages lists messages to post on GitHub, oldest first. Only jobs
 // that came from an issue post comments to GitHub.
 func (s *Store) UnpostedMessages(ctx context.Context) ([]Outbound, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT e.id,t.repo,t.issue_number,e.body FROM ticket_entries e JOIN tickets t ON t.id=e.ticket_id WHERE e.kind=? AND e.posted_at IS NULL AND t.issue_number IS NOT NULL ORDER BY e.id`, EntryMessage)
+	rows, err := s.q().QueryContext(ctx, `SELECT e.id,t.repo,t.issue_number,e.body FROM ticket_entries e JOIN tickets t ON t.id=e.ticket_id WHERE e.kind=? AND e.posted_at IS NULL AND t.issue_number IS NOT NULL ORDER BY e.id`, EntryMessage)
 	if err != nil {
 		return nil, err
 	}
@@ -1736,7 +1832,7 @@ func (s *Store) UnpostedMessages(ctx context.Context) ([]Outbound, error) {
 
 // MarkPosted records that a message reached GitHub.
 func (s *Store) MarkPosted(ctx context.Context, entryID int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE ticket_entries SET posted_at=? WHERE id=?`, stamp(s.now()), entryID)
+	_, err := s.q().ExecContext(ctx, `UPDATE ticket_entries SET posted_at=? WHERE id=?`, stamp(s.now()), entryID)
 	return err
 }
 
@@ -1841,7 +1937,7 @@ func (s *Store) CreateScopedToken(ctx context.Context, name, role, scope string)
 	if err != nil {
 		return "", err
 	}
-	err = s.inTx(ctx, func(tx *sql.Tx) error {
+	err = s.inTx(ctx, func(tx querier) error {
 		var taken int
 		err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&taken)
 		if err != nil {
@@ -1854,6 +1950,9 @@ func (s *Store) CreateScopedToken(ctx context.Context, name, role, scope string)
 		return err
 	})
 	if err != nil {
+		if isUniqueViolation(err) {
+			return "", ErrTokenExists
+		}
 		return "", err
 	}
 	return token, nil
@@ -1878,9 +1977,9 @@ func (s *Store) RegenerateTokenWithID(ctx context.Context, name string) (string,
 	if err != nil {
 		return "", "", err
 	}
-	err = s.inTx(ctx, func(tx *sql.Tx) error {
+	err = s.inTx(ctx, func(tx querier) error {
 		var oldID, role, scope string
-		err := tx.QueryRowContext(ctx, `SELECT id,role,scope FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&oldID, &role, &scope)
+		err := tx.QueryRowContext(ctx, `SELECT id,role,scope FROM tokens WHERE name=? AND revoked_at IS NULL`+s.forUpdate(), name).Scan(&oldID, &role, &scope)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -1919,7 +2018,7 @@ type TokenInfo struct {
 
 // ListTokens returns every token, oldest first.
 func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,role,scope,prefix,created_at,last_used_at,revoked_at FROM tokens ORDER BY created_at,id`)
+	rows, err := s.q().QueryContext(ctx, `SELECT name,role,scope,prefix,created_at,last_used_at,revoked_at FROM tokens ORDER BY created_at,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1942,9 +2041,9 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
 // RevokeToken ends an active token. Its sign-ins end with it, and a runner
 // that used it leaves the fleet.
 func (s *Store) RevokeToken(ctx context.Context, name string) error {
-	return s.inTx(ctx, func(tx *sql.Tx) error {
+	return s.inTx(ctx, func(tx querier) error {
 		var id string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&id)
+		err := tx.QueryRowContext(ctx, `SELECT id FROM tokens WHERE name=? AND revoked_at IS NULL`+s.forUpdate(), name).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -1967,7 +2066,7 @@ func (s *Store) RevokeToken(ctx context.Context, name string) error {
 // as machinist reload use it to clean up one-shot tokens without cluttering
 // machinist token list.
 func (s *Store) DeleteToken(ctx context.Context, name string) error {
-	return s.inTx(ctx, func(tx *sql.Tx) error {
+	return s.inTx(ctx, func(tx querier) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_id IN (SELECT id FROM tokens WHERE name=?)`, name); err != nil {
 			return err
 		}
@@ -1979,7 +2078,7 @@ func (s *Store) DeleteToken(ctx context.Context, name string) error {
 // HasActiveRoleAllToken reports whether any active pre-role (RoleAll) token exists.
 func (s *Store) HasActiveRoleAllToken(ctx context.Context) (bool, error) {
 	var found bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tokens WHERE role=? AND revoked_at IS NULL)`, RoleAll).Scan(&found)
+	err := s.q().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tokens WHERE role=? AND revoked_at IS NULL)`, RoleAll).Scan(&found)
 	return found, err
 }
 
@@ -2006,7 +2105,7 @@ func (s *Store) Authenticate(ctx context.Context, token string) (TokenAuth, erro
 	cutoff := stamp(now.Add(-tokenUseInterval))
 	var auth TokenAuth
 	var stale bool
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,role,scope,coalesce(last_used_at,'')<? FROM tokens WHERE token_hash=? AND revoked_at IS NULL`, cutoff, hash).Scan(&auth.ID, &auth.Name, &auth.Role, &auth.Scope, &stale)
+	err := s.q().QueryRowContext(ctx, `SELECT id,name,role,scope,(last_used_at IS NULL OR last_used_at<?) FROM tokens WHERE token_hash=? AND revoked_at IS NULL`, cutoff, hash).Scan(&auth.ID, &auth.Name, &auth.Role, &auth.Scope, &stale)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TokenAuth{}, ErrNotFound
 	}
@@ -2015,7 +2114,7 @@ func (s *Store) Authenticate(ctx context.Context, token string) (TokenAuth, erro
 	}
 	// The guard repeats the staleness check so that concurrent requests
 	// write once between them.
-	_, err = s.db.ExecContext(ctx, `UPDATE tokens SET last_used_at=? WHERE token_hash=? AND revoked_at IS NULL AND coalesce(last_used_at,'')<?`, stamp(now), hash, cutoff)
+	_, err = s.q().ExecContext(ctx, `UPDATE tokens SET last_used_at=? WHERE token_hash=? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<?)`, stamp(now), hash, cutoff)
 	return auth, err
 }
 

@@ -15,7 +15,7 @@ type Project struct {
 
 // Projects lists the repositories added in the web app, by name.
 func (s *Store) Projects(ctx context.Context) ([]Project, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT repo,added_by,added_at FROM projects ORDER BY repo`)
+	rows, err := s.q().QueryContext(ctx, `SELECT repo,added_by,added_at FROM projects ORDER BY LOWER(repo), repo`)
 	if err != nil {
 		return nil, err
 	}
@@ -37,14 +37,14 @@ func (s *Store) Projects(ctx context.Context) ([]Project, error) {
 
 // AddProject adds a repository. Adding one that is already there does nothing.
 func (s *Store) AddProject(ctx context.Context, repo, by string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO projects(repo,added_by,added_at) VALUES(?,?,?) ON CONFLICT(repo) DO NOTHING`, repo, by, stamp(s.now()))
+	_, err := s.q().ExecContext(ctx, `INSERT INTO projects(repo,added_by,added_at) VALUES(?,?,?) ON CONFLICT DO NOTHING`, repo, by, stamp(s.now()))
 	return err
 }
 
 // RemoveProject removes a repository added in the web app. It reports whether
 // there was one to remove.
 func (s *Store) RemoveProject(ctx context.Context, repo string) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM projects WHERE repo=?`, repo)
+	result, err := s.q().ExecContext(ctx, `DELETE FROM projects WHERE LOWER(repo)=LOWER(?)`, repo)
 	if err != nil {
 		return false, err
 	}

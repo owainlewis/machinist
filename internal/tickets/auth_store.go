@@ -214,7 +214,7 @@ func (s *Store) CreateTokenSession(ctx context.Context, tokenID, userAgent, ipAd
 	absExp := now.Add(SessionAbsoluteTTL)
 	ua := truncateField(userAgent, 512)
 	ip := truncateField(ipAddress, 128)
-	_, err = s.db.ExecContext(ctx,
+	_, err = s.q().ExecContext(ctx,
 		`INSERT INTO sessions(id,token_hash,auth_method,user_id,token_id,user_agent,ip_address,created_at,last_seen_at,idle_expires_at,expires_at)
 		 VALUES(?,?,?,NULL,?,?,?,?,?,?,?)`,
 		id, hashToken(secret), AuthMethodToken, tokenID, ua, ip, stamp(now), stamp(now), stamp(idleExp), stamp(absExp),
@@ -256,7 +256,7 @@ func (s *Store) CreateUserSession(ctx context.Context, userID, userAgent, ipAddr
 	absExp := now.Add(SessionAbsoluteTTL)
 	ua := truncateField(userAgent, 512)
 	ip := truncateField(ipAddress, 128)
-	_, err = s.db.ExecContext(ctx,
+	_, err = s.q().ExecContext(ctx,
 		`INSERT INTO sessions(id,token_hash,auth_method,user_id,token_id,user_agent,ip_address,created_at,last_seen_at,idle_expires_at,expires_at)
 		 VALUES(?,?,?,?,NULL,?,?,?,?,?,?)`,
 		id, hashToken(secret), AuthMethodGitHub, userID, ua, ip, stamp(now), stamp(now), stamp(idleExp), stamp(absExp),
@@ -308,7 +308,7 @@ func (s *Store) AuthenticateSession(ctx context.Context, secret string) (Session
 		uAvatar   sql.NullString
 		uDisabled sql.NullString
 	)
-	err := s.db.QueryRowContext(ctx, `
+	err := s.q().QueryRowContext(ctx, `
 		SELECT
 			s.id, s.auth_method, s.user_id, s.token_id, s.expires_at, (s.last_seen_at < ?),
 			t.name, t.role, t.scope, t.revoked_at,
@@ -366,7 +366,7 @@ func (s *Store) AuthenticateSession(ctx context.Context, secret string) (Session
 		if absExp := parseTime(sql.NullString{String: expiresStr, Valid: true}); absExp != nil && newIdle.After(*absExp) {
 			newIdle = *absExp
 		}
-		_, err = s.db.ExecContext(ctx,
+		_, err = s.q().ExecContext(ctx,
 			`UPDATE sessions SET last_seen_at=?, idle_expires_at=? WHERE id=? AND revoked_at IS NULL AND last_seen_at<?`,
 			nowStamp, stamp(newIdle), auth.SessionID, cutoff,
 		)
@@ -379,7 +379,7 @@ func (s *Store) AuthenticateSession(ctx context.Context, secret string) (Session
 
 // RevokeSession marks a single session revoked immediately.
 func (s *Store) RevokeSession(ctx context.Context, sessionID string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL`, stamp(s.now()), sessionID)
+	res, err := s.q().ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL`, stamp(s.now()), sessionID)
 	if err != nil {
 		return err
 	}
@@ -403,9 +403,9 @@ func (s *Store) RevokeSessionForOwner(ctx context.Context, sessionID, userID, to
 	now := stamp(s.now())
 	switch {
 	case userID != "":
-		res, err = s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL`, now, sessionID, userID)
+		res, err = s.q().ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL`, now, sessionID, userID)
 	case tokenID != "":
-		res, err = s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE id=? AND token_id=? AND revoked_at IS NULL`, now, sessionID, tokenID)
+		res, err = s.q().ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE id=? AND token_id=? AND revoked_at IS NULL`, now, sessionID, tokenID)
 	default:
 		return ErrNotFound
 	}
@@ -427,7 +427,7 @@ func (s *Store) RevokeSessionBySecret(ctx context.Context, secret string) error 
 	if !strings.HasPrefix(secret, SessionPrefix) {
 		return ErrNotFound
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL`, stamp(s.now()), hashToken(secret))
+	res, err := s.q().ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL`, stamp(s.now()), hashToken(secret))
 	if err != nil {
 		return err
 	}
@@ -444,7 +444,7 @@ func (s *Store) RevokeSessionBySecret(ctx context.Context, secret string) error 
 // ListActiveSessionsForToken lists active unexpired sessions belonging to tokenID.
 func (s *Store) ListActiveSessionsForToken(ctx context.Context, tokenID string) ([]Session, error) {
 	nowStamp := stamp(s.now())
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q().QueryContext(ctx, `
 		SELECT id, auth_method, user_id, token_id, user_agent, ip_address, created_at, last_seen_at, idle_expires_at, expires_at
 		FROM sessions
 		WHERE token_id = ? AND revoked_at IS NULL AND idle_expires_at > ? AND expires_at > ?
@@ -461,7 +461,7 @@ func (s *Store) ListActiveSessionsForToken(ctx context.Context, tokenID string) 
 // ListActiveSessionsForUser lists active unexpired sessions belonging to userID.
 func (s *Store) ListActiveSessionsForUser(ctx context.Context, userID string) ([]Session, error) {
 	nowStamp := stamp(s.now())
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q().QueryContext(ctx, `
 		SELECT id, auth_method, user_id, token_id, user_agent, ip_address, created_at, last_seen_at, idle_expires_at, expires_at
 		FROM sessions
 		WHERE user_id = ? AND revoked_at IS NULL AND idle_expires_at > ? AND expires_at > ?
@@ -518,7 +518,7 @@ func (s *Store) CreateOAuthTransaction(ctx context.Context, provider, state, pkc
 	if inviteID != "" {
 		inviteArg = inviteID
 	}
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.q().ExecContext(ctx, `
 		INSERT INTO oauth_transactions(id_hash, provider, state, pkce_verifier, return_to, invite_id, expires_at, created_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
 		hashToken(secret), provider, state, pkceVerifier, returnTo, inviteArg, stamp(exp), stamp(now),
@@ -537,36 +537,27 @@ func (s *Store) ConsumeOAuthTransaction(ctx context.Context, secret string) (OAu
 	}
 	hash := hashToken(secret)
 	nowStamp := stamp(s.now().UTC())
-	var out OAuthTransaction
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		var (
-			inviteID   sql.NullString
-			expiresStr string
-			createdStr string
-		)
-		err := tx.QueryRowContext(ctx, `
-			SELECT provider, state, pkce_verifier, return_to, invite_id, expires_at, created_at
-			FROM oauth_transactions
-			WHERE id_hash = ? AND expires_at > ?`,
-			hash, nowStamp,
-		).Scan(&out.Provider, &out.State, &out.PKCEVerifier, &out.ReturnTo, &inviteID, &expiresStr, &createdStr)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_transactions WHERE id_hash = ?`, hash); err != nil {
-			return err
-		}
-		out.InviteID = inviteID.String
-		out.ExpiresAt = *parseTime(sql.NullString{String: expiresStr, Valid: true})
-		out.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
-		return nil
-	})
+	var (
+		out        OAuthTransaction
+		inviteID   sql.NullString
+		expiresStr string
+		createdStr string
+	)
+	err := s.q().QueryRowContext(ctx, `
+		DELETE FROM oauth_transactions
+		WHERE id_hash = ? AND expires_at > ?
+		RETURNING provider, state, pkce_verifier, return_to, invite_id, expires_at, created_at`,
+		hash, nowStamp,
+	).Scan(&out.Provider, &out.State, &out.PKCEVerifier, &out.ReturnTo, &inviteID, &expiresStr, &createdStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OAuthTransaction{}, ErrNotFound
+	}
 	if err != nil {
 		return OAuthTransaction{}, err
 	}
+	out.InviteID = inviteID.String
+	out.ExpiresAt = *parseTime(sql.NullString{String: expiresStr, Valid: true})
+	out.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
 	return out, nil
 }
 
@@ -608,7 +599,11 @@ func (s *Store) CreateInvite(ctx context.Context, role, githubLogin, email, crea
 	nowStamp := stamp(now)
 	expStamp := stamp(exp)
 
-	err = s.inTx(ctx, func(tx *sql.Tx) error {
+	err = s.inTx(ctx, func(tx querier) error {
+		// Serialize invite mutations against concurrent invites, logins, and user disables.
+		if _, err := tx.ExecContext(ctx, `UPDATE auth_state SET id = id WHERE id = 1`); err != nil {
+			return err
+		}
 		var existing int
 		if githubLogin != "" {
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE LOWER(github_login) = ?`, githubLogin).Scan(&existing); err != nil {
@@ -656,7 +651,7 @@ func (s *Store) CreateInvite(ctx context.Context, role, githubLogin, email, crea
 // ListPendingInvites returns unexpired, unaccepted, unrevoked invites, newest first.
 func (s *Store) ListPendingInvites(ctx context.Context) ([]Invite, error) {
 	nowStamp := stamp(s.now().UTC())
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q().QueryContext(ctx, `
 		SELECT id, role, github_login, email, created_by, expires_at, created_at
 		FROM invites
 		WHERE accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?
@@ -683,18 +678,23 @@ func (s *Store) ListPendingInvites(ctx context.Context) ([]Invite, error) {
 
 // RevokeInvite revokes a pending invite by ID.
 func (s *Store) RevokeInvite(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE invites SET revoked_at=? WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL`, stamp(s.now().UTC()), id)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.inTx(ctx, func(tx querier) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE auth_state SET id = id WHERE id = 1`); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE invites SET revoked_at=? WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL`, stamp(s.now().UTC()), id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 }
 
 // RegenerateInvite rotates an unexpired pending invite's secret and extends
@@ -708,7 +708,10 @@ func (s *Store) RegenerateInvite(ctx context.Context, id string) (Invite, string
 	now := s.now().UTC()
 	exp := now.Add(InviteTTL)
 	var inv Invite
-	err = s.inTx(ctx, func(tx *sql.Tx) error {
+	err = s.inTx(ctx, func(tx querier) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE auth_state SET id = id WHERE id = 1`); err != nil {
+			return err
+		}
 		var createdStr string
 		err := tx.QueryRowContext(ctx, `
 			SELECT id, role, github_login, email, created_by, created_at
@@ -744,7 +747,7 @@ func (s *Store) ValidateInviteSecret(ctx context.Context, secret string) (Invite
 	nowStamp := stamp(s.now().UTC())
 	var inv Invite
 	var expStr, createdStr string
-	err := s.db.QueryRowContext(ctx, `
+	err := s.q().QueryRowContext(ctx, `
 		SELECT id, role, github_login, email, created_by, expires_at, created_at
 		FROM invites
 		WHERE token_hash=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
@@ -795,7 +798,7 @@ func (s *Store) ResolveGitHubLogin(ctx context.Context, profile GitHubProfile, b
 	var result GitHubLoginResult
 	var retErr error
 
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
+	err := s.inTx(ctx, func(tx querier) error {
 		// Serialize bootstrap/invite provisioning on the singleton auth_state row.
 		if _, err := tx.ExecContext(ctx, `UPDATE auth_state SET id = id WHERE id = 1`); err != nil {
 			return err
@@ -982,13 +985,13 @@ func inviteMatchesProfile(inv Invite, loginLower string, verifiedEmails []string
 // ListUsers returns all team members ordered active first, then oldest first,
 // along with each member's most recent session activity timestamp.
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q().QueryContext(ctx, `
 		SELECT
 			u.id, u.role, u.github_id, u.github_login, u.email, u.name, u.avatar_url,
 			u.invited_by, u.disabled_at, u.created_at, u.updated_at,
 			(SELECT MAX(s.last_seen_at) FROM sessions s WHERE s.user_id = u.id)
 		FROM users u
-		ORDER BY (u.disabled_at IS NOT NULL) ASC, u.created_at ASC, u.id ASC`)
+		ORDER BY CASE WHEN u.disabled_at IS NULL THEN 0 ELSE 1 END ASC, u.created_at ASC, u.id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1029,7 +1032,7 @@ func (s *Store) FindUserByIDOrLogin(ctx context.Context, idOrLogin string) (User
 		createdStr string
 		updatedStr string
 	)
-	err := s.db.QueryRowContext(ctx, `
+	err := s.q().QueryRowContext(ctx, `
 		SELECT id, role, github_id, github_login, email, name, avatar_url, invited_by, disabled_at, created_at, updated_at
 		FROM users
 		WHERE id = ? OR LOWER(github_login) = LOWER(?)
@@ -1064,7 +1067,7 @@ func (s *Store) UpdateUser(ctx context.Context, id string, role *string, disable
 	nowStamp := stamp(now)
 	var updated User
 
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
+	err := s.inTx(ctx, func(tx querier) error {
 		// Serialize admin mutations on singleton auth_state row.
 		if _, err := tx.ExecContext(ctx, `UPDATE auth_state SET id = id WHERE id = 1`); err != nil {
 			return err
@@ -1159,9 +1162,9 @@ func (s *Store) PruneExpiredAuth(ctx context.Context) error {
 	now := s.now().UTC()
 	nowStamp := stamp(now)
 	oldStamp := stamp(now.Add(-sessionPruneRetention))
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM oauth_transactions WHERE expires_at < ?`, nowStamp); err != nil {
+	if _, err := s.q().ExecContext(ctx, `DELETE FROM oauth_transactions WHERE expires_at < ?`, nowStamp); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR expires_at < ?`, oldStamp, oldStamp)
+	_, err := s.q().ExecContext(ctx, `DELETE FROM sessions WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR expires_at < ?`, oldStamp, oldStamp)
 	return err
 }

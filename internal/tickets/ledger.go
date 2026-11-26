@@ -31,12 +31,12 @@ type Ledger struct {
 
 const figuresQuery = `SELECT t.id,t.human_commits,t.merged_at,
   (SELECT COUNT(DISTINCT e.consumed_by_run) FROM ticket_entries e WHERE e.ticket_id=t.id AND e.kind IN ('comment','review') AND e.consumed_by_run IS NOT NULL),
-  (SELECT COALESCE(SUM(r.tokens),0) FROM runs r WHERE r.ticket_id=t.id),
+  (SELECT CAST(COALESCE(SUM(r.tokens),0) AS BIGINT) FROM runs r WHERE r.ticket_id=t.id),
   (SELECT SUM(r.cost) FROM runs r WHERE r.ticket_id=t.id)
   FROM tickets t WHERE `
 
 func (s *Store) figures(ctx context.Context, where string, arguments ...any) ([]Figures, error) {
-	rows, err := s.db.QueryContext(ctx, figuresQuery+where, arguments...)
+	rows, err := s.q().QueryContext(ctx, figuresQuery+where, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ func (s *Store) figures(ctx context.Context, where string, arguments ...any) ([]
 
 // elapsed adds up how long each ticket's started runs ran, by ticket ID.
 func (s *Store) elapsed(ctx context.Context, where string, arguments ...any) (map[string]time.Duration, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.ticket_id,r.started_at,r.ended_at FROM runs r JOIN tickets t ON t.id=r.ticket_id
+	rows, err := s.q().QueryContext(ctx, `SELECT r.ticket_id,r.started_at,r.ended_at FROM runs r JOIN tickets t ON t.id=r.ticket_id
 	  WHERE r.started_at IS NOT NULL AND `+where, arguments...)
 	if err != nil {
 		return nil, err

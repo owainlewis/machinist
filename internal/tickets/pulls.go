@@ -2,7 +2,6 @@ package tickets
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
 )
@@ -12,7 +11,7 @@ import (
 // request has not yet merged or closed. Once it merges or closes, the job
 // leaves this list.
 func (s *Store) TicketsWithOpenPRs(ctx context.Context) ([]Ticket, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state IN (?,?,?) AND COALESCE(pr_number,0)>0 AND COALESCE(pr_state,'') IN ('',?) ORDER BY created_at`,
+	rows, err := s.q().QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state IN (?,?,?) AND COALESCE(pr_number,0)>0 AND COALESCE(pr_state,'') IN ('',?) ORDER BY created_at`,
 		StatePRReady, StateFailed, StateCancelled, PROpen)
 	if err != nil {
 		return nil, err
@@ -67,8 +66,8 @@ func (s *Store) SetPRState(ctx context.Context, listed Ticket, update PRUpdate) 
 	ticketID := listed.ID
 	var current Ticket
 	var same bool
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		ticket, err := loadTicket(ctx, tx, ticketID)
+	err := s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
 		if err != nil {
 			return err
 		}
@@ -142,8 +141,8 @@ type Shipped struct {
 func (s *Store) SetShipping(ctx context.Context, listed Ticket, shipped Shipped) (Ticket, bool, error) {
 	var updated Ticket
 	var changed bool
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		ticket, err := loadTicket(ctx, tx, listed.ID)
+	err := s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, listed.ID)
 		if err != nil || ticket.State != StatePRReady || ticket.Shipping == "" || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
 			return err
 		}
@@ -203,8 +202,8 @@ type StewardRequeueRequest struct {
 func (s *Store) StewardRequeue(ctx context.Context, listed Ticket, request StewardRequeueRequest) (Ticket, bool, error) {
 	var updated Ticket
 	var requeued bool
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		ticket, err := loadTicket(ctx, tx, listed.ID)
+	err := s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, listed.ID)
 		if err != nil || ticket.State != StatePRReady || ticket.Shipping == "" || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
 			return err
 		}
@@ -244,7 +243,7 @@ func (s *Store) StewardRequeue(ctx context.Context, listed Ticket, request Stewa
 // fetched is not mutated on GitHub.
 func (s *Store) StillShipping(ctx context.Context, listed Ticket) (bool, error) {
 	var ok bool
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
+	err := s.inTx(ctx, func(tx querier) error {
 		ticket, err := loadTicket(ctx, tx, listed.ID)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {

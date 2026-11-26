@@ -68,7 +68,7 @@ func lastAction(text string) string {
 	return found
 }
 
-func loadProgress(ctx context.Context, tx *sql.Tx, runID string) (progress, error) {
+func loadProgress(ctx context.Context, tx querier, runID string) (progress, error) {
 	var p progress
 	var started sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT step,step_started_at,action,partial FROM run_progress WHERE run=?`, runID).Scan(&p.step, &started, &p.action, &p.partial)
@@ -79,7 +79,7 @@ func loadProgress(ctx context.Context, tx *sql.Tx, runID string) (progress, erro
 	return p, err
 }
 
-func saveProgress(ctx context.Context, tx *sql.Tx, runID string, p progress) error {
+func saveProgress(ctx context.Context, tx querier, runID string, p progress) error {
 	if !p.changed {
 		return nil
 	}
@@ -100,7 +100,7 @@ func nullable(value string) any {
 // it has none.
 func (s *Store) RequestKey(ctx context.Context, ticketID string) (string, error) {
 	var key string
-	err := s.db.QueryRowContext(ctx, `SELECT source_key FROM ticket_entries WHERE ticket_id=? AND kind=? AND source_key IS NOT NULL ORDER BY id LIMIT 1`, ticketID, EntryRequest).Scan(&key)
+	err := s.q().QueryRowContext(ctx, `SELECT source_key FROM ticket_entries WHERE ticket_id=? AND kind=? AND source_key IS NOT NULL ORDER BY id LIMIT 1`, ticketID, EntryRequest).Scan(&key)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -111,7 +111,7 @@ func (s *Store) RequestKey(ctx context.Context, ticketID string) (string, error)
 // run is running or it has not started a step.
 func (s *Store) CurrentStep(ctx context.Context, ticketID string) (string, error) {
 	var step string
-	err := s.db.QueryRowContext(ctx, `SELECT p.step FROM runs r JOIN run_progress p ON p.run=r.id WHERE r.ticket_id=? AND r.status=? ORDER BY r.rowid DESC LIMIT 1`, ticketID, RunRunning).Scan(&step)
+	err := s.q().QueryRowContext(ctx, `SELECT p.step FROM runs r JOIN run_progress p ON p.run=r.id WHERE r.ticket_id=? AND r.status=? ORDER BY r.seq DESC, r.id DESC LIMIT 1`, ticketID, RunRunning).Scan(&step)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -131,7 +131,7 @@ type RunProgress struct {
 func (s *Store) RunProgress(ctx context.Context, runID string) (RunProgress, error) {
 	var p RunProgress
 	var started sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT step,step_started_at,action FROM run_progress WHERE run=?`, runID).Scan(&p.Step, &started, &p.Action)
+	err := s.q().QueryRowContext(ctx, `SELECT step,step_started_at,action FROM run_progress WHERE run=?`, runID).Scan(&p.Step, &started, &p.Action)
 	if err == sql.ErrNoRows {
 		return RunProgress{}, nil
 	}
@@ -168,7 +168,7 @@ func EventStepName(event protocol.RunEvent) (string, bool) {
 // RunStartedSteps returns the names of the steps that have started in a run,
 // in order.
 func (s *Store) RunStartedSteps(ctx context.Context, runID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT body FROM run_activity_events WHERE run=? AND (body LIKE '%"step.started"%' OR body LIKE '%"stage.started"%') ORDER BY sequence`, runID)
+	rows, err := s.q().QueryContext(ctx, `SELECT body FROM run_activity_events WHERE run=? AND (body LIKE '%"step.started"%' OR body LIKE '%"stage.started"%') ORDER BY sequence`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +196,7 @@ func (s *Store) RunStepAt(ctx context.Context, runID string, atSeq int64) (strin
 	if atSeq <= 0 {
 		return "", nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT body FROM run_activity_events WHERE run=? AND sequence<=? AND (body LIKE '%"step.started"%' OR body LIKE '%"stage.started"%') ORDER BY sequence DESC`, runID, atSeq)
+	rows, err := s.q().QueryContext(ctx, `SELECT body FROM run_activity_events WHERE run=? AND sequence<=? AND (body LIKE '%"step.started"%' OR body LIKE '%"stage.started"%') ORDER BY sequence DESC`, runID, atSeq)
 	if err != nil {
 		return "", err
 	}
