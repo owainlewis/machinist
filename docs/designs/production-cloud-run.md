@@ -4,7 +4,9 @@
 *   **Status:** Proposed
 *   **Date:** 2026-11-26
 *   **Issues:** ENG-213, ENG-216, ENG-178
-*   **Detailed Auth & Access Spec (Single Source of Truth):** [Spec 1: Identity and Access Control](identity-and-access.md)
+*   **Detailed Auth & Access Spec (Single Source of Truth):** [Spec 1: Identity and Access Control](identity-and-access.md) *(implemented)*
+*   **Detailed PostgreSQL Storage Spec:** [Spec 2: PostgreSQL Storage Backend](postgresql-storage.md)
+*   **Detailed Cloud Run Packaging Spec:** [Spec 3: Cloud Run Packaging & Production Guide](cloud-run-packaging.md)
 
 --------------------------------------------------------------------------------
 
@@ -100,16 +102,18 @@ must explicitly address these live SQLite-only constructs:
    status='queued' RETURNING ...` (retrying on 0 rows).
 3. **Replace SQLite-only SQL functions & types:**
    - `group_concat(...)` (`reports.go:39`) → `string_agg` on Postgres (or aggregate in Go).
-   - `COLLATE NOCASE` (`store.go:102` on `projects.repo`) → normalize lowercase in Go +
-     standard primary key.
-   - `BLOB` (`store.go:103` on `run_patches.body`) → `BYTEA` on Postgres.
+   - `COLLATE NOCASE` (`store.go:102` on `projects.repo`) → functional `LOWER(repo)` unique
+     index + targetless `ON CONFLICT DO NOTHING` + `ORDER BY LOWER(repo), repo` (preserving
+     original casing).
+   - `BLOB` (`store.go:103` on `run_patches.body`) → `BYTEA` on Postgres (plus `DOUBLE PRECISION`
+     for `cost`, `BIGINT` for `tokens`/`duration_millis`/`sequence`, and `CAST(SUM(tokens) AS BIGINT)`).
    - `substr(<ts>, 1, 10)` (`usage.go:28`, `stats.go`) and `coalesce(last_used_at, '') < ?`
-     (`store.go:1917, 1926`) → use `(last_used_at IS NULL OR last_used_at < ?)` and
-     consistent UTC date bucketing across SQLite and PostgreSQL.
-4. **Bypass filesystem helpers for `postgres://` URLs:** `tickets.Open` (`store.go:303, 370`)
-   calls `os.MkdirAll` / `os.Chmod`, and `config.LoadConfig` (`config.go:311–319`) calls
-   `resolveConfigPath` on `server.database`. Route `DATABASE_URL` cleanly through `pgxpool`
-   without touching local paths.
+     (`store.go:2009, 2018`) → use `(last_used_at IS NULL OR last_used_at < ?)` with canonical
+     fixed-width UTC RFC3339Nano `TEXT` timestamps preserving nanosecond precision.
+4. **Bypass filesystem helpers for `postgres://` URLs:** `tickets.Open` (`store.go:365`)
+   calls `os.MkdirAll` / `os.Chmod`, and `config.LoadConfig` (`config.go:362–377`) calls
+   `resolveConfigPath` on `server.database`. Route `DATABASE_URL` cleanly through
+   `pgx/v5/stdlib` (`QueryExecModeExec` for pooler safety) without touching local paths.
 5. **Versioned, expand-and-contract migrations:**
    - Use a monotonic `schema_migrations(version INT PRIMARY KEY, applied_at ...)` table.
    - Protect startup migrations with a transaction-scoped **`pg_advisory_xact_lock`** on a
@@ -165,20 +169,19 @@ container image** rather than mounted from a mutable bucket or edited over SSH.
 
 ### Reference `Dockerfile` Pattern
 
-Machinist already builds a control-plane container image in
-`deploy/kubernetes/control-plane.Dockerfile` (which bundles `machinist`, `ca-certificates`,
-a pinned recent `gh` CLI — currently `GH_VERSION=2.102.0`, supporting both `gh pr checks
---json` and `gh api --slurp` — and a non-root user).
+Machinist ships a dedicated lean Cloud Run control-plane image (`deploy/cloudrun/Dockerfile`,
+bundling only `machinist`, `ca-certificates`, and a SHA-256-verified `gh` CLI with no `curl`
+or `kubectl`, distinct from `deploy/kubernetes/control-plane.Dockerfile`).
 
-Milestone 3 publishes that official base image on each release (e.g.
-`ghcr.io/owainlewis/machinist:vX.Y.Z`) with `USER machinist`, `WORKDIR /srv/machinist`,
-`GH_CONFIG_DIR=/tmp/gh`, and `ENTRYPOINT` pre-configured. A team's own config repository
-then needs only a 4-line `Dockerfile` pinned to a release tag (never `:latest`):
+Spec 3 publishes that official base image on each release (`ghcr.io/owainlewis/machinist:vX.Y.Z`)
+with non-root `USER 1000:1000`, read-only `/srv/machinist`, `GH_CONFIG_DIR=/tmp/gh`, and
+`ENTRYPOINT` pre-configured. A team's own config repository then needs only a 3-line `Dockerfile`
+pinned to a release tag (never `:latest`), pushed to Artifact Registry for Cloud Run:
 
 ```dockerfile
 FROM ghcr.io/owainlewis/machinist:v0.6.0
-COPY --chown=machinist:machinist config.yaml /srv/machinist/config.yaml
-COPY --chown=machinist:machinist factory/ /srv/machinist/factory/
+COPY --chmod=0644 config.yaml /srv/machinist/config.yaml
+COPY --chmod=0755 factory/ /srv/machinist/factory/
 ```
 
 *(We can drop `gh` and move the base image to `distroless/static` later if `internal/ghclient`
@@ -199,9 +202,8 @@ No secret may ever be baked into the image or committed to `config.yaml`:
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) | **Never on the control plane** — live only on runners | — |
 
 **Cloud Run runtime conventions (Spec 3):**
-- When `$PORT` is set and `server.listen` is unset (or default loopback), listen on `":" + PORT`.
-- Bound parallel `gh` subprocess fanout in `internal/controlplane/settings_http.go` with a
-  small semaphore so large repo lists cannot exhaust Cloud Run container memory.
+- When `$PORT` is set, `server.listen` is unset, and `K_SERVICE != ""` (or `server.public_url` is set), listen on `":" + PORT`.
+- Bound concurrent GitHub lookups (`max 4` post-cache in `github_cache.go`) and process-wide `gh` subprocesses (`max 6` in `ghclient`) so large repo lists cannot exhaust Cloud Run container memory.
 
 --------------------------------------------------------------------------------
 
