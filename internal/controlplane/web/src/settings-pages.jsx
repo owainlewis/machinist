@@ -27,34 +27,38 @@ function useResource(paths, onSignedOut) {
   const [data, setDataState] = useState(() => resourceCache.get(key) ?? null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const version = useRef(0);
 
   const setData = useCallback(next => {
+    version.current += 1;
     setDataState(prev => {
       const value = typeof next === "function" ? next(prev) : next;
       if (value === null || value === undefined) resourceCache.delete(key);
       else resourceCache.set(key, value);
       return value;
     });
+    setRefreshing(false);
   }, [key]);
 
   useEffect(() => {
     let cancelled = false;
     const generation = cacheGeneration;
+    const requestVersion = version.current;
     setRefreshing(true);
     Promise.all(key.split(" ").map(path => api(path)))
       .then(found => {
-        if (cancelled || generation !== cacheGeneration) return;
+        if (cancelled || generation !== cacheGeneration || requestVersion !== version.current) return;
         resourceCache.set(key, found);
         setDataState(found);
         setError("");
       })
       .catch(failure => {
-        if (cancelled || generation !== cacheGeneration) return;
+        if (cancelled || generation !== cacheGeneration || requestVersion !== version.current) return;
         if (failure instanceof SignedOutError) onSignedOut();
         else setError(sentence(failure.message));
       })
       .finally(() => {
-        if (!cancelled && generation === cacheGeneration) setRefreshing(false);
+        if (!cancelled && generation === cacheGeneration && requestVersion === version.current) setRefreshing(false);
       });
     return () => { cancelled = true; };
   }, [key, onSignedOut]);

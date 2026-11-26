@@ -690,6 +690,193 @@ test("Settings: cold loads show layout-matched skeletons, cached tab switches re
   assert.ok(document.querySelector(".settings-skeleton"), "setup state was cleared on sign-out");
 });
 
+test("Settings: mutations on cached Projects and Tokens tabs are not overwritten by stale in-flight background GETs", { timeout: 30000 }, async context => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/settings/tokens" });
+  const previous = new Map();
+  for (const name of ["window", "document", "navigator", "localStorage", "Event", "MouseEvent", "HTMLElement", "getComputedStyle", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
+  }
+
+  const now = new Date().toISOString();
+  let projects = [{ repo: "owner/web", source: "app", added_by: "alice" }];
+  let tokens = [
+    { name: "alice", role: "operator", prefix: "mch_1a2b", created_at: "2026-11-01T12:00:00Z", current: true },
+  ];
+  let holdRoutes = new Set();
+  const pending = new Map();
+  const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
+
+  const makeSetup = () => ({
+    ready: projects.length > 0,
+    checks: [
+      check("GitHub", true),
+      check("Runner", true),
+      check("Projects", projects.length > 0),
+    ],
+    projects: projects.map(project => ({ ...project })),
+    install_url: "https://github.com/apps/machinistagent/installations/new",
+  });
+
+  globalThis.fetch = async (url, options = {}) => {
+    const method = options.method || "GET";
+    if (url === "/api/v1/repositories") return reply(200, { repositories: [], name: "alice" });
+    if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
+    if (url === "/api/v1/settings/github") return reply(200, {
+      handle: "machinist-bot",
+      auto_merge: false,
+      app: { id: 42, name: "machinistagent[bot]" },
+      repositories: [],
+    });
+    if (url === "/api/v1/setup" && method === "GET") {
+      // Snapshot the pre-mutation response when the request starts.
+      const snapshot = makeSetup();
+      if (holdRoutes.has(url)) {
+        return new Promise(resolve => {
+          if (!pending.has(url)) pending.set(url, []);
+          pending.get(url).push(() => resolve(reply(200, snapshot)));
+        });
+      }
+      return reply(200, snapshot);
+    }
+    if (url === "/api/v1/projects" && method === "POST") {
+      const { repo } = JSON.parse(options.body);
+      projects = [...projects, { repo, source: "app", added_by: "alice" }];
+      return reply(200, makeSetup());
+    }
+    if (url.startsWith("/api/v1/projects/") && method === "DELETE") {
+      const repo = url.slice("/api/v1/projects/".length).split("/").map(decodeURIComponent).join("/");
+      projects = projects.filter(project => project.repo !== repo);
+      return reply(200, makeSetup());
+    }
+    if (url === "/api/v1/tokens" && method === "GET") {
+      // Snapshot the pre-mutation token list when the request starts.
+      const snapshot = { tokens: tokens.map(token => ({ ...token })) };
+      if (holdRoutes.has(url)) {
+        return new Promise(resolve => {
+          if (!pending.has(url)) pending.set(url, []);
+          pending.get(url).push(() => resolve(reply(200, snapshot)));
+        });
+      }
+      return reply(200, snapshot);
+    }
+    if (url === "/api/v1/tokens" && method === "POST") {
+      const { name, role } = JSON.parse(options.body);
+      const secret = `mch_abcd${"0".repeat(60)}`;
+      const prefix = secret.slice(0, 8);
+      tokens = [...tokens, { name, role, prefix, created_at: now }];
+      return reply(201, { token: secret, name, role, prefix, tokens: tokens.map(token => ({ ...token })) });
+    }
+    return reply(404, { error: `no route ${url}` });
+  };
+
+  const releaseAll = async url => {
+    await eventually(() => assert.ok((pending.get(url) || []).length > 0, `expected pending request for ${url}`));
+    const resolvers = pending.get(url).splice(0);
+    await act(async () => { for (const done of resolvers) done(); });
+  };
+
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
+  let root;
+  context.after(async () => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    await act(async () => root?.unmount());
+    await server.close();
+    dom.window.close();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = false;
+  root = (await server.ssrLoadModule("/src/main.jsx")).appRoot;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  const heading = () => document.querySelector("h1")?.textContent;
+  const go = async hash => act(async () => {
+    window.location.hash = hash;
+    window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+  });
+
+  // Warm the Tokens cache and App's setup state.
+  await eventually(() => assert.equal(heading(), "Tokens"));
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 1));
+  await go("#/settings/github");
+  await eventually(() => assert.equal(heading(), "GitHub"));
+
+  // Tokens: return to cached tab with mount-time GET held, create a token before the GET resolves.
+  holdRoutes = new Set(["/api/v1/tokens", "/api/v1/setup"]);
+  await go("#/settings/tokens");
+  assert.equal(heading(), "Tokens");
+  assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 1);
+  await eventually(() => assert.equal((pending.get("/api/v1/tokens") || []).length, 1));
+
+  await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent.includes("New token")).click());
+  await type("#token-name", "mac-mini");
+  await act(async () => document.querySelector('.token-form button[type="submit"]').click());
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 2));
+  assert.match(document.querySelector('[aria-label="Tokens"]').textContent, /mac-mini/);
+
+  // Resolving the stale pre-mutation GET must not clobber component state or resourceCache.
+  await releaseAll("/api/v1/tokens");
+  await act(async () => new Promise(resolve => setTimeout(resolve, 40)));
+  assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 2);
+  assert.match(document.querySelector('[aria-label="Tokens"]').textContent, /mac-mini/);
+
+  await go("#/settings/github");
+  await eventually(() => assert.equal(heading(), "GitHub"));
+  await go("#/settings/tokens");
+  assert.equal(heading(), "Tokens");
+  assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 2, "resourceCache kept the created token");
+  assert.match(document.querySelector('[aria-label="Tokens"]').textContent, /mac-mini/);
+  await releaseAll("/api/v1/tokens");
+
+  // Projects: mount with cached setup while mount-time GET is held, add a project before the GET resolves.
+  await go("#/settings/projects");
+  assert.equal(heading(), "Projects");
+  assert.equal(document.querySelectorAll(".project-row").length, 1);
+  await eventually(() => assert.equal((pending.get("/api/v1/setup") || []).length, 1));
+
+  await type("#project-repo", "owner/api");
+  await act(async () => document.querySelector(".project-add button").click());
+  await eventually(() => assert.equal(document.querySelectorAll(".project-row").length, 2));
+  assert.match(document.querySelector(".setup-projects").textContent, /owner\/api/);
+
+  // Resolving the stale mount-time GET must not clobber local or App setup state.
+  await releaseAll("/api/v1/setup");
+  await act(async () => new Promise(resolve => setTimeout(resolve, 40)));
+  assert.equal(document.querySelectorAll(".project-row").length, 2);
+  assert.match(document.querySelector(".setup-projects").textContent, /owner\/api/);
+
+  // Switching away and back proves App's setup state also retained the mutation.
+  await go("#/settings/github");
+  await eventually(() => assert.equal(heading(), "GitHub"));
+  await go("#/settings/projects");
+  assert.equal(heading(), "Projects");
+  assert.equal(document.querySelectorAll(".project-row").length, 2, "App setup state kept the added project");
+  assert.match(document.querySelector(".setup-projects").textContent, /owner\/api/);
+  await releaseAll("/api/v1/setup");
+
+  // Projects: trigger a focus refresh() GET, remove a project before it resolves, then resolve the stale refresh().
+  await act(async () => window.dispatchEvent(new window.Event("focus")));
+  await eventually(() => assert.equal((pending.get("/api/v1/setup") || []).length, 1));
+
+  await act(async () => document.querySelector('[aria-label="Remove owner/api"]').click());
+  await eventually(() => assert.equal(document.querySelectorAll(".project-row").length, 1));
+  assert.doesNotMatch(document.querySelector(".setup-projects").textContent, /owner\/api/);
+
+  await releaseAll("/api/v1/setup");
+  await act(async () => new Promise(resolve => setTimeout(resolve, 40)));
+  assert.equal(document.querySelectorAll(".project-row").length, 1, "stale focus refresh did not re-add removed project");
+  assert.doesNotMatch(document.querySelector(".setup-projects").textContent, /owner\/api/);
+
+  // A subsequent focus refresh started after the mutation still applies newer server state.
+  holdRoutes = new Set();
+  projects = [...projects, { repo: "owner/mobile", source: "app", added_by: "alice" }];
+  await act(async () => window.dispatchEvent(new window.Event("focus")));
+  await eventually(() => assert.match(document.querySelector(".setup-projects").textContent, /owner\/mobile/));
+});
+
 async function type(selector, value) {
   const element = document.querySelector(selector);
   const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value").set;

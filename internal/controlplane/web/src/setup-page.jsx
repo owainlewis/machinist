@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, CircleAlert, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, SignedOutError } from "./api.js";
@@ -116,6 +116,7 @@ function useSetup({ initialSetup = null, onSignedOut, onChange }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const version = useRef(0);
 
   useEffect(() => {
     if (initialSetup) setSetup(current => current ?? initialSetup);
@@ -125,8 +126,10 @@ function useSetup({ initialSetup = null, onSignedOut, onChange }) {
     setBusy(true);
     try {
       const next = await request();
+      version.current += 1;
       setSetup(next);
       setError("");
+      setRefreshing(false);
       onChange?.(next);
       return true;
     } catch (failure) {
@@ -140,21 +143,22 @@ function useSetup({ initialSetup = null, onSignedOut, onChange }) {
 
   useEffect(() => {
     let cancelled = false;
+    const requestVersion = version.current;
     setRefreshing(true);
     api("/api/v1/setup")
       .then(next => {
-        if (cancelled) return;
+        if (cancelled || requestVersion !== version.current) return;
         setSetup(next);
         setError("");
         onChange?.(next);
       })
       .catch(failure => {
-        if (cancelled) return;
+        if (cancelled || requestVersion !== version.current) return;
         if (failure instanceof SignedOutError) onSignedOut();
         else setError(sentence(failure.message));
       })
       .finally(() => {
-        if (!cancelled) setRefreshing(false);
+        if (!cancelled && requestVersion === version.current) setRefreshing(false);
       });
     const timer = window.setInterval(refresh, refreshMillis);
     window.addEventListener("focus", refresh);
@@ -164,14 +168,15 @@ function useSetup({ initialSetup = null, onSignedOut, onChange }) {
       window.removeEventListener("focus", refresh);
     };
     async function refresh() {
+      const refreshVersion = version.current;
       try {
         const next = await api("/api/v1/setup");
-        if (cancelled) return;
+        if (cancelled || refreshVersion !== version.current) return;
         setSetup(next);
         setError("");
         onChange?.(next);
       } catch (failure) {
-        if (cancelled) return;
+        if (cancelled || refreshVersion !== version.current) return;
         if (failure instanceof SignedOutError) onSignedOut();
       }
     }
