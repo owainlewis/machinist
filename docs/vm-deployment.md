@@ -69,6 +69,17 @@ systemctl enable --now machinist-runner
 systemctl status machinist-control-plane machinist-runner
 ```
 
+Later edits to `config.yaml` (repositories, automations, Linear mapping, `github.auto_merge`,
+`github.steward_retries`) or files under `factory/` can be applied live without restarting the
+control plane or interrupting running jobs:
+
+```sh
+su - machinist -c 'cd && machinist reload'
+```
+
+Changes to `server.listen`, `server.database`, TLS paths, or `/etc/machinist/*.env` still
+require a service restart (`machinist reload` names any setting that needs one).
+
 ## Credentials
 
 Secrets go in two files that only root can read. systemd passes them to the services.

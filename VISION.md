@@ -54,47 +54,54 @@ file in your repository. It runs Codex on your VM every weekday at 9, and anyone
 
 Built and merged:
 
-- The run API, presets, local and Kubernetes runners, schedules, and headless jobs.
-- YAML configuration in the repository, created by `machinist init`.
-- One-off jobs with only the `default` preset, and the New job form.
-- The web app: a dashboard, jobs as a board or a list, each job drawn as a pipeline with
-  **Run again**, runners, and a Settings area with one page per topic, where repositories
-  can be added as projects.
-- Live runs. Each step's agent messages and actions stream to the job page as they happen.
-  The board shows the current step and elapsed time, and each step records its agent,
-  harness, model, tokens and cost. A failed job says why it failed.
+- The run API, presets, local, Docker (hardened defaults + 1-line gVisor `runtime: runsc`) and
+  Kubernetes runners, schedules, and headless jobs.
+- YAML configuration in the repository, created by `machinist init`, with live reload via
+  `machinist reload` (no control-plane restart needed for factory, repository, or Linear edits).
+- One-off jobs with only the `default` preset, the **New job** form, and **Automations** in
+  the web app (`Jobs → Automations`, each with its schedule, last result, **Run**, and **Run**
+  with an edited one-off prompt).
+- An **MCP server** (`POST /mcp`) so bots and team assistants can list jobs and automations,
+  run jobs, follow status and output, and cancel jobs using scoped bearer tokens (`read` and
+  `run`), each revocable on its own.
+- The web app: a dashboard, jobs as a 4-column board (**Queued**, **Running**, **Review**,
+  **Done**) or paginated list with Merge Gate risk badges (`Low`, `Medium`, `High`), each job
+  drawn as a pipeline (with a Merge Gate panel, `Held` state on `merge`, and **Run again**),
+  runners, and a Settings area with one page per topic where repositories can be added as
+  projects.
+- Live runs across local, Docker, and Kubernetes runners. Each step's agent messages and
+  actions stream to the job page as they happen. The board shows the current step and elapsed
+  time, and each step records its agent, harness, model, tokens and cost. A failed job says
+  why it failed.
 - Short-lived, one-repository tokens from a GitHub App. A local runner takes a new one
   before each step.
-- Tokens with roles: an operator token runs and watches jobs, a runner token takes work and
-  reaches only its own runs. Each token can be revoked on its own.
+- Tokens with roles and scopes: operator tokens (full, `run`, or `read` scope) and runner
+  tokens (restricted to taking work and reporting on their own runs).
 - Agent files: each step names an agent in `factory/agents/`, which picks its harness
   (Claude Code, Codex, Pi or Antigravity), its model and its prompt.
 - Harness matching. Runners report which harnesses they have, and a job goes only to a
   runner that has the agents it needs.
-- Jobs that ship themselves: a second agent reviews the change, then Machinist opens the
-  pull request, waits for its checks and merges it.
-- Linear. Assigning an issue to the Machinist app starts a job in the repository its project
+- Jobs that ship themselves: a second agent reviews the change, a read-only `merge-gate`
+  triages blast radius against `factory/prompts/merge-policy.md` or a repository's
+  `.machinist/merge-policy.md` (with observe mode when `github.auto_merge: false`), and
+  **PR Steward** automatically requeues bounded fix/rebase runs (`github.steward_retries`)
+  when CI checks fail or parallel merges introduce a branch conflict.
+- Linear. Delegating an issue to the Machinist app starts a job in the repository its project
   or team maps to. Machinist moves the issue as the job goes, and stops the job when the
   issue is unassigned or leaves In Progress.
+- Webhook notifications (`notify.webhook` and `server.public_url`) posting concise
+  Slack-compatible alerts when a job needs a person or fails.
 - Runs that stall stop. A step that prints nothing for its `idle_timeout` is stopped, and a
   run whose runner is lost is retried, at most three times in all.
-
-Automations already hold a saved prompt, repository, preset and schedule, and can be run
-through the API. They become saved jobs.
 
 ## Next
 
 In this order. Each ships on its own.
 
-1.  **Saved jobs in the web app.** Automations become saved jobs, listed on the Jobs page,
-    each with **Run**, its schedule, its last result, and Run with an edited prompt.
-2.  **An MCP server.** A bot such as a team assistant lists, runs, watches and cancels jobs
-    through MCP, with a token of its own. Tokens get narrower scopes, such as run-only and
-    read-only.
-3.  **An OpenCode harness.**
-4.  **Pick the host.** Runner labels and `runs_on:` on a job. A job with no label runs on
+1.  **An OpenCode harness.**
+2.  **Pick the host.** Runner labels and `runs_on:` on a job. A job with no label runs on
     any runner.
-5.  **Retry a failed run.** Retry a run that failed with backoff, not only one whose runner
+3.  **Retry a failed run.** Retry a run that failed with backoff, not only one whose runner
     was lost.
-6.  **Rerun from a step.** Save each step's workspace so a failed run can start again at
+4.  **Rerun from a step.** Save each step's workspace so a failed run can start again at
     the step that failed instead of from the clone.
