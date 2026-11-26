@@ -11,7 +11,16 @@ import { Button } from "@/components/ui/button";
 
 // A runner sends a heartbeat every 30 seconds while it is running work.
 const onlineWindowMillis = 90_000;
-const kinds = { local: "Local", kubernetes: "Kubernetes" };
+const kinds = { local: "Local", kubernetes: "Kubernetes", docker: "Docker" };
+
+export function runnerKindLabel(kind) {
+  if (!kind) return "";
+  if (kinds[kind]) return kinds[kind];
+  if (kind.startsWith("docker (") && kind.endsWith(")")) {
+    return "Docker" + kind.slice("docker".length);
+  }
+  return "";
+}
 
 // runnerHarnesses is the agent harnesses a runner reported, without the steps
 // every runner runs.
@@ -121,9 +130,10 @@ function Runner({ runner, onChange, onSignedOut }) {
   const online = runnerOnline(runner);
   const jobs = runner.jobs || [];
   const slots = runner.slots || 1;
+  const kindLabel = runnerKindLabel(runner.kind);
   return <li>
     <div className="runner-row">
-      <span className="runner-name"><strong>{runner.name}</strong>{kinds[runner.kind] && <span className="ticket-meta">{kinds[runner.kind]}</span>}{runnerHarnesses(runner).length > 0 && <span className="runner-harnesses">{runnerHarnesses(runner).map(name => <span key={name} className="runner-harness"><HarnessMark harness={name} /><span>{harnessLabel(name)}</span></span>)}</span>}</span>
+      <span className="runner-name"><strong>{runner.name}</strong>{kindLabel && <span className="ticket-meta">{kindLabel}</span>}{runnerHarnesses(runner).length > 0 && <span className="runner-harnesses">{runnerHarnesses(runner).map(name => <span key={name} className="runner-harness"><HarnessMark harness={name} /><span>{harnessLabel(name)}</span></span>)}</span>}</span>
       <span className="runner-slots"><SlotMeter busy={jobs.length} slots={slots} /><span className="ticket-meta">{jobs.length} of {slots} {slotWord(slots)} busy</span></span>
       <time className="ticket-meta" dateTime={runner.last_contact}>Last contact {relativeTime(runner.last_contact)}</time>
       <span className={online ? "pill pill-success" : "pill pill-warning"}><span className="live-dot" data-live={online || undefined} aria-hidden="true" />{online ? "Online" : "Not responding"}</span>

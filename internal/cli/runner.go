@@ -102,6 +102,16 @@ func loadRunner(ctx context.Context, options *commandOptions) (config.Runner, ag
 		executor, err := agentrunner.NewKubernetes(runnerConfig)
 		return runnerConfig, executor, err
 	}
+	if runnerConfig.Docker != nil {
+		executor, err := agentrunner.NewDocker(ctx, runnerConfig, options.stderr)
+		if err == nil {
+			// A failed scope lookup must not prevent the runner from taking work.
+			if scopes, scopeErr := ghclient.New().TokenScopes(ctx); scopeErr == nil {
+				warnAboutTokenScopes(options.stderr, scopes)
+			}
+		}
+		return runnerConfig, executor, err
+	}
 	executor, err := agentrunner.NewLocal(runnerConfig)
 	if err == nil {
 		// A failed scope lookup must not prevent the runner from taking work.

@@ -42,6 +42,10 @@ type Daemon struct {
 	installed []string
 }
 
+type harnessProber interface {
+	ProbeHarnesses(ctx context.Context) ([]string, error)
+}
+
 func NewDaemon(runnerConfig config.Runner, executor Executor, log io.Writer) (*Daemon, error) {
 	token, err := runnerConfig.Token()
 	if err != nil {
@@ -58,10 +62,23 @@ func NewDaemon(runnerConfig config.Runner, executor Executor, log io.Writer) (*D
 		retryInterval:     2 * time.Second,
 		maxBackoff:        time.Minute,
 	}
-	// Steps on a local runner run the harnesses found on this PATH. A
-	// Kubernetes runner's steps run in its image, which it cannot see.
-	if runnerConfig.Kind() == "local" {
+	// Steps on a local runner run the harnesses found on this PATH. A Docker
+	// runner uses configured docker.harnesses or probes its image. A Kubernetes
+	// runner's steps run in its cluster image, which it cannot see.
+	switch {
+	case runnerConfig.Kind() == "local":
 		daemon.installed = harness.Installed(exec.LookPath)
+	case runnerConfig.Docker != nil && len(runnerConfig.Docker.Harnesses) > 0:
+		daemon.installed = append([]string(nil), runnerConfig.Docker.Harnesses...)
+	default:
+		if prober, ok := executor.(harnessProber); ok {
+			found, probeErr := prober.ProbeHarnesses(context.Background())
+			if probeErr != nil {
+				fmt.Fprintf(log, "machinist: warning: could not probe harnesses: %v\n", probeErr)
+			} else {
+				daemon.installed = found
+			}
+		}
 	}
 	return daemon, nil
 }

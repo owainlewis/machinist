@@ -58,12 +58,97 @@ Antigravity waits for a runner that has it instead of failing on one that doesn'
 with its own `program` is not checked. Install a harness and restart the runner for it to
 count.
 
+A Docker runner probes its image at startup for `agy`, `claude`, `codex` and `pi` (unless
+`docker.harnesses` lists them explicitly), so it reports the image's harnesses on the Runners
+page and only takes jobs its image can run.
+
 A Kubernetes runner takes any job, because its image decides which harnesses exist.
 
 The Runners page shows each runner's harnesses. When no online runner can run a preset,
 the Settings overview says which harness is missing. Queued jobs that wait for one are
 named on the Runners page and on the job's page, with the harnesses they wait for. A
 `machinist agent <name>` call in a shell comment does not count.
+
+## Docker runner
+
+Run each job in an ephemeral, hardened container on a single Linux or macOS host, without
+Kubernetes. Add a `docker:` block to `runner.yaml` (leaving out `docker:` and `kubernetes:`
+keeps the bare-metal local runner unchanged).
+
+```yaml
+control_plane: http://10.0.0.5:7331
+token_file: .machinist/runner.token
+data_directory: .machinist/runner
+slots: 2
+
+docker:
+  image: ghcr.io/owainlewis/machinist-runner:latest
+  runtime: ""            # default vanilla Docker (runc); set "runsc" for gVisor
+  network: ""            # optional Docker network (e.g. internal bridge with egress proxy)
+  proxy_url: ""          # optional HTTP egress proxy URL
+  memory: "4g"           # default container memory limit
+  cpus: 2                # default CPU limit
+  pids_limit: 512        # prevent fork bombs
+  env: [ANTHROPIC_API_KEY]
+  # harnesses: [claude, codex]  # optional; probed from the image when omitted
+```
+
+### Hardened defaults
+
+Every Docker run starts a fresh container with:
+
+- `--rm` so containers are removed as soon as the run finishes
+- non-root `--user` matching the runner user (or `1000:1000` if started as root)
+- `--read-only` root filesystem
+- `--cap-drop=ALL` and `--security-opt=no-new-privileges`
+- `--pids-limit` (default `512`), `--memory` (default `4g`), and `--cpus` (default `2`)
+- isolated per-run mounts for workspace, control directory, home, `/tmp`, and exchange (never
+  mounting the host user's home directory)
+- secret values (`GH_TOKEN` and `env` variables) passed through process environment (`-e NAME`),
+  never on the command line or in `request.json`
+
+Step output and progress stream live to the control plane as `events.jsonl` is written inside
+the run's mounted exchange directory, just like the local runner. Cancelling a job or hitting
+the run timeout runs `docker rm -f` so no orphan container remains.
+
+Docker runners do not support `login: true`.
+
+### 1-line gVisor upgrade (`runtime: runsc`)
+
+By default, Docker uses its standard OCI runtime (`runc`). On Linux, Machinist logs a note at
+startup when `runtime` is unset to remind operators that `runc` is active and `runtime: runsc`
+is available for untrusted repositories.
+
+To run containers under gVisor:
+
+1. Install `runsc` and register it in `/etc/docker/daemon.json` (`runsc install && systemctl reload docker`).
+2. Set one line in `runner.yaml`:
+
+   ```yaml
+   docker:
+     image: ghcr.io/owainlewis/machinist-runner:latest
+     runtime: runsc
+   ```
+
+`machinist runner check` and `machinist runner start` verify via `docker info` that Docker
+reports the configured runtime installed before taking work, and report `Docker (runsc)` on
+the Runners page (or `Docker` with the default runtime).
+
+### Checking and starting
+
+Set `GH_TOKEN` (unless the control plane uses a GitHub App) and any variables listed in `env`,
+then run:
+
+```sh
+machinist runner check --repo owner/name --config runner.yaml
+```
+
+```sh
+machinist runner start --config runner.yaml
+```
+
+To restrict outbound traffic, attach the container to an internal Docker bridge with `network:`
+and point `proxy_url:` at an HTTP CONNECT egress proxy.
 
 ## Kubernetes runner
 
