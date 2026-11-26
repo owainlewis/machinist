@@ -481,8 +481,10 @@ a.source:hover span { text-decoration: underline; }
 @keyframes run-spin { to { transform: rotate(360deg); } }
 @keyframes run-sweep { from { background-position: -100% 0; } to { background-position: 200% 0; } }
 @keyframes live-pulse { 50% { opacity: .45; } }
+@keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) {
   .board-dot, .live-dot, .board-card[data-state="running"]::before, .pipeline li[data-state="running"] .pipeline-node::after { animation: none; }
+  .skeleton { animation: none; background: var(--muted); }
   .board-card:hover { transform: none; }
 }
 
@@ -525,6 +527,33 @@ a.source:hover span { text-decoration: underline; }
 .settings-nav-item-active, .settings-nav-item-active:hover { background: var(--surface); box-shadow: inset 0 0 0 1px var(--border); color: var(--foreground); font-weight: 500; }
 .settings-nav-item-active::before { position: absolute; top: 8px; bottom: 8px; left: 0; width: 2px; border-radius: 2px; background: var(--primary); content: ""; }
 .settings-body { display: flex; min-width: 0; max-width: 820px; flex-direction: column; gap: 20px; }
+.settings-head { min-height: 52px; }
+.settings-head-main { min-width: 0; }
+.settings-head-title { display: flex; align-items: center; gap: 8px; }
+.settings-head-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.settings-sub-spacer { visibility: hidden; user-select: none; }
+.settings-refresh { display: inline-flex; width: 16px; height: 16px; flex: none; align-items: center; justify-content: center; color: var(--faint); }
+.settings-skeleton { display: flex; flex-direction: column; gap: 20px; }
+.skeleton { display: block; border-radius: 6px; background: linear-gradient(90deg, var(--muted) 25%, color-mix(in srgb, var(--foreground) 7%, var(--muted)) 50%, var(--muted) 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.6s ease-in-out infinite; }
+.skeleton-stack { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.skeleton-grow { flex: 1; }
+.skeleton-sub { display: inline-block; width: 220px; max-width: 100%; height: 13px; vertical-align: middle; }
+.skeleton-heading { width: 120px; height: 15px; }
+.skeleton-label { width: 92px; height: 13px; }
+.skeleton-field-label { margin-bottom: 5px; }
+.skeleton-title { width: 148px; max-width: 100%; height: 14px; }
+.skeleton-text { width: 280px; max-width: 100%; height: 12px; opacity: .75; }
+.skeleton-meta { width: 112px; height: 12px; opacity: .75; }
+.skeleton-pill { width: 72px; height: 21px; border-radius: 999px; }
+.skeleton-button { width: 96px; height: 32px; border-radius: 8px; }
+.skeleton-add-button { width: 78px; height: 36px; flex: none; }
+.skeleton-button-sm { width: 76px; height: 28px; border-radius: 7px; }
+.skeleton-input { flex: 1; height: 36px; border-radius: 8px; }
+.skeleton-icon { width: 30px; height: 30px; border-radius: 8px; }
+.skeleton-dot { width: 14px; height: 14px; border-radius: 999px; }
+.skeleton-pipeline-nodes { display: flex; align-items: center; overflow: hidden; padding: 4px; }
+.skeleton-pipeline-node { display: flex; min-width: 120px; flex: 1 1 0; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); padding: 9px 10px; }
+.skeleton-agent-row { display: grid; grid-template-columns: 14px 14px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px 14px; }
 .settings-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .settings-link { display: inline-flex; align-items: center; gap: 4px; color: var(--primary); font-size: 13px; }
 .settings-link:hover { text-decoration: underline; }
@@ -661,9 +690,9 @@ a.source:hover span { text-decoration: underline; }
 }
 @media (max-width: 560px) {
   .setup-check { grid-template-columns: 1fr auto; gap: 8px; }
-  .setup-check .pill { justify-self: start; }
+  .setup-check .pill, .setup-check .skeleton-pill { justify-self: start; }
   .setup-check > div { grid-column: 1 / -1; }
-  .setup-check a.setup-check-open { grid-row: 1; grid-column: 2; }
+  .setup-check a.setup-check-open, .setup-check .skeleton-icon { grid-row: 1; grid-column: 2; }
   .project-row { flex-direction: column; align-items: flex-start; }
 }
 .nav-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 999px; background: var(--warning); }

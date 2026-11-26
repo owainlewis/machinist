@@ -448,6 +448,248 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   await eventually(() => assert.ok(document.querySelector("#token"), "signed out"));
 });
 
+test("Settings: cold loads show layout-matched skeletons, cached tab switches render immediately while revalidating, errors show cleanly, and sign-out clears the cache", { timeout: 30000 }, async context => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/settings/overview" });
+  const previous = new Map();
+  for (const name of ["window", "document", "navigator", "localStorage", "Event", "MouseEvent", "HTMLElement", "getComputedStyle", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
+  }
+
+  let signedIn = true;
+  let githubHandle = "machinist-bot";
+  let setupVersion = 1;
+  let holdRoutes = new Set(["/api/v1/setup", "/api/v1/settings/github", "/api/v1/settings/linear", "/api/v1/tokens", "/api/v1/presets", "/api/v1/agents"]);
+  let failRoutes = new Map();
+  const pending = new Map();
+  const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
+
+  const makeSetup = () => ({
+    ready: true,
+    checks: [
+      check("GitHub", true),
+      check("Runner", true),
+      check("Projects", true),
+    ],
+    projects: [{ repo: `owner/web-v${setupVersion}`, source: "app", added_by: "alice" }],
+    install_url: "https://github.com/apps/machinistagent/installations/new",
+  });
+  const makeGitHub = () => ({
+    handle: githubHandle,
+    auto_merge: false,
+    app: { id: 42, name: "machinistagent[bot]", install_url: "https://github.com/apps/machinistagent/installations/new" },
+    repositories: [{ repo: "owner/web", default_branch: "main", protected: true, admin: false, warnings: [] }],
+  });
+  const makeLinear = () => ({
+    enabled: false,
+    allowed_users: [],
+    teams: [],
+    credential_env: ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"],
+    renews: true,
+    docs: "https://example.com/linear.md",
+  });
+  const makeTokens = () => ({
+    tokens: [{ name: "alice", role: "operator", prefix: "mch_1a2b", created_at: "2026-11-01T12:00:00Z", current: true }],
+  });
+  const makePresets = () => ({
+    default: "default",
+    presets: [{ name: "default", description: "Default pipeline.", steps: [{ name: "checkout", run: "checkout.sh", agents: [] }] }],
+  });
+  const makeAgents = () => ({
+    agents: [{ name: "implement", harness: "claude", model: "opus", prompt: "Implement.", presets: ["default"], uses: [] }],
+  });
+
+  const respond = url => {
+    if (failRoutes.has(url)) return reply(500, { error: failRoutes.get(url) });
+    if (url === "/api/v1/setup") return reply(200, makeSetup());
+    if (url === "/api/v1/settings/github") return reply(200, makeGitHub());
+    if (url === "/api/v1/settings/linear") return reply(200, makeLinear());
+    if (url === "/api/v1/tokens") return reply(200, makeTokens());
+    if (url === "/api/v1/presets") return reply(200, makePresets());
+    if (url === "/api/v1/agents") return reply(200, makeAgents());
+    return reply(404, { error: `no route ${url}` });
+  };
+
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === "/api/v1/session" && options.method === "POST") {
+      signedIn = true;
+      return reply(200, { name: "alice" });
+    }
+    if (url === "/api/v1/session" && options.method === "DELETE") {
+      signedIn = false;
+      return { ok: true, status: 204, json: async () => null };
+    }
+    if (!signedIn) return reply(401, { error: "a token is required" });
+    if (url === "/api/v1/repositories") return reply(200, { repositories: [], name: "alice" });
+    if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
+    if (holdRoutes.has(url)) {
+      return new Promise(resolve => {
+        if (!pending.has(url)) pending.set(url, []);
+        pending.get(url).push(() => resolve(respond(url)));
+      });
+    }
+    return respond(url);
+  };
+
+  const release = async url => {
+    await eventually(() => assert.ok((pending.get(url) || []).length > 0, `expected pending request for ${url}`));
+    const resolvers = pending.get(url).splice(0);
+    await act(async () => { for (const done of resolvers) done(); });
+  };
+
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
+  let root;
+  context.after(async () => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    await act(async () => root?.unmount());
+    await server.close();
+    dom.window.close();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = false;
+  root = (await server.ssrLoadModule("/src/main.jsx")).appRoot;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  const heading = () => document.querySelector("h1")?.textContent;
+  const go = async hash => act(async () => {
+    window.location.hash = hash;
+    window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+  });
+
+  // Cold load on Overview: shows layout-matched skeleton with subtitle skeleton and role="status", no bare page-note.
+  await eventually(() => assert.equal(heading(), "Overview"));
+  assert.ok(document.querySelector(".settings-head .page-sub .skeleton-sub"), "subtitle geometry reserved while loading");
+  assert.equal(document.querySelector(".settings-skeleton")?.getAttribute("role"), "status");
+  assert.match(document.querySelector(".settings-skeleton").textContent, /Checking setup/);
+  assert.equal(document.querySelectorAll(".settings-skeleton .setup-check").length, 4);
+  assert.equal(document.querySelector("p.page-note[role='status']"), null);
+  assert.equal(document.querySelector(".settings-refresh"), null, "no refresh indicator during cold load");
+
+  // Cold load on Projects (while setup is still held): shows layout-matched projects skeleton.
+  await go("#/settings/projects");
+  await eventually(() => assert.equal(heading(), "Projects"));
+  assert.ok(document.querySelector(".settings-head .page-sub .skeleton-sub"));
+  assert.match(document.querySelector(".settings-skeleton").textContent, /Loading projects/);
+  assert.equal(document.querySelectorAll(".settings-skeleton .project-row").length, 2);
+
+  // Cold load on GitHub, Linear, Tokens, Presets: each shows layout-matched skeletons and header action placeholders.
+  await go("#/settings/github");
+  await eventually(() => assert.equal(heading(), "GitHub"));
+  assert.ok(document.querySelector(".settings-head .page-sub .skeleton-sub"));
+  assert.match(document.querySelector(".settings-skeleton").textContent, /Asking GitHub/);
+  assert.equal(document.querySelectorAll(".settings-skeleton .settings-fact").length, 3);
+
+  await go("#/settings/linear");
+  await eventually(() => assert.equal(heading(), "Linear"));
+  assert.ok(document.querySelector(".settings-head .page-sub .skeleton-sub"));
+  assert.ok(document.querySelector(".settings-head-actions .skeleton-pill"), "Linear reserves status pill geometry");
+  assert.match(document.querySelector(".settings-skeleton").textContent, /Loading Linear/);
+  assert.equal(document.querySelectorAll(".settings-skeleton .settings-fact").length, 4);
+
+  await go("#/settings/tokens");
+  await eventually(() => assert.equal(heading(), "Tokens"));
+  assert.ok(document.querySelector(".settings-head .page-sub .skeleton-sub"));
+  assert.ok(document.querySelector(".settings-head-actions .skeleton-button"), "Tokens reserves New token button geometry");
+  assert.match(document.querySelector(".settings-skeleton").textContent, /Loading tokens/);
+  assert.equal(document.querySelectorAll(".settings-skeleton .token-row").length, 3);
+
+  await go("#/settings/presets");
+  await eventually(() => assert.equal(heading(), "Presets and agents"));
+  assert.ok(document.querySelector(".settings-head .page-sub .skeleton-sub"));
+  assert.match(document.querySelector(".settings-skeleton").textContent, /Loading presets/);
+  assert.equal(document.querySelectorAll(".settings-skeleton .preset-card").length, 2);
+
+  // Cold error state replaces the skeleton with role="alert" without leaving a loading status behind.
+  failRoutes.set("/api/v1/settings/github", "github rate limit exceeded");
+  holdRoutes.delete("/api/v1/settings/github");
+  await go("#/settings/github");
+  await eventually(() => assert.match(document.querySelector('[role="alert"]')?.textContent || "", /Github rate limit exceeded\./));
+  assert.equal(document.querySelector(".settings-skeleton"), null);
+  assert.ok(document.querySelector(".settings-head .page-sub"), "header keeps subtitle row height on error");
+  failRoutes.delete("/api/v1/settings/github");
+
+  // Populate caches for all tabs by releasing requests cleanly.
+  holdRoutes = new Set();
+  for (const resolvers of pending.values()) {
+    await act(async () => { for (const done of resolvers.splice(0)) done(); });
+  }
+  await go("#/settings/overview");
+  await eventually(() => assert.match(document.querySelector(".page-sub")?.textContent || "", /Machinist is ready to take jobs\./));
+  await go("#/settings/github");
+  await eventually(() => assert.match(document.querySelector(".settings-facts")?.textContent || "", /machinist-bot/));
+  await go("#/settings/linear");
+  await eventually(() => assert.match(document.querySelector(".settings-howto")?.textContent || "", /LINEAR_CLIENT_ID/));
+  await go("#/settings/tokens");
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 1));
+  await go("#/settings/presets");
+  await eventually(() => assert.equal(document.querySelectorAll(".preset-card").length, 1));
+
+  // Now hold requests again and switch between cached tabs: cached data renders immediately with no skeleton flash.
+  holdRoutes = new Set(["/api/v1/setup", "/api/v1/settings/github", "/api/v1/settings/linear", "/api/v1/tokens", "/api/v1/presets", "/api/v1/agents"]);
+  setupVersion = 2;
+  await go("#/settings/projects");
+  assert.equal(heading(), "Projects");
+  assert.equal(document.querySelector(".settings-skeleton"), null, "Projects renders from setup prop immediately");
+  assert.match(document.querySelector(".project-row")?.textContent || "", /owner\/web-v1/);
+  assert.equal(document.querySelector('[aria-label="Remove owner/web-v1"]').disabled, false, "background refresh does not disable actions");
+  assert.ok(document.querySelector('.settings-refresh[aria-label="Refreshing Projects"]'), "shows subtle refresh indicator");
+  await release("/api/v1/setup");
+  await eventually(() => assert.match(document.querySelector(".project-row")?.textContent || "", /owner\/web-v2/));
+  await eventually(() => assert.equal(document.querySelector(".settings-refresh"), null));
+
+  githubHandle = "machinist-bot-v2";
+  await go("#/settings/github");
+  assert.equal(heading(), "GitHub");
+  assert.equal(document.querySelector(".settings-skeleton"), null, "GitHub renders cached data immediately");
+  assert.match(document.querySelector(".settings-facts").textContent, /machinist-bot/);
+  assert.ok(document.querySelector('.settings-refresh[aria-label="Refreshing GitHub"]'));
+  await release("/api/v1/settings/github");
+  await eventually(() => assert.match(document.querySelector(".settings-facts").textContent, /machinist-bot-v2/));
+  await eventually(() => assert.equal(document.querySelector(".settings-refresh"), null));
+
+  // Background revalidation error on a cached tab shows an alert while keeping cached content visible.
+  failRoutes.set("/api/v1/settings/linear", "linear api unavailable");
+  await go("#/settings/linear");
+  assert.equal(document.querySelector(".settings-skeleton"), null);
+  assert.match(document.querySelector(".settings-howto").textContent, /LINEAR_CLIENT_ID/);
+  await release("/api/v1/settings/linear");
+  await eventually(() => assert.match(document.querySelector('[role="alert"]')?.textContent || "", /Linear api unavailable\./));
+  assert.match(document.querySelector(".settings-howto").textContent, /LINEAR_CLIENT_ID/, "cached Linear view stays visible on refresh failure");
+  failRoutes.delete("/api/v1/settings/linear");
+
+  // Tokens and Presets also render immediately from SWR cache while background refresh is pending.
+  await go("#/settings/tokens");
+  assert.equal(document.querySelector(".settings-skeleton"), null);
+  assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 1);
+  assert.ok(document.querySelector('.settings-refresh[aria-label="Refreshing Tokens"]'));
+  await release("/api/v1/tokens");
+  await eventually(() => assert.equal(document.querySelector(".settings-refresh"), null));
+
+  await go("#/settings/presets");
+  assert.equal(document.querySelector(".settings-skeleton"), null);
+  assert.equal(document.querySelectorAll(".preset-card").length, 1);
+  assert.ok(document.querySelector('.settings-refresh[aria-label="Refreshing Presets and agents"]'));
+  await release("/api/v1/presets");
+  await release("/api/v1/agents");
+  await eventually(() => assert.equal(document.querySelector(".settings-refresh"), null));
+
+  // Signing out clears both the SWR resource cache and setup state so the next session cold-loads with skeletons.
+  await act(async () => document.querySelector('button[aria-label="Sign out"]').click());
+  await eventually(() => assert.ok(document.querySelector("#token")));
+  await type("#token", "good");
+  await act(async () => document.querySelector("form button").click());
+  await eventually(() => assert.equal(heading(), "Presets and agents"));
+  assert.ok(document.querySelector(".settings-skeleton"), "Presets cache was cleared on sign-out");
+  assert.equal(document.querySelector(".preset-card:not(.settings-skeleton .preset-card)"), null);
+
+  await go("#/settings/overview");
+  await eventually(() => assert.equal(heading(), "Overview"));
+  assert.ok(document.querySelector(".settings-skeleton"), "setup state was cleared on sign-out");
+});
+
 async function type(selector, value) {
   const element = document.querySelector(selector);
   const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value").set;

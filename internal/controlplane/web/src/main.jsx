@@ -14,6 +14,7 @@ import { NewJobPage } from "./new-job-page.jsx";
 import { RunnersPage } from "./runners.jsx";
 import { settingsNeedAttention, shouldOpenSetup } from "./setup.js";
 import { SettingsPage } from "./settings-page.jsx";
+import { clearSettingsCache } from "./settings-pages.jsx";
 import { SignIn } from "./sign-in.jsx";
 import "./styles.css";
 
@@ -42,6 +43,8 @@ function App() {
   const [route, setRoute] = useState(() => routeFromHash(followRedirect()));
   const [setup, setSetup] = useState(null);
   const signedOut = useCallback(() => {
+    clearSettingsCache();
+    setSetup(null);
     setSession({ checked: true, signedIn: false });
     setStatus(emptyStatus);
     setLoaded(false);
@@ -94,10 +97,13 @@ function App() {
   // A new install opens on the setup checklist until every required step is done.
   useEffect(() => {
     if (!session.signedIn) return;
+    let cancelled = false;
     api("/api/v1/setup").then(found => {
+      if (cancelled) return;
       setSetup(found);
       if (shouldOpenSetup(found, window.location.hash)) window.location.hash = settingsHref("overview");
     }).catch(() => {});
+    return () => { cancelled = true; };
   }, [session.signedIn]);
 
   async function signOut() {
