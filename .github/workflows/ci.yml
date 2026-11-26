@@ -29,6 +29,8 @@ jobs:
           cache-dependency-path: internal/controlplane/web/package-lock.json
       - name: Test Kubernetes deployment safety
         run: python3 -m unittest discover -s deploy/kubernetes -p 'test_*.py'
+      - name: Test Cloud Run packaging safety
+        run: python3 -m unittest discover -s deploy/cloudrun -p 'test_*.py'
       - name: Test issue triage
         run: node --test .github/scripts/issue-triage.test.cjs
       - name: Test release notes

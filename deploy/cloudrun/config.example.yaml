@@ -1,0 +1,24 @@
+# Example Cloud Run control-plane configuration (zero secrets baked in).
+#
+# Omit server.listen (Machinist binds :$PORT automatically on Cloud Run) and
+# server.database (supplied via the DATABASE_URL secret).
+
+server:
+  public_url: https://machinist.example.com
+  # 1 = Cloud Run behind Google Front End (GFE).
+  # 2 = External HTTPS Load Balancer / Cloud Armor in front of Cloud Run.
+  trusted_proxy_hops: 1
+
+auth:
+  # Set MACHINIST_BOOTSTRAP_ADMIN=github:<your-login> on first deploy to become
+  # the initial admin; inert forever after first login.
+  github:
+    enabled: true
+
+github:
+  handle: machinist-bot
+  app:
+    id: 123456
+    # Mounted read-only from GCP Secret Manager via:
+    # --set-secrets=/secrets/github-app.pem=machinist-github-app-key:1
+    private_key_file: /secrets/github-app.pem

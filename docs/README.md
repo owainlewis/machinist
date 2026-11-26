@@ -21,6 +21,7 @@ Start with the [quick start](../README.md#quick-start).
 | [Credentials](credentials.md) | Choose the credentials steps get |
 | [GitHub App](github-app.md) | Give each run a short-lived token for its own repository |
 | [VM deployment](vm-deployment.md) | Run the control plane and a runner on a VM |
+| [Cloud Run deployment](cloud-run.md) | Run the control plane on Google Cloud Run with PostgreSQL and Secret Manager |
 | [Continuous deployment](local-factory/continuous-deployment.md) | Release to GKE |
 | [Architecture](../ARCHITECTURE.md) | See how the pieces fit |
 | [Security](../SECURITY.md) | Understand what a step can do |

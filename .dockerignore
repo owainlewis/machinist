@@ -1,0 +1,20 @@
+# Exclude VCS, local secrets, runtime state, build outputs, and JS dependencies
+# from Docker build contexts. Tracked internal/controlplane/web/dist stays included.
+.git
+.github
+.env
+.env.*
+.machinist
+bin
+dist
+dist-repeat
+target
+*.db
+*.db-shm
+*.db-wal
+error.log
+internal/controlplane/web/node_modules
+**/node_modules
+**/__pycache__
+*.docx
+*.html
