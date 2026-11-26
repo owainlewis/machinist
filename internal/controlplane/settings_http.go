@@ -54,6 +54,7 @@ type RepositoryAccess struct {
 }
 
 func (s *Server) githubSettings(w http.ResponseWriter, r *http.Request, _ string) {
+	refresh := refreshRequested(r)
 	st := s.state()
 	settings := GitHubSettings{Handle: st.config.GitHub.Handle, AutoMerge: st.config.GitHub.AutoMerges(), Repositories: []RepositoryAccess{}}
 	if st.config.GitHub.App != nil || st.app != nil {
@@ -62,14 +63,14 @@ func (s *Server) githubSettings(w http.ResponseWriter, r *http.Request, _ string
 			settings.App.ID = st.config.GitHub.App.ID
 		}
 		if st.app != nil {
-			if identity, err := st.app.Identity(r.Context()); err != nil {
+			if identity, err := s.appIdentity(r.Context(), st.app, refresh); err != nil {
 				settings.App.Error = err.Error()
 			} else {
 				settings.App.Name, settings.App.InstallURL = identity.Name, identity.InstallURL()
 			}
 		}
 	}
-	projects, err := s.projects(r.Context())
+	projects, err := s.projects(r.Context(), refresh)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -81,16 +82,18 @@ func (s *Server) githubSettings(w http.ResponseWriter, r *http.Request, _ string
 		if project.Problem != "" {
 			continue
 		}
-		wait.Go(func() { settings.Repositories[index] = s.repositoryAccess(r, project.Repo, settings.AutoMerge) })
+		wait.Go(func() {
+			settings.Repositories[index] = s.repositoryAccess(r.Context(), project.Repo, settings.AutoMerge, refresh)
+		})
 	}
 	wait.Wait()
 	writeJSON(w, http.StatusOK, settings)
 }
 
 // repositoryAccess asks GitHub about one repository and says what to watch for.
-func (s *Server) repositoryAccess(r *http.Request, repository string, autoMerge bool) RepositoryAccess {
+func (s *Server) repositoryAccess(ctx context.Context, repository string, autoMerge, refresh bool) RepositoryAccess {
 	view := RepositoryAccess{Repo: repository, Warnings: []string{}}
-	access, err := s.client.RepositoryAccess(r.Context(), repository)
+	access, err := s.repoAccess(ctx, repository, refresh)
 	if err != nil {
 		view.Problem = "Machinist could not read this repository from GitHub: " + err.Error()
 		return view

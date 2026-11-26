@@ -47,7 +47,7 @@ func TestGitHubSettingsWarnAboutUnprotectedBranchesAndAdminRights(t *testing.T) 
 	}
 
 	f.github.SetAccess(false, true)
-	status, body = f.get(t, "/api/v1/settings/github")
+	status, body = f.get(t, "/api/v1/settings/github?refresh=1")
 	settings = decodeAs[GitHubSettings](t, status, http.StatusOK, body)
 	warnings := settings.Repositories[0].Warnings
 	if len(warnings) != 2 || !strings.Contains(warnings[0], "auto-merge is on") || !strings.Contains(warnings[1], "admin") {
@@ -63,7 +63,7 @@ func TestGitHubSettingsWarnAboutUnprotectedBranchesAndAdminRights(t *testing.T) 
 	}
 
 	f.github.Fail("gh: Bad credentials (HTTP 401)")
-	status, body = f.get(t, "/api/v1/settings/github")
+	status, body = f.get(t, "/api/v1/settings/github?refresh=1")
 	settings = decodeAs[GitHubSettings](t, status, http.StatusOK, body)
 	if !strings.Contains(settings.Repositories[0].Problem, "could not read") {
 		t.Fatalf("repository = %+v", settings.Repositories[0])
@@ -88,9 +88,139 @@ func TestGitHubSettingsShowTheAppButNotItsKey(t *testing.T) {
 		t.Fatalf("the key file leaked: %s", body)
 	}
 	f.server.app = fakeApp{broken: true}
-	status, body = f.get(t, "/api/v1/settings/github")
+	status, body = f.get(t, "/api/v1/settings/github?refresh=1")
 	if settings := decodeAs[GitHubSettings](t, status, http.StatusOK, body); !strings.Contains(settings.App.Error, "bad JWT") {
 		t.Fatalf("app = %+v", settings.App)
+	}
+}
+
+func TestGitHubSettingsChecksInstallationsInParallel(t *testing.T) {
+	f := newFixture(t)
+	repos := []string{"owner/one", "owner/two", "owner/three"}
+	f.server.intake.Repositories = repos
+	app := newCountingApp(repos...)
+	hook, allConcurrent := parallelBarrier(len(repos), 2*time.Second)
+	app.onInstalled = hook
+	f.server.app = app
+
+	status, body := f.get(t, "/api/v1/settings/github")
+	settings := decodeAs[GitHubSettings](t, status, http.StatusOK, body)
+	if !allConcurrent() {
+		t.Fatal("app.Installed was not called concurrently across projects")
+	}
+	if len(settings.Repositories) != 3 {
+		t.Fatalf("repositories = %+v", settings.Repositories)
+	}
+	for index, want := range repos {
+		if got := settings.Repositories[index]; got.Repo != want || got.DefaultBranch != "main" || !got.Protected || got.Problem != "" {
+			t.Fatalf("repo %d = %+v, want %s", index, got, want)
+		}
+	}
+}
+
+func TestGitHubSettingsCachesLookupsUntilTTLAndInvalidatesOnProjectChanges(t *testing.T) {
+	f := newFixture(t)
+	clock := newTestClock()
+	f.server.now = clock.Now
+	app := newCountingApp("owner/repo")
+	f.server.app = app
+
+	if status, _ := f.setup(t, http.MethodPost, "/api/v1/projects", map[string]string{"repo": "owner/repo"}); status != http.StatusOK {
+		t.Fatalf("add project status = %d", status)
+	}
+
+	// First visit populates identity, installed, and repository access caches.
+	status, body := f.get(t, "/api/v1/settings/github")
+	settings := decodeAs[GitHubSettings](t, status, http.StatusOK, body)
+	if len(settings.Repositories) != 1 || !settings.Repositories[0].Protected || settings.Repositories[0].Admin {
+		t.Fatalf("settings = %+v", settings)
+	}
+	ghCallsAfterFirst := len(f.github.Calls())
+	if ghCallsAfterFirst == 0 {
+		t.Fatal("expected initial RepositoryAccess gh calls")
+	}
+	idCalls, repoCalls := app.counts()
+	if idCalls != 1 || repoCalls["owner/repo"] != 1 {
+		t.Fatalf("after first settings call: id=%d repos=%v", idCalls, repoCalls)
+	}
+
+	// Within TTL: repeated visits reuse cached identity, installed, and branch protection.
+	f.github.SetAccess(false, true)
+	clock.Advance(githubCacheTTL / 2)
+	status, body = f.get(t, "/api/v1/settings/github")
+	settings = decodeAs[GitHubSettings](t, status, http.StatusOK, body)
+	if !settings.Repositories[0].Protected || settings.Repositories[0].Admin {
+		t.Fatalf("expected cached access within TTL, got %+v", settings.Repositories[0])
+	}
+	if len(f.github.Calls()) != ghCallsAfterFirst {
+		t.Fatalf("gh calls grew from %d to %d within TTL", ghCallsAfterFirst, len(f.github.Calls()))
+	}
+	idCalls, repoCalls = app.counts()
+	if idCalls != 1 || repoCalls["owner/repo"] != 1 {
+		t.Fatalf("within TTL: id=%d repos=%v", idCalls, repoCalls)
+	}
+
+	// ?refresh=1 bypasses the cache and updates cached values.
+	status, body = f.get(t, "/api/v1/settings/github?refresh=1")
+	settings = decodeAs[GitHubSettings](t, status, http.StatusOK, body)
+	if settings.Repositories[0].Protected || !settings.Repositories[0].Admin {
+		t.Fatalf("expected refreshed access, got %+v", settings.Repositories[0])
+	}
+	ghCallsAfterRefresh := len(f.github.Calls())
+	if ghCallsAfterRefresh <= ghCallsAfterFirst {
+		t.Fatalf("expected fresh gh calls on refresh: %d <= %d", ghCallsAfterRefresh, ghCallsAfterFirst)
+	}
+	idCalls, repoCalls = app.counts()
+	if idCalls != 2 || repoCalls["owner/repo"] != 2 {
+		t.Fatalf("after refresh: id=%d repos=%v", idCalls, repoCalls)
+	}
+
+	// Advancing past TTL expires the cache and fetches fresh branch protection.
+	f.github.SetAccess(true, false)
+	clock.Advance(githubCacheTTL)
+	status, body = f.get(t, "/api/v1/settings/github")
+	settings = decodeAs[GitHubSettings](t, status, http.StatusOK, body)
+	if !settings.Repositories[0].Protected || settings.Repositories[0].Admin {
+		t.Fatalf("expected fresh access after TTL expiry, got %+v", settings.Repositories[0])
+	}
+	idCalls, repoCalls = app.counts()
+	if idCalls != 3 || repoCalls["owner/repo"] != 3 {
+		t.Fatalf("after TTL expiry: id=%d repos=%v", idCalls, repoCalls)
+	}
+
+	// Transient RepositoryAccess errors are not cached and evict stale entries.
+	f.github.Fail("gh: temporary 502")
+	status, body = f.get(t, "/api/v1/settings/github?refresh=1")
+	settings = decodeAs[GitHubSettings](t, status, http.StatusOK, body)
+	if !strings.Contains(settings.Repositories[0].Problem, "could not read") {
+		t.Fatalf("expected failure on refresh: %+v", settings.Repositories[0])
+	}
+	f.github.Recover()
+	f.github.SetAccess(false, false)
+	status, body = f.get(t, "/api/v1/settings/github")
+	settings = decodeAs[GitHubSettings](t, status, http.StatusOK, body)
+	if settings.Repositories[0].Problem != "" || settings.Repositories[0].Protected {
+		t.Fatalf("expected immediate recovery without waiting for TTL: %+v", settings.Repositories[0])
+	}
+
+	// Removing and re-adding the project invalidates its cached entries immediately.
+	if status, _ := f.setup(t, http.MethodDelete, "/api/v1/projects/owner/repo", nil); status != http.StatusOK {
+		t.Fatalf("remove project status = %d", status)
+	}
+	if ok, _ := f.server.githubCache.getInstalled("owner/repo", clock.Now()); ok {
+		t.Fatal("expected removeProject to invalidate installed cache immediately")
+	}
+	if _, ok, _ := f.server.githubCache.getAccess("owner/repo", clock.Now()); ok {
+		t.Fatal("expected removeProject to invalidate access cache immediately")
+	}
+	f.github.SetAccess(true, false)
+	if status, _ := f.setup(t, http.MethodPost, "/api/v1/projects", map[string]string{"repo": "owner/repo"}); status != http.StatusOK {
+		t.Fatalf("re-add project status = %d", status)
+	}
+	status, body = f.get(t, "/api/v1/settings/github")
+	settings = decodeAs[GitHubSettings](t, status, http.StatusOK, body)
+	if len(settings.Repositories) != 1 || !settings.Repositories[0].Protected {
+		t.Fatalf("expected fresh access after remove+add invalidation, got %+v", settings.Repositories)
 	}
 }
 

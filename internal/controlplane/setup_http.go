@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/factory"
@@ -67,7 +68,7 @@ type Setup struct {
 	FactoryUpdates []factory.FileUpdate `json:"factory_updates,omitempty"`
 }
 
-func (s *Server) setup(ctx context.Context) (Setup, error) {
+func (s *Server) setup(ctx context.Context, refresh bool) (Setup, error) {
 	st := s.state()
 	setup := Setup{Checks: []SetupCheck{}}
 	github := SetupCheck{Name: "GitHub", Required: true}
@@ -76,7 +77,7 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 		github.Detail = "No GitHub App is set, so runs use the runner's own GH_TOKEN."
 		github.Fix = "Set up a GitHub App so each run gets a short-lived token and commits as the app."
 		github.Link = docs + "github-app.md"
-	} else if identity, err := st.app.Identity(ctx); err != nil {
+	} else if identity, err := s.appIdentity(ctx, st.app, refresh); err != nil {
 		github.Detail = "Machinist cannot reach the GitHub App: " + err.Error()
 		github.Fix = "Check github.app.id and the private key file in config.yaml."
 	} else {
@@ -112,7 +113,7 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 		setup.Checks = append(setup.Checks, check)
 	}
 
-	setup.Projects, err = s.projects(ctx)
+	setup.Projects, err = s.projects(ctx, refresh)
 	if err != nil {
 		return setup, err
 	}
@@ -157,7 +158,7 @@ func (s *Server) setup(ctx context.Context) (Setup, error) {
 }
 
 // projects lists every connected repository, and asks the GitHub App about each.
-func (s *Server) projects(ctx context.Context) ([]ProjectView, error) {
+func (s *Server) projects(ctx context.Context, refresh bool) ([]ProjectView, error) {
 	app := s.state().app
 	added, err := s.store.Projects(ctx)
 	if err != nil {
@@ -173,18 +174,22 @@ func (s *Server) projects(ctx context.Context) ([]ProjectView, error) {
 		}
 		views = append(views, ProjectView{Repo: project.Repo, Source: "app", AddedBy: project.AddedBy})
 	}
-	if app != nil {
+	if app != nil && len(views) > 0 {
+		var wait sync.WaitGroup
 		for index := range views {
-			if err := app.Installed(ctx, views[index].Repo); err != nil {
-				views[index].Problem = err.Error()
-			}
+			wait.Go(func() {
+				if err := s.appInstalled(ctx, app, views[index].Repo, refresh); err != nil {
+					views[index].Problem = err.Error()
+				}
+			})
 		}
+		wait.Wait()
 	}
 	return views, nil
 }
 
 func (s *Server) getSetup(w http.ResponseWriter, r *http.Request, _ string) {
-	setup, err := s.setup(r.Context())
+	setup, err := s.setup(r.Context(), refreshRequested(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -205,8 +210,9 @@ func (s *Server) addProject(w http.ResponseWriter, r *http.Request, tokenName st
 		writeError(w, http.StatusBadRequest, fmt.Errorf("%q is not a repository name like owner/name", request.Repo))
 		return
 	}
-	if app := s.state().app; app != nil {
-		if err := app.Installed(r.Context(), repository); err != nil {
+	app := s.state().app
+	if app != nil {
+		if err := s.appInstalled(r.Context(), app, repository, true); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -214,6 +220,11 @@ func (s *Server) addProject(w http.ResponseWriter, r *http.Request, tokenName st
 	if err := s.store.AddProject(r.Context(), repository, tokenName); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if app != nil {
+		s.githubCache.invalidateAccess(repository)
+	} else {
+		s.githubCache.invalidateRepo(repository)
 	}
 	s.getSetup(w, r, tokenName)
 }
@@ -235,6 +246,7 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request, tokenName
 		writeError(w, http.StatusNotFound, fmt.Errorf("%s is not a project", repository))
 		return
 	}
+	s.githubCache.invalidateRepo(repository)
 	s.getSetup(w, r, tokenName)
 }
 
