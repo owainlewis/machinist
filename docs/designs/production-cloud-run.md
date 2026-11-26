@@ -146,20 +146,22 @@ image** rather than mounted from a mutable bucket or edited over SSH.
 ### Reference `Dockerfile` pattern
 
 A team's own machinist-config repository builds a minimal image on top of the official
-Machinist release binary. Because `internal/ghclient` currently shells out to the GitHub CLI
-(`gh`) for PR watching and repository checks even with GitHub App auth, the runtime stage
-includes `gh` and `ca-certificates` (we can drop `gh` and move to `distroless/static` later
-if `internal/ghclient` is migrated to direct Go HTTP calls):
+Machinist release image. Because `internal/ghclient` currently shells out to `gh` (including
+`gh pr checks --json`, which requires a recent GitHub CLI release newer than Debian
+Bookworm's default `2.23.0` package), the official `ghcr.io/owainlewis/machinist` base image
+bundles both `machinist` and a pinned recent `gh` binary (we can drop `gh` and move to
+`distroless/static` later if `internal/ghclient` is migrated to direct Go HTTP calls):
 
 ```dockerfile
 FROM ghcr.io/owainlewis/machinist:latest AS bin
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates gh \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home /srv/machinist --shell /usr/sbin/nologin machinist
 COPY --from=bin /usr/local/bin/machinist /usr/local/bin/machinist
+COPY --from=bin /usr/local/bin/gh /usr/local/bin/gh
 WORKDIR /srv/machinist
 COPY --chown=machinist:machinist config.yaml /srv/machinist/config.yaml
 COPY --chown=machinist:machinist factory/ /srv/machinist/factory/
