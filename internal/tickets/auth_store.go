@@ -19,6 +19,8 @@ var (
 	ErrUserDisabled = errors.New("user account is disabled")
 	// ErrNotInvited is returned when an unknown GitHub account has no matching invite.
 	ErrNotInvited = errors.New("not invited")
+	// ErrLastAdmin is returned when a role change or disable would leave zero active admins.
+	ErrLastAdmin = errors.New("cannot demote or disable the last active admin")
 )
 
 const (
@@ -975,6 +977,181 @@ func inviteMatchesProfile(inv Invite, loginLower string, verifiedEmails []string
 		return slices.Contains(verifiedEmails, strings.ToLower(inv.Email))
 	}
 	return false
+}
+
+// ListUsers returns all team members ordered active first, then oldest first,
+// along with each member's most recent session activity timestamp.
+func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			u.id, u.role, u.github_id, u.github_login, u.email, u.name, u.avatar_url,
+			u.invited_by, u.disabled_at, u.created_at, u.updated_at,
+			(SELECT MAX(s.last_seen_at) FROM sessions s WHERE s.user_id = u.id)
+		FROM users u
+		ORDER BY (u.disabled_at IS NOT NULL) ASC, u.created_at ASC, u.id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := []User{}
+	for rows.Next() {
+		var (
+			u          User
+			ghID       sql.NullString
+			disabled   sql.NullString
+			createdStr string
+			updatedStr string
+			lastSeen   sql.NullString
+		)
+		if err := rows.Scan(&u.ID, &u.Role, &ghID, &u.GitHubLogin, &u.Email, &u.Name, &u.AvatarURL, &u.InvitedBy, &disabled, &createdStr, &updatedStr, &lastSeen); err != nil {
+			return nil, err
+		}
+		u.GitHubID = ghID.String
+		u.DisabledAt = parseTime(disabled)
+		u.LastSeenAt = parseTime(lastSeen)
+		u.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
+		u.UpdatedAt = *parseTime(sql.NullString{String: updatedStr, Valid: true})
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// FindUserByIDOrLogin looks up a user by exact ID or case-insensitive GitHub handle.
+func (s *Store) FindUserByIDOrLogin(ctx context.Context, idOrLogin string) (User, error) {
+	key := strings.TrimPrefix(strings.TrimSpace(idOrLogin), "@")
+	if key == "" {
+		return User{}, ErrNotFound
+	}
+	var (
+		u          User
+		ghID       sql.NullString
+		disabled   sql.NullString
+		createdStr string
+		updatedStr string
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, role, github_id, github_login, email, name, avatar_url, invited_by, disabled_at, created_at, updated_at
+		FROM users
+		WHERE id = ? OR LOWER(github_login) = LOWER(?)
+		LIMIT 1`,
+		key, key,
+	).Scan(&u.ID, &u.Role, &ghID, &u.GitHubLogin, &u.Email, &u.Name, &u.AvatarURL, &u.InvitedBy, &disabled, &createdStr, &updatedStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	if err != nil {
+		return User{}, err
+	}
+	u.GitHubID = ghID.String
+	u.DisabledAt = parseTime(disabled)
+	u.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
+	u.UpdatedAt = *parseTime(sql.NullString{String: updatedStr, Valid: true})
+	return u, nil
+}
+
+// UpdateUser updates a team member's role and/or disabled status inside an
+// auth_state-serialized transaction. Enforces the last-admin invariant (409 /
+// ErrLastAdmin) and, when disabling, revokes all active sessions for that user
+// and all pending invites matching their github_login or email in one tx.
+func (s *Store) UpdateUser(ctx context.Context, id string, role *string, disabled *bool) (User, error) {
+	if role == nil && disabled == nil {
+		return User{}, errors.New("specify role or disabled")
+	}
+	if role != nil && !ValidUserRole(*role) {
+		return User{}, fmt.Errorf("invalid role %q; must be admin, member, or viewer", *role)
+	}
+	now := s.now().UTC()
+	nowStamp := stamp(now)
+	var updated User
+
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		// Serialize admin mutations on singleton auth_state row.
+		if _, err := tx.ExecContext(ctx, `UPDATE auth_state SET id = id WHERE id = 1`); err != nil {
+			return err
+		}
+		var (
+			ghID       sql.NullString
+			curDis     sql.NullString
+			createdStr string
+			updatedStr string
+		)
+		err := tx.QueryRowContext(ctx, `
+			SELECT id, role, github_id, github_login, email, name, avatar_url, invited_by, disabled_at, created_at, updated_at
+			FROM users WHERE id = ?`,
+			id,
+		).Scan(&updated.ID, &updated.Role, &ghID, &updated.GitHubLogin, &updated.Email, &updated.Name, &updated.AvatarURL, &updated.InvitedBy, &curDis, &createdStr, &updatedStr)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		updated.GitHubID = ghID.String
+		updated.DisabledAt = parseTime(curDis)
+		updated.CreatedAt = *parseTime(sql.NullString{String: createdStr, Valid: true})
+
+		nextRole := updated.Role
+		if role != nil {
+			nextRole = *role
+		}
+		nextDisabled := updated.DisabledAt != nil
+		if disabled != nil {
+			nextDisabled = *disabled
+		}
+
+		isActiveAdmin := updated.Role == UserRoleAdmin && updated.DisabledAt == nil
+		if isActiveAdmin && (nextRole != UserRoleAdmin || nextDisabled) {
+			var activeAdmins int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role=? AND disabled_at IS NULL`, UserRoleAdmin).Scan(&activeAdmins); err != nil {
+				return err
+			}
+			if activeAdmins < 2 {
+				return ErrLastAdmin
+			}
+		}
+
+		var disabledArg any
+		if nextDisabled {
+			if updated.DisabledAt != nil {
+				disabledArg = curDis.String
+			} else {
+				disabledArg = nowStamp
+				ts := now
+				updated.DisabledAt = &ts
+			}
+		} else {
+			disabledArg = nil
+			updated.DisabledAt = nil
+		}
+
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET role=?, disabled_at=?, updated_at=? WHERE id=?`, nextRole, disabledArg, nowStamp, id); err != nil {
+			return err
+		}
+		updated.Role = nextRole
+		updated.UpdatedAt = now
+
+		// Offboarding cascade: revoke all active sessions and matching pending invites.
+		if disabled != nil && *disabled {
+			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, nowStamp, id); err != nil {
+				return err
+			}
+			if updated.GitHubLogin != "" {
+				if _, err := tx.ExecContext(ctx, `UPDATE invites SET revoked_at=? WHERE LOWER(github_login)=LOWER(?) AND accepted_at IS NULL AND revoked_at IS NULL`, nowStamp, updated.GitHubLogin); err != nil {
+					return err
+				}
+			}
+			if updated.Email != "" {
+				if _, err := tx.ExecContext(ctx, `UPDATE invites SET revoked_at=? WHERE LOWER(email)=LOWER(?) AND accepted_at IS NULL AND revoked_at IS NULL`, nowStamp, updated.Email); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return User{}, err
+	}
+	return updated, nil
 }
 
 // PruneExpiredAuth removes expired OAuth transactions and aged expired/revoked sessions.

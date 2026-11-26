@@ -144,6 +144,8 @@ func (s *Server) runJob(w http.ResponseWriter, r *http.Request, tokenName string
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
+		actorID, actorName := s.actorInfo(r, tokenName)
+		s.audit(r, "job.started", actorID, actorName, ticket.ID, "succeeded")
 	}
 	s.writeJob(w, r, status, ticket)
 }
@@ -194,6 +196,8 @@ func (s *Server) rerunJob(w http.ResponseWriter, r *http.Request, tokenName stri
 	if s.engine != nil {
 		s.engine.UnpinBefore(ticket.ID, ticket.UpdatedAt)
 	}
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "job.rerun", actorID, actorName, ticket.ID, "succeeded")
 	s.writeJob(w, r, http.StatusOK, ticket)
 }
 
@@ -206,5 +210,7 @@ func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request, tokenName str
 	if s.engine != nil {
 		s.engine.UnpinThrough(ticket.ID, ticket.UpdatedAt)
 	}
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "job.cancelled", actorID, actorName, ticket.ID, "succeeded")
 	s.writeJob(w, r, http.StatusOK, ticket)
 }

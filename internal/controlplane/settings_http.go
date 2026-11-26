@@ -279,6 +279,8 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, tokenName s
 		return
 	}
 	fmt.Fprintf(s.log, "machinist: %s created %s token %q from the web app\n", tokenName, request.Role, name)
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "token.created", actorID, actorName, name, "succeeded")
 	views, err := s.tokenViews(r.Context(), s.currentTokenName(r, tokenName))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -314,6 +316,8 @@ func (s *Server) regenerateToken(w http.ResponseWriter, r *http.Request, tokenNa
 		return
 	}
 	fmt.Fprintf(s.log, "machinist: %s regenerated token %q from the web app\n", tokenName, name)
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "token.regenerated", actorID, actorName, name, "succeeded")
 	if p, ok := principalFromRequest(r); ok && p.Kind == "token" && p.ViaCookie && p.Name == name {
 		cfg := s.state().config
 		secret, _, err := s.store.CreateTokenSession(r.Context(), newTokenID, r.UserAgent(), clientIP(r, cfg.Server.TrustedProxyHops))
@@ -360,6 +364,8 @@ func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request, tokenName s
 		return
 	}
 	fmt.Fprintf(s.log, "machinist: %s revoked token %q from the web app\n", tokenName, name)
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "token.revoked", actorID, actorName, name, "succeeded")
 	if p, ok := principalFromRequest(r); ok && p.Kind == "token" && p.Name == name {
 		// The workspace token that authenticated this request is gone, so its
 		// sign-in ends here. OAuth sessions (p.Kind == "user") are never touched.

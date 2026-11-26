@@ -47,6 +47,8 @@ func (s *Server) createTicket(w http.ResponseWriter, r *http.Request, tokenName 
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
+		actorID, actorName := s.actorInfo(r, tokenName)
+		s.audit(r, "job.started", actorID, actorName, ticket.ID, "succeeded")
 	}
 	s.writeTicket(w, r, status, ticket)
 }
@@ -201,6 +203,8 @@ func (s *Server) rerunTicket(w http.ResponseWriter, r *http.Request, tokenName s
 	if s.engine != nil {
 		s.engine.UnpinBefore(ticket.ID, ticket.UpdatedAt)
 	}
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "job.rerun", actorID, actorName, ticket.ID, "succeeded")
 	writeJSON(w, http.StatusOK, ticket)
 }
 
@@ -213,6 +217,8 @@ func (s *Server) cancelTicket(w http.ResponseWriter, r *http.Request, tokenName 
 	if s.engine != nil {
 		s.engine.UnpinThrough(ticket.ID, ticket.UpdatedAt)
 	}
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "job.cancelled", actorID, actorName, ticket.ID, "succeeded")
 	s.writeTicket(w, r, http.StatusOK, ticket)
 }
 
@@ -374,6 +380,8 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
+		actorID, actorName := s.actorInfo(r, tokenName)
+		s.audit(r, "job.started", actorID, actorName, ticket.ID, "succeeded")
 	}
 	s.writeTicket(w, r, status, ticket)
 }
