@@ -22,9 +22,11 @@ import (
 )
 
 const (
-	commandTimeout = 30 * time.Second
-	maxErrorBytes  = 512
-	maxOutputBytes = 8 << 20
+	commandTimeout           = 30 * time.Second
+	commandWaitDelay         = 2 * time.Second
+	maxConcurrentGHProcesses = 6
+	maxErrorBytes            = 512
+	maxOutputBytes           = 8 << 20
 
 	StateOpen   = "OPEN"
 	StateClosed = "CLOSED"
@@ -67,15 +69,18 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
+var ghProcessSem = make(chan struct{}, maxConcurrentGHProcesses)
+
 // Client runs the gh executable found on PATH, which reads GH_TOKEN.
 type Client struct {
 	executable string
 	timeout    time.Duration
+	sem        chan struct{}
 	mu         sync.RWMutex
 	token      func(ctx context.Context, repository string) (string, error)
 }
 
-func New() *Client { return &Client{executable: "gh", timeout: commandTimeout} }
+func New() *Client { return &Client{executable: "gh", timeout: commandTimeout, sem: ghProcessSem} }
 
 // WithToken gives each command a token for the repository it works on, in
 // place of the process's GH_TOKEN.
@@ -120,11 +125,22 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 func (c *Client) run(ctx context.Context, repository, operation string, input []byte, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	sem := c.sem
+	if sem == nil {
+		sem = ghProcessSem
+	}
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return nil, &Error{Kind: classify(ctx, nil, ctx.Err()), Operation: operation, Detail: sanitize([]byte(ctx.Err().Error())), Err: ctx.Err()}
+	}
 	environment, err := c.environment(ctx, repository)
 	if err != nil {
 		return nil, err
 	}
 	command := exec.CommandContext(ctx, c.executable, args...)
+	command.WaitDelay = commandWaitDelay
 	command.Env = environment
 	if input != nil {
 		command.Stdin = bytes.NewReader(input)

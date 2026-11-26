@@ -33,8 +33,13 @@ import (
 var webAssets embed.FS
 
 const (
-	maxRequestBytes = 1 << 20
-	shutdownTimeout = 10 * time.Second
+	maxRequestBytes           = 1 << 20
+	httpShutdownTimeout       = 6 * time.Second
+	backgroundShutdownTimeout = 2 * time.Second
+	httpReadHeaderTimeout     = 5 * time.Second
+	httpReadTimeout           = 30 * time.Second
+	httpWriteTimeout          = 120 * time.Second
+	httpIdleTimeout           = 60 * time.Second
 )
 
 // Server is the one control plane of a deployment. It never starts an agent.
@@ -65,6 +70,7 @@ type Server struct {
 	githubAPIBase   string
 	oauthHTTPClient *http.Client
 	githubCache     githubLookupCache
+	githubSem       chan struct{}
 	leaderCfg       leaderConfig
 	bgWorkers       func(context.Context)
 }
@@ -212,6 +218,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		githubOAuthBase: defaultGitHubOAuthBase,
 		githubAPIBase:   defaultGitHubAPIBase,
 		oauthHTTPClient: &http.Client{Timeout: 10 * time.Second},
+		githubSem:       make(chan struct{}, maxConcurrentGitHubLookups),
 	}
 	if app != nil {
 		server.app = app
@@ -239,8 +246,13 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 //     auth.allow_token_only_public: true is explicitly set.
 //   - auth.github.enabled: true requires server.public_url and OAuth env secrets.
 func validateAuthStartup(cfg config.Config) error {
-	if svc := strings.TrimSpace(os.Getenv("K_SERVICE")); svc != "" && !config.IsPostgresURL(cfg.Server.Database) {
-		return fmt.Errorf("refusing to start on Cloud Run (K_SERVICE=%q) with SQLite database; set %s to a PostgreSQL connection URL", svc, config.DatabaseURLEnv)
+	if svc := strings.TrimSpace(os.Getenv("K_SERVICE")); svc != "" {
+		if !config.IsPostgresURL(cfg.Server.Database) {
+			return fmt.Errorf("refusing to start on Cloud Run (K_SERVICE=%q) with SQLite database; set %s to a PostgreSQL connection URL", svc, config.DatabaseURLEnv)
+		}
+		if cfg.Server.PublicURL == "" && !cfg.Auth.AllowTokenOnlyPublic {
+			return fmt.Errorf("refusing to start on Cloud Run (K_SERVICE=%q) without server.public_url (set server.public_url or auth.allow_token_only_public: true)", svc)
+		}
 	}
 	if isPublicNonLoopback(cfg.Server.PublicURL) && !cfg.Auth.GitHub.Enabled && !cfg.Auth.AllowTokenOnlyPublic {
 		return fmt.Errorf("refusing to start on non-loopback server.public_url %q without auth.github.enabled: true (set auth.allow_token_only_public: true only if you intentionally want token-only public auth)", cfg.Server.PublicURL)
@@ -557,7 +569,13 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	if onListening != nil {
 		onListening(listener.Addr())
 	}
-	httpServer := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	httpServer := &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
 	served := make(chan error, 1)
 	go func() {
 		if cfg.Server.TLSCert != "" {
@@ -568,21 +586,31 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	}()
 	bgCtx, stopBG := context.WithCancel(ctx)
 	defer stopBG()
+	drainCtx, cancelDrain := context.WithCancel(context.Background())
+	defer cancelDrain()
 	bgDone := make(chan struct{})
 	go func() {
 		defer close(bgDone)
-		s.runLeaderSupervisor(bgCtx)
+		s.runLeaderSupervisorWithDrain(bgCtx, drainCtx)
 	}()
 
 	select {
 	case err = <-served:
 	case <-ctx.Done():
+		// Parallel SIGTERM shutdown (Cloud Run 10s budget): cancel background
+		// loops immediately while draining active HTTP requests (6s max).
 		stopBG()
-		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpShutdownTimeout)
 		defer cancel()
 		err = errors.Join(httpServer.Shutdown(shutdown), <-served)
 	}
 	stopBG()
+	drainBudget := s.leaderCfg.drainTimeout
+	if drainBudget <= 0 {
+		drainBudget = backgroundShutdownTimeout
+	}
+	drainTimer := time.AfterFunc(drainBudget, cancelDrain)
+	defer drainTimer.Stop()
 	<-bgDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

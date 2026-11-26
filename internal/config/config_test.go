@@ -379,3 +379,74 @@ func TestDatabaseURLEnvOverridesConfigAndSkipsPathResolution(t *testing.T) {
 		t.Fatalf("Server.Database = %q, want %q", loaded.Server.Database, wantDSN)
 	}
 }
+
+func TestPortFallbackSafetyAndNotifyWebhookEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	// 1. Local dev (no K_SERVICE, no public_url): PORT is ignored to avoid accidental 0.0.0.0 exposure.
+	writeTestFile(t, path, "github:\n  handle: bot\n")
+	t.Setenv("PORT", "8080")
+	t.Setenv("K_SERVICE", "")
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("local PORT LoadConfig: %v", err)
+	}
+	if loaded.Server.Listen != defaultListen {
+		t.Fatalf("local listen = %q, want %q", loaded.Server.Listen, defaultListen)
+	}
+
+	// 2. Cloud Run (K_SERVICE set, listen omitted): PORT binds :8080.
+	t.Setenv("K_SERVICE", "machinist")
+	loaded, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("Cloud Run PORT LoadConfig: %v", err)
+	}
+	if loaded.Server.Listen != ":8080" {
+		t.Fatalf("Cloud Run listen = %q, want :8080", loaded.Server.Listen)
+	}
+
+	// 3. Explicit server.listen always wins over PORT.
+	writeTestFile(t, path, "server:\n  listen: 127.0.0.1:9000\ngithub:\n  handle: bot\n")
+	loaded, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("explicit listen LoadConfig: %v", err)
+	}
+	if loaded.Server.Listen != "127.0.0.1:9000" {
+		t.Fatalf("explicit listen = %q, want 127.0.0.1:9000", loaded.Server.Listen)
+	}
+
+	// 4. public_url set with omitted listen honors PORT.
+	t.Setenv("K_SERVICE", "")
+	writeTestFile(t, path, "server:\n  public_url: https://machinist.example.com\ngithub:\n  handle: bot\n")
+	loaded, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("public_url PORT LoadConfig: %v", err)
+	}
+	if loaded.Server.Listen != ":8080" {
+		t.Fatalf("public_url listen = %q, want :8080", loaded.Server.Listen)
+	}
+
+	// 5. Invalid PORT fails closed when gated on.
+	for _, bad := range []string{"0", "70000", "abc"} {
+		t.Setenv("PORT", bad)
+		if _, err := LoadConfig(path); err == nil {
+			t.Fatalf("expected error for invalid PORT=%q", bad)
+		}
+	}
+	t.Setenv("PORT", "8080")
+
+	// 6. NOTIFY_WEBHOOK_URL overrides notify.webhook and validates URL.
+	t.Setenv(NotifyWebhookEnv, "https://hooks.example.com/secret-token")
+	loaded, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("NOTIFY_WEBHOOK_URL LoadConfig: %v", err)
+	}
+	if loaded.Notify.Webhook != "https://hooks.example.com/secret-token" {
+		t.Fatalf("Notify.Webhook = %q", loaded.Notify.Webhook)
+	}
+	t.Setenv(NotifyWebhookEnv, "ftp://bad.example.com/hook")
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected error for invalid NOTIFY_WEBHOOK_URL scheme")
+	}
+}
