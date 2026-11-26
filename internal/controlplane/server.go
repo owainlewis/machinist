@@ -452,7 +452,7 @@ func (s *Server) Handler() http.Handler {
 	cfg := s.state().config
 	loopback := isLoopbackListen(cfg.Server.Listen)
 	if cfg.Server.PublicURL != "" {
-		handler = canonicalHostOnly(cfg.Server.PublicURL, loopback, handler)
+		handler = canonicalHostOnly(cfg.Server.PublicURL, handler)
 	}
 	if loopback {
 		handler = loopbackHostOnly(publicURLHost(cfg.Server.PublicURL), handler)

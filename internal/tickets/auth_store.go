@@ -161,17 +161,17 @@ func (s *Store) AuthenticateSession(ctx context.Context, secret string) (Session
 		expiresStr string
 		stale      bool
 		// joined token columns
-		tName      sql.NullString
-		tRole      sql.NullString
-		tScope     sql.NullString
-		tRevoked   sql.NullString
+		tName    sql.NullString
+		tRole    sql.NullString
+		tScope   sql.NullString
+		tRevoked sql.NullString
 		// joined user columns
-		uRole      sql.NullString
-		uLogin     sql.NullString
-		uEmail     sql.NullString
-		uName      sql.NullString
-		uAvatar    sql.NullString
-		uDisabled  sql.NullString
+		uRole     sql.NullString
+		uLogin    sql.NullString
+		uEmail    sql.NullString
+		uName     sql.NullString
+		uAvatar   sql.NullString
+		uDisabled sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
@@ -315,13 +315,13 @@ func scanSessions(rows *sql.Rows) ([]Session, error) {
 	out := []Session{}
 	for rows.Next() {
 		var (
-			sess      Session
-			userID    sql.NullString
-			tokenID   sql.NullString
-			created   string
-			lastSeen  string
-			idleExp   string
-			absExp    string
+			sess     Session
+			userID   sql.NullString
+			tokenID  sql.NullString
+			created  string
+			lastSeen string
+			idleExp  string
+			absExp   string
 		)
 		if err := rows.Scan(&sess.ID, &sess.AuthMethod, &userID, &tokenID, &sess.UserAgent, &sess.IPAddress, &created, &lastSeen, &idleExp, &absExp); err != nil {
 			return nil, err

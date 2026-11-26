@@ -121,6 +121,10 @@ func TestCanonicalHostAndLoopbackProxyHost(t *testing.T) {
 	if rec := serveWithHost(h2, "/auth/github/callback", "machinist-abc.a.run.app"); rec.Code != http.StatusMisdirectedRequest {
 		t.Fatalf("OAuth callback on run.app = %d, want 421", rec.Code)
 	}
+	// Local loopback access (e.g. machinist reload on 127.0.0.1:8080) still works on wildcard listeners.
+	if rec := serveWithHost(h2, "/api/v1/tickets", "127.0.0.1:8080"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("loopback API on wildcard listener = %d, want 401 (reached auth, not 421)", rec.Code)
+	}
 }
 
 func TestCSRFProtectionBlocksCrossOriginAndAllowsBearer(t *testing.T) {

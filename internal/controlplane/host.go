@@ -83,11 +83,12 @@ func loopbackHostOnly(allowedPublicHost string, next http.Handler) http.Handler 
 	})
 }
 
-// canonicalHostOnly enforces that requests on a public deployment arrive on
-// the canonical server.public_url host so Cloud Run's *.run.app alias cannot
-// break __Host- OAuth cookies. GET /healthz is always exempt, and loopback
-// hosts remain allowed when listening on loopback (so local CLI/runners work).
-func canonicalHostOnly(publicURL string, allowLoopback bool, next http.Handler) http.Handler {
+// canonicalHostOnly enforces that browser requests on a public deployment
+// arrive on the canonical server.public_url host so Cloud Run's *.run.app
+// alias cannot break __Host- OAuth cookies. GET /healthz, loopback hosts
+// (used by local CLI commands such as machinist reload even on wildcard
+// listeners), and bearer-authenticated API calls are exempt.
+func canonicalHostOnly(publicURL string, next http.Handler) http.Handler {
 	canonicalHost := publicURLHost(publicURL)
 	if canonicalHost == "" {
 		return next
@@ -97,11 +98,12 @@ func canonicalHostOnly(publicURL string, allowLoopback bool, next http.Handler) 
 			next.ServeHTTP(w, r)
 			return
 		}
-		if strings.EqualFold(r.Host, canonicalHost) {
+		if strings.EqualFold(r.Host, canonicalHost) || isLoopbackHost(r.Host) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if allowLoopback && isLoopbackHost(r.Host) {
+		isAPI := strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/machinist/") || r.URL.Path == "/mcp"
+		if isAPI && hasBearerHeader(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -109,9 +111,7 @@ func canonicalHostOnly(publicURL string, allowLoopback bool, next http.Handler) 
 		// /auth/github/start to the canonical URL; reject callbacks and API
 		// requests with 421 Misdirected Request.
 		if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
-			!strings.HasPrefix(r.URL.Path, "/api/") &&
-			!strings.HasPrefix(r.URL.Path, "/machinist/") &&
-			r.URL.Path != "/mcp" &&
+			!isAPI &&
 			r.URL.Path != "/auth/github/callback" {
 			target := strings.TrimRight(publicURL, "/") + r.URL.RequestURI()
 			http.Redirect(w, r, target, http.StatusTemporaryRedirect)
