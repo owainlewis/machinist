@@ -9,15 +9,15 @@ Start with the [quick start](../README.md#quick-start).
 | [Run API](run-api.md) | Start and follow jobs from any system |
 | [MCP](mcp.md) | Let a bot run and watch jobs over Model Context Protocol |
 | [Linear](linear.md) | Start a job by assigning a Linear issue to Machinist |
-| [Factory files](factory.md) | Write presets and add automations |
+| [Factory files](factory.md) | Write presets, configure merge gate and PR Steward, and add automations |
 | [Merge policies](merge-policies.md) | Configure risk-based auto-merge and starter policies |
 
 ## Run it
 
 | Guide | Use it to |
 | --- | --- |
-| [Configuration](configuration.md) | Look up every setting |
-| [Runners](runners.md) | Add local and Kubernetes runners |
+| [Configuration](configuration.md) | Look up every setting (including live reload, webhooks and PR Steward) |
+| [Runners](runners.md) | Add local, Docker (with optional gVisor), and Kubernetes runners |
 | [Credentials](credentials.md) | Choose the credentials steps get |
 | [GitHub App](github-app.md) | Give each run a short-lived token for its own repository |
 | [VM deployment](vm-deployment.md) | Run the control plane and a runner on a VM |

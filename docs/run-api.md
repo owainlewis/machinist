@@ -57,7 +57,7 @@ A job looks like this:
 | --- | --- |
 | `id` | Machinist's ID for the job. Use it in the routes above |
 | `key` | The key the job was started with. A job that came from somewhere else, such as a schedule, shows that source's key |
-| `source` | Where the job came from: `web` for the web app, `api` for a call with a token such as `curl`, `schedule` for an automation, or a tracker such as `linear`. See [job sources](designs/issue-sources.md) |
+| `source` | Where the job came from: `web` for the web app, `api` for a call with a token such as `curl`, `mcp` for a bot calling the [MCP endpoint](mcp.md), `schedule` for an automation, or a tracker such as `linear`. See [job sources](designs/issue-sources.md) |
 | `source_url` | The original issue or message, such as the Linear issue. Left out when there is none, as for a job started with `curl` |
 | `preset`, `vars`, `title` | What the job runs, as in the request |
 | `state` | Where the job is. See the table below |

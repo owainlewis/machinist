@@ -1,21 +1,23 @@
 # <img src=".github/assets/machinist-mark.svg" alt="" width="34" align="top"> Machinist
 
 A job runner for coding agents. Your team assigns work in one place, and every job runs the
-same predefined steps on machines you control: a laptop, a VM or Kubernetes. Everyone can
-see what is running and what is waiting on a person. It is early-access, open-source
-software.
+same predefined steps on machines you control: a laptop, a VM, Docker (with optional gVisor)
+or Kubernetes. Everyone can see what is running and what is waiting on a person. It is
+early-access, open-source software.
 
 <a href=".github/assets/machinist-explainer.mp4"><img src=".github/assets/machinist-explainer.png" alt="Watch how Machinist works: a 50-second explainer with sound. A job is assigned from the web app or a Linear issue, a runner checks out the repository, an agent implements it, a second model family reviews it, and Machinist opens the pull request, merges it once checks pass and moves the issue to Done." width="100%"></a>
 
 - **One place for the team.** One control plane holds every job. Anyone signed in can see
   what each job is doing, step by step, and open its pull request.
 - **Runs anywhere.** A runner is a small daemon that asks the control plane for work. Start
-  one on a Mac, a VM or a Kubernetes cluster. The control plane treats them all the same.
+  one on a Mac, a VM, a hardened Docker container (or gVisor with one config line), or a
+  Kubernetes cluster. The control plane treats them all the same.
 - **A workflow you define.** A preset is a list of steps: clone, plan, build, test,
-  review, open a pull request. A step runs an agent (Claude Code, Codex, Pi or agy, each with
-  its own model and prompt) or any shell command. A test
-  step is a gate an agent cannot skip.
-- **Any trigger.** A tracker, a schedule or `curl` starts a job with one request.
+  review, open a pull request, triage risk with a merge gate, and merge. A step runs an agent
+  (Claude Code, Codex, Pi or agy, each with its own model and prompt) or any shell command. A
+  test step is a gate an agent cannot skip.
+- **Any trigger.** The web app (including saved **Automations**), [Linear](docs/linear.md), a
+  schedule, an [MCP](docs/mcp.md) bot, or `curl` against the [run API](docs/run-api.md).
 
 <img src=".github/assets/screenshot-job.png" alt="A job started from a Linear issue, running on vm-runner. Its pipeline shows checkout passed, implement running, and review, revise, publish and merge waiting, each step with its model." width="100%">
 
@@ -136,20 +138,26 @@ The production UI is committed, so this build does not need Node.
 
 ## Using it
 
-Jobs start from the web app's **New job** form, through the [run API](docs/run-api.md)
-from `curl`, a tracker, a webhook or an automation, or when a Linear issue is assigned to
-the Machinist app (see [Linear](docs/linear.md)). The web app can also run an ended job again:
+Jobs start from the web app's **New job** form or **Jobs → Automations** view (run as-is or
+with an edited one-off prompt), through the [run API](docs/run-api.md) from `curl`, a tracker
+or a webhook, over [MCP](docs/mcp.md) with a scoped bot token, or when a Linear issue is
+delegated to the Machinist app (see [Linear](docs/linear.md)). The web app can also run an
+ended job again:
 
 | Page | What it does |
 | --- | --- |
 | Dashboard | Jobs and runs over 7, 14 or 30 days: time to merge and where it goes, how often a person stepped in, pull requests opened and merged, success rate, run and wait times, tokens, runs per day by outcome and by step, and each preset and repository |
-| Jobs | Every job as a board of Queued, Running and Done, or as a list with each one's repository, preset, pull request and state |
+| Jobs | Every job as a 4-column board (**Queued**, **Running**, **Review**, **Done**) or paginated list with each job's repository, preset, pull request, state, and Merge Gate risk badge (`Low`, `Medium`, `High`), plus an **Automations** view to run scheduled jobs on demand |
 | New job | Pick a repository, paste a prompt or spec, and start a job. It calls the run API |
-| Job | One job: its result, its prompt, its preset's steps drawn as a pipeline with each step's state, and every attempt with the output of each step. **Run again** starts an ended job once more |
-| Runners | Each runner, where it runs, how many of its slots are busy and with what, and how long runs have waited |
+| Job | One job: its result, Merge Gate verdict and reason, prompt, preset steps drawn as a pipeline (showing `Held` when waiting for human review), and every attempt with live step output. **Run again** starts an ended job once more |
+| Runners | Each runner (`local`, `docker`, `docker (runsc)`, or `kubernetes`), how many of its slots are busy and with what, and how long runs have waited |
+| Settings | Overview checks, repositories/projects, GitHub App & Linear status, presets, agents, and revocable tokens (with `read` and `run` scopes for bots) |
 
 To stop a job, `POST /machinist/jobs/{id}/cancel`. To run an ended job again,
-`POST /machinist/jobs/{id}/rerun`.
+`POST /machinist/jobs/{id}/rerun`. After editing `config.yaml` or `factory/`, run
+`machinist reload` to apply changes live without restarting the control plane. Configure
+`notify.webhook` (and `server.public_url`) in `config.yaml` to receive a Slack-compatible
+webhook notification whenever a job needs a person or fails.
 
 Jobs run headless, from start to finish, and never stop to ask a question. When the agent
 has to guess, it says so under **Assumptions** in the pull request.
@@ -158,8 +166,11 @@ Every job uses the `default` preset unless it names another: `checkout`, `implem
 `review`, `revise`, `publish`, `merge-gate` (risk triage against the merge policy), and
 `merge`. When `github.auto_merge` is on (the default), low-risk pull requests approved by
 both `review` and `merge-gate` merge once their checks pass; medium- or high-risk changes
-stay open for human review. Commit `.machinist/merge-policy.md` to a repository's default
-branch to override the default policy (`factory/prompts/merge-policy.md`) for that
+stay open for human review in the **Review** column with their risk badge and reason. If CI
+checks fail or a parallel merge introduces a branch conflict, **PR Steward** automatically
+requeues a bounded fix/rebase run on the same branch (`github.steward_retries`, default `2`)
+without overwriting human commits. Commit `.machinist/merge-policy.md` to a repository's
+default branch to override the default policy (`factory/prompts/merge-policy.md`) for that
 repository, or set `github.auto_merge: false` to run `merge-gate` in **observe mode**
 (evaluating PRs and posting its judgment comment without merging). See
 [Merge gate and policy](docs/factory.md#merge-gate-and-policy) and
@@ -169,7 +180,7 @@ kind of job needs different steps.
 ### Start jobs from Linear
 
 1. In Linear, create an app called Machinist with client credentials on.
-2. Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` where the control plane runs. In the `linear` section of `config.yaml`, set `app_user_id` (the app's user ID), `projects` or `teams` (Linear project or team to repository) and a non-empty `allowed_users`. Then restart the control plane.
+2. Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` where the control plane runs. In the `linear` section of `config.yaml`, set `app_user_id` (the app's user ID), `projects` or `teams` (Linear project or team to repository) and a non-empty `allowed_users`. Then run `machinist reload` (or restart the control plane if you changed environment variables).
 3. Delegate an issue to the Machinist app. Machinist starts a job for it within a minute.
 
 See the [Linear setup guide](docs/linear.md#set-it-up) for each step.
@@ -200,8 +211,8 @@ decides what can merge. See [Security](SECURITY.md) for what a step can do.
 ## How it fits together
 
 One control plane holds jobs and presets. It never runs a step. Any number
-of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
-[Architecture](ARCHITECTURE.md).
+of runners, on Macs, VMs, Docker (with optional gVisor), or Kubernetes, dial out and ask for
+work. See [Architecture](ARCHITECTURE.md).
 
 ## Go deeper
 
@@ -210,11 +221,12 @@ of runners, on Macs, VMs or Kubernetes, dial out and ask for work. See
 | [Documentation](docs/README.md) | The full list |
 | [Vision](VISION.md) | What Machinist is for, where it is, and what comes next |
 | [Run API](docs/run-api.md) | Starting jobs from any system |
-| [Factory files](docs/factory.md) | Presets, merge gate and automations |
+| [MCP](docs/mcp.md) | Letting bots list, run, watch and cancel jobs over MCP |
+| [Factory files](docs/factory.md) | Presets, merge gate, PR Steward and automations |
 | [Merge policies](docs/merge-policies.md) | Risk-based merge policies and starter templates |
-| [Runners](docs/runners.md) | Adding local and Kubernetes runners |
+| [Runners](docs/runners.md) | Adding local, Docker (with optional gVisor), and Kubernetes runners |
 | [Credentials](docs/credentials.md) | Which credential to use, and why |
-| [Configuration](docs/configuration.md) | Every setting |
+| [Configuration](docs/configuration.md) | Every setting (including live reload, notifications and PR Steward) |
 | [Development](docs/development.md) | Build, test and contribute |
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing. Machinist uses the
