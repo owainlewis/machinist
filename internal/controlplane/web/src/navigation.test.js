@@ -25,6 +25,9 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   const started = [];
   const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
   globalThis.fetch = async (url, options = {}) => {
+    if (url === "/api/v1/auth/status") {
+      return reply(200, { authenticated: signedIn, methods: [], token_signin_enabled: true });
+    }
     if (url === "/api/v1/session" && options.method === "POST") {
       const { token } = JSON.parse(options.body);
       if (token !== "good") return reply(401, { error: "invalid token" });
@@ -32,6 +35,7 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
       return reply(200, { name: "alice" });
     }
     if (!signedIn) return reply(401, { error: "a token is required" });
+    if (url === "/api/v1/me") return reply(200, { auth_method: "token", role: "admin", version: "v1.0.0", token_name: "alice" });
     if (url === "/api/v1/repositories") return reply(200, { repositories: ["owner/repo"], name: "alice" });
     if (url === "/api/v1/tickets" || url.startsWith("/api/v1/tickets?")) {
       const list = [older, ticket];

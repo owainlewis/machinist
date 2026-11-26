@@ -511,6 +511,9 @@ test("Settings: cold loads show layout-matched skeletons, cached tab switches re
   };
 
   globalThis.fetch = async (url, options = {}) => {
+    if (url === "/api/v1/auth/status") {
+      return reply(200, { authenticated: signedIn, methods: [], token_signin_enabled: true });
+    }
     if (url === "/api/v1/session" && options.method === "POST") {
       signedIn = true;
       return reply(200, { name: "alice" });
@@ -520,6 +523,7 @@ test("Settings: cold loads show layout-matched skeletons, cached tab switches re
       return { ok: true, status: 204, json: async () => null };
     }
     if (!signedIn) return reply(401, { error: "a token is required" });
+    if (url === "/api/v1/me") return reply(200, { auth_method: "token", role: "admin", version: "v1.0.0", token_name: "alice" });
     if (url === "/api/v1/repositories") return reply(200, { repositories: [], name: "alice" });
     if (url === "/api/v1/runners") return reply(200, { runners: [], queue: { waiting: 0 } });
     if (holdRoutes.has(url)) {

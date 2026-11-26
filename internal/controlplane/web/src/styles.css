@@ -473,10 +473,16 @@ a.source:hover span { text-decoration: underline; }
 
 /* Sign-in. */
 .sign-in { display: grid; min-height: 100vh; place-items: center; padding: 16px; }
-.sign-in form { display: flex; width: min(100%, 380px); flex-direction: column; align-items: stretch; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 28px; }
+.sign-in-card { display: flex; width: min(100%, 380px); flex-direction: column; align-items: stretch; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 28px; }
+.sign-in-card form { display: flex; flex-direction: column; align-items: stretch; }
 .sign-in .brand { padding: 0 0 24px; }
-.sign-in .form-error { margin-top: 10px; }
+.sign-in .form-error { margin-top: 12px; }
 .sign-in button { margin-top: 16px; }
+.sign-in-oauth-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 38px; border-radius: 8px; background: var(--fg); color: var(--bg); font-size: 14px; font-weight: 500; text-decoration: none; transition: opacity .15s ease; }
+.sign-in-oauth-btn:hover { opacity: .9; }
+.sign-in-invite { margin: 0 0 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); font-size: 13px; line-height: 1.45; }
+.sign-in-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 14px; color: var(--faint); font-size: 12px; }
+.sign-in-divider::before, .sign-in-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 
 @keyframes run-spin { to { transform: rotate(360deg); } }
 @keyframes run-sweep { from { background-position: -100% 0; } to { background-position: 200% 0; } }

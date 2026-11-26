@@ -85,6 +85,7 @@ func TestCanonicalHostAndLoopbackProxyHost(t *testing.T) {
 	cfg := testConfig()
 	cfg.Server.Listen = "127.0.0.1:7331"
 	cfg.Server.PublicURL = "https://machinist.example.com"
+	cfg.Auth.AllowTokenOnlyPublic = true
 	srv, err := New(cfg, store, testFactory(), "v1.2.3", io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -259,6 +260,7 @@ func TestRoleAllRejectedOnPublicDeploymentsWithWarning(t *testing.T) {
 	var logs bytes.Buffer
 	cfg := testConfig()
 	cfg.Server.PublicURL = "https://machinist.example.com"
+	cfg.Auth.AllowTokenOnlyPublic = true
 	srv, err := New(cfg, store, testFactory(), "v1.2.3", &logs)
 	if err != nil {
 		t.Fatal(err)
