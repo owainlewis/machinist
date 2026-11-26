@@ -264,3 +264,59 @@ test("pollJob stops only on terminal states with no active run and no open or sh
   assert.equal(pollJob({ ticket: { ...ticket, state: "failed", pr_number: 1, pr_state: "open" }, runs: [{ id: "run_1", status: "failed", ended_at: now }] }), true);
   assert.equal(pollJob({ ticket: { ...ticket, state: "done", shipping: '{"hold":""}' }, runs: [{ id: "run_1", status: "succeeded", ended_at: now }] }), true);
 });
+
+test("JobView shows the Merge gate panel for low, medium, and high verdicts and omits it when absent", { timeout: 30000 }, async context => {
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  context.after(() => server.close());
+  const { JobView } = await server.ssrLoadModule("/src/job-page.jsx");
+  const page = overrides => renderToStaticMarkup(React.createElement(JobView, {
+    detail: {
+      ticket: { ...ticket, state: "pr_ready", pr_number: 42, pr_state: "open", ...overrides },
+      runs: [{ id: "run_1", status: "succeeded", started_at: now, ended_at: now }],
+    },
+  }));
+
+  const approvedLow = page({
+    state: "done",
+    pr_state: "merged",
+    merge_gate_decision: "approve",
+    merge_gate_risk: "low",
+    merge_gate_reason: "Low-risk UI copy fix covered by unit tests.",
+  });
+  assert.match(approvedLow, /<section class="panel merge-gate" data-decision="approve" data-risk="low" aria-labelledby="job-merge-gate">/);
+  assert.match(approvedLow, /<h2 id="job-merge-gate" class="label">Merge gate<\/h2>/);
+  assert.match(approvedLow, /class="merge-gate-decision merge-gate-decision-approved"[^>]*>.*<span>Approved<\/span><\/span>/);
+  assert.match(approvedLow, /class="risk-badge" data-risk="low"[^>]*>.*<span>Low<\/span><\/span>/);
+  assert.match(approvedLow, /Low-risk UI copy fix covered by unit tests\./);
+  assert.ok(approvedLow.indexOf("job-merge-gate") < approvedLow.indexOf("Attempt 1"), "merge gate panel sits before attempts");
+
+  const mediumRisk = page({
+    merge_gate_decision: "approve",
+    merge_gate_risk: "medium",
+    merge_gate_reason: "Changes API response schema.",
+  });
+  assert.match(mediumRisk, /<section class="panel merge-gate" data-decision="approve" data-risk="medium"/);
+  assert.match(mediumRisk, /<span>Approved<\/span>/);
+  assert.match(mediumRisk, /class="risk-badge" data-risk="medium"[^>]*>.*<span>Medium<\/span><\/span>/);
+  assert.match(mediumRisk, /Changes API response schema\./);
+
+  const highRisk = page({
+    merge_gate_decision: "human_review",
+    merge_gate_risk: "high",
+    merge_gate_reason: "Alters authentication token handling and session cookies.",
+  });
+  assert.match(highRisk, /<section class="panel merge-gate" data-decision="human_review" data-risk="high"/);
+  assert.match(highRisk, /class="merge-gate-decision merge-gate-decision-review"[^>]*>.*<span>Human review<\/span><\/span>/);
+  assert.match(highRisk, /class="risk-badge" data-risk="high"[^>]*>.*<span>High<\/span><\/span>/);
+  assert.match(highRisk, /Alters authentication token handling and session cookies\./);
+
+  const reasonOnly = page({ merge_gate_reason: "Held for manual verification." });
+  assert.match(reasonOnly, /<section class="panel merge-gate"/);
+  assert.match(reasonOnly, /Held for manual verification\./);
+  assert.doesNotMatch(reasonOnly, /class="risk-badge"/);
+  assert.doesNotMatch(reasonOnly, /class="merge-gate-decision/);
+
+  const absent = page({});
+  assert.doesNotMatch(absent, /job-merge-gate/, "panel is omitted when no merge-gate fields exist");
+  assert.doesNotMatch(absent, /class="risk-badge"/);
+});

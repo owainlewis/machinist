@@ -189,3 +189,100 @@ test("Board caps Done to 20 cards, keeps Queued and Running uncapped, and jumps 
   assert.equal(document.querySelector(".pagination"), null, "single-page results hide pagination controls");
   assert.ok(requests.some(url => url.includes("state=failed&limit=50&offset=0")));
 });
+
+test("Board cards and List rows show Low, Medium, and High merge-gate risk badges and omit them when absent", { timeout: 30000 }, async context => {
+  const { dom, cleanup } = setupDOM("board");
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root"));
+  context.after(async () => {
+    await act(async () => root.unmount());
+    await server.close();
+    cleanup();
+  });
+
+  const tickets = [
+    {
+      ...makeTicket(1, { state: "done", source: "linear", minutesAgo: 1 }),
+      title: "Auto-merged low risk",
+      pr_number: 101,
+      pr_state: "merged",
+      merge_gate_decision: "approve",
+      merge_gate_risk: "low",
+      merge_gate_reason: "Small docs update covered by tests.",
+    },
+    {
+      ...makeTicket(2, { state: "pr_ready", source: "linear", minutesAgo: 2 }),
+      title: "Held medium risk",
+      pr_number: 102,
+      pr_state: "open",
+      merge_gate_decision: "approve",
+      merge_gate_risk: "medium",
+      merge_gate_reason: "Changes API response schema.",
+    },
+    {
+      ...makeTicket(3, { state: "pr_ready", source: "api", minutesAgo: 3 }),
+      title: "Held high risk",
+      pr_number: 103,
+      pr_state: "open",
+      merge_gate_decision: "human_review",
+      merge_gate_risk: "high",
+      merge_gate_reason: "Alters authentication token handling.",
+    },
+    {
+      ...makeTicket(4, { state: "working", source: "web", minutesAgo: 4 }),
+      title: "Plain queued job",
+    },
+    {
+      ...makeTicket(5, { state: "pr_ready", source: "api", minutesAgo: 5 }),
+      title: "Legacy PR without merge gate",
+      pr_number: 105,
+      pr_state: "open",
+    },
+  ];
+
+  const { JobsPage } = await server.ssrLoadModule("/src/jobs-page.jsx");
+  await act(async () => root.render(React.createElement(JobsPage, { tickets, runners: [], loaded: true })));
+
+  const cardByTitle = title => [...document.querySelectorAll(".board-card")].find(card => card.querySelector(".board-card-title")?.textContent === title);
+
+  const lowCard = cardByTitle("Auto-merged low risk");
+  assert.ok(lowCard.querySelector(".board-card-foot .pr-chip"), "PR chip stays in card footer");
+  const lowBadge = lowCard.querySelector('.board-card-foot .risk-badge[data-risk="low"]');
+  assert.ok(lowBadge, "expected Low risk badge in .board-card-foot");
+  assert.equal(lowBadge.textContent, "Low");
+  assert.match(lowBadge.getAttribute("title"), /Small docs update covered by tests\./);
+
+  const mediumCard = cardByTitle("Held medium risk");
+  assert.ok(mediumCard.querySelector(".board-card-foot .pr-chip"));
+  const mediumBadge = mediumCard.querySelector('.board-card-foot .risk-badge[data-risk="medium"]');
+  assert.ok(mediumBadge, "expected Medium risk badge in .board-card-foot");
+  assert.equal(mediumBadge.textContent, "Medium");
+
+  const highCard = cardByTitle("Held high risk");
+  assert.ok(highCard.querySelector(".board-card-foot .pr-chip"));
+  const highBadge = highCard.querySelector('.board-card-foot .risk-badge[data-risk="high"]');
+  assert.ok(highBadge, "expected High risk badge in .board-card-foot");
+  assert.equal(highBadge.textContent, "High");
+
+  const plainCard = cardByTitle("Plain queued job");
+  assert.equal(plainCard.querySelector(".board-card-foot"), null, "queued card without PR or risk keeps no footer");
+  assert.equal(plainCard.querySelector(".risk-badge"), null);
+
+  const legacyCard = cardByTitle("Legacy PR without merge gate");
+  assert.ok(legacyCard.querySelector(".board-card-foot .pr-chip"));
+  assert.equal(legacyCard.querySelector(".risk-badge"), null, "card without merge_gate_risk shows no risk badge");
+
+  // Switch to List view and verify the Risk column renders matching badges cleanly.
+  const listButton = [...document.querySelectorAll(".range button")].find(button => button.textContent.includes("List"));
+  await act(async () => listButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+
+  assert.equal(document.querySelector("table.jobs thead th.job-risk")?.textContent, "Risk");
+  const rowByTitle = title => [...document.querySelectorAll("table.jobs tbody tr")].find(row => row.querySelector(".job-title")?.textContent === title);
+
+  assert.equal(rowByTitle("Auto-merged low risk").querySelector('.job-risk .risk-badge[data-risk="low"]')?.textContent, "Low");
+  assert.equal(rowByTitle("Held medium risk").querySelector('.job-risk .risk-badge[data-risk="medium"]')?.textContent, "Medium");
+  assert.equal(rowByTitle("Held high risk").querySelector('.job-risk .risk-badge[data-risk="high"]')?.textContent, "High");
+  assert.equal(rowByTitle("Plain queued job").querySelector(".job-risk .risk-badge"), null);
+  assert.equal(rowByTitle("Legacy PR without merge gate").querySelector(".job-risk .risk-badge"), null);
+});
