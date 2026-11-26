@@ -145,18 +145,25 @@ image** rather than mounted from a mutable bucket or edited over SSH.
 
 ### Reference `Dockerfile` pattern
 
-A team's own machinist-config repository builds a tiny derived image on top of the official
-Machinist release binary:
+A team's own machinist-config repository builds a minimal image on top of the official
+Machinist release binary. Because `internal/ghclient` currently shells out to the GitHub CLI
+(`gh`) for PR watching and repository checks even with GitHub App auth, the runtime stage
+includes `gh` and `ca-certificates` (we can drop `gh` and move to `distroless/static` later
+if `internal/ghclient` is migrated to direct Go HTTP calls):
 
 ```dockerfile
 FROM ghcr.io/owainlewis/machinist:latest AS bin
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates gh \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --home /srv/machinist --shell /usr/sbin/nologin machinist
 COPY --from=bin /usr/local/bin/machinist /usr/local/bin/machinist
 WORKDIR /srv/machinist
-COPY --chown=nonroot:nonroot config.yaml /srv/machinist/config.yaml
-COPY --chown=nonroot:nonroot factory/ /srv/machinist/factory/
-USER nonroot:nonroot
+COPY --chown=machinist:machinist config.yaml /srv/machinist/config.yaml
+COPY --chown=machinist:machinist factory/ /srv/machinist/factory/
+USER machinist
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/machinist", "start", "--config", "/srv/machinist/config.yaml"]
 ```
@@ -418,8 +425,9 @@ Each milestone ships cleanly on its own without breaking existing SQLite / VM in
      Cloud Run revision overlaps.
    - CI matrix running `internal/tickets` tests on both SQLite and PostgreSQL.
 3. **Milestone 3 — Cloud Run Packaging & Docs:**
-   - Official distroless control-plane container image (`Dockerfile`, `$PORT` support,
-     Secret Manager env/file conventions) with baked `config.yaml` + `factory/`.
+   - Official minimal control-plane container image (`Dockerfile` including `gh` + `ca-certificates`, `$PORT` support,
+     Secret Manager env/file conventions; optional future `distroless` once `internal/ghclient`
+     uses direct HTTP) with baked `config.yaml` + `factory/`.
    - Step-by-step `docs/cloud-run.md` deployment guide (Cloud Run + Cloud SQL or Neon +
      Secret Manager + custom domain + connecting a VM Docker/gVisor runner).
 4. **Milestone 4 (Optional) — OIDC Login & Cloud Run Jobs Runner:**
