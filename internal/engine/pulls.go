@@ -256,7 +256,11 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 				return nil
 			}
 			current, loadErr := e.Store.Ticket(ctx, ticket.ID)
-			if loadErr != nil || current.State != tickets.StatePRReady || current.Shipping == "" {
+			if loadErr != nil ||
+				current.State != tickets.StatePRReady ||
+				current.Shipping == "" ||
+				!sameTime(current.PRStateAt, ticket.PRStateAt) ||
+				current.StewardRetries < maxRetries {
 				return nil
 			}
 			ticket = current
@@ -302,6 +306,13 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		shipped.Failed = true
 	}
 	return e.setShipping(ctx, ticket, shipped)
+}
+
+func sameTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 func stewardLogReason(s *ship.Steward) string {

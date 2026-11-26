@@ -19,6 +19,7 @@ type fakeGitHub struct {
 	mergeErr   error
 	updateErr  error
 	readErr    error
+	readErrs   []error
 	merged     []string // the head commits merges named
 	updates    int
 	viewCount  int
@@ -28,6 +29,11 @@ type fakeGitHub struct {
 func (f *fakeGitHub) PullRequest(context.Context) (PullRequest, error) {
 	if f.readErr != nil {
 		return PullRequest{}, f.readErr
+	}
+	if f.viewCount < len(f.readErrs) && f.readErrs[f.viewCount] != nil {
+		err := f.readErrs[f.viewCount]
+		f.viewCount++
+		return PullRequest{}, err
 	}
 	pr := f.views[min(f.viewCount, len(f.views)-1)]
 	f.viewCount++
@@ -408,6 +414,23 @@ func TestLookNeverStewardsHumanCommitsOrNonConflictHolds(t *testing.T) {
 		got := look(t, github, Watch{Hold: "auto-merge is off", Since: start, Head: "sha1"}, start)
 		if got.Outcome != LeftOpen || got.Steward != nil {
 			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("UpdateBranch conflict re-read error returns Waiting without Steward", func(t *testing.T) {
+		wantErr := errors.New("temporary GitHub API error")
+		github := &fakeGitHub{
+			views:     []PullRequest{open("sha1", "BEHIND")},
+			readErrs:  []error{nil, wantErr},
+			checks:    [][]Check{passed},
+			updateErr: errors.New("merge conflict between base and head"),
+		}
+		got, err := LookOnce(t.Context(), github, Watch{Since: start, Head: "sha1"}, start)
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("err = %v, want %v", err, wantErr)
+		}
+		if got.Outcome != Waiting || got.Steward != nil || got.Watch.Head != "sha1" {
+			t.Fatalf("got = %+v, want Waiting without Steward", got)
 		}
 	})
 

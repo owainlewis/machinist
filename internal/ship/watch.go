@@ -272,15 +272,17 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 		}
 		updateDetail := "GitHub could not update the branch: " + err.Error()
 		if isConflictError(err) {
-			if latest, readErr := github.PullRequest(ctx); readErr == nil {
-				if latest.State != "OPEN" {
-					return Look{Outcome: Settled}, nil
-				}
-				if watch.Head != "" && latest.HeadRefOid != watch.Head {
-					return leaveOpen(latest, "the branch has commits pushed after the review"), nil
-				}
-				pr = latest
+			latest, readErr := github.PullRequest(ctx)
+			if readErr != nil {
+				return waiting(watch), readErr
 			}
+			if latest.State != "OPEN" {
+				return Look{Outcome: Settled}, nil
+			}
+			if watch.Head != "" && latest.HeadRefOid != watch.Head {
+				return leaveOpen(latest, "the branch has commits pushed after the review"), nil
+			}
+			pr = latest
 			result := leaveOpen(pr, updateDetail)
 			result.Steward = &Steward{
 				Reason: StewardMergeConflict,

@@ -764,3 +764,44 @@ func TestPRStewardPreservesRetryCapAcrossControlPlaneRestart(t *testing.T) {
 		t.Fatalf("message = %q", msg)
 	}
 }
+
+// A stale LookOnce result must not overwrite a newer PR generation's watch or
+// mark the newer generation failed when StewardRequeue declines due to a
+// concurrent rerun completing during LookOnce.
+func TestPRStewardIgnoresStaleGenerationDuringLookOnce(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+	e.StewardRetries = 2
+	pull.checks = []ship.Check{{Name: "test", Bucket: "fail", Link: "https://ci.example.test/fail"}}
+
+	newer := time.Now().UTC().Add(time.Hour)
+	raced := false
+	pull.onChecks = func() {
+		if raced {
+			return
+		}
+		raced = true
+		e.Store.SetClock(func() time.Time { return newer })
+		if _, err := e.Store.Rerun(t.Context(), ticket.ID, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		run := assignRun(t, e)
+		completion := succeed(protocol.OutcomeNoChange, "New generation ready on sha2")
+		completion.Ship = &protocol.Ship{Verdict: ship.Accepted, Head: "sha2"}
+		if err := e.Complete(t.Context(), run.RunID, completion); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	checkPRs(t, e)
+
+	got := ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StatePRReady || got.StewardRetries != 0 || !strings.Contains(got.Shipping, `"head":"sha2"`) {
+		t.Fatalf("stale look clobbered newer generation: ticket = %+v", got)
+	}
+	if got.PRStateAt == nil || !got.PRStateAt.Equal(newer) {
+		t.Fatalf("PRStateAt = %v, want %v", got.PRStateAt, newer)
+	}
+	if msg := lastMessage(t, e, ticket.ID); msg != "New generation ready on sha2" {
+		t.Fatalf("message = %q, want newer generation message", msg)
+	}
+}
