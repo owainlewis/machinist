@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +16,9 @@ import (
 
 func openStore(t *testing.T) *Store {
 	t.Helper()
+	if pgURL := strings.TrimSpace(os.Getenv("TEST_POSTGRES_URL")); pgURL != "" {
+		return openPostgresTestStore(t, pgURL)
+	}
 	store, err := Open(filepath.Join(t.TempDir(), "tickets.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -490,7 +494,7 @@ func TestTokensAuthenticateByHashOnly(t *testing.T) {
 		t.Fatalf("wrong token: %v", err)
 	}
 	var stored, prefix string
-	if err := store.db.QueryRow(`SELECT token_hash, prefix FROM tokens`).Scan(&stored, &prefix); err != nil || stored == token || prefix != token[:tokenPrefixDisplayLength] {
+	if err := store.q().QueryRowContext(t.Context(), `SELECT token_hash, prefix FROM tokens`).Scan(&stored, &prefix); err != nil || stored == token || prefix != token[:tokenPrefixDisplayLength] {
 		t.Fatalf("stored = %q, prefix = %q, err = %v", stored, prefix, err)
 	}
 	if _, err := store.CreateToken(t.Context(), " ", RoleAll); err == nil {
@@ -504,7 +508,7 @@ func TestTokensAuthenticateByHashOnly(t *testing.T) {
 func TestLegacyTokensWorkWithoutPrefixAndRegenerateKeepsNameAndRole(t *testing.T) {
 	store := openStore(t)
 	legacy := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	if _, err := store.db.Exec(`INSERT INTO tokens(id,name,token_hash,created_at,role) VALUES('old1','legacy',?,?,?)`, hashToken(legacy), stamp(time.Now().UTC()), RoleAll); err != nil {
+	if _, err := store.q().ExecContext(t.Context(), `INSERT INTO tokens(id,name,token_hash,created_at,role) VALUES('old1','legacy',?,?,?)`, hashToken(legacy), stamp(time.Now().UTC()), RoleAll); err != nil {
 		t.Fatal(err)
 	}
 	if name, role, err := store.TokenName(t.Context(), legacy); err != nil || name != "legacy" || role != RoleAll {
@@ -1001,6 +1005,9 @@ func TestAClaimLooksPastRunsTheRunnerCannotTake(t *testing.T) {
 
 func TestTokenUseIsRecordedAtMostOncePerMinute(t *testing.T) {
 	store := openStore(t)
+	if store.dialect == dialectPostgres {
+		t.Skip("SQLite trigger syntax test")
+	}
 	token, err := store.CreateToken(t.Context(), "runner-1", RoleAll)
 	if err != nil {
 		t.Fatal(err)
@@ -1065,7 +1072,7 @@ func TestACancelledRunNeverLandsOnTheRerun(t *testing.T) {
 	}
 
 	// Even with the ticket working again, the cancelled run stays cancelled.
-	if _, err := store.db.Exec(`UPDATE tickets SET state=? WHERE id=?`, StateWorking, ticket.ID); err != nil {
+	if _, err := store.q().ExecContext(t.Context(), `UPDATE tickets SET state=? WHERE id=?`, StateWorking, ticket.ID); err != nil {
 		t.Fatal(err)
 	}
 	if stop, err := store.RenewLease(t.Context(), old.ID, time.Now().Add(time.Minute)); err != nil || !stop {
@@ -1150,7 +1157,7 @@ func TestUnpostedMessagesOnlyIncludesIssueTickets(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Even a legacy row with posted_at IS NULL on a non-issue ticket with a PR must not be posted.
-	if _, err := store.db.ExecContext(t.Context(), `UPDATE ticket_entries SET posted_at=NULL WHERE ticket_id=? AND kind=?`, webTicket.ID, EntryMessage); err != nil {
+	if _, err := store.q().ExecContext(t.Context(), `UPDATE ticket_entries SET posted_at=NULL WHERE ticket_id=? AND kind=?`, webTicket.ID, EntryMessage); err != nil {
 		t.Fatal(err)
 	}
 

@@ -89,12 +89,44 @@ jobs:
           test -x bin/machinist
           test "$(bin/machinist version)" = "ci"
 
+  postgres:
+    name: PostgreSQL 16 tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: machinist
+          POSTGRES_PASSWORD: machinist
+          POSTGRES_DB: machinist_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache: true
+      - name: Run Go tests against PostgreSQL 16 with race detector
+        env:
+          TEST_POSTGRES_URL: postgres://machinist:machinist@127.0.0.1:5432/machinist_test?sslmode=disable
+        run: go test -race ./internal/tickets/... ./internal/controlplane/...
+
   check:
     name: check
     if: always()
     needs:
       - linux
       - macos
+      - postgres
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -102,6 +134,8 @@ jobs:
         env:
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
+          POSTGRES_RESULT: ${{ needs.postgres.result }}
         run: |
           test "$LINUX_RESULT" = success
           test "$MACOS_RESULT" = success
+          test "$POSTGRES_RESULT" = success

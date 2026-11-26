@@ -36,7 +36,62 @@ const (
 	MaxStewardRetries = 5
 	// MaxTrustedProxyHops caps server.trusted_proxy_hops.
 	MaxTrustedProxyHops = 10
+
+	// DatabaseURLEnv overrides server.database with a PostgreSQL connection URL
+	// (or SQLite file path) from the environment.
+	DatabaseURLEnv = "DATABASE_URL"
 )
+
+// IsPostgresURL reports whether dsn is a PostgreSQL connection URL
+// (postgres:// or postgresql://), including empty-host Cloud SQL Unix socket URLs.
+func IsPostgresURL(dsn string) bool {
+	lower := strings.ToLower(strings.TrimSpace(dsn))
+	return strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://")
+}
+
+// RedactDatabaseURL removes credentials from a PostgreSQL connection URL so it
+// can be safely logged or included in error messages. Non-URL paths are
+// returned unchanged. Malformed PostgreSQL URLs still have credentials stripped.
+func RedactDatabaseURL(dsn string) string {
+	trimmed := strings.TrimSpace(dsn)
+	if !IsPostgresURL(trimmed) {
+		return dsn
+	}
+	if parsed, err := url.Parse(trimmed); err == nil {
+		if parsed.User != nil {
+			if _, hasPass := parsed.User.Password(); hasPass {
+				parsed.User = url.UserPassword(parsed.User.Username(), "REDACTED")
+			} else if parsed.User.Username() != "" {
+				parsed.User = url.User(parsed.User.Username())
+			}
+		}
+		if parsed.RawQuery != "" {
+			q, qErr := url.ParseQuery(parsed.RawQuery)
+			if qErr != nil {
+				parsed.RawQuery = "redacted=true"
+			} else if q.Has("password") {
+				q.Set("password", "REDACTED")
+				parsed.RawQuery = q.Encode()
+			}
+		}
+		return parsed.String()
+	}
+	// String-level fallback when url.Parse fails (e.g. unescaped password characters).
+	schemeIdx := strings.Index(trimmed, "://")
+	if schemeIdx < 0 {
+		return "postgres://<redacted>"
+	}
+	prefix := trimmed[:schemeIdx+3]
+	rest := trimmed[schemeIdx+3:]
+	// Strip query password=... if present.
+	if qIdx := strings.IndexByte(rest, '?'); qIdx >= 0 {
+		rest = rest[:qIdx] + "?<redacted>"
+	}
+	if atIdx := strings.LastIndexByte(rest, '@'); atIdx >= 0 {
+		return prefix + "REDACTED@" + rest[atIdx+1:]
+	}
+	return prefix + "<redacted>"
+}
 
 type Server struct {
 	Listen           string `yaml:"listen"`
@@ -255,7 +310,7 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	machinistConfig.Server.configDir = filepath.Dir(absPath)
-	machinistConfig.Server, err = applyServerDefaults(machinistConfig.Server)
+	machinistConfig.Server, err = applyServerDefaults(machinistConfig.Server, os.Getenv)
 	if err != nil {
 		return Config{}, err
 	}
@@ -327,7 +382,7 @@ func DecodeStrict(path string, body []byte, target any) error {
 	return nil
 }
 
-func applyServerDefaults(server Server) (Server, error) {
+func applyServerDefaults(server Server, getenv func(string) string) (Server, error) {
 	if server.Listen == "" {
 		server.Listen = defaultListen
 	}
@@ -359,6 +414,11 @@ func applyServerDefaults(server Server) (Server, error) {
 	if (server.TLSCert == "") != (server.TLSKey == "") {
 		return Server{}, errors.New("tls_cert and tls_key must be set together")
 	}
+	if getenv != nil {
+		if envDB := strings.TrimSpace(getenv(DatabaseURLEnv)); envDB != "" {
+			server.Database = envDB
+		}
+	}
 	if server.Database == "" {
 		server.Database = filepath.FromSlash(defaultDatabase)
 	}
@@ -368,6 +428,9 @@ func applyServerDefaults(server Server) (Server, error) {
 	var err error
 	for _, path := range []*string{&server.Database, &server.Factory, &server.TLSCert, &server.TLSKey} {
 		if *path == "" {
+			continue
+		}
+		if path == &server.Database && IsPostgresURL(*path) {
 			continue
 		}
 		*path, err = resolveConfigPath(*path, server.configDir)

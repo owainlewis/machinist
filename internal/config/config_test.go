@@ -325,3 +325,57 @@ func TestLoadConfigStewardRetriesBounds(t *testing.T) {
 		})
 	}
 }
+
+func TestPostgresURLAndRedaction(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://user:secret@db.example.com:5432/machinist?sslmode=require",
+		"POSTGRESQL://user:secret@db.example.com/machinist",
+		"postgres://user:secret@/machinist?host=/cloudsql/proj:us-central1:inst",
+	} {
+		if !IsPostgresURL(dsn) {
+			t.Fatalf("IsPostgresURL(%q) = false, want true", dsn)
+		}
+		redacted := RedactDatabaseURL(dsn)
+		if strings.Contains(redacted, "secret") {
+			t.Fatalf("RedactDatabaseURL(%q) leaked password: %q", dsn, redacted)
+		}
+	}
+	if IsPostgresURL(".machinist/tickets.db") || IsPostgresURL("/var/lib/machinist/tickets.db") {
+		t.Fatal("IsPostgresURL matched sqlite file path")
+	}
+	if got := RedactDatabaseURL(".machinist/tickets.db"); got != ".machinist/tickets.db" {
+		t.Fatalf("RedactDatabaseURL sqlite path = %q", got)
+	}
+	// Malformed URL with unescaped special characters in password must still redact cleanly.
+	malformed := "postgres://user:p@ss%ZZ#word@db.example.com:5432/machinist?password=leak"
+	redactedMalformed := RedactDatabaseURL(malformed)
+	if strings.Contains(redactedMalformed, "p@ss") || strings.Contains(redactedMalformed, "word") || strings.Contains(redactedMalformed, "leak") {
+		t.Fatalf("RedactDatabaseURL malformed leaked secret: %q", redactedMalformed)
+	}
+	// Query-param password redaction, including malformed query encodings.
+	queryPass := "postgres://user@db.example.com/machinist?password=topsecret&sslmode=require"
+	if got := RedactDatabaseURL(queryPass); strings.Contains(got, "topsecret") {
+		t.Fatalf("RedactDatabaseURL query password leaked: %q", got)
+	}
+	malformedQuery := "postgres://user@db.example.com/machinist?password=secret%ZZ"
+	if got := RedactDatabaseURL(malformedQuery); strings.Contains(got, "secret") {
+		t.Fatalf("RedactDatabaseURL malformed query leaked secret: %q", got)
+	}
+}
+
+func TestDatabaseURLEnvOverridesConfigAndSkipsPathResolution(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeTestFile(t, path, "server:\n  database: .machinist/tickets.db\ngithub:\n  handle: bot\n")
+
+	wantDSN := "postgres://machinist:pass@/machinist?host=/cloudsql/proj:region:inst"
+	t.Setenv(DatabaseURLEnv, wantDSN)
+
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.Server.Database != wantDSN {
+		t.Fatalf("Server.Database = %q, want %q", loaded.Server.Database, wantDSN)
+	}
+}

@@ -2,7 +2,6 @@ package tickets
 
 import (
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,11 +9,7 @@ import (
 
 func openAuthTestStore(t *testing.T) (*Store, *time.Time) {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openStore(t)
 	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 	store.SetClock(func() time.Time { return now })
 	return store, &now
@@ -26,19 +21,19 @@ func TestAuthSchemaAndForeignKeysEnforced(t *testing.T) {
 	// auth_state singleton row exists with bootstrapped_at NULL.
 	var id int
 	var bootstrapped *string
-	if err := store.db.QueryRow(`SELECT id, bootstrapped_at FROM auth_state`).Scan(&id, &bootstrapped); err != nil {
+	if err := store.q().QueryRowContext(t.Context(), `SELECT id, bootstrapped_at FROM auth_state`).Scan(&id, &bootstrapped); err != nil {
 		t.Fatalf("auth_state query: %v", err)
 	}
 	if id != 1 || bootstrapped != nil {
 		t.Fatalf("auth_state = (%d, %v), want (1, nil)", id, bootstrapped)
 	}
 	// Inserting a second auth_state row violates CHECK (id = 1).
-	if _, err := store.db.Exec(`INSERT INTO auth_state (id, bootstrapped_at) VALUES (2, NULL)`); err == nil {
+	if _, err := store.q().ExecContext(t.Context(), `INSERT INTO auth_state (id, bootstrapped_at) VALUES (2, NULL)`); err == nil {
 		t.Fatal("expected CHECK constraint failure for auth_state.id = 2")
 	}
 
-	// PRAGMA foreign_keys = ON must reject sessions referencing a missing token_id.
-	_, err := store.db.Exec(`
+	// Foreign keys must reject sessions referencing a missing token_id.
+	_, err := store.q().ExecContext(t.Context(), `
 		INSERT INTO sessions(id,token_hash,auth_method,user_id,token_id,user_agent,ip_address,created_at,last_seen_at,idle_expires_at,expires_at)
 		VALUES('ses_1','hash_1','token',NULL,'nonexistent_token','','','2026-11-26T12:00:00.000000000Z','2026-11-26T12:00:00.000000000Z','2026-12-03T12:00:00.000000000Z','2026-12-26T12:00:00.000000000Z')`)
 	if err == nil {
@@ -46,7 +41,7 @@ func TestAuthSchemaAndForeignKeysEnforced(t *testing.T) {
 	}
 
 	// Untargeted invites must be rejected by CHECK (github_login != '' OR email != '').
-	_, err = store.db.Exec(`
+	_, err = store.q().ExecContext(t.Context(), `
 		INSERT INTO invites(id,role,github_login,email,token_hash,created_by,expires_at,created_at)
 		VALUES('inv_1','member','','','hash_inv','cli','2026-12-03T12:00:00.000000000Z','2026-11-26T12:00:00.000000000Z')`)
 	if err == nil {
@@ -226,7 +221,7 @@ func TestPruneExpiredAuthAndHasActiveRoleAllToken(t *testing.T) {
 	if err := store.RevokeSession(ctx, sess.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`INSERT INTO oauth_transactions(id_hash,provider,state,pkce_verifier,return_to,expires_at,created_at) VALUES('h1','github','st','ver','/',?,?)`,
+	if _, err := store.q().ExecContext(ctx, `INSERT INTO oauth_transactions(id_hash,provider,state,pkce_verifier,return_to,expires_at,created_at) VALUES('h1','github','st','ver','/',?,?)`,
 		stamp(now.Add(10*time.Minute)), stamp(*now)); err != nil {
 		t.Fatal(err)
 	}
@@ -236,8 +231,8 @@ func TestPruneExpiredAuthAndHasActiveRoleAllToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	var oauthCount, sessCount int
-	_ = store.db.QueryRow(`SELECT COUNT(*) FROM oauth_transactions`).Scan(&oauthCount)
-	_ = store.db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessCount)
+	_ = store.q().QueryRowContext(ctx, `SELECT COUNT(*) FROM oauth_transactions`).Scan(&oauthCount)
+	_ = store.q().QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&sessCount)
 	if oauthCount != 0 || sessCount != 0 {
 		t.Fatalf("after prune: oauth=%d sessions=%d, want 0, 0", oauthCount, sessCount)
 	}

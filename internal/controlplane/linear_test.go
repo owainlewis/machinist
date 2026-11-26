@@ -2,24 +2,18 @@ package controlplane
 
 import (
 	"io"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/sources"
-	"github.com/owainlewis/machinist/internal/tickets"
 )
 
 // linearIntake is an intake over a fresh store that connects the
 // repositories in config.yaml.
 func linearIntake(t *testing.T, repositories ...string) *sources.Intake {
 	t.Helper()
-	store, err := tickets.Open(filepath.Join(t.TempDir(), "tickets.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openTestStore(t)
 	return &sources.Intake{Store: store, Repositories: repositories}
 }
 

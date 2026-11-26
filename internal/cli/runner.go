@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -30,6 +31,9 @@ func newStartCommand(options *commandOptions) *cobra.Command {
 			loaded, err := factory.Load(machinistConfig.Server.Factory)
 			if err != nil {
 				return fmt.Errorf("load factory: %w", err)
+			}
+			if svc := strings.TrimSpace(os.Getenv("K_SERVICE")); svc != "" && !config.IsPostgresURL(machinistConfig.Server.Database) {
+				return fmt.Errorf("refusing to start on Cloud Run (K_SERVICE=%q) with SQLite database; set %s to a PostgreSQL connection URL", svc, config.DatabaseURLEnv)
 			}
 			store, err := tickets.Open(machinistConfig.Server.Database)
 			if err != nil {
