@@ -35,8 +35,9 @@ type TrackerJob struct {
 // source yet.
 func (s *Store) TrackerJobs(ctx context.Context, source string) ([]TrackerJob, error) {
 	unreported := `NOT EXISTS (SELECT 1 FROM tracker_reports r WHERE r.ticket_id=t.id AND r.kind=?)`
-	rows, err := s.db.QueryContext(ctx, `SELECT t.id,t.repo,t.state,COALESCE(t.pr_number,0),COALESCE(t.pr_state,''),e.source_key,
-  COALESCE((SELECT group_concat(r.kind) FROM tracker_reports r WHERE r.ticket_id=t.id),'')
+	var jobs []TrackerJob
+	err := s.inTxReadOnly(ctx, func(tx querier) error {
+		rows, err := tx.QueryContext(ctx, `SELECT t.id,t.repo,t.state,COALESCE(t.pr_number,0),COALESCE(t.pr_state,''),e.source_key
   FROM tickets t JOIN ticket_entries e ON e.ticket_id=t.id AND e.kind=? AND e.source_key IS NOT NULL
   WHERE t.source=? AND (t.state=?
     OR (COALESCE(t.pr_number,0)>0 AND `+unreported+`)
@@ -45,30 +46,58 @@ func (s *Store) TrackerJobs(ctx context.Context, source string) ([]TrackerJob, e
     OR (t.pr_state=? AND `+unreported+`)
     OR (t.state=? AND COALESCE(t.pr_number,0)=0 AND `+unreported+`))
   ORDER BY t.created_at`, EntryRequest, source, StateWorking, ReportPR, StateFailed, ReportFailed, PRMerged, ReportMerged, PRClosed, ReportClosed, StateDone, ReportFinished)
+		if err != nil {
+			return err
+		}
+		jobs = []TrackerJob{}
+		for rows.Next() {
+			var job TrackerJob
+			if err := rows.Scan(&job.TicketID, &job.Repo, &job.State, &job.PRNumber, &job.PRState, &job.SourceKey); err != nil {
+				rows.Close()
+				return err
+			}
+			job.Reported = map[string]bool{}
+			jobs = append(jobs, job)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(jobs) == 0 {
+			return nil
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(jobs)), ",")
+		args := make([]any, len(jobs))
+		indexByID := make(map[string]int, len(jobs))
+		for i, job := range jobs {
+			args[i] = job.TicketID
+			indexByID[job.TicketID] = i
+		}
+		repRows, err := tx.QueryContext(ctx, `SELECT ticket_id,kind FROM tracker_reports WHERE ticket_id IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return err
+		}
+		defer repRows.Close()
+		for repRows.Next() {
+			var ticketID, kind string
+			if err := repRows.Scan(&ticketID, &kind); err != nil {
+				return err
+			}
+			if idx, ok := indexByID[ticketID]; ok && kind != "" {
+				jobs[idx].Reported[kind] = true
+			}
+		}
+		return repRows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	jobs := []TrackerJob{}
-	for rows.Next() {
-		var job TrackerJob
-		var reported string
-		if err := rows.Scan(&job.TicketID, &job.Repo, &job.State, &job.PRNumber, &job.PRState, &job.SourceKey, &reported); err != nil {
-			return nil, err
-		}
-		job.Reported = map[string]bool{}
-		for _, kind := range strings.Split(reported, ",") {
-			if kind != "" {
-				job.Reported[kind] = true
-			}
-		}
-		jobs = append(jobs, job)
-	}
-	return jobs, rows.Err()
+	return jobs, nil
 }
 
 // MarkReported records that the tracker was told kind about a ticket.
 func (s *Store) MarkReported(ctx context.Context, ticketID, kind string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO tracker_reports(ticket_id,kind,reported_at) VALUES(?,?,?) ON CONFLICT(ticket_id,kind) DO NOTHING`, ticketID, kind, stamp(s.now()))
+	_, err := s.q().ExecContext(ctx, `INSERT INTO tracker_reports(ticket_id,kind,reported_at) VALUES(?,?,?) ON CONFLICT(ticket_id,kind) DO NOTHING`, ticketID, kind, stamp(s.now()))
 	return err
 }

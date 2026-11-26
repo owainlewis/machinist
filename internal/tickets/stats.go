@@ -230,7 +230,7 @@ func (s *Store) Stats(ctx context.Context, days int, repo string) (Stats, error)
 		stats.Daily = append(stats.Daily, StatsDay{Day: day.Format(time.DateOnly), Steps: map[string]int{}})
 	}
 
-	repoRows, err := s.db.QueryContext(ctx, `SELECT DISTINCT repo FROM tickets WHERE repo<>'' ORDER BY repo`)
+	repoRows, err := s.q().QueryContext(ctx, `SELECT DISTINCT repo FROM tickets WHERE repo<>'' ORDER BY repo`)
 	if err != nil {
 		return Stats{}, err
 	}
@@ -255,7 +255,7 @@ func (s *Store) Stats(ctx context.Context, days int, repo string) (Stats, error)
 	}
 
 	jobsWhere, jobsArgs := repoClause("repo", repo, []any{stamp(first)})
-	jobs, err := s.db.QueryContext(ctx, `SELECT substr(created_at,1,10),state,agent,repo,origin FROM tickets WHERE created_at>=?`+jobsWhere, jobsArgs...)
+	jobs, err := s.q().QueryContext(ctx, `SELECT substr(created_at,1,10),state,agent,repo,origin FROM tickets WHERE created_at>=?`+jobsWhere, jobsArgs...)
 	if err != nil {
 		return Stats{}, err
 	}
@@ -278,8 +278,8 @@ func (s *Store) Stats(ctx context.Context, days int, repo string) (Stats, error)
 	}
 
 	runsWhere, runsArgs := repoClause("t.repo", repo, []any{stamp(first)})
-	runs, err := s.db.QueryContext(ctx, `SELECT r.status,r.queued_at,r.started_at,r.ended_at,
-  COALESCE(r.tokens,(SELECT SUM(s.tokens) FROM run_stages s WHERE s.run=r.id),0),
+	runs, err := s.q().QueryContext(ctx, `SELECT r.status,r.queued_at,r.started_at,r.ended_at,
+  COALESCE(r.tokens,(SELECT CAST(SUM(s.tokens) AS BIGINT) FROM run_stages s WHERE s.run=r.id),0),
   COALESCE(r.cost,(SELECT SUM(s.cost) FROM run_stages s WHERE s.run=r.id)),
   EXISTS (SELECT 1 FROM run_stages s WHERE s.run=r.id AND s.cost_unknown<>0),
   t.agent,t.repo,t.origin
@@ -405,8 +405,8 @@ func (s *Store) monthSpendStats(ctx context.Context, stats *Stats, now time.Time
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	mtd := MonthSpend{Month: monthStart.Format("2006-01")}
 	runsWhere, runsArgs := repoClause("t.repo", repo, []any{stamp(monthStart)})
-	rows, err := s.db.QueryContext(ctx, `SELECT
-  COALESCE(r.tokens,(SELECT SUM(s.tokens) FROM run_stages s WHERE s.run=r.id),0),
+	rows, err := s.q().QueryContext(ctx, `SELECT
+  COALESCE(r.tokens,(SELECT CAST(SUM(s.tokens) AS BIGINT) FROM run_stages s WHERE s.run=r.id),0),
   COALESCE(r.cost,(SELECT SUM(s.cost) FROM run_stages s WHERE s.run=r.id)),
   EXISTS (SELECT 1 FROM run_stages s WHERE s.run=r.id AND s.cost_unknown<>0)
   FROM runs r JOIN tickets t ON t.id=r.ticket_id WHERE r.ended_at>=?`+runsWhere, runsArgs...)
@@ -436,7 +436,7 @@ func (s *Store) monthSpendStats(ctx context.Context, stats *Stats, now time.Time
 	}
 
 	mergedWhere, mergedArgs := repoClause("repo", repo, []any{stamp(monthStart)})
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE merged_at>=?`+mergedWhere, mergedArgs...).Scan(&mtd.MergedPRs); err != nil {
+	if err := s.q().QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE merged_at>=?`+mergedWhere, mergedArgs...).Scan(&mtd.MergedPRs); err != nil {
 		return err
 	}
 	if mtd.MergedPRs > 0 && mtd.HasCost {
@@ -454,7 +454,7 @@ func (s *Store) monthSpendStats(ctx context.Context, stats *Stats, now time.Time
 func (s *Store) pullRequestStats(ctx context.Context, stats *Stats, first time.Time, repo string, index map[string]int, presets, repos, sources map[string]*StatsGroup) error {
 	since := stamp(first)
 	openedWhere, openedArgs := repoClause("repo", repo, []any{since})
-	opened, err := s.db.QueryContext(ctx, `SELECT substr(pr_opened_at,1,10),merged_at IS NOT NULL FROM tickets WHERE pr_opened_at>=?`+openedWhere, openedArgs...)
+	opened, err := s.q().QueryContext(ctx, `SELECT substr(pr_opened_at,1,10),merged_at IS NOT NULL FROM tickets WHERE pr_opened_at>=?`+openedWhere, openedArgs...)
 	if err != nil {
 		return err
 	}
@@ -490,7 +490,7 @@ func (s *Store) pullRequestStats(ctx context.Context, stats *Stats, first time.T
 	}
 
 	mergedWhere, mergedArgs := repoClause("repo", repo, []any{since})
-	merged, err := s.db.QueryContext(ctx, `SELECT created_at,pr_opened_at,first_review_at,merged_at,COALESCE(human_reviews,0),agent,repo,origin FROM tickets WHERE merged_at>=?`+mergedWhere, mergedArgs...)
+	merged, err := s.q().QueryContext(ctx, `SELECT created_at,pr_opened_at,first_review_at,merged_at,COALESCE(human_reviews,0),agent,repo,origin FROM tickets WHERE merged_at>=?`+mergedWhere, mergedArgs...)
 	if err != nil {
 		return err
 	}
@@ -534,7 +534,7 @@ func (s *Store) pullRequestStats(ctx context.Context, stats *Stats, first time.T
 	stats.Cycle.ToReview, stats.Cycle.ReviewToMerge = spread(toReview), spread(reviewToMerge)
 
 	touchesWhere, touchesArgs := repoClause("t.repo", repo, []any{since})
-	touches, err := s.db.QueryContext(ctx, `SELECT substr(t.merged_at,1,10),h.kind,COUNT(*) FROM human_touches h JOIN tickets t ON t.id=h.ticket_id
+	touches, err := s.q().QueryContext(ctx, `SELECT substr(t.merged_at,1,10),h.kind,COUNT(*) FROM human_touches h JOIN tickets t ON t.id=h.ticket_id
   WHERE t.merged_at>=? AND h.at<=t.merged_at`+touchesWhere+` GROUP BY 1,2`, touchesArgs...)
 	if err != nil {
 		return err
@@ -574,7 +574,7 @@ func (s *Store) pullRequestStats(ctx context.Context, stats *Stats, first time.T
 // nothing to do, records no agents and is left out.
 func (s *Store) stepStats(ctx context.Context, stats *Stats, first time.Time, repo string, index map[string]int) error {
 	where, args := repoClause("t.repo", repo, []any{stamp(first), protocol.StageSkipped})
-	rows, err := s.db.QueryContext(ctx, `SELECT substr(r.ended_at,1,10),s.name,COUNT(*) FROM run_stages s
+	rows, err := s.q().QueryContext(ctx, `SELECT substr(r.ended_at,1,10),s.name,COUNT(*) FROM run_stages s
   JOIN runs r ON r.id=s.run JOIN tickets t ON t.id=r.ticket_id
   WHERE r.ended_at>=? AND s.state<>? AND s.agents<>''`+where+` GROUP BY 1,2`, args...)
 	if err != nil {
@@ -644,7 +644,7 @@ type modelAccum struct {
 // totals across models are never double-counted.
 func (s *Store) modelStats(ctx context.Context, stats *Stats, first time.Time, repo string) error {
 	where, args := repoClause("t.repo", repo, []any{stamp(first), protocol.StageSkipped})
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,t.id,s.name,s.state,s.tokens,s.cost,s.cost_unknown,s.duration_millis,s.agents,
+	rows, err := s.q().QueryContext(ctx, `SELECT r.id,t.id,s.name,s.state,s.tokens,s.cost,s.cost_unknown,s.duration_millis,s.agents,
   t.pr_opened_at IS NOT NULL OR t.merged_at IS NOT NULL,
   t.merged_at IS NOT NULL,
   COALESCE(t.human_reviews,0),
@@ -678,13 +678,14 @@ func (s *Store) modelStats(ctx context.Context, stats *Stats, first time.Time, r
 		var runID, ticketID, stepName, state, agentsRaw string
 		var tokens sql.NullInt64
 		var cost sql.NullFloat64
-		var costUnknown bool
+		var costUnknownInt int
 		var durationMillis int64
 		var opened, merged bool
 		var humanReviews, replyReruns int
-		if err := rows.Scan(&runID, &ticketID, &stepName, &state, &tokens, &cost, &costUnknown, &durationMillis, &agentsRaw, &opened, &merged, &humanReviews, &replyReruns); err != nil {
+		if err := rows.Scan(&runID, &ticketID, &stepName, &state, &tokens, &cost, &costUnknownInt, &durationMillis, &agentsRaw, &opened, &merged, &humanReviews, &replyReruns); err != nil {
 			return err
 		}
+		costUnknown := costUnknownInt != 0
 		var agents []protocol.Agent
 		if err := json.Unmarshal([]byte(agentsRaw), &agents); err != nil || len(agents) == 0 {
 			continue
