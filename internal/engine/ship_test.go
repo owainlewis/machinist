@@ -1,12 +1,15 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/ship"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -14,13 +17,14 @@ import (
 
 // fakePull is one pull request on GitHub, as the control plane watches it.
 type fakePull struct {
-	pr       ship.PullRequest
-	checks   []ship.Check
-	merged   []string
-	mergeErr error
-	updated  int
-	looks    int
-	onChecks func()
+	pr        ship.PullRequest
+	checks    []ship.Check
+	merged    []string
+	mergeErr  error
+	updateErr error
+	updated   int
+	looks     int
+	onChecks  func()
 }
 
 func (f *fakePull) PullRequest(context.Context) (ship.PullRequest, error) {
@@ -39,7 +43,7 @@ func (f *fakePull) Merge(_ context.Context, head string) error {
 }
 func (f *fakePull) UpdateBranch(context.Context) error {
 	f.updated++
-	return nil
+	return f.updateErr
 }
 
 // handedOver runs a ticket whose run hands its pull request, #42, to the
@@ -436,5 +440,327 @@ func TestMergeGateVerdictPersistsOnTicketFromShipRequest(t *testing.T) {
 				t.Fatalf("after checks: ticket = %+v, want %s/%s/%q", after, tc.decision, tc.risk, tc.reason)
 			}
 		})
+	}
+}
+
+type recordingNotifier struct {
+	notified []tickets.Ticket
+}
+
+func (r *recordingNotifier) Notify(ticket tickets.Ticket) {
+	r.notified = append(r.notified, ticket)
+}
+
+func TestPRStewardRequeuesFailedCheckAndMergesWithoutCountingHumanReruns(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+	log := &bytes.Buffer{}
+	notifier := &recordingNotifier{}
+	e.Log = log
+	e.Notify = notifier
+	e.StewardRetries = 2
+
+	pull.checks = []ship.Check{{Name: "Linux checks", Bucket: "fail", Link: "https://ci.example.test/99"}}
+	checkPRs(t, e)
+
+	got := ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StateWorking || got.Shipping != "" || got.StewardRetries != 1 || got.PRNumber != 42 {
+		t.Fatalf("after steward requeue: ticket = %+v", got)
+	}
+	if len(notifier.notified) != 0 {
+		t.Fatalf("steward requeue should not notify a person: %+v", notifier.notified)
+	}
+	if !strings.Contains(log.String(), "machinist: job "+ticket.ID+": pull request #42: steward attempt 1/2:") {
+		t.Fatalf("log = %q", log.String())
+	}
+
+	// Next agent run runs on the same branch and sees actionable steward instructions.
+	run := assignRun(t, e)
+	if run.Branch != ticket.Branch() {
+		t.Fatalf("branch = %q, want %q", run.Branch, ticket.Branch())
+	}
+	if !strings.Contains(run.Prompt, `PR Steward (attempt 1/2): check "Linux checks" failed (https://ci.example.test/99).`) ||
+		!strings.Contains(run.Prompt, "origin/HEAD") ||
+		!strings.Contains(run.Prompt, "review and merge-gate") {
+		t.Fatalf("prompt = %q", run.Prompt)
+	}
+
+	// Steward run fixes the failure and hands off new head sha2.
+	pull.pr.HeadRefOid = "sha2"
+	pull.checks = []ship.Check{{Name: "Linux checks", Bucket: "pass"}}
+	completion := succeed(protocol.OutcomeNoChange, "Fixed failing check")
+	completion.Ship = &protocol.Ship{Verdict: ship.Accepted, Head: "sha2"}
+	if err := e.Complete(t.Context(), run.RunID, completion); err != nil {
+		t.Fatal(err)
+	}
+	checkPRs(t, e)
+
+	final := ticketOf(t, e, ticket.ID)
+	if final.State != tickets.StateDone || final.PRState != tickets.PRMerged || len(pull.merged) != 1 || pull.merged[0] != "sha2" {
+		t.Fatalf("final = %+v, merged = %v", final, pull.merged)
+	}
+	stats, err := e.Store.Stats(t.Context(), 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Touches.Reruns != 0 || stats.Touches.Replies != 0 {
+		t.Fatalf("steward retries inflated human touches: %+v", stats.Touches)
+	}
+}
+
+func TestPRStewardRequeuesMergeConflicts(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mergeState string
+		checks     []ship.Check
+		updateErr  error
+	}{
+		{
+			name:       "DIRTY merge state",
+			mergeState: "DIRTY",
+			checks:     []ship.Check{{Name: "test", Bucket: "pending"}},
+		},
+		{
+			name:       "UpdateBranch conflict error",
+			mergeState: "BEHIND",
+			checks:     []ship.Check{{Name: "test", Bucket: "pass"}},
+			updateErr:  errors.New("merge conflict between base and head"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+			log := &bytes.Buffer{}
+			e.Log = log
+			e.StewardRetries = 2
+			pull.pr.MergeStateStatus = tc.mergeState
+			pull.checks = tc.checks
+			pull.updateErr = tc.updateErr
+
+			checkPRs(t, e)
+
+			got := ticketOf(t, e, ticket.ID)
+			if got.State != tickets.StateWorking || got.Shipping != "" || got.StewardRetries != 1 {
+				t.Fatalf("ticket = %+v", got)
+			}
+			if !strings.Contains(log.String(), "steward attempt 1/2: merge conflict") {
+				t.Fatalf("log = %q", log.String())
+			}
+			run := assignRun(t, e)
+			if run.Branch != ticket.Branch() || !strings.Contains(run.Prompt, "PR Steward (attempt 1/2): merge conflict") || !strings.Contains(run.Prompt, "origin/HEAD") {
+				t.Fatalf("run = %+v", run)
+			}
+
+			// Resolve conflict and merge cleanly.
+			pull.pr.HeadRefOid = "sha2"
+			pull.pr.MergeStateStatus = "CLEAN"
+			pull.updateErr = nil
+			pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+			completion := succeed(protocol.OutcomeNoChange, "Resolved conflict")
+			completion.Ship = &protocol.Ship{Verdict: ship.Accepted, Head: "sha2"}
+			if err := e.Complete(t.Context(), run.RunID, completion); err != nil {
+				t.Fatal(err)
+			}
+			checkPRs(t, e)
+
+			final := ticketOf(t, e, ticket.ID)
+			if final.State != tickets.StateDone || final.PRState != tickets.PRMerged || len(pull.merged) != 1 || pull.merged[0] != "sha2" {
+				t.Fatalf("final = %+v, merged = %v", final, pull.merged)
+			}
+		})
+	}
+}
+
+func TestPRStewardExhaustionFallsBackToFailedOrLeftOpen(t *testing.T) {
+	t.Run("CI failure exhausts retries and fails", func(t *testing.T) {
+		e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+		notifier := &recordingNotifier{}
+		e.Notify = notifier
+		e.StewardRetries = 2
+		pull.checks = []ship.Check{{Name: "test", Bucket: "fail", Link: "https://ci.example.test/fail"}}
+
+		for attempt := 1; attempt <= 2; attempt++ {
+			checkPRs(t, e)
+			got := ticketOf(t, e, ticket.ID)
+			if got.State != tickets.StateWorking || got.StewardRetries != attempt {
+				t.Fatalf("attempt %d: ticket = %+v", attempt, got)
+			}
+			run := assignRun(t, e)
+			head := "sha" + string(rune('1'+attempt))
+			pull.pr.HeadRefOid = head
+			completion := succeed(protocol.OutcomeNoChange, "Tried fix")
+			completion.Ship = &protocol.Ship{Verdict: ship.Accepted, Head: head}
+			if err := e.Complete(t.Context(), run.RunID, completion); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// Third failure exhausts the 2/2 cap and marks the ticket failed.
+		checkPRs(t, e)
+		got := ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StateFailed || got.Shipping != "" || got.StewardRetries != 2 {
+			t.Fatalf("after exhaustion: ticket = %+v", got)
+		}
+		if msg := lastMessage(t, e, ticket.ID); !strings.Contains(msg, `check "test" failed`) || !strings.Contains(msg, "PR Steward exhausted 2/2 retries") {
+			t.Fatalf("message = %q", msg)
+		}
+		if len(notifier.notified) != 1 || notifier.notified[0].State != tickets.StateFailed {
+			t.Fatalf("notified = %+v", notifier.notified)
+		}
+	})
+
+	t.Run("merge conflict exhausts retries and leaves PR open", func(t *testing.T) {
+		e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+		notifier := &recordingNotifier{}
+		e.Notify = notifier
+		e.StewardRetries = 1
+		pull.pr.MergeStateStatus = "DIRTY"
+
+		checkPRs(t, e)
+		run := assignRun(t, e)
+		pull.pr.HeadRefOid = "sha2"
+		completion := succeed(protocol.OutcomeNoChange, "Tried rebase")
+		completion.Ship = &protocol.Ship{Verdict: ship.Accepted, Head: "sha2"}
+		if err := e.Complete(t.Context(), run.RunID, completion); err != nil {
+			t.Fatal(err)
+		}
+
+		// Second conflict exhausts 1/1 and leaves PR open for a person.
+		checkPRs(t, e)
+		got := ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StatePRReady || got.Shipping != "" || got.StewardRetries != 1 {
+			t.Fatalf("after exhaustion: ticket = %+v", got)
+		}
+		if msg := lastMessage(t, e, ticket.ID); !strings.Contains(msg, "merge conflicts") || !strings.Contains(msg, "PR Steward exhausted 1/1 retries") {
+			t.Fatalf("message = %q", msg)
+		}
+		if len(notifier.notified) != 1 || notifier.notified[0].State != tickets.StatePRReady {
+			t.Fatalf("notified = %+v", notifier.notified)
+		}
+	})
+}
+
+func TestPRStewardDisabledWhenZero(t *testing.T) {
+	t.Run("CI failure fails immediately", func(t *testing.T) {
+		e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+		e.StewardRetries = 0
+		pull.checks = []ship.Check{{Name: "test", Bucket: "fail", Link: "https://ci.example.test/2"}}
+		checkPRs(t, e)
+		got := ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StateFailed || got.StewardRetries != 0 {
+			t.Fatalf("ticket = %+v", got)
+		}
+		if msg := lastMessage(t, e, ticket.ID); strings.Contains(msg, "PR Steward") {
+			t.Fatalf("unexpected steward text when disabled: %q", msg)
+		}
+	})
+
+	t.Run("merge conflict leaves open immediately", func(t *testing.T) {
+		e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+		e.StewardRetries = 0
+		pull.pr.MergeStateStatus = "DIRTY"
+		checkPRs(t, e)
+		got := ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StatePRReady || got.Shipping != "" || got.StewardRetries != 0 {
+			t.Fatalf("ticket = %+v", got)
+		}
+		if msg := lastMessage(t, e, ticket.ID); strings.Contains(msg, "PR Steward") {
+			t.Fatalf("unexpected steward text when disabled: %q", msg)
+		}
+	})
+}
+
+func TestPRStewardNeverTriggersOnHumanCommits(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"})
+	e.StewardRetries = 2
+	// A person pushed commit sha9 on top of the reviewed head, and the branch is DIRTY with failing checks.
+	pull.pr.HeadRefOid = "sha9"
+	pull.pr.MergeStateStatus = "DIRTY"
+	pull.checks = []ship.Check{{Name: "test", Bucket: "fail"}}
+
+	checkPRs(t, e)
+	got := ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StatePRReady || got.Shipping != "" || got.StewardRetries != 0 {
+		t.Fatalf("human commits triggered steward: ticket = %+v", got)
+	}
+	if msg := lastMessage(t, e, ticket.ID); !strings.Contains(msg, "commits pushed after the review") {
+		t.Fatalf("message = %q", msg)
+	}
+}
+
+func TestPRStewardPreservesRetryCapAcrossControlPlaneRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tickets.db")
+	pull := &fakePull{
+		pr:     ship.PullRequest{Number: 42, URL: "https://github.com/owner/repo/pull/42", State: "OPEN", MergeStateStatus: "CLEAN", HeadRefOid: "sha1"},
+		checks: []ship.Check{{Name: "test", Bucket: "fail", Link: "https://ci.example.test/1"}},
+	}
+	makeEngine := func(store *tickets.Store) *Engine {
+		e := New(Options{
+			Store:          store,
+			Factory:        &factory.Factory{Presets: map[string]factory.Preset{"default": testPreset()}},
+			RunTimeout:     time.Hour,
+			Handle:         "machinist-bot",
+			AutoMerge:      true,
+			StewardRetries: 2,
+			FindPR:         func(context.Context, string, string) (*PR, error) { return &PR{Number: 42}, nil },
+			PullRequests:   func(string, int) ship.GitHub { return pull },
+		})
+		return e
+	}
+
+	store1, err := tickets.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e1 := makeEngine(store1)
+	ticket := newTicket(t, e1, "api")
+	run1 := assignRun(t, e1)
+	c1 := succeed(protocol.OutcomeNoChange, "Opened PR")
+	c1.Ship = &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"}
+	if err := e1.Complete(t.Context(), run1.RunID, c1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Steward attempt 1/2 before restart.
+	checkPRs(t, e1)
+	run2 := assignRun(t, e1)
+	pull.pr.HeadRefOid = "sha2"
+	c2 := succeed(protocol.OutcomeNoChange, "Steward fix 1")
+	c2.Ship = &protocol.Ship{Verdict: ship.Accepted, Head: "sha2"}
+	if err := e1.Complete(t.Context(), run2.RunID, c2); err != nil {
+		t.Fatal(err)
+	}
+	if err := store1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Control plane restarts with a fresh Store and Engine on the same SQLite DB.
+	store2, err := tickets.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+	e2 := makeEngine(store2)
+
+	// Steward attempt 2/2 after restart.
+	checkPRs(t, e2)
+	got := ticketOf(t, e2, ticket.ID)
+	if got.State != tickets.StateWorking || got.StewardRetries != 2 {
+		t.Fatalf("after restart attempt 2: ticket = %+v", got)
+	}
+	run3 := assignRun(t, e2)
+	pull.pr.HeadRefOid = "sha3"
+	c3 := succeed(protocol.OutcomeNoChange, "Steward fix 2")
+	c3.Ship = &protocol.Ship{Verdict: ship.Accepted, Head: "sha3"}
+	if err := e2.Complete(t.Context(), run3.RunID, c3); err != nil {
+		t.Fatal(err)
+	}
+
+	// Next failure hits the persisted 2/2 cap and fails instead of looping.
+	checkPRs(t, e2)
+	got = ticketOf(t, e2, ticket.ID)
+	if got.State != tickets.StateFailed || got.StewardRetries != 2 {
+		t.Fatalf("after restart cap: ticket = %+v", got)
+	}
+	if msg := lastMessage(t, e2, ticket.ID); !strings.Contains(msg, "PR Steward exhausted 2/2 retries") {
+		t.Fatalf("message = %q", msg)
 	}
 }

@@ -36,6 +36,9 @@ func TestLoadConfigAppliesDefaults(t *testing.T) {
 	if !loaded.GitHub.AutoMerges() {
 		t.Fatal("auto-merge is off by default")
 	}
+	if loaded.GitHub.StewardRetryLimit() != DefaultStewardRetries {
+		t.Fatalf("steward_retries default = %d, want %d", loaded.GitHub.StewardRetryLimit(), DefaultStewardRetries)
+	}
 }
 
 func TestLoadConfigReadsTheCurrentDirectoryByDefault(t *testing.T) {
@@ -68,6 +71,7 @@ github:
   handle: machinist-bot
   repositories: [owner/one, owner/two]
   auto_merge: false
+  steward_retries: 3
 
 notify:
   webhook: https://hooks.slack.com/services/T000/B000/secret
@@ -85,7 +89,7 @@ notify:
 			t.Fatalf("path = %q, want it under %q", got, directory)
 		}
 	}
-	if loaded.GitHub.Handle != "machinist-bot" || strings.Join(loaded.GitHub.Repositories, ",") != "owner/one,owner/two" || loaded.GitHub.AutoMerges() {
+	if loaded.GitHub.Handle != "machinist-bot" || strings.Join(loaded.GitHub.Repositories, ",") != "owner/one,owner/two" || loaded.GitHub.AutoMerges() || loaded.GitHub.StewardRetryLimit() != 3 {
 		t.Fatalf("github = %+v", loaded.GitHub)
 	}
 	if loaded.Notify.Webhook != "https://hooks.slack.com/services/T000/B000/secret" {
@@ -121,6 +125,8 @@ func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 		{"notify:\n  webhook: hooks.slack.com/services/a/b/c\n", "notify.webhook"},
 		{"notify:\n  webhook: ftp://hooks.example.com/hook\n", "notify.webhook"},
 		{"notify:\n  email: ops@example.com\n", "unknown key email"},
+		{"github:\n  steward_retries: -1\n", "github.steward_retries"},
+		{"github:\n  steward_retries: 6\n", "github.steward_retries"},
 		{"server: [", "parse config"},
 		{"server:\n  run_timeout: [1]\n", "parse config"},
 		{"github:\n  handle: one\n---\ngithub:\n  handle: two\n", "only one YAML document"},
@@ -293,5 +299,29 @@ func TestLinearClientCredentialsComeFromTheEnvironment(t *testing.T) {
 	writeTestFile(t, path, "linear:\n  client_secret: in-the-file\n  teams:\n    ENG: owner/repo\n")
 	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown key client_secret") {
 		t.Fatalf("secret in the file: error = %v", err)
+	}
+}
+
+func TestLoadConfigStewardRetriesBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{"disabled", "github:\n  steward_retries: 0\n", 0},
+		{"default omitted", "github:\n  handle: bot\n", DefaultStewardRetries},
+		{"max allowed", "github:\n  steward_retries: 5\n", MaxStewardRetries},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			writeTestFile(t, path, tc.body)
+			loaded, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig failed: %v", err)
+			}
+			if got := loaded.GitHub.StewardRetryLimit(); got != tc.want {
+				t.Fatalf("StewardRetryLimit() = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }

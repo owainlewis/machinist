@@ -19,6 +19,9 @@ github:
   # Jobs merge their own pull requests once the checks pass and the review is
   # clean. Set false to leave every pull request open for a person to merge.
   auto_merge: true
+  # Automatic PR Steward retries when a pull request fails CI or hits a merge
+  # conflict (0 disables, max 5).
+  steward_retries: 2
   # app:
   #   id: 123456
   #   private_key_file: .machinist/github-app.pem

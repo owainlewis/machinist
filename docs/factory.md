@@ -207,6 +207,27 @@ repository allows, so squash-only and rebase-only repositories work without a se
 GitHub App the control plane merges with the app's token, and otherwise with its own
 `GH_TOKEN`, so that token needs to be able to merge.
 
+### PR Steward
+
+When a watched pull request fails a CI check (for example, a compile or test failure after a
+parallel pull request merged) or hits a merge conflict (`DIRTY` merge state or a conflicting
+branch update), **PR Steward** automatically shepherds the pull request back to green instead
+of immediately failing or abandoning it:
+
+- Up to `github.steward_retries` times per job (default `2`, `0` disables, max `5`, persisted
+  in SQLite across control-plane restarts), the control plane clears the old check watch,
+  records a timeline entry naming the failed check or conflict, and requeues a follow-up run on
+  the **same branch**.
+- The follow-up prompt tells the agent to fetch `origin`, merge `origin/HEAD`, resolve any
+  conflicts, inspect and fix the failing check, run local checks, and commit on the branch so
+  the pipeline pushes the update and re-runs `review` and `merge-gate`.
+- **Safety guardrails:** PR Steward never runs if a person pushed commits to the branch after
+  the reviewed head commit, or if the pull request was already merged or closed.
+- **Metrics:** Automatic steward retries are not counted as human `reruns` touches in Dashboard
+  metrics. Once `github.steward_retries` is exhausted, Machinist falls back to marking the job
+  `failed` (on CI failure) or leaving the pull request open (on merge conflict) and notifies
+  a person.
+
 The reviser does not judge its own fixes. `scripts/review.sh` removes any `review.json`
 before the review runs, and fails the step if the review writes none. `scripts/revise.sh`
 keeps the first review as `first-review.json` and runs the review again on the fixed branch,

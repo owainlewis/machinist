@@ -137,6 +137,7 @@ func TestReloadAppliesConfigAndFactoryChanges(t *testing.T) {
 github:
   handle: new-bot
   auto_merge: false
+  steward_retries: 4
   repositories:
     - owner/beta
 
@@ -167,6 +168,7 @@ linear:
 		"server.run_timeout: 30m0s -> 45m0s",
 		"github.handle: machinist-bot -> new-bot",
 		"github.auto_merge: true -> false",
+		"github.steward_retries: 2 -> 4",
 		"github.repositories: added owner/beta; removed owner/alpha",
 		"linear: enabled",
 		"preset added: fast",
@@ -219,6 +221,7 @@ linear:
 github:
   handle: new-bot
   auto_merge: false
+  steward_retries: 4
   repositories:
     - owner/beta
 `)
@@ -281,6 +284,16 @@ func TestReloadRejectsInvalidConfigOrFactoryAndKeepsPreviousState(t *testing.T) 
 		t.Cleanup(func() { writeFile(t, rf.configPath, string(origConfig)) })
 		status, _, errMsg := rf.postReload(t, rf.token)
 		if status != http.StatusBadRequest || !strings.Contains(errMsg, "unknown key bogus_key") {
+			t.Fatalf("status = %d, err = %q", status, errMsg)
+		}
+		assertUnchanged(t)
+	})
+
+	t.Run("out of range github.steward_retries", func(t *testing.T) {
+		writeFile(t, rf.configPath, string(origConfig)+"  steward_retries: 9\n")
+		t.Cleanup(func() { writeFile(t, rf.configPath, string(origConfig)) })
+		status, _, errMsg := rf.postReload(t, rf.token)
+		if status != http.StatusBadRequest || !strings.Contains(errMsg, "github.steward_retries") {
 			t.Fatalf("status = %d, err = %q", status, errMsg)
 		}
 		assertUnchanged(t)
@@ -834,8 +847,8 @@ github:
 			t.Fatalf("reload failed: %d %q", status, errMsg)
 		}
 		st := rf.server.state()
-		rf.server.engine.Reload(nil, origState.factory, origState.config.Server.RunDeadline(), origState.config.GitHub.Handle, origState.config.GitHub.AutoMerges(), nil, nil)
-		rf.server.engine.Reload(staleQueued, st.factory, st.config.Server.RunDeadline(), st.config.GitHub.Handle, st.config.GitHub.AutoMerges(), nil, nil)
+		rf.server.engine.Reload(nil, origState.factory, origState.config.Server.RunDeadline(), origState.config.GitHub.Handle, origState.config.GitHub.AutoMerges(), origState.config.GitHub.StewardRetryLimit(), nil, nil)
+		rf.server.engine.Reload(staleQueued, st.factory, st.config.Server.RunDeadline(), st.config.GitHub.Handle, st.config.GitHub.AutoMerges(), st.config.GitHub.StewardRetryLimit(), nil, nil)
 		if rf.server.engine.PinnedFactory(tk.ID, staleQueued[0].UpdatedAt) != origState.factory {
 			t.Fatal("expected stale v1 pin to be present for pre-claim generation")
 		}

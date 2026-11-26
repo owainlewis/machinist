@@ -68,7 +68,11 @@ type Options struct {
 	// AutoMerge reaches every step as MACHINIST_AUTO_MERGE, true or false.
 	// A pull request merges only when it is true, whatever a step says.
 	AutoMerge bool
-	FindPR    PRFinder
+	// StewardRetries is how many times PR Steward automatically requeues a job
+	// on the same branch when its pull request fails CI or hits a merge
+	// conflict. Zero disables automatic steward retries.
+	StewardRetries int
+	FindPR         PRFinder
 	// PullRequests reaches one pull request on GitHub, to wait for its checks
 	// and merge it. Without it, a pull request a run hands over stays open.
 	PullRequests PullRequests
@@ -204,6 +208,12 @@ func (e *Engine) autoMerge() bool {
 	return e.AutoMerge
 }
 
+func (e *Engine) stewardRetries() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.StewardRetries
+}
+
 func (e *Engine) githubToken() TokenMinter {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -213,7 +223,7 @@ func (e *Engine) githubToken() TokenMinter {
 // Reload swaps the engine's factory and reloadable config atomically while
 // pinning every currently queued or awaiting-run ticket to the configuration
 // it started with, tied to that ticket's current UpdatedAt generation.
-func (e *Engine) Reload(queuedTickets []tickets.Ticket, loaded *factory.Factory, runTimeout time.Duration, handle string, autoMerge bool, tokens TokenMinter, identity IdentityFinder) {
+func (e *Engine) Reload(queuedTickets []tickets.Ticket, loaded *factory.Factory, runTimeout time.Duration, handle string, autoMerge bool, stewardRetries int, tokens TokenMinter, identity IdentityFinder) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	previous := e.snapshotLocked()
@@ -230,6 +240,7 @@ func (e *Engine) Reload(queuedTickets []tickets.Ticket, loaded *factory.Factory,
 	e.RunTimeout = runTimeout
 	e.Handle = handle
 	e.AutoMerge = autoMerge
+	e.StewardRetries = stewardRetries
 	e.GitHubToken = tokens
 	e.Identity = identity
 }

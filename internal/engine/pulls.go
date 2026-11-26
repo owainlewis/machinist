@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/ghclient"
@@ -237,6 +238,36 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		}
 		return err
 	}
+	if look.Steward != nil {
+		maxRetries := e.stewardRetries()
+		if maxRetries > 0 && ticket.StewardRetries < maxRetries {
+			attempt := ticket.StewardRetries + 1
+			prompt := stewardPrompt(ticket.Repo, number, attempt, maxRetries, look.Steward)
+			_, requeued, err := e.Store.StewardRequeue(ctx, ticket, tickets.StewardRequeueRequest{
+				MaxRetries: maxRetries,
+				Prompt:     prompt,
+			})
+			if err != nil {
+				return err
+			}
+			if requeued {
+				fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d: steward attempt %d/%d: %s; requeueing\n",
+					ticket.ID, number, attempt, maxRetries, stewardLogReason(look.Steward))
+				return nil
+			}
+			current, loadErr := e.Store.Ticket(ctx, ticket.ID)
+			if loadErr != nil || current.State != tickets.StatePRReady || current.Shipping == "" {
+				return nil
+			}
+			ticket = current
+		}
+		if maxRetries > 0 && ticket.StewardRetries >= maxRetries {
+			fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d: steward retries exhausted (%d/%d): %s\n",
+				ticket.ID, number, ticket.StewardRetries, maxRetries, look.Log)
+			look.Message = stewardExhaustedMessage(look.Message, ticket.StewardRetries, maxRetries)
+			look.Log = ""
+		}
+	}
 	if look.Log != "" {
 		fmt.Fprintf(e.Log, "machinist: job %s: pull request #%d: %s\n", ticket.ID, number, look.Log)
 	}
@@ -271,4 +302,76 @@ func (e *Engine) lookAt(ctx context.Context, ticket tickets.Ticket, number int) 
 		shipped.Failed = true
 	}
 	return e.setShipping(ctx, ticket, shipped)
+}
+
+func stewardLogReason(s *ship.Steward) string {
+	switch s.Reason {
+	case ship.StewardMergeConflict:
+		if s.Detail != "" {
+			return "merge conflict (" + s.Detail + ")"
+		}
+		return "merge conflict"
+	default:
+		return s.Detail
+	}
+}
+
+func stewardExhaustedMessage(message string, used, maxRetries int) string {
+	note := fmt.Sprintf("PR Steward exhausted %d/%d retries", used, maxRetries)
+	if message == "" {
+		return note
+	}
+	return fmt.Sprintf("%s (%s)", message, note)
+}
+
+func stewardSummary(number, attempt, maxRetries int, s *ship.Steward) string {
+	switch s.Reason {
+	case ship.StewardCheckFailed:
+		if s.Link != "" {
+			return fmt.Sprintf("PR Steward (attempt %d/%d): check %q failed (%s). Requeueing to rebase onto main and fix.", attempt, maxRetries, s.Check, s.Link)
+		}
+		return fmt.Sprintf("PR Steward (attempt %d/%d): check %q failed. Requeueing to rebase onto main and fix.", attempt, maxRetries, s.Check)
+	case ship.StewardMergeConflict:
+		if s.Detail != "" {
+			return fmt.Sprintf("PR Steward (attempt %d/%d): merge conflict on pull request #%d (%s). Requeueing to rebase onto main and resolve conflicts.", attempt, maxRetries, number, s.Detail)
+		}
+		return fmt.Sprintf("PR Steward (attempt %d/%d): merge conflict on pull request #%d. Requeueing to rebase onto main and resolve conflicts.", attempt, maxRetries, number)
+	default:
+		return fmt.Sprintf("PR Steward (attempt %d/%d): %s. Requeueing to fix.", attempt, maxRetries, s.Detail)
+	}
+}
+
+func stewardPrompt(repo string, number, attempt, maxRetries int, s *ship.Steward) string {
+	prURL := s.PRURL
+	if prURL == "" {
+		prURL = fmt.Sprintf("https://github.com/%s/pull/%d", repo, number)
+	}
+	var b strings.Builder
+	b.WriteString(stewardSummary(number, attempt, maxRetries, s))
+	b.WriteString("\n\n")
+	switch s.Reason {
+	case ship.StewardCheckFailed:
+		if s.Link != "" {
+			fmt.Fprintf(&b, "Pull request #%d (%s) failed CI check %q (%s).\n\n", number, prURL, s.Check, s.Link)
+		} else {
+			fmt.Fprintf(&b, "Pull request #%d (%s) failed CI check %q.\n\n", number, prURL, s.Check)
+		}
+		b.WriteString("Follow these steps on this pull request branch to bring it back to green:\n")
+		b.WriteString("1. Fetch the latest default branch (`git fetch origin`) and merge `origin/HEAD` into this branch (prefer merging over rebasing published commits so the pipeline's non-force push stays fast-forward).\n")
+		b.WriteString("2. Resolve any merge conflicts cleanly without dropping either branch's intent.\n")
+		fmt.Fprintf(&b, "3. Inspect and fix the failing check (%q), reproducing the failure locally.\n", s.Check)
+		b.WriteString("4. Run the repository's tests, linter, and type checker locally and confirm they pass.\n")
+		b.WriteString("5. Commit your fixes on this branch. Do not push, open a new pull request, or merge — the pipeline will push the updated branch and re-run review and merge-gate.")
+	case ship.StewardMergeConflict:
+		fmt.Fprintf(&b, "Pull request #%d (%s) has merge conflicts with the base branch (%s).\n\n", number, prURL, s.Detail)
+		b.WriteString("Follow these steps on this pull request branch to resolve the conflicts and bring it back to green:\n")
+		b.WriteString("1. Fetch the latest default branch (`git fetch origin`) and merge `origin/HEAD` into this branch (prefer merging over rebasing published commits so the pipeline's non-force push stays fast-forward).\n")
+		b.WriteString("2. Resolve all merge conflicts cleanly, preserving both the base branch changes and this pull request's intent.\n")
+		b.WriteString("3. Run the repository's tests, linter, and type checker locally to catch any semantic conflicts or regressions.\n")
+		b.WriteString("4. Commit the resolution on this branch. Do not push, open a new pull request, or merge — the pipeline will push the updated branch and re-run review and merge-gate.")
+	default:
+		fmt.Fprintf(&b, "Pull request #%d (%s) needs attention: %s.\n\n", number, prURL, s.Detail)
+		b.WriteString("Fetch `origin`, merge `origin/HEAD`, fix the issue, run the repository's checks locally, and commit your fixes on this branch.")
+	}
+	return b.String()
 }

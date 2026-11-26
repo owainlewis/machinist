@@ -297,3 +297,127 @@ func TestLookPreservesNormalizedWatchAcrossTransientMergeError(t *testing.T) {
 		t.Fatalf("got = %+v, want Waiting with OldHead cleared and Head=sha2", got)
 	}
 }
+
+func TestLookReportsStewardReasonForFailedCheckAndConflicts(t *testing.T) {
+	t.Run("failed check sets StewardCheckFailed", func(t *testing.T) {
+		github := &fakeGitHub{
+			views:  []PullRequest{open("sha1", "CLEAN")},
+			checks: [][]Check{{{Name: "Linux checks", Bucket: "fail", Link: "https://ci/9"}}},
+		}
+		got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+		if got.Outcome != CheckFailed || got.Steward == nil {
+			t.Fatalf("got = %+v", got)
+		}
+		if got.Steward.Reason != StewardCheckFailed || got.Steward.Check != "Linux checks" || got.Steward.Link != "https://ci/9" || got.Steward.PRURL != "https://github.com/o/r/pull/7" {
+			t.Fatalf("steward = %+v", got.Steward)
+		}
+	})
+
+	t.Run("DIRTY merge state sets StewardMergeConflict immediately", func(t *testing.T) {
+		github := &fakeGitHub{
+			views:  []PullRequest{open("sha1", "DIRTY")},
+			checks: [][]Check{running},
+		}
+		got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+		if got.Outcome != LeftOpen || got.Steward == nil {
+			t.Fatalf("got = %+v", got)
+		}
+		if got.Steward.Reason != StewardMergeConflict || got.Steward.PRURL != "https://github.com/o/r/pull/7" || github.checkCount != 0 {
+			t.Fatalf("steward = %+v, checkCount = %d", got.Steward, github.checkCount)
+		}
+	})
+
+	t.Run("DIRTY discovered after merge refusal sets StewardMergeConflict", func(t *testing.T) {
+		github := &fakeGitHub{
+			views:  []PullRequest{open("sha1", "CLEAN"), open("sha1", "DIRTY")},
+			checks: [][]Check{passed},
+			refuse: []string{"Pull request is not mergeable"},
+		}
+		got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+		if got.Outcome != LeftOpen || got.Steward == nil || got.Steward.Reason != StewardMergeConflict {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("UpdateBranch conflict error sets StewardMergeConflict", func(t *testing.T) {
+		github := &fakeGitHub{
+			views:     []PullRequest{open("sha1", "BEHIND")},
+			checks:    [][]Check{passed},
+			updateErr: errors.New("merge conflict between base and head"),
+		}
+		got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+		if got.Outcome != LeftOpen || got.Steward == nil || got.Steward.Reason != StewardMergeConflict || !strings.Contains(got.Steward.Detail, "merge conflict") {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("UpdateBranch non-conflict error does not trigger Steward", func(t *testing.T) {
+		github := &fakeGitHub{
+			views:     []PullRequest{open("sha1", "BEHIND")},
+			checks:    [][]Check{passed},
+			updateErr: errors.New("Resource not accessible by integration"),
+		}
+		got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+		if got.Outcome != LeftOpen || got.Steward != nil {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+}
+
+func TestLookNeverStewardsHumanCommitsOrNonConflictHolds(t *testing.T) {
+	t.Run("human push on DIRTY branch leaves open without Steward", func(t *testing.T) {
+		github := &fakeGitHub{
+			views:  []PullRequest{open("sha9", "DIRTY")},
+			checks: [][]Check{{{Name: "test", Bucket: "fail"}}},
+		}
+		got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+		if got.Outcome != LeftOpen || got.Steward != nil || !strings.Contains(got.Message, "commits pushed after the review") {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("human push raced with UpdateBranch conflict leaves open without Steward", func(t *testing.T) {
+		github := &fakeGitHub{
+			views:     []PullRequest{open("sha1", "BEHIND"), open("sha9", "DIRTY")},
+			checks:    [][]Check{passed},
+			updateErr: errors.New("merge conflict between base and head"),
+		}
+		got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+		if got.Outcome != LeftOpen || got.Steward != nil || !strings.Contains(got.Message, "commits pushed after the review") {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("missing required human review does not trigger Steward", func(t *testing.T) {
+		github := &fakeGitHub{
+			views:  []PullRequest{open("sha1", "CLEAN")},
+			checks: [][]Check{passed},
+			refuse: []string{"Required review is missing"},
+		}
+		got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+		if got.Outcome != LeftOpen || got.Steward != nil {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("auto-merge off hold does not trigger Steward", func(t *testing.T) {
+		github := &fakeGitHub{
+			views:  []PullRequest{open("sha1", "CLEAN")},
+			checks: [][]Check{passed},
+		}
+		got := look(t, github, Watch{Hold: "auto-merge is off", Since: start, Head: "sha1"}, start)
+		if got.Outcome != LeftOpen || got.Steward != nil {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("closed PR returns Settled without Steward", func(t *testing.T) {
+		closed := open("sha1", "DIRTY")
+		closed.State = "CLOSED"
+		github := &fakeGitHub{views: []PullRequest{closed}, checks: [][]Check{{{Name: "test", Bucket: "fail"}}}}
+		got := look(t, github, Watch{Since: start, Head: "sha1"}, start)
+		if got.Outcome != Settled || got.Steward != nil {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+}
