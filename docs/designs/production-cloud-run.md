@@ -3,7 +3,8 @@
 *   **Author:** Owain Lewis
 *   **Status:** Proposed
 *   **Date:** 2026-11-26
-*   **Issues:** ENG-213, ENG-178
+*   **Issues:** ENG-213, ENG-216, ENG-178
+*   **Detailed Auth & Access Spec:** [Spec 1: Identity, Workspaces, and Access Control](identity-and-access.md)
 
 --------------------------------------------------------------------------------
 
