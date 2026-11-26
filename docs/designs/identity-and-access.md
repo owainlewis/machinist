@@ -145,9 +145,10 @@ CREATE TABLE IF NOT EXISTS users (
     `github_id` (as string), never mutable `github_login` or `email`. On each login,
     `github_login`, `email`, `name`, and `avatar_url` (validated as `https://` and ≤ 512
     bytes, else empty) are refreshed.
-*   **Last-admin invariant:** Any role downgrade (`admin` → `member`/`viewer`) or user
-    disable **must** lock `auth_state` and fail with `409 Conflict` if fewer than 2 active
-    (`disabled_at IS NULL`) `admin` users exist.
+*   **Last-admin invariant:** Any operation that demotes (`admin` → `member`/`viewer`) or
+    disables an **active `admin`** **must** lock `auth_state` and fail with `409 Conflict`
+    if fewer than 2 active (`disabled_at IS NULL`) `admin` users exist (disabling a `member`
+    or `viewer` is always allowed even when only 1 active admin exists).
 
 #### `invites`
 ```sql
@@ -368,8 +369,11 @@ When `authenticated: false`, leaks no user handles, repo names, or setup details
     ```json
     {"role": "member", "github_login": "alice"}
     ```
-    *   Revokes any existing pending invite for the same target, creates the new invite, and
-        returns `201`:
+    *   If an active or disabled `users` row already matches the target, returns `409 Conflict`
+        directing the admin to update or re-enable that user via `PATCH /api/v1/team/members/{id}`
+        instead of creating a duplicate invite.
+    *   Otherwise revokes any existing pending invite for the same target, creates the new
+        invite, and returns `201`:
         ```json
         {"invite": {"id": "inv_...", "role": "member", "github_login": "alice", "expires_at": "..."}, "invite_url": "https://machinist.example.com/#/invite#<secret>"}
         ```
