@@ -33,7 +33,9 @@ Start with the [quick start](../README.md#quick-start).
 | [Vision](../VISION.md) | See what Machinist is for, where it is, and what comes next |
 | [Design](designs/generic-runner.md) | Read the design: one API, presets of steps, runners |
 | [Identity & access control](designs/identity-and-access.md) | Read Spec 1 (v1): GitHub OAuth, DB invites, 3-role RBAC, and public hardening |
-| [Production Cloud Run & auth](designs/production-cloud-run.md) | Read the design for Cloud Run, PostgreSQL, baked config, and public-instance login security |
+| [PostgreSQL storage](designs/postgresql-storage.md) | Read Spec 2: PostgreSQL backend, lock-free claiming, migrations, and leader leases |
+| [Cloud Run packaging](designs/cloud-run-packaging.md) | Read Spec 3: Cloud Run runtime, baked-config container image, and Secret Manager deploy |
+| [Production Cloud Run & auth](designs/production-cloud-run.md) | Read the parent architecture for Cloud Run, PostgreSQL, baked config, and public auth |
 | [Job sources](designs/issue-sources.md) | See where jobs come from and how a new tracker plugs in |
 | [Earlier design](designs/machinist-redesign.md) | Read the GitHub-first design the code still follows |
 | [Examples](../examples/README.md) | See the files `machinist init` installs |
