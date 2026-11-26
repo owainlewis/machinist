@@ -63,6 +63,7 @@ type Server struct {
 	githubOAuthBase string
 	githubAPIBase   string
 	oauthHTTPClient *http.Client
+	githubCache     githubLookupCache
 }
 
 type serverState struct {

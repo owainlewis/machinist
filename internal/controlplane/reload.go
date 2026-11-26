@@ -169,6 +169,7 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 	if linearChanged {
 		s.linear = nextLinear
 	}
+	s.githubCache.clear()
 	s.mu.Unlock()
 
 	if linearChanged {
