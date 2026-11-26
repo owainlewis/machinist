@@ -1,0 +1,244 @@
+package tickets
+
+import (
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func openAuthTestStore(t *testing.T) (*Store, *time.Time) {
+	t.Helper()
+	store, err := Open(filepath.Join(t.TempDir(), "tickets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
+	return store, &now
+}
+
+func TestAuthSchemaAndForeignKeysEnforced(t *testing.T) {
+	store, _ := openAuthTestStore(t)
+
+	// auth_state singleton row exists with bootstrapped_at NULL.
+	var id int
+	var bootstrapped *string
+	if err := store.db.QueryRow(`SELECT id, bootstrapped_at FROM auth_state`).Scan(&id, &bootstrapped); err != nil {
+		t.Fatalf("auth_state query: %v", err)
+	}
+	if id != 1 || bootstrapped != nil {
+		t.Fatalf("auth_state = (%d, %v), want (1, nil)", id, bootstrapped)
+	}
+	// Inserting a second auth_state row violates CHECK (id = 1).
+	if _, err := store.db.Exec(`INSERT INTO auth_state (id, bootstrapped_at) VALUES (2, NULL)`); err == nil {
+		t.Fatal("expected CHECK constraint failure for auth_state.id = 2")
+	}
+
+	// PRAGMA foreign_keys = ON must reject sessions referencing a missing token_id.
+	_, err := store.db.Exec(`
+		INSERT INTO sessions(id,token_hash,auth_method,user_id,token_id,user_agent,ip_address,created_at,last_seen_at,idle_expires_at,expires_at)
+		VALUES('ses_1','hash_1','token',NULL,'nonexistent_token','','','2026-11-26T12:00:00.000000000Z','2026-11-26T12:00:00.000000000Z','2026-12-03T12:00:00.000000000Z','2026-12-26T12:00:00.000000000Z')`)
+	if err == nil {
+		t.Fatal("expected foreign key constraint failure for nonexistent token_id")
+	}
+
+	// Untargeted invites must be rejected by CHECK (github_login != '' OR email != '').
+	_, err = store.db.Exec(`
+		INSERT INTO invites(id,role,github_login,email,token_hash,created_by,expires_at,created_at)
+		VALUES('inv_1','member','','','hash_inv','cli','2026-12-03T12:00:00.000000000Z','2026-11-26T12:00:00.000000000Z')`)
+	if err == nil {
+		t.Fatal("expected CHECK constraint failure for untargeted invite")
+	}
+}
+
+func TestTokenSessionLifecycleAndExpiry(t *testing.T) {
+	store, now := openAuthTestStore(t)
+	ctx := t.Context()
+
+	tok, err := store.CreateToken(ctx, "alice", RoleOperator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := store.Authenticate(ctx, tok)
+	if err != nil || auth.ID == "" {
+		t.Fatalf("Authenticate = %+v, err = %v", auth, err)
+	}
+
+	secret, sess, err := store.CreateTokenSession(ctx, auth.ID, "Mozilla/5.0", "203.0.113.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(secret, SessionPrefix) || !strings.HasPrefix(sess.ID, "ses_") || sess.TokenID != auth.ID {
+		t.Fatalf("session = %+v, secret = %q", sess, secret)
+	}
+
+	// Raw API token is not accepted as a session secret.
+	if _, err := store.AuthenticateSession(ctx, tok); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AuthenticateSession(raw token) = %v, want ErrNotFound", err)
+	}
+
+	// Valid session authenticates and returns mapped admin role.
+	got, err := store.AuthenticateSession(ctx, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID != sess.ID || got.AuthMethod != AuthMethodToken || got.Name != "alice" || got.Role != UserRoleAdmin || got.TokenID != auth.ID {
+		t.Fatalf("SessionAuth = %+v", got)
+	}
+
+	// Activity within 1 minute does not advance last_seen_at.
+	*now = now.Add(30 * time.Second)
+	if _, err := store.AuthenticateSession(ctx, secret); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.ListActiveSessionsForToken(ctx, auth.ID)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("listed = %+v, err = %v", listed, err)
+	}
+	if !listed[0].LastSeenAt.Equal(sess.CreatedAt) {
+		t.Fatalf("last_seen_at updated too early: got %v, want %v", listed[0].LastSeenAt, sess.CreatedAt)
+	}
+
+	// Activity after 5 days slides idle_expires_at forward.
+	*now = sess.CreatedAt.Add(5 * 24 * time.Hour)
+	if _, err := store.AuthenticateSession(ctx, secret); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = store.ListActiveSessionsForToken(ctx, auth.ID)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("listed = %+v, err = %v", listed, err)
+	}
+	wantIdle := now.Add(SessionIdleTTL)
+	if !listed[0].LastSeenAt.Equal(*now) || !listed[0].IdleExpiresAt.Equal(wantIdle) {
+		t.Fatalf("sliding expiry not updated: last_seen=%v idle=%v want_idle=%v", listed[0].LastSeenAt, listed[0].IdleExpiresAt, wantIdle)
+	}
+
+	// Idle expiration after >7 days without activity rejects session.
+	*now = now.Add(SessionIdleTTL + time.Second)
+	if _, err := store.AuthenticateSession(ctx, secret); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("idle expired session err = %v, want ErrNotFound", err)
+	}
+
+	// Absolute expiration after 30 days even with frequent activity.
+	*now = sess.CreatedAt
+	secret2, _, err := store.CreateTokenSession(ctx, auth.ID, "UA", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for day := 1; day <= 29; day++ {
+		*now = sess.CreatedAt.Add(time.Duration(day) * 24 * time.Hour)
+		if _, err := store.AuthenticateSession(ctx, secret2); err != nil {
+			t.Fatalf("day %d failed: %v", day, err)
+		}
+	}
+	*now = sess.CreatedAt.Add(SessionAbsoluteTTL + time.Second)
+	if _, err := store.AuthenticateSession(ctx, secret2); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("absolute expired session err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestTokenRevocationAndRegenerationCascadeToSessions(t *testing.T) {
+	store, _ := openAuthTestStore(t)
+	ctx := t.Context()
+
+	tokA, err := store.CreateToken(ctx, "alice", RoleOperator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokB, err := store.CreateToken(ctx, "bob", RoleOperator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authA, _ := store.Authenticate(ctx, tokA)
+	authB, _ := store.Authenticate(ctx, tokB)
+
+	secA, _, err := store.CreateTokenSession(ctx, authA.ID, "UA", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secB, _, err := store.CreateTokenSession(ctx, authB.ID, "UA", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Regenerating alice revokes alice's session but preserves bob's.
+	_, newID, err := store.RegenerateTokenWithID(ctx, "alice")
+	if err != nil || newID == "" || newID == authA.ID {
+		t.Fatalf("RegenerateTokenWithID = %q, err = %v", newID, err)
+	}
+	if _, err := store.AuthenticateSession(ctx, secA); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("regenerated token session still active: %v", err)
+	}
+	if _, err := store.AuthenticateSession(ctx, secB); err != nil {
+		t.Fatalf("unrelated session failed after alice regenerate: %v", err)
+	}
+
+	// Revoking bob revokes bob's session.
+	if err := store.RevokeToken(ctx, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AuthenticateSession(ctx, secB); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked token session still active: %v", err)
+	}
+
+	// DeleteToken works even when sessions reference the token (PRAGMA foreign_keys = ON).
+	if err := store.DeleteToken(ctx, "bob"); err != nil {
+		t.Fatalf("DeleteToken with referencing session failed: %v", err)
+	}
+}
+
+func TestPruneExpiredAuthAndHasActiveRoleAllToken(t *testing.T) {
+	store, now := openAuthTestStore(t)
+	ctx := t.Context()
+
+	has, err := store.HasActiveRoleAllToken(ctx)
+	if err != nil || has {
+		t.Fatalf("HasActiveRoleAllToken empty = %v, %v", has, err)
+	}
+	if _, err := store.CreateToken(ctx, "legacy", RoleAll); err != nil {
+		t.Fatal(err)
+	}
+	has, err = store.HasActiveRoleAllToken(ctx)
+	if err != nil || !has {
+		t.Fatalf("HasActiveRoleAllToken = %v, %v", has, err)
+	}
+	if err := store.RevokeToken(ctx, "legacy"); err != nil {
+		t.Fatal(err)
+	}
+	has, err = store.HasActiveRoleAllToken(ctx)
+	if err != nil || has {
+		t.Fatalf("HasActiveRoleAllToken after revoke = %v, %v", has, err)
+	}
+
+	// Seed an oauth_transaction and a revoked session, then prune after 31 days.
+	tok, err := store.CreateToken(ctx, "alice", RoleOperator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, _ := store.Authenticate(ctx, tok)
+	_, sess, err := store.CreateTokenSession(ctx, auth.ID, "UA", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeSession(ctx, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO oauth_transactions(id_hash,provider,state,pkce_verifier,return_to,expires_at,created_at) VALUES('h1','github','st','ver','/',?,?)`,
+		stamp(now.Add(10*time.Minute)), stamp(*now)); err != nil {
+		t.Fatal(err)
+	}
+
+	*now = now.Add(31 * 24 * time.Hour)
+	if err := store.PruneExpiredAuth(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var oauthCount, sessCount int
+	_ = store.db.QueryRow(`SELECT COUNT(*) FROM oauth_transactions`).Scan(&oauthCount)
+	_ = store.db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessCount)
+	if oauthCount != 0 || sessCount != 0 {
+		t.Fatalf("after prune: oauth=%d sessions=%d, want 0, 0", oauthCount, sessCount)
+	}
+}

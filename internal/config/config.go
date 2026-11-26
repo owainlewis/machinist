@@ -34,19 +34,22 @@ const (
 	// MaxStewardRetries caps github.steward_retries so a broken pull request
 	// cannot loop indefinitely.
 	MaxStewardRetries = 5
+	// MaxTrustedProxyHops caps server.trusted_proxy_hops.
+	MaxTrustedProxyHops = 10
 )
 
 type Server struct {
-	Listen        string `yaml:"listen"`
-	PublicURL     string `yaml:"public_url"`
-	Database      string `yaml:"database"`
-	Factory       string `yaml:"factory"`
-	DefaultPreset string `yaml:"default_preset"`
-	RunTimeout    string `yaml:"run_timeout"`
-	TLSCert       string `yaml:"tls_cert"`
-	TLSKey        string `yaml:"tls_key"`
-	runTimeout    time.Duration
-	configDir     string
+	Listen           string `yaml:"listen"`
+	PublicURL        string `yaml:"public_url"`
+	TrustedProxyHops int    `yaml:"trusted_proxy_hops"`
+	Database         string `yaml:"database"`
+	Factory          string `yaml:"factory"`
+	DefaultPreset    string `yaml:"default_preset"`
+	RunTimeout       string `yaml:"run_timeout"`
+	TLSCert          string `yaml:"tls_cert"`
+	TLSKey           string `yaml:"tls_key"`
+	runTimeout       time.Duration
+	configDir        string
 }
 
 // RunDeadline is the longest one run may last.
@@ -159,6 +162,53 @@ const (
 	minLinearPoll            = 10 * time.Second
 )
 
+// Environment variables for GitHub OAuth sign-in and one-time admin bootstrap.
+const (
+	GitHubOAuthClientIDEnv     = "GITHUB_OAUTH_CLIENT_ID"
+	GitHubOAuthClientSecretEnv = "GITHUB_OAUTH_CLIENT_SECRET"
+	BootstrapAdminEnv          = "MACHINIST_BOOTSTRAP_ADMIN"
+)
+
+// AuthGitHub configures GitHub OAuth for human browser sign-in.
+type AuthGitHub struct {
+	Enabled      bool   `yaml:"enabled"`
+	ClientID     string `yaml:"-"`
+	ClientSecret string `yaml:"-"`
+}
+
+// Auth configures human sign-in, public deployment guardrails, and initial admin bootstrap.
+type Auth struct {
+	// DisableTokenSignin disables quickstart token sign-in (POST /api/v1/session).
+	// Defaults to true when auth.github.enabled is true, and false otherwise.
+	DisableTokenSignin *bool `yaml:"disable_token_signin"`
+	// AllowTokenOnlyPublic explicitly permits token-only auth on a non-loopback public_url.
+	AllowTokenOnlyPublic bool `yaml:"allow_token_only_public"`
+	// BootstrapAdmin names the one-time initial admin in "github:<login>" format.
+	// MACHINIST_BOOTSTRAP_ADMIN overrides the YAML value when set.
+	BootstrapAdmin string     `yaml:"bootstrap_admin"`
+	GitHub         AuthGitHub `yaml:"github"`
+}
+
+// TokenSigninEnabled reports whether POST /api/v1/session accepts operator tokens.
+func (a Auth) TokenSigninEnabled() bool {
+	if a.DisableTokenSignin != nil {
+		return !*a.DisableTokenSignin
+	}
+	return !a.GitHub.Enabled
+}
+
+// CheckCredentials verifies that required OAuth secrets are present in the
+// environment when GitHub OAuth is enabled. Only the control plane calls this.
+func (a Auth) CheckCredentials() error {
+	if !a.GitHub.Enabled {
+		return nil
+	}
+	if a.GitHub.ClientID == "" || a.GitHub.ClientSecret == "" {
+		return fmt.Errorf("auth.github: set both %s and %s when auth.github.enabled is true", GitHubOAuthClientIDEnv, GitHubOAuthClientSecretEnv)
+	}
+	return nil
+}
+
 // Notify posts a JSON message to a webhook when a job needs a person: when its
 // pull request waits for a person or the job fails.
 type Notify struct {
@@ -167,6 +217,7 @@ type Notify struct {
 
 type Config struct {
 	Server Server `yaml:"server"`
+	Auth   Auth   `yaml:"auth"`
 	GitHub GitHub `yaml:"github"`
 	Linear Linear `yaml:"linear"`
 	Notify Notify `yaml:"notify"`
@@ -205,6 +256,10 @@ func LoadConfig(path string) (Config, error) {
 	}
 	machinistConfig.Server.configDir = filepath.Dir(absPath)
 	machinistConfig.Server, err = applyServerDefaults(machinistConfig.Server)
+	if err != nil {
+		return Config{}, err
+	}
+	machinistConfig.Auth, err = applyAuthDefaults(machinistConfig.Auth, os.Getenv)
 	if err != nil {
 		return Config{}, err
 	}
@@ -284,6 +339,9 @@ func applyServerDefaults(server Server) (Server, error) {
 		}
 		server.PublicURL = strings.TrimRight(server.PublicURL, "/")
 	}
+	if server.TrustedProxyHops < 0 || server.TrustedProxyHops > MaxTrustedProxyHops {
+		return Server{}, fmt.Errorf("server.trusted_proxy_hops must be between 0 and %d", MaxTrustedProxyHops)
+	}
 	if server.DefaultPreset == "" {
 		server.DefaultPreset = defaultPreset
 	}
@@ -318,6 +376,29 @@ func applyServerDefaults(server Server) (Server, error) {
 		}
 	}
 	return server, nil
+}
+
+func applyAuthDefaults(auth Auth, getenv func(string) string) (Auth, error) {
+	// Read OAuth credentials from env here, checked by Auth.CheckCredentials
+	// when the control plane starts (so CLI commands work without secrets set).
+	auth.GitHub.ClientID = strings.TrimSpace(getenv(GitHubOAuthClientIDEnv))
+	auth.GitHub.ClientSecret = strings.TrimSpace(getenv(GitHubOAuthClientSecretEnv))
+
+	if envBootstrap := strings.TrimSpace(getenv(BootstrapAdminEnv)); envBootstrap != "" {
+		auth.BootstrapAdmin = envBootstrap
+	} else {
+		auth.BootstrapAdmin = strings.TrimSpace(auth.BootstrapAdmin)
+	}
+	if auth.BootstrapAdmin != "" {
+		lower := strings.ToLower(auth.BootstrapAdmin)
+		login, ok := strings.CutPrefix(lower, "github:")
+		login = strings.TrimSpace(login)
+		if !ok || login == "" || strings.ContainsAny(login, " \t\r\n/") {
+			return Auth{}, errors.New(`auth.bootstrap_admin must be in "github:<login>" format`)
+		}
+		auth.BootstrapAdmin = "github:" + login
+	}
+	return auth, nil
 }
 
 func applyLinearDefaults(linear Linear, getenv func(string) string) (Linear, error) {

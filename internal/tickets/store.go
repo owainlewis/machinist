@@ -61,7 +61,7 @@ var (
 	ErrTokenExists  = errors.New("an active token with this name exists")
 )
 
-const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
+const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
   state TEXT NOT NULL, agent TEXT NOT NULL, pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
@@ -102,7 +102,66 @@ CREATE TABLE IF NOT EXISTS run_stages (
 CREATE TABLE IF NOT EXISTS projects (repo TEXT PRIMARY KEY COLLATE NOCASE, added_by TEXT NOT NULL, added_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_patches (run TEXT PRIMARY KEY, body BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS human_touches (ticket_id TEXT NOT NULL, kind TEXT NOT NULL, author TEXT NOT NULL, at TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS human_touches_ticket ON human_touches(ticket_id, at);`
+CREATE INDEX IF NOT EXISTS human_touches_ticket ON human_touches(ticket_id, at);
+CREATE TABLE IF NOT EXISTS auth_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  bootstrapped_at TEXT);
+INSERT OR IGNORE INTO auth_state (id, bootstrapped_at) VALUES (1, NULL);
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'viewer')),
+  github_id TEXT UNIQUE CHECK (github_id IS NULL OR github_id != ''),
+  github_login TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL DEFAULT '',
+  avatar_url TEXT NOT NULL DEFAULT '',
+  invited_by TEXT NOT NULL DEFAULT '',
+  disabled_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS invites (
+  id TEXT PRIMARY KEY,
+  role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'viewer')),
+  github_login TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  token_hash TEXT NOT NULL UNIQUE,
+  created_by TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  accepted_by TEXT REFERENCES users(id),
+  accepted_at TEXT,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL,
+  CHECK (github_login != '' OR email != ''));
+CREATE INDEX IF NOT EXISTS idx_invites_github_login ON invites(github_login) WHERE accepted_at IS NULL AND revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_invites_email ON invites(email) WHERE accepted_at IS NULL AND revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  auth_method TEXT NOT NULL CHECK (auth_method IN ('github', 'token')),
+  user_id TEXT REFERENCES users(id),
+  token_id TEXT REFERENCES tokens(id),
+  user_agent TEXT NOT NULL DEFAULT '',
+  ip_address TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  idle_expires_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  CHECK (
+    (auth_method = 'github' AND user_id IS NOT NULL AND token_id IS NULL) OR
+    (auth_method = 'token' AND token_id IS NOT NULL AND user_id IS NULL)
+  ));
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, revoked_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_id, revoked_at);
+CREATE TABLE IF NOT EXISTS oauth_transactions (
+  id_hash TEXT PRIMARY KEY,
+  provider TEXT NOT NULL CHECK (provider IN ('github')),
+  state TEXT NOT NULL,
+  pkce_verifier TEXT NOT NULL,
+  return_to TEXT NOT NULL DEFAULT '/',
+  invite_id TEXT REFERENCES invites(id),
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL);`
 
 type Store struct {
 	db  *sql.DB
@@ -308,6 +367,9 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxIdleTime(0)
+	db.SetConnMaxLifetime(0)
 	if _, err = db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
@@ -1800,17 +1862,25 @@ func (s *Store) CreateScopedToken(ctx context.Context, name, role, scope string)
 // RegenerateToken atomically revokes an active token and creates a new one
 // with the same name, role and scope, returning its only plaintext copy.
 func (s *Store) RegenerateToken(ctx context.Context, name string) (string, error) {
+	token, _, err := s.RegenerateTokenWithID(ctx, name)
+	return token, err
+}
+
+// RegenerateTokenWithID atomically revokes an active token (and any browser
+// sessions backed by it) and creates a new one with the same name, role and
+// scope, returning its plaintext copy and new token ID.
+func (s *Store) RegenerateTokenWithID(ctx context.Context, name string) (string, string, error) {
 	id, err := randomHex(8)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	token, prefix, err := newToken()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		var role, scope string
-		err := tx.QueryRowContext(ctx, `SELECT role,scope FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&role, &scope)
+		var oldID, role, scope string
+		err := tx.QueryRowContext(ctx, `SELECT id,role,scope FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&oldID, &role, &scope)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -1818,7 +1888,10 @@ func (s *Store) RegenerateToken(ctx context.Context, name string) (string, error
 			return err
 		}
 		now := stamp(s.now())
-		if _, err := tx.ExecContext(ctx, `UPDATE tokens SET revoked_at=? WHERE name=? AND revoked_at IS NULL`, now, name); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL`, now, oldID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE token_id=? AND revoked_at IS NULL`, now, oldID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM runners WHERE name=?`, name); err != nil {
@@ -1828,9 +1901,9 @@ func (s *Store) RegenerateToken(ctx context.Context, name string) (string, error
 		return err
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return token, nil
+	return token, id, nil
 }
 
 // TokenInfo describes a token without revealing it.
@@ -1869,27 +1942,45 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenInfo, error) {
 // RevokeToken ends an active token. Its sign-ins end with it, and a runner
 // that used it leaves the fleet.
 func (s *Store) RevokeToken(ctx context.Context, name string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE tokens SET revoked_at=? WHERE name=? AND revoked_at IS NULL`, stamp(s.now()), name)
-	if err != nil {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		var id string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM tokens WHERE name=? AND revoked_at IS NULL`, name).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		now := stamp(s.now())
+		if _, err := tx.ExecContext(ctx, `UPDATE tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL`, now, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE token_id=? AND revoked_at IS NULL`, now, id); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM runners WHERE name=?`, name)
 		return err
-	}
-	revoked, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if revoked == 0 {
-		return ErrNotFound
-	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM runners WHERE name=?`, name)
-	return err
+	})
 }
 
 // DeleteToken removes a token record completely. Short-lived CLI commands such
 // as machinist reload use it to clean up one-shot tokens without cluttering
 // machinist token list.
 func (s *Store) DeleteToken(ctx context.Context, name string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM tokens WHERE name=?`, name)
-	return err
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_id IN (SELECT id FROM tokens WHERE name=?)`, name); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM tokens WHERE name=?`, name)
+		return err
+	})
+}
+
+// HasActiveRoleAllToken reports whether any active pre-role (RoleAll) token exists.
+func (s *Store) HasActiveRoleAllToken(ctx context.Context) (bool, error) {
+	var found bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tokens WHERE role=? AND revoked_at IS NULL)`, RoleAll).Scan(&found)
+	return found, err
 }
 
 // tokenUseInterval is how stale last_used_at may get before a request
@@ -1900,13 +1991,14 @@ const tokenUseInterval = time.Minute
 
 // TokenAuth is the identity and permissions of an authenticated token.
 type TokenAuth struct {
+	ID    string
 	Name  string
 	Role  string
 	Scope string
 }
 
-// Authenticate returns the name, role and scope of a valid token and records
-// its use, at most once per tokenUseInterval.
+// Authenticate returns the ID, name, role and scope of a valid token and
+// records its use, at most once per tokenUseInterval.
 func (s *Store) Authenticate(ctx context.Context, token string) (TokenAuth, error) {
 	now := s.now()
 	hash := hashToken(token)
@@ -1914,7 +2006,7 @@ func (s *Store) Authenticate(ctx context.Context, token string) (TokenAuth, erro
 	cutoff := stamp(now.Add(-tokenUseInterval))
 	var auth TokenAuth
 	var stale bool
-	err := s.db.QueryRowContext(ctx, `SELECT name,role,scope,coalesce(last_used_at,'')<? FROM tokens WHERE token_hash=? AND revoked_at IS NULL`, cutoff, hash).Scan(&auth.Name, &auth.Role, &auth.Scope, &stale)
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,role,scope,coalesce(last_used_at,'')<? FROM tokens WHERE token_hash=? AND revoked_at IS NULL`, cutoff, hash).Scan(&auth.ID, &auth.Name, &auth.Role, &auth.Scope, &stale)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TokenAuth{}, ErrNotFound
 	}

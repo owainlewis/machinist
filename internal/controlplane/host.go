@@ -3,6 +3,7 @@ package controlplane
 import (
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -41,6 +42,25 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
+// publicURLHost returns the host[:port] from a configured server.public_url.
+func publicURLHost(publicURL string) string {
+	if publicURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(publicURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
+}
+
+// isPublicNonLoopback reports whether server.public_url is configured to a
+// non-loopback host.
+func isPublicNonLoopback(publicURL string) bool {
+	host := publicURLHost(publicURL)
+	return host != "" && !isLoopbackHost(host)
+}
+
 // isPort reports whether value is a decimal TCP port number.
 func isPort(value string) bool {
 	if value == "" || strings.Trim(value, "0123456789") != "" {
@@ -50,15 +70,53 @@ func isPort(value string) bool {
 	return err == nil && port <= 65535
 }
 
-// loopbackHostOnly refuses requests whose Host header is not a loopback name.
-// A browser page on a rebound domain sends that domain as its Host, so this
-// keeps such pages away from a control plane listening on loopback.
-func loopbackHostOnly(next http.Handler) http.Handler {
+// loopbackHostOnly refuses requests whose Host header is not a loopback name
+// (or the configured server.public_url host, so a local reverse proxy such as
+// Caddy or nginx can forward traffic to a loopback listener).
+func loopbackHostOnly(allowedPublicHost string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isLoopbackHost(r.Host) {
+		if !isLoopbackHost(r.Host) && (allowedPublicHost == "" || !strings.EqualFold(r.Host, allowedPublicHost)) {
 			http.Error(w, "misdirected request: this control plane only answers to localhost, 127.0.0.1 or [::1]", http.StatusMisdirectedRequest)
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// canonicalHostOnly enforces that requests on a public deployment arrive on
+// the canonical server.public_url host so Cloud Run's *.run.app alias cannot
+// break __Host- OAuth cookies. GET /healthz is always exempt, and loopback
+// hosts remain allowed when listening on loopback (so local CLI/runners work).
+func canonicalHostOnly(publicURL string, allowLoopback bool, next http.Handler) http.Handler {
+	canonicalHost := publicURLHost(publicURL)
+	if canonicalHost == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.EqualFold(r.Host, canonicalHost) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if allowLoopback && isLoopbackHost(r.Host) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Redirect plain browser navigations (GET/HEAD) on the SPA root or
+		// /auth/github/start to the canonical URL; reject callbacks and API
+		// requests with 421 Misdirected Request.
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+			!strings.HasPrefix(r.URL.Path, "/api/") &&
+			!strings.HasPrefix(r.URL.Path, "/machinist/") &&
+			r.URL.Path != "/mcp" &&
+			r.URL.Path != "/auth/github/callback" {
+			target := strings.TrimRight(publicURL, "/") + r.URL.RequestURI()
+			http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+			return
+		}
+		http.Error(w, "misdirected request: use the canonical server.public_url host", http.StatusMisdirectedRequest)
 	})
 }

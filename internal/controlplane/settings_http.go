@@ -219,8 +219,18 @@ func (s *Server) tokenViews(ctx context.Context, tokenName string) ([]TokenView,
 	return views, nil
 }
 
+func (s *Server) currentTokenName(r *http.Request, fallback string) string {
+	if p, ok := principalFromRequest(r); ok {
+		if p.Kind == "token" {
+			return p.Name
+		}
+		return ""
+	}
+	return fallback
+}
+
 func (s *Server) listTokens(w http.ResponseWriter, r *http.Request, tokenName string) {
-	views, err := s.tokenViews(r.Context(), tokenName)
+	views, err := s.tokenViews(r.Context(), s.currentTokenName(r, tokenName))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -269,7 +279,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, tokenName s
 		return
 	}
 	fmt.Fprintf(s.log, "machinist: %s created %s token %q from the web app\n", tokenName, request.Role, name)
-	views, err := s.tokenViews(r.Context(), tokenName)
+	views, err := s.tokenViews(r.Context(), s.currentTokenName(r, tokenName))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -294,7 +304,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, tokenName s
 
 func (s *Server) regenerateToken(w http.ResponseWriter, r *http.Request, tokenName string) {
 	name := r.PathValue("name")
-	token, err := s.store.RegenerateToken(r.Context(), name)
+	token, newTokenID, err := s.store.RegenerateTokenWithID(r.Context(), name)
 	if errors.Is(err, tickets.ErrNotFound) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("no active token is named %q", name))
 		return
@@ -304,12 +314,16 @@ func (s *Server) regenerateToken(w http.ResponseWriter, r *http.Request, tokenNa
 		return
 	}
 	fmt.Fprintf(s.log, "machinist: %s regenerated token %q from the web app\n", tokenName, name)
-	if name == tokenName {
-		if _, err := r.Cookie(sessionCookie); err == nil && !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			s.setSessionCookie(w, r, token, sessionMaxAge)
+	if p, ok := principalFromRequest(r); ok && p.Kind == "token" && p.ViaCookie && p.Name == name {
+		cfg := s.state().config
+		secret, _, err := s.store.CreateTokenSession(r.Context(), newTokenID, r.UserAgent(), clientIP(r, cfg.Server.TrustedProxyHops))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
 		}
+		s.setSessionCookie(w, r, secret, sessionMaxAge)
 	}
-	views, err := s.tokenViews(r.Context(), tokenName)
+	views, err := s.tokenViews(r.Context(), s.currentTokenName(r, tokenName))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -346,8 +360,9 @@ func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request, tokenName s
 		return
 	}
 	fmt.Fprintf(s.log, "machinist: %s revoked token %q from the web app\n", tokenName, name)
-	if name == tokenName {
-		// The token that asked is gone, so its sign-in ends here.
+	if p, ok := principalFromRequest(r); ok && p.Kind == "token" && p.Name == name {
+		// The workspace token that authenticated this request is gone, so its
+		// sign-in ends here. OAuth sessions (p.Kind == "user") are never touched.
 		s.setSessionCookie(w, r, "", -time.Second)
 		w.WriteHeader(http.StatusNoContent)
 		return

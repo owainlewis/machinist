@@ -77,6 +77,9 @@ func (f *fixture) call(t *testing.T, method, path, token string, body any) (*htt
 	if err != nil {
 		t.Fatal(err)
 	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -359,7 +362,7 @@ func TestControlPlanePostsWebhookNotificationOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := store.CreateToken(t.Context(), "runner-1", tickets.RoleAll)
+	token, err := store.CreateToken(t.Context(), "runner-1", tickets.RoleRunner)
 	if err != nil {
 		t.Fatal(err)
 	}
