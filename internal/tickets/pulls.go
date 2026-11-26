@@ -162,6 +162,60 @@ func (s *Store) SetShipping(ctx context.Context, listed Ticket, shipped Shipped)
 	return updated, changed, nil
 }
 
+// StewardRequeueRequest describes an automatic PR Steward requeue after a
+// failing CI check or merge conflict.
+type StewardRequeueRequest struct {
+	// MaxRetries is the configured automatic steward retry cap.
+	MaxRetries int
+	// Prompt is the system timeline and follow-up instructions entry added as
+	// EntryCI so the next run sees what failed and how to fix it.
+	Prompt string
+}
+
+// StewardRequeue clears a waiting pull request's shipping watch, increments
+// its persisted steward_retries count, appends the steward timeline/prompt
+// entry, and returns the ticket to working on the same branch without
+// recording a human touch (TouchRerun). It returns false without modifying the
+// ticket when the ticket has changed since listed, already has an active run,
+// or has reached request.MaxRetries.
+func (s *Store) StewardRequeue(ctx context.Context, listed Ticket, request StewardRequeueRequest) (Ticket, bool, error) {
+	var updated Ticket
+	var requeued bool
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		ticket, err := loadTicket(ctx, tx, listed.ID)
+		if err != nil || ticket.State != StatePRReady || ticket.Shipping == "" || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
+			return err
+		}
+		if request.MaxRetries <= 0 || ticket.StewardRetries >= request.MaxRetries {
+			return nil
+		}
+		var active int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND status IN (?,?)`, ticket.ID, RunQueued, RunRunning).Scan(&active); err != nil {
+			return err
+		}
+		if active > 0 {
+			return nil
+		}
+		now := s.now()
+		if err = insertEntry(ctx, tx, ticket.ID, EntryCI, authorMachinist, request.Prompt, nil, now); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',steward_retries=steward_retries+1,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticket.ID); err != nil {
+			return err
+		}
+		updated, err = loadTicket(ctx, tx, ticket.ID)
+		if err != nil {
+			return err
+		}
+		requeued = true
+		return nil
+	})
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	return updated, requeued, nil
+}
+
 // StillShipping reports whether listed is still waiting to ship on the same
 // pull request generation. It lets the control plane re-check right before a
 // GitHub merge or branch update, so a job cancelled or rerun while checks were

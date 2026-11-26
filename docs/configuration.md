@@ -52,6 +52,7 @@ github:
   handle: machinist-bot
   repositories: [owner/name]
   auto_merge: true
+  steward_retries: 2
 
 # notify:
 #   webhook: https://hooks.slack.com/services/...
@@ -69,6 +70,7 @@ github:
 | `github.handle` | The bot's login. Use a dedicated account. With a GitHub App, runs commit as the app's bot account instead |
 | `github.repositories` | Repositories Machinist works on. You can also add them on the Settings > Projects page, with no restart. Automations can only name repositories listed here; `linear.projects` and `linear.teams` can also name repositories added on Settings > Projects |
 | `github.auto_merge` | Controls auto-merge for pull requests. On (`true`) by default: the control plane auto-merges low-risk pull requests once checks pass, `review` accepted the change, and the default preset's `merge-gate` step approved them as `low` risk (medium- and high-risk pull requests stay open for a person). Set to `false` to run in **observe mode**: `merge-gate` still evaluates every pull request and posts its judgment comment without merging. Steps see it as `MACHINIST_AUTO_MERGE` |
+| `github.steward_retries` | Maximum number of automatic **PR Steward** retries per job when an open pull request fails a CI check or hits a merge conflict (`DIRTY` or a conflicting branch update). Defaults to `2`; set to `0` to disable PR Steward; maximum `5`. Persisted per job across restarts, and never triggered if a person pushed commits after the review |
 | `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
 | `github.app.private_key_file` | The app's private key file. Keep it out of git |
 | `linear.*` | Start jobs from Linear issues. Off unless `linear.projects` or `linear.teams` is set. See [Linear](linear.md) |

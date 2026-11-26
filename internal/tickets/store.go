@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS tickets (
   state TEXT NOT NULL, agent TEXT NOT NULL, pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
   origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT,
-  merge_gate_decision TEXT NOT NULL DEFAULT '', merge_gate_risk TEXT NOT NULL DEFAULT '', merge_gate_reason TEXT NOT NULL DEFAULT '');
+  merge_gate_decision TEXT NOT NULL DEFAULT '', merge_gate_risk TEXT NOT NULL DEFAULT '', merge_gate_reason TEXT NOT NULL DEFAULT '',
+  steward_retries INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
   WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
 CREATE INDEX IF NOT EXISTS tickets_created_at ON tickets(created_at DESC, id DESC);
@@ -134,11 +135,14 @@ type Ticket struct {
 	// MergeGateDecision, MergeGateRisk and MergeGateReason record the merge
 	// gate's judgment when the merge-gate step ran. All three are empty when
 	// no merge gate ran.
-	MergeGateDecision string    `json:"merge_gate_decision,omitempty"`
-	MergeGateRisk     string    `json:"merge_gate_risk,omitempty"`
-	MergeGateReason   string    `json:"merge_gate_reason,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	MergeGateDecision string `json:"merge_gate_decision,omitempty"`
+	MergeGateRisk     string `json:"merge_gate_risk,omitempty"`
+	MergeGateReason   string `json:"merge_gate_reason,omitempty"`
+	// StewardRetries is how many times PR Steward has automatically requeued
+	// this job after a failing check or merge conflict.
+	StewardRetries int       `json:"steward_retries,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 	// Shipping is what the control plane keeps while it waits for the pull
 	// request's checks, to merge it or report a failed one. It is empty when
 	// nothing waits. The engine owns its contents.
@@ -348,6 +352,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "tickets", "steward_retries INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Reviewer runs are gone. Cancel any a database from before still queues.
 	// Jobs no longer wait for answers, so one left waiting has failed.
 	for _, statement := range []string{
@@ -419,7 +427,7 @@ func nullableString(value string) any {
 	return value
 }
 
-const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,'')`
+const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
 
 type scanner interface{ Scan(...any) error }
 
@@ -428,7 +436,7 @@ func scanTicket(row scanner) (Ticket, error) {
 	var issue, pr, commits sql.NullInt64
 	var merged, prStateAt sql.NullString
 	var created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason); err != nil {
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
@@ -1101,7 +1109,7 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		// again that it started and how it ends. A pull request that merged or
 		// closed is finished with, so the new run opens and counts its own. An
 		// open one stays, so the new run keeps working on it.
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',steward_retries=0,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
 			return err
 		}
 		if ticket.MergedAt != nil || ticket.PRState == PRMerged || ticket.PRState == PRClosed {
@@ -1258,11 +1266,12 @@ func (s *Store) TicketsAwaitingRun(ctx context.Context) ([]Ticket, error) {
 	return tickets, rows.Err()
 }
 
-// turnsSinceHuman counts agent runs since the last human input. Input not yet
-// given to a run means none have happened since.
+// turnsSinceHuman counts agent runs since the last input entry (human input or
+// automatic PR Steward requeue). Input not yet given to a run means none have
+// happened since.
 func turnsSinceHuman(ctx context.Context, q querier, ticketID string) (int, error) {
 	var consumed sql.NullString
-	err := q.QueryRowContext(ctx, `SELECT consumed_by_run FROM ticket_entries WHERE ticket_id=? AND kind IN (?,?,?) ORDER BY id DESC LIMIT 1`, ticketID, EntryRequest, EntryComment, EntryReview).Scan(&consumed)
+	err := q.QueryRowContext(ctx, `SELECT consumed_by_run FROM ticket_entries WHERE ticket_id=? AND kind IN (?,?,?,?) ORDER BY id DESC LIMIT 1`, ticketID, EntryRequest, EntryComment, EntryReview, EntryCI).Scan(&consumed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}

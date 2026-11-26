@@ -548,9 +548,10 @@ func TestARevisedChangeMergesOnlyAfterAFreshReview(t *testing.T) {
 }
 
 // A clean review runs no revise agent, and a failed check fails the job
-// without merging. The control plane sees the failure after the run ended.
+// without merging when PR Steward is disabled. The control plane sees the
+// failure after the run ended.
 func TestAFailedCheckFailsTheJob(t *testing.T) {
-	s := startWith(t, options{claude: claudeScript})
+	s := startWith(t, options{claude: claudeScript, github: "  steward_retries: 0\n"})
 	s.github.SetChecks([]map[string]string{{"name": "test", "bucket": "fail", "link": "https://ci.example.test/2"}})
 	ticket := s.createTicket(t)
 	s.waitForState(t, ticket.ID, tickets.StateFailed)
@@ -566,6 +567,39 @@ func TestAFailedCheckFailsTheJob(t *testing.T) {
 	}
 	if message, err := s.store.LatestMessage(t.Context(), ticket.ID); err != nil || message != `Left open: check "test" failed: https://ci.example.test/2. https://github.com/owner/repo/pull/7` {
 		t.Fatalf("message = %q, err = %v", message, err)
+	}
+}
+
+// When a PR fails CI and PR Steward is enabled, Machinist automatically
+// requeues a follow-up run on the same branch and merges once checks turn green.
+func TestPRStewardRetriesAFailedCheckAndMerges(t *testing.T) {
+	s := startWith(t, options{claude: claudeScript})
+	s.github.SetChecks([]map[string]string{{"name": "test", "bucket": "fail", "link": "https://ci.example.test/2"}})
+	ticket := s.createTicket(t)
+	eventually(t, "steward requeue", func() bool {
+		got, err := s.store.Ticket(t.Context(), ticket.ID)
+		return err == nil && got.StewardRetries == 1
+	})
+	// Once the steward follow-up run starts, turn CI green so the updated PR merges.
+	eventually(t, "second run to start", func() bool {
+		runs, err := s.store.Runs(t.Context(), ticket.ID)
+		return err == nil && len(runs) >= 2 && runs[1].StartedAt != nil
+	})
+	s.github.SetChecks([]map[string]string{{"name": "test", "bucket": "pass", "link": "https://ci.example.test/3"}})
+	s.waitForState(t, ticket.ID, tickets.StateDone)
+	if merged := s.github.Merged(); len(merged) != 1 {
+		t.Fatalf("merged = %v, want 1 merged PR", merged)
+	}
+	if prompt := s.read(t, "prompt"); !strings.Contains(prompt, `PR Steward (attempt 1/2): check "test" failed`) {
+		t.Fatalf("steward prompt missing expected instructions:\n%s", prompt)
+	}
+	got, err := s.store.Ticket(t.Context(), ticket.ID)
+	if err != nil || got.StewardRetries != 1 {
+		t.Fatalf("ticket = %+v, err = %v", got, err)
+	}
+	stats, err := s.store.Stats(t.Context(), 7, "")
+	if err != nil || stats.Touches.Reruns != 0 {
+		t.Fatalf("stats.Touches = %+v, err = %v", stats.Touches, err)
 	}
 }
 

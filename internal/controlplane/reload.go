@@ -138,6 +138,7 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 		effectiveConfig.Server.RunDeadline(),
 		effectiveConfig.GitHub.Handle,
 		effectiveConfig.GitHub.AutoMerges(),
+		effectiveConfig.GitHub.StewardRetryLimit(),
 		tokens,
 		identity,
 	)
@@ -228,6 +229,9 @@ func diffReload(prevCfg config.Config, prevKeyHash [32]byte, prevFac *factory.Fa
 	}
 	if nextCfg.GitHub.AutoMerges() != prevCfg.GitHub.AutoMerges() {
 		changed = append(changed, fmt.Sprintf("github.auto_merge: %s -> %s", strconv.FormatBool(prevCfg.GitHub.AutoMerges()), strconv.FormatBool(nextCfg.GitHub.AutoMerges())))
+	}
+	if nextCfg.GitHub.StewardRetryLimit() != prevCfg.GitHub.StewardRetryLimit() {
+		changed = append(changed, fmt.Sprintf("github.steward_retries: %d -> %d", prevCfg.GitHub.StewardRetryLimit(), nextCfg.GitHub.StewardRetryLimit()))
 	}
 	if repoDiff := diffRepositories(prevCfg.GitHub.Repositories, nextCfg.GitHub.Repositories); repoDiff != "" {
 		changed = append(changed, repoDiff)

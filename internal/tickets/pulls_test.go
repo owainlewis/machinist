@@ -282,3 +282,169 @@ func TestMergeGateVerdictsPersistAcrossLevelsAndClearOnRerun(t *testing.T) {
 		})
 	}
 }
+
+func TestStewardRequeuePersistsCountAcrossRestartsAndSkipsHumanTouches(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "tickets.db")
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetClock(func() time.Time { return now })
+
+	ticket := createTicket(t, store, "k-steward")
+	if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{
+		State:     StatePRReady,
+		PRNumber:  42,
+		Shipping:  `{"head":"sha1"}`,
+		MergeGate: &MergeGate{Decision: "approve", Risk: "low", Reason: "Safe."},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.Ticket(ctx, ticket.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempt 1/2 succeeds, clears shipping & stale merge gate, keeps PRNumber,
+	// increments steward_retries, records EntryCI, and adds no human_touches.
+	now = now.Add(time.Minute)
+	updated, requeued, err := store.StewardRequeue(ctx, listed, StewardRequeueRequest{
+		MaxRetries: 2,
+		Prompt:     `PR Steward (attempt 1/2): check "test" failed.`,
+	})
+	if err != nil || !requeued {
+		t.Fatalf("attempt 1: requeued = %v, err = %v", requeued, err)
+	}
+	if updated.State != StateWorking || updated.Shipping != "" || updated.PRNumber != 42 || updated.StewardRetries != 1 || updated.MergeGateDecision != "" {
+		t.Fatalf("updated = %+v", updated)
+	}
+	entries, err := store.Entries(ctx, ticket.ID)
+	if err != nil || len(entries) < 2 {
+		t.Fatalf("entries = %+v, err = %v", entries, err)
+	}
+	last := entries[len(entries)-1]
+	if last.Kind != EntryCI || last.Author != "machinist" || last.Body != `PR Steward (attempt 1/2): check "test" failed.` {
+		t.Fatalf("last entry = %+v", last)
+	}
+	// TurnsSinceHuman resets on EntryCI so lost-runner counting starts fresh.
+	if turns, err := store.TurnsSinceHuman(ctx, ticket.ID); err != nil || turns != 0 {
+		t.Fatalf("TurnsSinceHuman = %d, err = %v", turns, err)
+	}
+
+	// Simulate control-plane restart by closing and reopening the SQLite store.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	store.SetClock(func() time.Time { return now })
+
+	reloaded, err := store.Ticket(ctx, ticket.ID)
+	if err != nil || reloaded.StewardRetries != 1 {
+		t.Fatalf("reloaded = %+v, err = %v", reloaded, err)
+	}
+
+	// Complete steward run 1 and hand off PR again.
+	now = now.Add(time.Minute)
+	if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{
+		State:    StatePRReady,
+		PRNumber: 42,
+		Shipping: `{"head":"sha2"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = store.Ticket(ctx, ticket.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempt 2/2 succeeds.
+	now = now.Add(time.Minute)
+	updated, requeued, err = store.StewardRequeue(ctx, listed, StewardRequeueRequest{
+		MaxRetries: 2,
+		Prompt:     `PR Steward (attempt 2/2): check "test" failed.`,
+	})
+	if err != nil || !requeued || updated.StewardRetries != 2 {
+		t.Fatalf("attempt 2: updated = %+v, requeued = %v, err = %v", updated, requeued, err)
+	}
+
+	// Hand off PR again and verify attempt 3/2 is rejected at the cap.
+	now = now.Add(time.Minute)
+	if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{
+		State:    StatePRReady,
+		PRNumber: 42,
+		Shipping: `{"head":"sha3"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = store.Ticket(ctx, ticket.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, requeued, err = store.StewardRequeue(ctx, listed, StewardRequeueRequest{
+		MaxRetries: 2,
+		Prompt:     "should not requeue",
+	})
+	if err != nil || requeued {
+		t.Fatalf("beyond cap: requeued = %v, err = %v", requeued, err)
+	}
+
+	// Merging records 0 human rerun touches.
+	now = now.Add(time.Minute)
+	if _, _, err := store.SetShipping(ctx, listed, Shipped{Merged: true, At: now, Message: "Merged"}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := store.Stats(ctx, 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Touches.Reruns != 0 || stats.Touches.Replies != 0 {
+		t.Fatalf("human touches inflated by steward: %+v", stats.Touches)
+	}
+
+	// A human rerun resets steward_retries to 0.
+	rerun, err := store.Rerun(ctx, ticket.ID, "alice")
+	if err != nil || rerun.StewardRetries != 0 {
+		t.Fatalf("human rerun = %+v, err = %v", rerun, err)
+	}
+}
+
+func TestStewardRequeueIgnoresStaleGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
+
+	ticket := createTicket(t, store, "k-stale")
+	if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.Ticket(ctx, ticket.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Human reruns and opens a new generation before steward writes.
+	now = now.Add(time.Minute)
+	if _, err := store.Rerun(ctx, ticket.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 7, Shipping: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, requeued, err := store.StewardRequeue(ctx, listed, StewardRequeueRequest{MaxRetries: 2, Prompt: "stale"})
+	if err != nil || requeued {
+		t.Fatalf("stale generation: requeued = %v, err = %v", requeued, err)
+	}
+	got, err := store.Ticket(ctx, ticket.ID)
+	if err != nil || got.StewardRetries != 0 || got.State != StatePRReady {
+		t.Fatalf("ticket = %+v, err = %v", got, err)
+	}
+}

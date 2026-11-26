@@ -27,6 +27,13 @@ const (
 	StateDir          = ".machinist"
 	defaultDatabase   = StateDir + "/tickets.db"
 	defaultFactoryDir = "factory"
+
+	// DefaultStewardRetries is how many times PR Steward automatically requeues
+	// a job when its pull request fails CI or hits a merge conflict.
+	DefaultStewardRetries = 2
+	// MaxStewardRetries caps github.steward_retries so a broken pull request
+	// cannot loop indefinitely.
+	MaxStewardRetries = 5
 )
 
 type Server struct {
@@ -54,10 +61,23 @@ type GitHub struct {
 	// AutoMerge lets the publish step merge a pull request once its checks
 	// pass and its review is clean. It is on unless set to false.
 	AutoMerge *bool `yaml:"auto_merge"`
+	// StewardRetries is how many times PR Steward automatically requeues a job
+	// on the same branch when its pull request fails CI or hits a merge
+	// conflict. It defaults to DefaultStewardRetries; 0 disables PR Steward.
+	StewardRetries *int `yaml:"steward_retries"`
 }
 
 // AutoMerges reports whether jobs may merge their own pull requests.
 func (g GitHub) AutoMerges() bool { return g.AutoMerge == nil || *g.AutoMerge }
+
+// StewardRetryLimit reports how many automatic PR Steward retries are allowed.
+// It defaults to DefaultStewardRetries when omitted; 0 disables PR Steward.
+func (g GitHub) StewardRetryLimit() int {
+	if g.StewardRetries == nil {
+		return DefaultStewardRetries
+	}
+	return *g.StewardRetries
+}
 
 // GitHubApp names a GitHub App and the file that holds its private key. The key
 // itself never goes in the configuration.
@@ -188,7 +208,7 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if err := applyAppDefaults(machinistConfig.GitHub.App, machinistConfig.Server.configDir); err != nil {
+	if err := applyGitHubDefaults(machinistConfig.GitHub, machinistConfig.Server.configDir); err != nil {
 		return Config{}, err
 	}
 	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv)
@@ -366,6 +386,15 @@ func applyNotifyDefaults(notify Notify) (Notify, error) {
 		return Notify{}, errors.New("notify.webhook must be an http or https URL")
 	}
 	return notify, nil
+}
+
+func applyGitHubDefaults(github GitHub, base string) error {
+	if github.StewardRetries != nil {
+		if *github.StewardRetries < 0 || *github.StewardRetries > MaxStewardRetries {
+			return fmt.Errorf("github.steward_retries must be between 0 and %d", MaxStewardRetries)
+		}
+	}
+	return applyAppDefaults(github.App, base)
 }
 
 func applyAppDefaults(app *GitHubApp, base string) error {

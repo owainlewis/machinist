@@ -113,6 +113,27 @@ const (
 	Settled = "settled"
 )
 
+// Reasons PR Steward may requeue a job to shepherd its pull request back to green.
+const (
+	StewardCheckFailed   = "check_failed"
+	StewardMergeConflict = "merge_conflict"
+)
+
+// Steward describes a pull request problem that PR Steward can attempt to fix
+// automatically by requeueing the job on the same branch.
+type Steward struct {
+	// Reason is StewardCheckFailed or StewardMergeConflict.
+	Reason string
+	// Check is the failed check's name when Reason is StewardCheckFailed.
+	Check string
+	// Link is the failed check's URL, if GitHub provided one.
+	Link string
+	// Detail describes the failing check or merge conflict.
+	Detail string
+	// PRURL is the pull request's URL.
+	PRURL string
+}
+
 // Look is what one look at a pull request found.
 type Look struct {
 	Outcome string
@@ -123,6 +144,11 @@ type Look struct {
 	Message string
 	// Log says what the look did, for the control plane's log.
 	Log string
+	// Steward is set when the failing check or merge conflict can be retried
+	// automatically by PR Steward. It is nil for outcomes that require a
+	// person, such as unreviewed commits pushed after the review, missing
+	// human approval, or auto-merge being off.
+	Steward *Steward
 }
 
 // LookOnce looks at the pull request once and does what its checks call for.
@@ -159,6 +185,9 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 	if watch.Head != "" && pr.HeadRefOid != watch.Head {
 		return leaveOpen(pr, "the branch has commits pushed after the review"), nil
 	}
+	if pr.MergeStateStatus == "DIRTY" {
+		return mergeConflict(pr, "the branch has merge conflicts with the base branch"), nil
+	}
 	checks, err := github.Checks(ctx)
 	if err != nil {
 		return waiting(watch), err
@@ -170,7 +199,18 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 		switch check.Bucket {
 		case "fail", "cancel":
 			failed := &CheckFailedError{Check: check.Name, Link: check.Link}
-			return Look{Outcome: CheckFailed, Message: fmt.Sprintf("Left open: %s. %s", failed.Error(), pr.URL), Log: failed.Error()}, nil
+			return Look{
+				Outcome: CheckFailed,
+				Message: fmt.Sprintf("Left open: %s. %s", failed.Error(), pr.URL),
+				Log:     failed.Error(),
+				Steward: &Steward{
+					Reason: StewardCheckFailed,
+					Check:  check.Name,
+					Link:   check.Link,
+					Detail: failed.Error(),
+					PRURL:  pr.URL,
+				},
+			}, nil
 		case "pending":
 			pending++
 		}
@@ -216,6 +256,9 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 		if pr.HeadRefOid != watch.Head {
 			return leaveOpen(pr, "the branch has commits pushed after the review"), nil
 		}
+		if pr.MergeStateStatus == "DIRTY" {
+			return mergeConflict(pr, "the branch has merge conflicts with the base branch"), nil
+		}
 		if pr.MergeStateStatus != "BEHIND" {
 			return leaveOpen(pr, refused), nil
 		}
@@ -227,7 +270,28 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 		if isTransient(ctx, err) {
 			return waiting(watch), err
 		}
-		return leaveOpen(pr, "GitHub could not update the branch: "+err.Error()), nil
+		updateDetail := "GitHub could not update the branch: " + err.Error()
+		if isConflictError(err) {
+			latest, readErr := github.PullRequest(ctx)
+			if readErr != nil {
+				return waiting(watch), readErr
+			}
+			if latest.State != "OPEN" {
+				return Look{Outcome: Settled}, nil
+			}
+			if watch.Head != "" && latest.HeadRefOid != watch.Head {
+				return leaveOpen(latest, "the branch has commits pushed after the review"), nil
+			}
+			pr = latest
+			result := leaveOpen(pr, updateDetail)
+			result.Steward = &Steward{
+				Reason: StewardMergeConflict,
+				Detail: err.Error(),
+				PRURL:  pr.URL,
+			}
+			return result, nil
+		}
+		return leaveOpen(pr, updateDetail), nil
 	}
 	next := Watch{Hold: watch.Hold, Since: now, Seen: names, OldHead: pr.HeadRefOid, Updates: watch.Updates + 1, Head: watch.Head}
 	return Look{Outcome: Waiting, Watch: next, Log: "updated the branch"}, nil
@@ -238,6 +302,23 @@ func waiting(watch Watch) Look { return Look{Outcome: Waiting, Watch: watch} }
 func leaveOpen(pr PullRequest, reason string) Look {
 	reason = strings.TrimRight(reason, ". ")
 	return Look{Outcome: LeftOpen, Message: fmt.Sprintf("Left open: %s. %s", reason, pr.URL), Log: "left open: " + reason}
+}
+
+func mergeConflict(pr PullRequest, detail string) Look {
+	result := leaveOpen(pr, detail)
+	result.Steward = &Steward{
+		Reason: StewardMergeConflict,
+		Detail: detail,
+		PRURL:  pr.URL,
+	}
+	return result
+}
+
+func isConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "conflict")
 }
 
 // CheckFailedError is a check on the pull request that failed.
