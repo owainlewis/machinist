@@ -88,6 +88,7 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 	effectiveConfig.Server.TLSCert = prev.config.Server.TLSCert
 	effectiveConfig.Server.TLSKey = prev.config.Server.TLSKey
 	effectiveConfig.Auth = prev.config.Auth
+	effectiveConfig.Notify = prev.config.Notify
 
 	nextFactory, err := factory.Load(effectiveConfig.Server.Factory)
 	if err != nil {
@@ -222,6 +223,9 @@ func restartSettingsDiff(prev, next config.Config) []string {
 	}
 	if authRestartDiff(prev.Auth, next.Auth) {
 		needed = append(needed, "auth")
+	}
+	if next.Notify.Webhook != prev.Notify.Webhook {
+		needed = append(needed, "notify.webhook")
 	}
 	return needed
 }

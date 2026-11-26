@@ -104,6 +104,10 @@ func (s *Server) runBackgroundWorkers(ctx context.Context) {
 // behind a database-backed leader lease so overlapping control-plane revisions
 // never run duplicate background loops.
 func (s *Server) runLeaderSupervisor(ctx context.Context) {
+	s.runLeaderSupervisorWithDrain(ctx, nil)
+}
+
+func (s *Server) runLeaderSupervisorWithDrain(ctx context.Context, drainCtx context.Context) {
 	if s.store == nil {
 		s.runBackgroundWorkers(ctx)
 		return
@@ -133,11 +137,20 @@ func (s *Server) runLeaderSupervisor(ctx context.Context) {
 		workerDone = wDone
 	}
 
-	stopWorkers := func(timeout time.Duration) bool {
+	stopWorkers := func(timeout time.Duration, deadlineCtx context.Context) bool {
 		if !leading {
 			return true
 		}
 		workerCancel()
+		if deadlineCtx != nil {
+			select {
+			case <-workerDone:
+				leading = false
+				return true
+			case <-deadlineCtx.Done():
+				return false
+			}
+		}
 		if timeout <= 0 {
 			<-workerDone
 			leading = false
@@ -167,7 +180,7 @@ func (s *Server) runLeaderSupervisor(ctx context.Context) {
 				if s.log != nil {
 					fmt.Fprintf(s.log, "machinist: leader lease %q reached safety margin without renewal, stepping down\n", cfg.leaseName)
 				}
-				stopWorkers(0)
+				stopWorkers(0, nil)
 				continue
 			}
 			if remaining < rpcTimeout {
@@ -198,7 +211,7 @@ func (s *Server) runLeaderSupervisor(ctx context.Context) {
 				if s.log != nil {
 					fmt.Fprintf(s.log, "machinist: lost leader lease %q (%s), stepping down\n", cfg.leaseName, cfg.holderID)
 				}
-				stopWorkers(0)
+				stopWorkers(0, nil)
 			}
 			nextWait = cfg.acquireInterval
 		default:
@@ -213,7 +226,7 @@ func (s *Server) runLeaderSupervisor(ctx context.Context) {
 					if s.log != nil {
 						fmt.Fprintf(s.log, "machinist: leader lease %q nearing expiry after DB errors, stepping down\n", cfg.leaseName)
 					}
-					stopWorkers(0)
+					stopWorkers(0, nil)
 				} else if remaining := stepDownAt.Sub(now); remaining < nextWait {
 					nextWait = remaining
 				}
@@ -237,7 +250,7 @@ func (s *Server) runLeaderSupervisor(ctx context.Context) {
 	}
 
 	if leading {
-		if stopWorkers(cfg.drainTimeout) {
+		if stopWorkers(cfg.drainTimeout, drainCtx) {
 			relCtx, relCancel := context.WithTimeout(context.Background(), cfg.releaseTimeout)
 			if err := s.store.ReleaseLease(relCtx, cfg.leaseName, cfg.holderID); err != nil && s.log != nil {
 				fmt.Fprintf(s.log, "machinist: release leader lease %q failed: %v\n", cfg.leaseName, err)

@@ -319,3 +319,19 @@ func TestIsTransient(t *testing.T) {
 		})
 	}
 }
+
+func TestSubprocessSemaphoreCancelsCleanlyWhenFull(t *testing.T) {
+	fakegh.Install(t, "bot")
+	client := New()
+	client.sem = make(chan struct{}, 1)
+	client.sem <- struct{}{} // occupy sole slot
+	defer func() { <-client.sem }()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := client.Issue(ctx, "owner/repo", 1)
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Kind != ErrorTimeout {
+		t.Fatalf("expected timeout error while semaphore full, got: %v", err)
+	}
+}

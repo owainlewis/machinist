@@ -13,7 +13,10 @@ import (
 
 // githubCacheTTL is how long GitHub lookups for /api/v1/setup and
 // /api/v1/settings/github are reused before asking GitHub again.
-const githubCacheTTL = 30 * time.Second
+const (
+	githubCacheTTL             = 30 * time.Second
+	maxConcurrentGitHubLookups = 4
+)
 
 type cachedIdentity struct {
 	value   githubapp.Identity
@@ -168,6 +171,18 @@ func (s *Server) currentTime() time.Time {
 	return s.now()
 }
 
+func (s *Server) acquireGitHubSlot(ctx context.Context) (func(), error) {
+	if s.githubSem == nil {
+		return func() {}, nil
+	}
+	select {
+	case s.githubSem <- struct{}{}:
+		return func() { <-s.githubSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (s *Server) appIdentity(ctx context.Context, app githubApp, refresh bool) (githubapp.Identity, error) {
 	var gen uint64
 	if !refresh {
@@ -179,6 +194,11 @@ func (s *Server) appIdentity(ctx context.Context, app githubApp, refresh bool) (
 	} else {
 		gen = s.githubCache.generation()
 	}
+	release, err := s.acquireGitHubSlot(ctx)
+	if err != nil {
+		return githubapp.Identity{}, err
+	}
+	defer release()
 	identity, err := app.Identity(ctx)
 	if err != nil {
 		s.githubCache.deleteIdentity()
@@ -199,6 +219,11 @@ func (s *Server) appInstalled(ctx context.Context, app githubApp, repository str
 	} else {
 		gen = s.githubCache.generation()
 	}
+	release, err := s.acquireGitHubSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := app.Installed(ctx, repository); err != nil {
 		s.githubCache.deleteInstalled(repository)
 		return err
@@ -218,6 +243,11 @@ func (s *Server) repoAccess(ctx context.Context, repository string, refresh bool
 	} else {
 		gen = s.githubCache.generation()
 	}
+	release, err := s.acquireGitHubSlot(ctx)
+	if err != nil {
+		return ghclient.Access{}, err
+	}
+	defer release()
 	access, err := s.client.RepositoryAccess(ctx, repository)
 	if err != nil {
 		s.githubCache.deleteAccess(repository)

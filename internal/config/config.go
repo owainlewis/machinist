@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,8 @@ const (
 	// DatabaseURLEnv overrides server.database with a PostgreSQL connection URL
 	// (or SQLite file path) from the environment.
 	DatabaseURLEnv = "DATABASE_URL"
+	// NotifyWebhookEnv overrides notify.webhook from the environment.
+	NotifyWebhookEnv = "NOTIFY_WEBHOOK_URL"
 )
 
 // IsPostgresURL reports whether dsn is a PostgreSQL connection URL
@@ -325,7 +328,7 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	machinistConfig.Notify, err = applyNotifyDefaults(machinistConfig.Notify)
+	machinistConfig.Notify, err = applyNotifyDefaults(machinistConfig.Notify, os.Getenv)
 	if err != nil {
 		return Config{}, err
 	}
@@ -383,9 +386,6 @@ func DecodeStrict(path string, body []byte, target any) error {
 }
 
 func applyServerDefaults(server Server, getenv func(string) string) (Server, error) {
-	if server.Listen == "" {
-		server.Listen = defaultListen
-	}
 	server.PublicURL = strings.TrimSpace(server.PublicURL)
 	if server.PublicURL != "" {
 		parsed, err := url.Parse(server.PublicURL)
@@ -393,6 +393,24 @@ func applyServerDefaults(server Server, getenv func(string) string) (Server, err
 			return Server{}, errors.New("public_url must be an http or https URL")
 		}
 		server.PublicURL = strings.TrimRight(server.PublicURL, "/")
+	}
+	server.Listen = strings.TrimSpace(server.Listen)
+	if server.Listen == "" {
+		var port string
+		var cloudRun bool
+		if getenv != nil {
+			port = strings.TrimSpace(getenv("PORT"))
+			cloudRun = strings.TrimSpace(getenv("K_SERVICE")) != ""
+		}
+		if port != "" && (cloudRun || server.PublicURL != "") {
+			p, err := strconv.Atoi(port)
+			if err != nil || p < 1 || p > 65535 {
+				return Server{}, fmt.Errorf("PORT must be an integer between 1 and 65535 (got %q)", port)
+			}
+			server.Listen = ":" + port
+		} else {
+			server.Listen = defaultListen
+		}
 	}
 	if server.TrustedProxyHops < 0 || server.TrustedProxyHops > MaxTrustedProxyHops {
 		return Server{}, fmt.Errorf("server.trusted_proxy_hops must be between 0 and %d", MaxTrustedProxyHops)
@@ -520,7 +538,12 @@ func applyLinearDefaults(linear Linear, getenv func(string) string) (Linear, err
 	return linear, nil
 }
 
-func applyNotifyDefaults(notify Notify) (Notify, error) {
+func applyNotifyDefaults(notify Notify, getenv func(string) string) (Notify, error) {
+	if getenv != nil {
+		if envWebhook := strings.TrimSpace(getenv(NotifyWebhookEnv)); envWebhook != "" {
+			notify.Webhook = envWebhook
+		}
+	}
 	notify.Webhook = strings.TrimSpace(notify.Webhook)
 	if notify.Webhook == "" {
 		return notify, nil

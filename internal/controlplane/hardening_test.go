@@ -2,6 +2,8 @@ package controlplane
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -432,13 +434,88 @@ func TestCloudRunRefusesSQLiteDatabase(t *testing.T) {
 	if _, err := New(cfg, nil, testFactory(), "v1.0.0", io.Discard); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
 		t.Fatalf("expected Cloud Run SQLite guardrail error, got: %v", err)
 	}
-	// With a PostgreSQL URL, the SQLite guardrail passes.
+	// With PostgreSQL URL but empty public_url and allow_token_only_public=false, refuse startup.
 	cfg.Server.Database = "postgres://machinist:secret@db.example.com:5432/machinist?sslmode=require"
+	if _, err := New(cfg, nil, testFactory(), "v1.0.0", io.Discard); err == nil || !strings.Contains(err.Error(), "server.public_url") {
+		t.Fatalf("expected Cloud Run empty public_url guardrail error, got: %v", err)
+	}
+	// With Postgres + explicit allow_token_only_public, startup succeeds and redacts DSN in logs.
+	cfg.Auth.AllowTokenOnlyPublic = true
 	var logs bytes.Buffer
 	if _, err := New(cfg, nil, testFactory(), "v1.0.0", &logs); err != nil {
 		t.Fatalf("unexpected error with postgres URL: %v", err)
 	}
 	if strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), "storage backend: postgres") {
 		t.Fatalf("unexpected startup log: %q", logs.String())
+	}
+}
+
+func TestReloadTreatsNotifyWebhookAsRestartOnly(t *testing.T) {
+	fakegh.Install(t, testConfig().GitHub.Handle)
+	dir := t.TempDir()
+	factoryDir := filepath.Join(dir, "factory")
+	if err := os.MkdirAll(filepath.Join(factoryDir, "presets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	presetYAML := "description: test preset\nsteps:\n  - name: work\n    run: \"true\"\n"
+	if err := os.WriteFile(filepath.Join(factoryDir, "presets", "default.yaml"), []byte(presetYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+	initial := "server:\n  listen: 127.0.0.1:7331\n  factory: factory\ngithub:\n  handle: machinist-bot\nnotify:\n  webhook: https://hooks.example.com/old-secret\n"
+	if err := os.WriteFile(cfgPath, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loadedCfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := openTestStore(t)
+	srv, err := New(loadedCfg, store, testFactory(), "v1.2.3", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := "server:\n  listen: 127.0.0.1:7331\n  factory: factory\ngithub:\n  handle: machinist-bot\nnotify:\n  webhook: https://hooks.example.com/new-secret\n"
+	if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := srv.Reload(t.Context())
+	if err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+	joined := strings.Join(res.RestartNeeded, ",")
+	if !strings.Contains(joined, "notify.webhook") || strings.Contains(joined, "new-secret") {
+		t.Fatalf("RestartNeeded = %v, want notify.webhook without URL", res.RestartNeeded)
+	}
+	if srv.state().config.Notify.Webhook != "https://hooks.example.com/old-secret" {
+		t.Fatalf("effective Notify.Webhook changed on reload: %q", srv.state().config.Notify.Webhook)
+	}
+}
+
+func TestGitHubSemBypassedOnCacheHitAndRespectsContext(t *testing.T) {
+	f := newFixture(t)
+	// Seed cache with an installed repo entry.
+	f.server.githubCache.setInstalled("owner/repo", f.server.currentTime().Add(githubCacheTTL), f.server.githubCache.generation())
+
+	// Saturate githubSem completely.
+	for range cap(f.server.githubSem) {
+		f.server.githubSem <- struct{}{}
+	}
+	defer func() {
+		for range cap(f.server.githubSem) {
+			<-f.server.githubSem
+		}
+	}()
+
+	// Cache hit must succeed immediately even when githubSem is saturated.
+	if err := f.server.appInstalled(t.Context(), nil, "owner/repo", false); err != nil {
+		t.Fatalf("cached appInstalled blocked or failed: %v", err)
+	}
+
+	// Cache miss (refresh=true) must wait on githubSem and bail immediately on ctx cancellation.
+	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+	defer cancel()
+	if err := f.server.appInstalled(ctx, nil, "owner/repo", true); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("uncached appInstalled = %v, want context.DeadlineExceeded", err)
 	}
 }
