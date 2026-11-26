@@ -32,6 +32,7 @@ Start with the [quick start](../README.md#quick-start).
 | [Development](development.md) | Build, test and contribute |
 | [Vision](../VISION.md) | See what Machinist is for, where it is, and what comes next |
 | [Design](designs/generic-runner.md) | Read the design: one API, presets of steps, runners |
+| [Production Cloud Run & auth](designs/production-cloud-run.md) | Read the design for Cloud Run, PostgreSQL, baked config, and public-instance login security |
 | [Job sources](designs/issue-sources.md) | See where jobs come from and how a new tracker plugs in |
 | [Earlier design](designs/machinist-redesign.md) | Read the GitHub-first design the code still follows |
 | [Examples](../examples/README.md) | See the files `machinist init` installs |
