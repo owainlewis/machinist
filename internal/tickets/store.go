@@ -71,8 +71,6 @@ CREATE TABLE IF NOT EXISTS tickets (
   steward_retries INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
   WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_schedule ON tickets(source)
-  WHERE source LIKE 'schedule:%' AND state='working';
 CREATE INDEX IF NOT EXISTS tickets_created_at ON tickets(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS tickets_updated_at ON tickets(updated_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS ticket_entries (
@@ -430,14 +428,34 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	// Backfill monotonic seq for upgraded SQLite databases and create seq indexes.
+	// Backfill monotonic seq for upgraded SQLite databases, reconcile any
+	// pre-existing duplicate working scheduled tickets before creating the
+	// partial unique index, and install seq indexes (including leading seq
+	// indexes so SQLite MAX(seq) lookups stay O(log N)).
 	// Reviewer runs are gone. Cancel any a database from before still queues.
 	// Jobs no longer wait for answers, so one left waiting has failed.
 	for _, statement := range []string{
 		`UPDATE tickets SET seq = rowid WHERE seq = 0`,
 		`UPDATE runs SET seq = rowid WHERE seq = 0`,
+		`CREATE INDEX IF NOT EXISTS idx_tickets_seq ON tickets(seq DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_runs_seq ON runs(seq DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_runs_queued_seq ON runs(status, kind, seq, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tickets_source_seq ON tickets(source, seq DESC)`,
+		`UPDATE runs SET status='cancelled' WHERE status='queued' AND ticket_id IN (
+			SELECT t.id FROM tickets t
+			WHERE t.source LIKE 'schedule:%' AND t.state='working'
+			  AND EXISTS (
+				SELECT 1 FROM tickets newer
+				WHERE newer.source = t.source AND newer.state='working' AND newer.seq > t.seq
+			  )
+		)`,
+		`UPDATE tickets SET state='cancelled'
+		 WHERE source LIKE 'schedule:%' AND state='working'
+		   AND EXISTS (
+			SELECT 1 FROM tickets newer
+			WHERE newer.source = tickets.source AND newer.state='working' AND newer.seq > tickets.seq
+		   )`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_schedule ON tickets(source) WHERE source LIKE 'schedule:%' AND state='working'`,
 		`UPDATE runs SET status='cancelled' WHERE status='queued' AND kind<>'agent'`,
 		`UPDATE tickets SET state='failed' WHERE state='needs_you'`,
 	} {
@@ -1195,6 +1213,15 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		if ticket.State == StateWorking {
 			return ErrStillWorking
 		}
+		if strings.HasPrefix(ticket.Source, sourceSchedulePrefix) {
+			var otherWorking int
+			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state=? AND id<>?`, ticket.Source, StateWorking, ticketID).Scan(&otherWorking); err != nil {
+				return err
+			}
+			if otherWorking > 0 {
+				return ErrStillWorking
+			}
+		}
 		var active int
 		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND status IN (?,?)`, ticketID, RunQueued, RunRunning).Scan(&active); err != nil {
 			return err
@@ -1243,6 +1270,12 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		ticket, err = loadTicket(ctx, tx, ticketID)
 		return err
 	})
+	if err != nil && isUniqueViolation(err) && strings.HasPrefix(ticket.Source, sourceSchedulePrefix) {
+		var otherWorking int
+		if checkErr := s.q().QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state=? AND id<>?`, ticket.Source, StateWorking, ticketID).Scan(&otherWorking); checkErr == nil && otherWorking > 0 {
+			return Ticket{}, ErrStillWorking
+		}
+	}
 	return ticket, err
 }
 

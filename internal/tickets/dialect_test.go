@@ -139,3 +139,57 @@ func TestSQLiteSeqBackfillPreservesOrder(t *testing.T) {
 		t.Fatalf("QueuedTickets order = %+v, want [t_second, %s]", queued, third.ID)
 	}
 }
+
+func TestOpenReconcilesDuplicateWorkingScheduledTickets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dup_schedule.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := stamp(time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC))
+	if _, err := db.Exec(`
+		CREATE TABLE tickets (
+			id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
+			state TEXT NOT NULL, agent TEXT NOT NULL, pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
+			merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+		);
+		CREATE TABLE runs (
+			id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, kind TEXT NOT NULL, reviewer TEXT NOT NULL DEFAULT '',
+			harness TEXT NOT NULL, runner TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, lease_expires_at TEXT,
+			tokens INTEGER, cost REAL, report TEXT, queued_at TEXT, started_at TEXT, ended_at TEXT
+		);
+		INSERT INTO tickets(id,source,repo,title,state,agent,created_by,created_at,updated_at) VALUES
+			('t_old','schedule:nightly','org/repo','old','working','default','sched','` + now + `','` + now + `'),
+			('t_new','schedule:nightly','org/repo','new','working','default','sched','` + now + `','` + now + `');
+		INSERT INTO runs(id,ticket_id,kind,harness,status,queued_at) VALUES
+			('run_old','t_old','agent','codex','queued','` + now + `');
+	`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open db with duplicate working schedules: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	oldTicket, err := store.Ticket(ctx, "t_old")
+	if err != nil || oldTicket.State != StateCancelled {
+		t.Fatalf("t_old = (%+v, %v), want cancelled", oldTicket, err)
+	}
+	oldRun, err := store.Run(ctx, "run_old")
+	if err != nil || oldRun.Status != RunCancelled {
+		t.Fatalf("run_old = (%+v, %v), want cancelled", oldRun, err)
+	}
+	newTicket, err := store.Ticket(ctx, "t_new")
+	if err != nil || newTicket.State != StateWorking {
+		t.Fatalf("t_new = (%+v, %v), want working", newTicket, err)
+	}
+	// Rerunning the older ticket while t_new is working must return ErrStillWorking.
+	if _, err := store.Rerun(ctx, "t_old", "alice"); !errors.Is(err, ErrStillWorking) {
+		t.Fatalf("Rerun while another schedule ticket is working: err = %v, want ErrStillWorking", err)
+	}
+}
