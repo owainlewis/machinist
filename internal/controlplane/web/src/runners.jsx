@@ -126,7 +126,7 @@ function RemoveRunner({ runner, onRemoved, onSignedOut }) {
   </div>;
 }
 
-function Runner({ runner, onChange, onSignedOut }) {
+function Runner({ runner, canRemove, onChange, onSignedOut }) {
   const online = runnerOnline(runner);
   const jobs = runner.jobs || [];
   const slots = runner.slots || 1;
@@ -138,7 +138,7 @@ function Runner({ runner, onChange, onSignedOut }) {
       <time className="ticket-meta" dateTime={runner.last_contact}>Last contact {relativeTime(runner.last_contact)}</time>
       <span className={online ? "pill pill-success" : "pill pill-warning"}><span className="live-dot" data-live={online || undefined} aria-hidden="true" />{online ? "Online" : "Not responding"}</span>
     </div>
-    {removable(runner) && <RemoveRunner runner={runner} onRemoved={onChange} onSignedOut={onSignedOut} />}
+    {canRemove && removable(runner) && <RemoveRunner runner={runner} onRemoved={onChange} onSignedOut={onSignedOut} />}
     {jobs.length > 0 && <ul className="runner-jobs">{jobs.map(job => <li key={job.run_id}>
       <a href={jobHref(job.ticket_id)}>{job.title || job.ticket_id}</a>
       {job.step && <span className="ticket-meta runner-job-step">{job.step}</span>}
@@ -148,7 +148,8 @@ function Runner({ runner, onChange, onSignedOut }) {
   </li>;
 }
 
-export function RunnersPage({ runners = [], queue, loaded, error, onChange, onSignedOut }) {
+export function RunnersPage({ runners = [], queue, loaded, error, role = "admin", onChange, onSignedOut }) {
+  const canRemove = role === "admin";
   const waiting = queueLine(queue);
   const waits = harnessWaits(queue);
   return <div className="page runners-page">
@@ -166,6 +167,6 @@ export function RunnersPage({ runners = [], queue, loaded, error, onChange, onSi
       <p>{waits.join(". ")}. No online runner has {missingHarnesses(queue).length === 1 ? "it" : "them"}.</p>
       <p>Install the harness on a runner and restart the runner, or change the presets' agents.</p>
     </div>}
-    {runners.length > 0 && <ul className="list">{runners.map(runner => <Runner key={runner.name} runner={runner} onChange={onChange} onSignedOut={onSignedOut} />)}</ul>}
+    {runners.length > 0 && <ul className="list">{runners.map(runner => <Runner key={runner.name} runner={runner} canRemove={canRemove} onChange={onChange} onSignedOut={onSignedOut} />)}</ul>}
   </div>;
 }

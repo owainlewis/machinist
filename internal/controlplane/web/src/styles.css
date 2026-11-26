@@ -771,3 +771,25 @@ a.source:hover span { text-decoration: underline; }
   .modal-head, .modal-body { padding: 14px 16px; }
 }
 
+/* Sidebar user badge & Settings Team / My Account. */
+.sidebar-user { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 4px; border-radius: 8px; color: var(--muted-foreground); font-size: 12.5px; text-decoration: none; }
+.sidebar-user:hover { background: var(--muted); color: var(--foreground); }
+.sidebar-avatar, .team-avatar, .account-avatar { border-radius: 999px; object-fit: cover; flex-shrink: 0; }
+.sidebar-user-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; color: var(--foreground); font-weight: 500; }
+.sidebar-user-role { text-transform: capitalize; font-size: 11px; color: var(--faint); }
+.account-profile { display: flex; align-items: center; gap: 14px; }
+.account-name-row { display: flex; align-items: center; gap: 8px; }
+.session-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.session-title { display: flex; align-items: center; gap: 8px; }
+.team-invite-fields { display: grid; grid-template-columns: 160px minmax(0, 1fr) 120px auto; gap: 8px; align-items: center; }
+.team-invite-banner { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); font-size: 13px; }
+.team-invite-banner p { margin: 0 0 8px; }
+.team-invite-url-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.team-invite-url { flex: 1; min-width: 0; overflow-x: auto; padding: 6px 8px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); font-size: 12px; }
+.team-member-cell { display: flex; align-items: center; gap: 10px; }
+.role-select { width: auto; min-width: 105px; height: 30px; padding: 2px 8px; font-size: 12.5px; }
+.team-actions { display: flex; justify-content: flex-end; gap: 6px; white-space: nowrap; }
+@media (max-width: 767px) {
+  .team-invite-fields { grid-template-columns: minmax(0, 1fr); }
+}
+

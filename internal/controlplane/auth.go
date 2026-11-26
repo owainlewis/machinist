@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -294,6 +295,7 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 	auth, err := s.store.Authenticate(r.Context(), request.Token)
 	if errors.Is(err, tickets.ErrNotFound) {
+		s.audit(r, "auth.login.denied", "", "", "token", "denied", slog.String("reason", "invalid_token"))
 		writeError(w, http.StatusUnauthorized, errors.New("invalid token"))
 		return
 	}
@@ -302,14 +304,17 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if auth.Role == tickets.RoleAll && publicAuthActive(cfg) {
+		s.audit(r, "auth.login.denied", auth.ID, auth.Name, "token", "denied", slog.String("reason", "legacy_role_all"))
 		writeError(w, http.StatusForbidden, errors.New("legacy unscoped role-less tokens are disabled on public deployments; create a typed operator token"))
 		return
 	}
 	if !tickets.Allows(auth.Role, tickets.RoleOperator) {
+		s.audit(r, "auth.login.denied", auth.ID, auth.Name, "token", "denied", slog.String("reason", "runner_token"))
 		writeError(w, http.StatusForbidden, errors.New("this is a runner's token; sign in with your own, from machinist token create <your-name>"))
 		return
 	}
 	if !tickets.AllowsScope(auth.Role, auth.Scope, tickets.ScopeAll) {
+		s.audit(r, "auth.login.denied", auth.ID, auth.Name, "token", "denied", slog.String("reason", "insufficient_scope"))
 		writeError(w, http.StatusForbidden, fmt.Errorf("this token has scope %q and cannot sign in to the web app; sign in with your own, from machinist token create <your-name>", auth.Scope))
 		return
 	}
@@ -319,6 +324,7 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setSessionCookie(w, r, secret, sessionMaxAge)
+	s.audit(r, "auth.login.succeeded", auth.ID, auth.Name, auth.ID, "succeeded", slog.String("method", "token"))
 	writeJSON(w, http.StatusOK, map[string]string{"name": auth.Name})
 }
 

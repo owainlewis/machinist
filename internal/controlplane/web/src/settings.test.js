@@ -3,7 +3,7 @@ import test from "node:test";
 import { agentFrontMatter, agentOverridden, checkLink, dayLabel, durationShort, factoryUpdateLine, githubLine, githubWarnings, groupAgents, pollLabel, roleLabel, settingsPages, stepKind, stepKindLabel, stepShellPreview, tokenLine, tokenPrefixLabel, validateTokenName } from "./settings.js";
 
 test("the side nav lists one page per topic, overview first", () => {
-  assert.deepEqual(settingsPages.map(([page]) => page), ["overview", "projects", "github", "linear", "tokens", "presets"]);
+  assert.deepEqual(settingsPages.map(([page]) => page), ["overview", "projects", "github", "linear", "tokens", "team", "presets", "account"]);
 });
 
 test("a setup check links to the page that holds more about it", () => {
