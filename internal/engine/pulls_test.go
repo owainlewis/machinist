@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/ghclient"
+	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/ship"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -284,6 +286,225 @@ func TestCheckPRsStopsEarlyOnRateLimit(t *testing.T) {
 			}
 			if len(checked) != 1 || checked[0] != "owner/first" {
 				t.Fatalf("checked = %v, want early stop after rate limit on owner/first", checked)
+			}
+		})
+	}
+}
+
+func TestFailedJobWithOpenPRMergedByHumanTransitionsToDone(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted})
+	github := &githubPRs{pr: PR{Number: 42}}
+	e.FindPR = github.find
+
+	// CI fails, so the job transitions to failed with an open PR.
+	pull.checks = []ship.Check{{Name: "test", Bucket: "fail", Link: "https://ci.example.test/fail"}}
+	checkPRs(t, e)
+	if got := ticketOf(t, e, ticket.ID); got.State != tickets.StateFailed || got.PRState != tickets.PROpen || got.Shipping != "" {
+		t.Fatalf("after check failure: %+v", got)
+	}
+
+	// Human fixes the branch and merges the PR manually on GitHub.
+	now := time.Now().UTC()
+	opened, reviewed, merged := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-time.Hour)
+	var reviewCalls int
+	e.Reviews = func(_ context.Context, repo string, number int, _ time.Time) (tickets.Reviews, error) {
+		reviewCalls++
+		if repo != "owner/repo" || number != 42 {
+			t.Errorf("unexpected review lookup %s#%d", repo, number)
+		}
+		return tickets.Reviews{Count: 2, First: &reviewed}, nil
+	}
+	github.pr = PR{Number: 42, Merged: true, ChangedAt: merged, OpenedAt: opened}
+	github.calls = 0
+
+	checkPRs(t, e)
+	got := ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StateDone || got.PRState != tickets.PRMerged || got.PRStateAt == nil || !got.PRStateAt.Equal(merged) || got.MergedAt == nil || !got.MergedAt.Equal(merged) {
+		t.Fatalf("after manual merge: %+v", got)
+	}
+	if reviewCalls != 1 {
+		t.Fatalf("reviewCalls = %d, want 1", reviewCalls)
+	}
+	stats, err := e.Store.Stats(t.Context(), 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Cycle.Merged != 1 || stats.Cycle.Reviewed != 1 || stats.Touches.Reviews != 2 {
+		t.Fatalf("stats: cycle = %+v, touches = %+v", stats.Cycle, stats.Touches)
+	}
+
+	// Polling stops once the PR is merged.
+	calls := github.calls
+	checkPRs(t, e)
+	if github.calls != calls {
+		t.Fatalf("merged PR on formerly failed job was checked again: %d -> %d", calls, github.calls)
+	}
+	open, err := e.Store.TicketsWithOpenPRs(t.Context())
+	if err != nil || len(open) != 0 {
+		t.Fatalf("TicketsWithOpenPRs() = %+v, err = %v", open, err)
+	}
+}
+
+func TestFailedJobWithOpenPRClosedByHumanStaysFailed(t *testing.T) {
+	e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted})
+	github := &githubPRs{pr: PR{Number: 42}}
+	e.FindPR = github.find
+
+	pull.checks = []ship.Check{{Name: "test", Bucket: "fail"}}
+	checkPRs(t, e)
+	if got := ticketOf(t, e, ticket.ID); got.State != tickets.StateFailed || got.PRState != tickets.PROpen {
+		t.Fatalf("after check failure: %+v", got)
+	}
+
+	closed := time.Date(2026, 11, 26, 11, 0, 0, 0, time.UTC)
+	github.pr = PR{Number: 42, Closed: true, ChangedAt: closed}
+	github.calls = 0
+
+	checkPRs(t, e)
+	got := ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StateFailed || got.PRState != tickets.PRClosed || got.PRStateAt == nil || !got.PRStateAt.Equal(closed) || got.MergedAt != nil {
+		t.Fatalf("after manual close: %+v", got)
+	}
+
+	// Polling stops once the PR is closed.
+	calls := github.calls
+	checkPRs(t, e)
+	if github.calls != calls {
+		t.Fatalf("closed PR on failed job was checked again: %d -> %d", calls, github.calls)
+	}
+	open, err := e.Store.TicketsWithOpenPRs(t.Context())
+	if err != nil || len(open) != 0 {
+		t.Fatalf("TicketsWithOpenPRs() = %+v, err = %v", open, err)
+	}
+}
+
+func TestCancelledJobWithOpenPRReconcilesMergedAndClosedWithoutAutoMerge(t *testing.T) {
+	for name, outcome := range map[string]struct {
+		pr        PR
+		wantState string
+		wantMerge bool
+	}{
+		"merged": {
+			pr:        PR{Number: 42, Merged: true, ChangedAt: time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)},
+			wantState: tickets.PRMerged,
+			wantMerge: true,
+		},
+		"closed": {
+			pr:        PR{Number: 42, Closed: true, ChangedAt: time.Date(2026, 11, 26, 12, 5, 0, 0, time.UTC)},
+			wantState: tickets.PRClosed,
+			wantMerge: false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted})
+			github := &githubPRs{pr: PR{Number: 42}}
+			e.FindPR = github.find
+			pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+
+			if _, err := e.Store.Cancel(t.Context(), ticket.ID, "alice"); err != nil {
+				t.Fatal(err)
+			}
+
+			// While still open, CheckPRs does not auto-merge or call PullRequests.
+			checkPRs(t, e)
+			if pull.looks != 0 || len(pull.merged) != 0 || pull.updated != 0 {
+				t.Fatalf("cancelled job touched ship client: looks=%d merged=%v updated=%d", pull.looks, pull.merged, pull.updated)
+			}
+
+			github.pr = outcome.pr
+			github.calls = 0
+			checkPRs(t, e)
+
+			got := ticketOf(t, e, ticket.ID)
+			if got.State != tickets.StateCancelled || got.PRState != outcome.wantState || got.PRStateAt == nil || !got.PRStateAt.Equal(outcome.pr.ChangedAt) || (got.MergedAt != nil) != outcome.wantMerge {
+				t.Fatalf("after %s: %+v", name, got)
+			}
+			if outcome.wantMerge && !got.MergedAt.Equal(outcome.pr.ChangedAt) {
+				t.Fatalf("merged_at = %v, want %v", got.MergedAt, outcome.pr.ChangedAt)
+			}
+			if pull.looks != 0 || len(pull.merged) != 0 || pull.updated != 0 {
+				t.Fatalf("cancelled job touched ship client after settle: looks=%d merged=%v updated=%d", pull.looks, pull.merged, pull.updated)
+			}
+
+			// Polling stops once settled.
+			calls := github.calls
+			checkPRs(t, e)
+			if github.calls != calls {
+				t.Fatalf("settled PR on cancelled job was checked again: %d -> %d", calls, github.calls)
+			}
+		})
+	}
+}
+
+func TestFailedAndCancelledJobsWithOpenPRNeverRunShipOrSteward(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, e *Engine, pull *fakePull, ticket tickets.Ticket)
+		want  string
+	}{
+		{
+			name: "failed",
+			setup: func(t *testing.T, e *Engine, pull *fakePull, ticket tickets.Ticket) {
+				pull.checks = []ship.Check{{Name: "test", Bucket: "fail"}}
+				checkPRs(t, e)
+				if got := ticketOf(t, e, ticket.ID); got.State != tickets.StateFailed {
+					t.Fatalf("setup failed: got state %s", got.State)
+				}
+			},
+			want: tickets.StateFailed,
+		},
+		{
+			name: "cancelled",
+			setup: func(t *testing.T, e *Engine, _ *fakePull, ticket tickets.Ticket) {
+				if _, err := e.Store.Cancel(t.Context(), ticket.ID, "alice"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: tickets.StateCancelled,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, pull, ticket := handedOver(t, true, &protocol.Ship{Verdict: ship.Accepted})
+			github := &githubPRs{pr: PR{Number: 42}}
+			e.FindPR = github.find
+
+			tc.setup(t, e, pull, ticket)
+
+			// Enable PR Steward and set up conditions that would trigger Merge,
+			// UpdateBranch, and Steward on a pr_ready job.
+			e.StewardRetries = 2
+			github.calls = 0
+			pull.looks = 0
+			pull.merged = nil
+			pull.updated = 0
+			pull.pr.MergeStateStatus = "BEHIND"
+			pull.checks = []ship.Check{{Name: "test", Bucket: "fail"}}
+
+			checkPRs(t, e)
+			if github.calls != 1 {
+				t.Fatalf("FindPR calls on %s job = %d, want 1", tc.name, github.calls)
+			}
+			if pull.looks != 0 || len(pull.merged) != 0 || pull.updated != 0 {
+				t.Fatalf("ship client called on %s job: looks=%d merged=%v updated=%d", tc.name, pull.looks, pull.merged, pull.updated)
+			}
+			got := ticketOf(t, e, ticket.ID)
+			if got.State != tc.want || got.PRState != tickets.PROpen || got.StewardRetries != 0 {
+				t.Fatalf("after CheckPRs on %s job: %+v", tc.name, got)
+			}
+
+			// Also verify with passing/clean checks (would auto-merge on pr_ready).
+			pull.pr.MergeStateStatus = "CLEAN"
+			pull.checks = []ship.Check{{Name: "test", Bucket: "pass"}}
+			checkPRs(t, e)
+			if github.calls != 2 {
+				t.Fatalf("FindPR calls on %s job = %d, want 2", tc.name, github.calls)
+			}
+			if pull.looks != 0 || len(pull.merged) != 0 || pull.updated != 0 {
+				t.Fatalf("ship client called on %s job with green checks: looks=%d merged=%v updated=%d", tc.name, pull.looks, pull.merged, pull.updated)
+			}
+			got = ticketOf(t, e, ticket.ID)
+			if got.State != tc.want || got.PRState != tickets.PROpen || got.StewardRetries != 0 {
+				t.Fatalf("after second CheckPRs on %s job: %+v", tc.name, got)
 			}
 		})
 	}
