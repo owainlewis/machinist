@@ -187,3 +187,57 @@ func TestLeaderSupervisorTTLFailoverAndStuckWorkerSkipsRelease(t *testing.T) {
 	cancel2()
 	<-done2
 }
+
+func TestLeaderSupervisorStepsDownAtSafetyMarginOnDBError(t *testing.T) {
+	fakegh.Install(t, testConfig().GitHub.Handle)
+	store := openTestStore(t)
+
+	s, err := New(testConfig(), store, testFactory(), "v1", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	stopped := make(chan struct{}, 1)
+	s.bgWorkers = func(ctx context.Context) {
+		started <- struct{}{}
+		<-ctx.Done()
+		stopped <- struct{}{}
+	}
+	s.leaderCfg = leaderConfig{
+		holderID:        "cp_err",
+		ttl:             400 * time.Millisecond,
+		renewInterval:   80 * time.Millisecond,
+		acquireInterval: 50 * time.Millisecond,
+		rpcTimeout:      5 * time.Second,
+		safetyMargin:    150 * time.Millisecond,
+		releaseTimeout:  time.Second,
+		drainTimeout:    time.Second,
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); s.runLeaderSupervisor(ctx) }()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("leader did not start")
+	}
+
+	// Simulate DB unavailability by closing the store while leading.
+	// Leader must proactively step down before ttl - safetyMargin (~250ms),
+	// well before the 5s rpcTimeout or 400ms ttl.
+	_ = store.Close()
+	stepDownStart := time.Now()
+	select {
+	case <-stopped:
+		if elapsed := time.Since(stepDownStart); elapsed > 600*time.Millisecond {
+			t.Fatalf("proactive step-down took %s, expected promptly at safety margin", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("leader did not proactively step down after DB became unavailable")
+	}
+	cancel()
+	<-done
+}

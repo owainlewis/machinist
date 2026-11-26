@@ -159,7 +159,22 @@ func (s *Server) runLeaderSupervisor(ctx context.Context) {
 			break
 		}
 		attemptStart := nowFn().UTC()
-		rpcCtx, rpcCancel := context.WithTimeout(ctx, cfg.rpcTimeout)
+		rpcTimeout := cfg.rpcTimeout
+		if leading {
+			stepDownAt := leaseValidUntil.Add(-cfg.safetyMargin)
+			remaining := stepDownAt.Sub(attemptStart)
+			if remaining <= 0 {
+				if s.log != nil {
+					fmt.Fprintf(s.log, "machinist: leader lease %q reached safety margin without renewal, stepping down\n", cfg.leaseName)
+				}
+				stopWorkers(0)
+				continue
+			}
+			if remaining < rpcTimeout {
+				rpcTimeout = remaining
+			}
+		}
+		rpcCtx, rpcCancel := context.WithTimeout(ctx, rpcTimeout)
 		acquired, err := s.store.AcquireOrRenewLease(rpcCtx, cfg.leaseName, cfg.holderID, cfg.ttl)
 		rpcCancel()
 
