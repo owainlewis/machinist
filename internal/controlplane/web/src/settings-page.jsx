@@ -30,7 +30,7 @@ export function SettingsPage({ page, setup, onSignedOut, onSetupChange }) {
       </a>)}
     </nav>
     <div className="settings-body">
-      <Page key={page} onSignedOut={onSignedOut} onChange={onSetupChange} />
+      <Page key={page} setup={setup} onSignedOut={onSignedOut} onChange={onSetupChange} />
     </div>
   </div>;
 }

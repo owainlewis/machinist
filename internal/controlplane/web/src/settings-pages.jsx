@@ -9,41 +9,174 @@ import { agentSummary, harnessLabel } from "./agents.js";
 import { relativeTime } from "./display.jsx";
 import { HarnessMark } from "./harness-mark.jsx";
 import { agentFrontMatter, agentOverridden, dayLabel, durationShort, factoryUpdateLine, githubLine, groupAgents, pollLabel, roleLabel, stepKind, stepKindLabel, stepShellPreview, tokenLine, tokenPrefixLabel, validateTokenName } from "./settings.js";
-import { sentence } from "./setup-page.jsx";
+import { sentence, SettingsHead } from "./setup-page.jsx";
+
+// resourceCache keeps the last loaded response per API key so switching
+// Settings tabs renders immediately while revalidating in the background.
+const resourceCache = new Map();
+let cacheGeneration = 0;
+
+export function clearSettingsCache() {
+  cacheGeneration++;
+  resourceCache.clear();
+}
 
 // useResource loads what a page shows from one or more API routes.
 function useResource(paths, onSignedOut) {
-  const [data, setData] = useState(null);
-  const [error, setError] = useState("");
   const key = paths.join(" ");
-  const load = useCallback(async () => {
-    try {
-      const found = await Promise.all(key.split(" ").map(path => api(path)));
-      setData(found);
-      setError("");
-    } catch (failure) {
-      if (failure instanceof SignedOutError) onSignedOut();
-      else setError(sentence(failure.message));
-    }
+  const [data, setDataState] = useState(() => resourceCache.get(key) ?? null);
+  const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const version = useRef(0);
+
+  const setData = useCallback(next => {
+    version.current += 1;
+    setDataState(prev => {
+      const value = typeof next === "function" ? next(prev) : next;
+      if (value === null || value === undefined) resourceCache.delete(key);
+      else resourceCache.set(key, value);
+      return value;
+    });
+    setRefreshing(false);
+  }, [key]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const generation = cacheGeneration;
+    const requestVersion = version.current;
+    setRefreshing(true);
+    Promise.all(key.split(" ").map(path => api(path)))
+      .then(found => {
+        if (cancelled || generation !== cacheGeneration || requestVersion !== version.current) return;
+        resourceCache.set(key, found);
+        setDataState(found);
+        setError("");
+      })
+      .catch(failure => {
+        if (cancelled || generation !== cacheGeneration || requestVersion !== version.current) return;
+        if (failure instanceof SignedOutError) onSignedOut();
+        else setError(sentence(failure.message));
+      })
+      .finally(() => {
+        if (!cancelled && generation === cacheGeneration && requestVersion === version.current) setRefreshing(false);
+      });
+    return () => { cancelled = true; };
   }, [key, onSignedOut]);
-  useEffect(() => { load(); }, [load]);
-  return { data, error, setData };
+
+  return { data, error, refreshing, setData };
 }
 
-function Head({ title, sub, children }) {
-  return <header className="page-head">
-    <div>
-      <h1>{title}</h1>
-      {sub && <p className="page-sub">{sub}</p>}
-    </div>
-    {children}
-  </header>;
+function FactsSkeleton({ rows }) {
+  return <dl className="list settings-facts" aria-hidden="true">
+    {rows.map(([labelWidth, valueWidth, hintWidth], index) => <div key={index} className="settings-fact">
+      <dt><span className="skeleton skeleton-label" style={{ width: labelWidth }} /></dt>
+      <dd className="skeleton-stack">
+        <span className="skeleton skeleton-title" style={{ width: valueWidth }} />
+        {hintWidth && <span className="skeleton skeleton-text" style={{ width: hintWidth }} />}
+      </dd>
+    </div>)}
+  </dl>;
 }
 
-function Status({ data, error, label }) {
-  if (error) return <p className="form-error" role="alert">{error}</p>;
-  if (!data) return <p className="page-note" role="status">{label}</p>;
-  return null;
+function GitHubSkeleton() {
+  return <div className="settings-skeleton" role="status" aria-busy="true">
+    <span className="sr-only">Asking GitHub</span>
+    <FactsSkeleton rows={[
+      ["64px", "124px", "72%"],
+      ["88px", "184px", "60%"],
+      ["82px", "54px", "68%"],
+    ]} />
+    <section className="settings-section" aria-hidden="true">
+      <span className="skeleton skeleton-heading" />
+      <span className="skeleton skeleton-text" style={{ width: "68%" }} />
+      <ul className="list">
+        {[["152px", "48px"], ["132px", "56px"]].map(([repoWidth, branchWidth], index) => <li key={index} className="settings-row">
+          <div className="settings-row-main">
+            <span className="skeleton skeleton-title" style={{ width: repoWidth }} />
+            <span className="skeleton skeleton-label" style={{ width: branchWidth }} />
+          </div>
+          <span className="skeleton skeleton-pill" />
+        </li>)}
+      </ul>
+    </section>
+  </div>;
+}
+
+function LinearSkeleton() {
+  return <div className="settings-skeleton" role="status" aria-busy="true">
+    <span className="sr-only">Loading Linear</span>
+    <FactsSkeleton rows={[
+      ["76px", "136px", "64%"],
+      ["96px", "172px", "54%"],
+      ["64px", "96px", ""],
+      ["88px", "112px", ""],
+    ]} />
+  </div>;
+}
+
+function TokensSkeleton() {
+  return <div className="settings-skeleton" role="status" aria-busy="true">
+    <span className="sr-only">Loading tokens</span>
+    <ul className="list" aria-hidden="true">
+      {[["92px", "64px"], ["116px", "72px"], ["84px", "68px"]].map(([nameWidth, pillWidth], index) => <li key={index} className="settings-row token-row">
+        <div className="settings-row-main">
+          <span className="skeleton skeleton-title" style={{ width: nameWidth }} />
+          <span className="skeleton skeleton-pill" style={{ width: pillWidth }} />
+        </div>
+        <div className="token-actions">
+          <span className="skeleton skeleton-button-sm" />
+          <span className="skeleton skeleton-button-sm" style={{ width: "64px" }} />
+        </div>
+        <div className="token-times">
+          <span className="skeleton skeleton-meta" style={{ width: "104px" }} />
+          <span className="skeleton skeleton-meta" style={{ width: "124px" }} />
+          <span className="skeleton skeleton-meta" style={{ width: "112px" }} />
+        </div>
+      </li>)}
+    </ul>
+  </div>;
+}
+
+function PresetsSkeleton() {
+  return <div className="settings-skeleton" role="status" aria-busy="true">
+    <span className="sr-only">Loading presets</span>
+    <section className="settings-section" aria-hidden="true">
+      <span className="skeleton skeleton-heading" style={{ width: "76px" }} />
+      <ul className="preset-cards">
+        {[["88px", "58%"], ["108px", "48%"]].map(([nameWidth, descWidth], cardIndex) => <li key={cardIndex} className="panel preset-card">
+          <div className="preset-card-head">
+            <div className="settings-row-main">
+              <span className="skeleton skeleton-title" style={{ width: nameWidth }} />
+              <span className="skeleton skeleton-pill" style={{ width: "62px" }} />
+            </div>
+            <span className="skeleton skeleton-text" style={{ width: descWidth }} />
+          </div>
+          <div className="pipeline preset-pipeline">
+            <div className="skeleton-pipeline-nodes">
+              {[0, 1, 2].map(stepIndex => <Fragment key={stepIndex}>
+                {stepIndex > 0 && <span className="pipeline-edge" />}
+                <div className="skeleton-pipeline-node">
+                  <span className="skeleton skeleton-title" style={{ width: stepIndex === 1 ? "78px" : "64px" }} />
+                  <span className="skeleton skeleton-meta" style={{ width: "56px" }} />
+                </div>
+              </Fragment>)}
+            </div>
+          </div>
+        </li>)}
+      </ul>
+    </section>
+    <section className="settings-section" aria-hidden="true">
+      <span className="skeleton skeleton-heading" style={{ width: "68px" }} />
+      <ul className="list">
+        {[["96px", "148px"], ["84px", "132px"], ["112px", "120px"]].map(([nameWidth, summaryWidth], index) => <li key={index} className="skeleton-agent-row">
+          <span className="skeleton skeleton-dot" />
+          <span className="skeleton skeleton-dot" />
+          <span className="skeleton skeleton-title" style={{ width: nameWidth }} />
+          <span className="skeleton skeleton-meta" style={{ width: summaryWidth }} />
+        </li>)}
+      </ul>
+    </section>
+  </div>;
 }
 
 function OnOff({ on, labels = ["On", "Off"] }) {
@@ -69,11 +202,13 @@ function DocsLink({ href, children }) {
 const docs = "https://github.com/owainlewis/machinist/blob/main/docs/";
 
 export function GitHubPage({ onSignedOut }) {
-  const { data, error } = useResource(["/api/v1/settings/github"], onSignedOut);
+  const { data, error, refreshing } = useResource(["/api/v1/settings/github"], onSignedOut);
   const settings = data?.[0];
+  const loading = !settings && !error;
   return <>
-    <Head title="GitHub" sub={settings && githubLine(settings)} />
-    <Status data={data} error={error} label="Asking GitHub" />
+    <SettingsHead title="GitHub" sub={settings && githubLine(settings)} loading={loading} refreshing={Boolean(settings && refreshing)} />
+    {error && <p className="form-error" role="alert">{error}</p>}
+    {loading && <GitHubSkeleton />}
     {settings && <>
       <Facts label="GitHub settings">
         <Fact name="Handle" hint="github.handle: the login that owns the token. Jobs commit and comment under it."><code>{settings.handle}</code></Fact>
@@ -117,13 +252,21 @@ function BranchRow({ repo }) {
 }
 
 export function LinearPage({ onSignedOut }) {
-  const { data, error } = useResource(["/api/v1/settings/linear"], onSignedOut);
+  const { data, error, refreshing } = useResource(["/api/v1/settings/linear"], onSignedOut);
   const linear = data?.[0];
+  const loading = !linear && !error;
   return <>
-    <Head title="Linear" sub={linear && (linear.enabled ? "Issues assigned to the Machinist app start jobs." : "Off. Jobs start from the web app, the API and schedules.")}>
+    <SettingsHead
+      title="Linear"
+      sub={linear && (linear.enabled ? "Issues assigned to the Machinist app start jobs." : "Off. Jobs start from the web app, the API and schedules.")}
+      loading={loading}
+      refreshing={Boolean(linear && refreshing)}
+      actionPlaceholder={<span className="skeleton skeleton-pill" aria-hidden="true" />}
+    >
       {linear && <OnOff on={linear.enabled} />}
-    </Head>
-    <Status data={data} error={error} label="Loading Linear" />
+    </SettingsHead>
+    {error && <p className="form-error" role="alert">{error}</p>}
+    {loading && <LinearSkeleton />}
     {linear && !linear.enabled && <section className="panel settings-howto" aria-labelledby="linear-howto">
       <h2 id="linear-howto" className="chart-title">Turn on Linear</h2>
       <ol>
@@ -161,7 +304,7 @@ function EnvNames({ names }) {
 }
 
 export function TokensPage({ onSignedOut }) {
-  const { data, error, setData } = useResource(["/api/v1/tokens"], onSignedOut);
+  const { data, error, refreshing, setData } = useResource(["/api/v1/tokens"], onSignedOut);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [role, setRole] = useState("operator");
@@ -287,10 +430,17 @@ export function TokensPage({ onSignedOut }) {
     }
   }
 
+  const loading = !tokens && !error;
   return <>
-    <Head title="Tokens" sub={tokens && tokenLine(tokens)}>
+    <SettingsHead
+      title="Tokens"
+      sub={tokens && tokenLine(tokens)}
+      loading={loading}
+      refreshing={Boolean(tokens && refreshing)}
+      actionPlaceholder={<span className="skeleton skeleton-button" aria-hidden="true" />}
+    >
       {tokens && !creating && <Button size="sm" onClick={openCreate} disabled={busy}><Plus className="size-4" aria-hidden="true" />New token</Button>}
-    </Head>
+    </SettingsHead>
     <p className="page-note">People and runners sign in with tokens. Only a token's hash and short prefix are kept, so each full token is shown once, when it is made.</p>
     {creating && <form className="panel token-form" aria-label="New token" onSubmit={create}>
       <div className="token-form-fields">
@@ -329,8 +479,9 @@ export function TokensPage({ onSignedOut }) {
       </div>
       {copyError && <p className="form-error" role="alert">{copyError}</p>}
     </section>}
-    <Status data={data} error={error} label="Loading tokens" />
+    {error && <p className="form-error" role="alert">{error}</p>}
     {failure && <p className="form-error" role="alert">{failure}</p>}
+    {loading && <TokensSkeleton />}
     {activeTokens && (activeTokens.length
       ? <ul className="list" aria-label="Tokens">{activeTokens.map(token => <TokenRow key={`${token.name}-${token.created_at}`} token={token} busy={busy} confirming={confirming?.name === token.name ? confirming.kind : ""} onAskRegenerate={() => setConfirming({ kind: "regenerate", name: token.name })} onAskRevoke={() => setConfirming({ kind: "revoke", name: token.name })} onCancel={() => setConfirming(null)} onRegenerate={() => regenerate(token)} onRevoke={() => revoke(token)} />)}</ul>
       : <p className="empty">No active tokens.</p>)}
@@ -575,7 +726,7 @@ function AgentGroupRow({ group, fileAgentsByName }) {
 }
 
 export function PresetsPage({ onSignedOut }) {
-  const { data, error } = useResource(["/api/v1/presets", "/api/v1/agents"], onSignedOut);
+  const { data, error, refreshing } = useResource(["/api/v1/presets", "/api/v1/agents"], onSignedOut);
   const [presets, agents] = data || [];
   const [showPresetSpecific, setShowPresetSpecific] = useState(false);
   const [showUnused, setShowUnused] = useState(false);
@@ -584,9 +735,15 @@ export function PresetsPage({ onSignedOut }) {
   const grouped = groupAgents(agents?.agents || []);
   const presetSpecificCount = grouped.presetGroups.reduce((sum, entry) => sum + entry.groups.length, 0);
   const hasActiveAgents = grouped.primary.length > 0 || presetSpecificCount > 0;
+  const loading = !data && !error;
 
   return <>
-    <Head title="Presets and agents" sub={data && `${presets.presets.length} ${presets.presets.length === 1 ? "preset" : "presets"} and ${agents.agents.length} ${agents.agents.length === 1 ? "agent" : "agents"}.`} />
+    <SettingsHead
+      title="Presets and agents"
+      sub={data && `${presets.presets.length} ${presets.presets.length === 1 ? "preset" : "presets"} and ${agents.agents.length} ${agents.agents.length === 1 ? "agent" : "agents"}.`}
+      loading={loading}
+      refreshing={Boolean(data && refreshing)}
+    />
     <p className="page-note">These come from <code>factory/presets</code> and <code>factory/agents</code>. Click any step or agent to inspect its script, front matter, or prompt. Change them in git and restart the control plane.</p>
     {updates.length > 0 && <div className="page-warning factory-warning" role="status">
       <p><strong>{factoryUpdateLine(updates)}</strong> Run <code>machinist factory upgrade</code> and restart the control plane.</p>
@@ -598,7 +755,8 @@ export function PresetsPage({ onSignedOut }) {
         </li>)}
       </ul>
     </div>}
-    <Status data={data} error={error} label="Loading presets" />
+    {error && <p className="form-error" role="alert">{error}</p>}
+    {loading && <PresetsSkeleton />}
     {data && <>
       <section className="settings-section" aria-labelledby="presets-title">
         <h2 id="presets-title" className="chart-title">Presets</h2>
