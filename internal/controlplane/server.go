@@ -65,6 +65,8 @@ type Server struct {
 	githubAPIBase   string
 	oauthHTTPClient *http.Client
 	githubCache     githubLookupCache
+	leaderCfg       leaderConfig
+	bgWorkers       func(context.Context)
 }
 
 type serverState struct {
@@ -564,35 +566,24 @@ func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 		}
 		served <- httpServer.Serve(listener)
 	}()
-	engineContext, stopEngine := context.WithCancel(ctx)
-	defer stopEngine()
-	engineDone := make(chan struct{})
-	go func() { s.engine.Run(engineContext); close(engineDone) }()
-	scheduleDone := make(chan struct{})
-	go func() { s.schedule.Run(engineContext); close(scheduleDone) }()
-	linearDone := make(chan struct{})
+	bgCtx, stopBG := context.WithCancel(ctx)
+	defer stopBG()
+	bgDone := make(chan struct{})
 	go func() {
-		s.runLinear(engineContext)
-		close(linearDone)
-	}()
-	pruneDone := make(chan struct{})
-	go func() {
-		s.runAuthPrune(engineContext)
-		close(pruneDone)
+		defer close(bgDone)
+		s.runLeaderSupervisor(bgCtx)
 	}()
 
 	select {
 	case err = <-served:
 	case <-ctx.Done():
+		stopBG()
 		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 		defer cancel()
 		err = errors.Join(httpServer.Shutdown(shutdown), <-served)
 	}
-	stopEngine()
-	<-engineDone
-	<-scheduleDone
-	<-linearDone
-	<-pruneDone
+	stopBG()
+	<-bgDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
