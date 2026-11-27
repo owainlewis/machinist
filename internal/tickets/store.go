@@ -55,12 +55,14 @@ const (
 )
 
 var (
-	ErrNotFound         = errors.New("not found")
-	ErrRunNotActive     = errors.New("run is not active")
-	ErrTicketEnded      = errors.New("ticket has ended")
-	ErrNotWorking       = errors.New("ticket is not working")
-	ErrTokenExists      = errors.New("an active token with this name exists")
-	ErrAutomationExists = errors.New("an automation with this name already exists")
+	ErrNotFound          = errors.New("not found")
+	ErrRunNotActive      = errors.New("run is not active")
+	ErrTicketEnded       = errors.New("ticket has ended")
+	ErrNotWorking        = errors.New("ticket is not working")
+	ErrTokenExists       = errors.New("an active token with this name exists")
+	ErrAutomationExists  = errors.New("an automation with this name already exists")
+	ErrNoCheckpoint      = errors.New("no saved checkpoint is available to resume from")
+	ErrInvalidResumeStep = errors.New("invalid resume step")
 )
 
 const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
@@ -71,7 +73,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
   origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT,
   merge_gate_decision TEXT NOT NULL DEFAULT '', merge_gate_risk TEXT NOT NULL DEFAULT '', merge_gate_reason TEXT NOT NULL DEFAULT '',
-  steward_retries INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0);
+  steward_retries INTEGER NOT NULL DEFAULT 0, resume_from_step TEXT NOT NULL DEFAULT '', resume_checkpoint_run TEXT NOT NULL DEFAULT '', seq INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
   WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
 CREATE INDEX IF NOT EXISTS tickets_created_at ON tickets(created_at DESC, id DESC);
@@ -82,7 +84,8 @@ CREATE TABLE IF NOT EXISTS ticket_entries (
 CREATE INDEX IF NOT EXISTS ticket_entries_ticket ON ticket_entries(ticket_id, id);
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, kind TEXT NOT NULL, reviewer TEXT NOT NULL DEFAULT '', harness TEXT NOT NULL, runner TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL, lease_expires_at TEXT, tokens INTEGER, cost REAL, report TEXT, queued_at TEXT, started_at TEXT, ended_at TEXT,
+  status TEXT NOT NULL, lease_expires_at TEXT, tokens INTEGER, cost REAL, report TEXT, failed_step TEXT NOT NULL DEFAULT '',
+  resume_from_step TEXT NOT NULL DEFAULT '', checkpoint_run_id TEXT NOT NULL DEFAULT '', queued_at TEXT, started_at TEXT, ended_at TEXT,
   cancel_requested_at TEXT, seq INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_agent_run ON runs(ticket_id) WHERE kind='agent' AND status IN ('queued','running');
 CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
@@ -105,6 +108,13 @@ CREATE TABLE IF NOT EXISTS run_stages (
 CREATE TABLE IF NOT EXISTS projects (repo TEXT PRIMARY KEY COLLATE NOCASE, added_by TEXT NOT NULL, added_at TEXT NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_repo_lower ON projects(LOWER(repo));
 CREATE TABLE IF NOT EXISTS run_patches (run TEXT PRIMARY KEY, body BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS run_checkpoints (
+  run TEXT PRIMARY KEY,
+  failed_step TEXT NOT NULL DEFAULT '',
+  head_sha TEXT NOT NULL DEFAULT '',
+  patch BLOB,
+  worktree BLOB,
+  control_files TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS human_touches (ticket_id TEXT NOT NULL, kind TEXT NOT NULL, author TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS human_touches_ticket ON human_touches(ticket_id, at);
 CREATE TABLE IF NOT EXISTS auth_state (
@@ -278,6 +288,14 @@ type Run struct {
 	Stages   []protocol.StageResult `json:"stages,omitempty"`
 	// Patch says the run saved its change as a patch, which RunPatch reads.
 	Patch bool `json:"patch,omitempty"`
+	// Checkpoint says the run saved a workspace checkpoint for resuming from a failed step.
+	Checkpoint bool `json:"checkpoint,omitempty"`
+	// FailedStep names the step that failed or timed out in this run, if any.
+	FailedStep string `json:"failed_step,omitempty"`
+	// ResumeFromStep names the step this run resumed from, if it was a checkpoint retry.
+	ResumeFromStep string `json:"resume_from_step,omitempty"`
+	// CheckpointRunID is the earlier run whose checkpoint this run resumes from.
+	CheckpointRunID string `json:"-"`
 	// CancelRequested says someone cancelled the run while it was running.
 	// It stops at its next heartbeat and its result never moves the ticket.
 	CancelRequested bool       `json:"cancel_requested,omitempty"`
@@ -370,6 +388,10 @@ type RunCompletion struct {
 	Stages []protocol.StageResult
 	// Patch is the change the run saved because it could not push it.
 	Patch []byte
+	// FailedStep names the step that failed or timed out, if any.
+	FailedStep string
+	// Checkpoint is the workspace snapshot captured when a step after checkout failed.
+	Checkpoint *protocol.Checkpoint
 }
 
 // Claim is a run given to a runner, with the ticket and log it works from.
@@ -463,6 +485,14 @@ func openSQLite(path string) (*Store, error) {
 		return nil, err
 	}
 	if err = addColumns(db, "tickets", "harness TEXT NOT NULL DEFAULT ''", "model TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = addColumns(db, "tickets", "resume_from_step TEXT NOT NULL DEFAULT ''", "resume_checkpoint_run TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = addColumns(db, "runs", "failed_step TEXT NOT NULL DEFAULT ''", "resume_from_step TEXT NOT NULL DEFAULT ''", "checkpoint_run_id TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -602,14 +632,17 @@ func (s *Store) Ticket(ctx context.Context, id string) (Ticket, error) {
 }
 
 const runColumns = `id,ticket_id,kind,reviewer,harness,runner,status,tokens,cost,report,started_at,ended_at,
-  EXISTS(SELECT 1 FROM run_patches WHERE run_patches.run=runs.id),cancel_requested_at IS NOT NULL`
+  EXISTS(SELECT 1 FROM run_patches WHERE run_patches.run=runs.id),
+  EXISTS(SELECT 1 FROM run_checkpoints WHERE run_checkpoints.run=runs.id),
+  COALESCE(failed_step,''),COALESCE(resume_from_step,''),COALESCE(checkpoint_run_id,''),
+  cancel_requested_at IS NOT NULL`
 
 func scanRun(row scanner) (Run, error) {
 	var run Run
 	var tokens sql.NullInt64
 	var cost sql.NullFloat64
 	var report, started, ended sql.NullString
-	if err := row.Scan(&run.ID, &run.TicketID, &run.Kind, &run.Reviewer, &run.Harness, &run.Runner, &run.Status, &tokens, &cost, &report, &started, &ended, &run.Patch, &run.CancelRequested); err != nil {
+	if err := row.Scan(&run.ID, &run.TicketID, &run.Kind, &run.Reviewer, &run.Harness, &run.Runner, &run.Status, &tokens, &cost, &report, &started, &ended, &run.Patch, &run.Checkpoint, &run.FailedStep, &run.ResumeFromStep, &run.CheckpointRunID, &run.CancelRequested); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Run{}, ErrNotFound
 		}
@@ -649,6 +682,59 @@ func (s *Store) RunPatch(ctx context.Context, runID string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	return body, err
+}
+
+func loadRunCheckpoint(ctx context.Context, q querier, runID string) (*protocol.Checkpoint, error) {
+	var cp protocol.Checkpoint
+	var controlJSON string
+	err := q.QueryRowContext(ctx, `SELECT COALESCE(failed_step,''),COALESCE(head_sha,''),patch,worktree,COALESCE(control_files,'') FROM run_checkpoints WHERE run=?`, runID).
+		Scan(&cp.FailedStep, &cp.HeadSHA, &cp.Patch, &cp.Worktree, &controlJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if controlJSON != "" {
+		if err := json.Unmarshal([]byte(controlJSON), &cp.ControlFiles); err != nil {
+			return nil, fmt.Errorf("decode stored checkpoint control files: %w", err)
+		}
+	}
+	return &cp, nil
+}
+
+// RunCheckpoint returns the workspace checkpoint saved by a failed run, or
+// ErrNotFound when the run saved none.
+func (s *Store) RunCheckpoint(ctx context.Context, runID string) (*protocol.Checkpoint, error) {
+	return loadRunCheckpoint(ctx, s.q(), runID)
+}
+
+func latestCheckpoint(ctx context.Context, q querier, ticketID string) (string, *protocol.Checkpoint, error) {
+	var runID, status string
+	err := q.QueryRowContext(ctx, `SELECT id,status FROM runs WHERE ticket_id=? ORDER BY seq DESC, id DESC LIMIT 1`, ticketID).Scan(&runID, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, ErrNoCheckpoint
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	if status != RunFailed && status != RunTimedOut {
+		return "", nil, ErrNoCheckpoint
+	}
+	cp, err := loadRunCheckpoint(ctx, q, runID)
+	if errors.Is(err, ErrNotFound) {
+		return "", nil, ErrNoCheckpoint
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	return runID, cp, nil
+}
+
+// LatestCheckpoint returns the run ID and saved checkpoint of a ticket's
+// latest run when that run failed or timed out and saved a checkpoint.
+func (s *Store) LatestCheckpoint(ctx context.Context, ticketID string) (string, *protocol.Checkpoint, error) {
+	return latestCheckpoint(ctx, s.q(), ticketID)
 }
 
 // Runs lists a ticket's runs with their stages, oldest first.
@@ -862,7 +948,7 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 		}
 		added = true
 		if ticket.State == StatePRReady {
-			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',resume_from_step='',resume_checkpoint_run='',updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
 				return err
 			}
 		} else {
@@ -1223,7 +1309,18 @@ var ErrStillWorking = errors.New("the job is still running")
 // as running. The request is logged as a comment from by, so the
 // next run sees it and the lost-runner count starts again.
 func (s *Store) Rerun(ctx context.Context, ticketID, by string) (Ticket, error) {
-	return s.reply(ctx, ticketID, by, TouchRerun, []Comment{{Body: "Run the job again."}})
+	return s.reply(ctx, ticketID, by, TouchRerun, []Comment{{Body: "Run the job again."}}, "")
+}
+
+// RerunFromStep resumes a failed job from fromStep using the checkpoint saved
+// by its latest failed run. It returns ErrNoCheckpoint when the latest run has
+// no saved checkpoint, or ErrStillWorking when a run is still active.
+func (s *Store) RerunFromStep(ctx context.Context, ticketID, by, fromStep string) (Ticket, error) {
+	fromStep = strings.TrimSpace(fromStep)
+	if fromStep == "" {
+		return Ticket{}, ErrInvalidResumeStep
+	}
+	return s.reply(ctx, ticketID, by, TouchRerun, []Comment{{Body: fmt.Sprintf("Retry from step %s.", fromStep)}}, fromStep)
 }
 
 // Comment is one comment to add to a ticket's log. Key, when set, is unique:
@@ -1237,11 +1334,13 @@ type Comment struct {
 // branch. The new run's prompt is the whole log, so it sees them. It returns
 // ErrStillWorking while any run of the ticket is queued or running.
 func (s *Store) Reply(ctx context.Context, ticketID, by string, comments []Comment) (Ticket, error) {
-	return s.reply(ctx, ticketID, by, TouchReply, comments)
+	return s.reply(ctx, ticketID, by, TouchReply, comments, "")
 }
 
-// reply runs a ticket again and records it as one human touch of kind.
-func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments []Comment) (Ticket, error) {
+// reply runs a ticket again and records it as one human touch of kind. When
+// fromStep is non-empty, the next run resumes from the latest failed run's
+// saved checkpoint starting at fromStep.
+func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments []Comment, fromStep string) (Ticket, error) {
 	var ticket Ticket
 	err := s.inTx(ctx, func(tx querier) error {
 		var err error
@@ -1267,6 +1366,13 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		if active > 0 {
 			return ErrStillWorking
 		}
+		checkpointRunID := ""
+		if fromStep != "" {
+			checkpointRunID, _, err = latestCheckpoint(ctx, tx, ticketID)
+			if err != nil {
+				return err
+			}
+		}
 		now := s.now()
 		for _, comment := range comments {
 			var key any
@@ -1281,7 +1387,7 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		// again that it started and how it ends. A pull request that merged or
 		// closed is finished with, so the new run opens and counts its own. An
 		// open one stays, so the new run keeps working on it.
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',steward_retries=0,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',steward_retries=0,resume_from_step=?,resume_checkpoint_run=?,updated_at=? WHERE id=?`, StateWorking, fromStep, checkpointRunID, stamp(now), ticketID); err != nil {
 			return err
 		}
 		if ticket.MergedAt != nil || ticket.PRState == PRMerged || ticket.PRState == PRClosed {
@@ -1322,17 +1428,17 @@ func cancelQueuedRuns(ctx context.Context, q querier, ticketID string, now time.
 	return err
 }
 
-func (s *Store) queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness string, now time.Time) (string, error) {
+func (s *Store) queueRun(ctx context.Context, q querier, ticketID, kind, reviewer, harness, resumeFromStep, checkpointRunID string, now time.Time) (string, error) {
 	id, err := randomHex(12)
 	if err != nil {
 		return "", err
 	}
 	id = "run_" + id
-	insertQuery := `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status,queued_at,seq) VALUES(?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM runs))`
+	insertQuery := `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status,resume_from_step,checkpoint_run_id,queued_at,seq) VALUES(?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM runs))`
 	if s.dialect == dialectPostgres {
-		insertQuery = `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status,queued_at) VALUES(?,?,?,?,?,?,?)`
+		insertQuery = `INSERT INTO runs(id,ticket_id,kind,reviewer,harness,status,resume_from_step,checkpoint_run_id,queued_at) VALUES(?,?,?,?,?,?,?,?,?)`
 	}
-	_, err = q.ExecContext(ctx, insertQuery, id, ticketID, kind, reviewer, harness, RunQueued, stamp(now))
+	_, err = q.ExecContext(ctx, insertQuery, id, ticketID, kind, reviewer, harness, RunQueued, resumeFromStep, checkpointRunID, stamp(now))
 	return id, err
 }
 
@@ -1341,8 +1447,14 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 	if transition.State == StatePRReady {
 		shipping = nullableString(transition.Shipping)
 	}
-	if _, err := q.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=COALESCE(?,pr_number),shipping=?,updated_at=? WHERE id=?`, transition.State, nullableInt(transition.PRNumber), shipping, stamp(now), ticket.ID); err != nil {
-		return err
+	if transition.State != StateWorking {
+		if _, err := q.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=COALESCE(?,pr_number),shipping=?,resume_from_step='',resume_checkpoint_run='',updated_at=? WHERE id=?`, transition.State, nullableInt(transition.PRNumber), shipping, stamp(now), ticket.ID); err != nil {
+			return err
+		}
+	} else {
+		if _, err := q.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=COALESCE(?,pr_number),shipping=?,updated_at=? WHERE id=?`, transition.State, nullableInt(transition.PRNumber), shipping, stamp(now), ticket.ID); err != nil {
+			return err
+		}
 	}
 	// A job that ends with an open pull request is watched until it merges or
 	// closes.
@@ -1492,7 +1604,11 @@ func (s *Store) QueueRun(ctx context.Context, ticketID, harness string) (Run, er
 		if ticket.State != StateWorking {
 			return ErrNotWorking
 		}
-		id, err := s.queueRun(ctx, tx, ticketID, RunKindAgent, "", harness, s.now())
+		var resumeFromStep, checkpointRunID string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(resume_from_step,''),COALESCE(resume_checkpoint_run,'') FROM tickets WHERE id=?`, ticketID).Scan(&resumeFromStep, &checkpointRunID); err != nil {
+			return err
+		}
+		id, err := s.queueRun(ctx, tx, ticketID, RunKindAgent, "", harness, resumeFromStep, checkpointRunID, s.now())
 		if err != nil {
 			return err
 		}
@@ -1715,7 +1831,7 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 			report = string(body)
 		}
 		now := s.now()
-		res, err := tx.ExecContext(ctx, `UPDATE runs SET status=?,tokens=?,cost=?,report=?,ended_at=? WHERE id=? AND status=?`, status, completion.Tokens, completion.Cost, report, stamp(now), run.ID, RunRunning)
+		res, err := tx.ExecContext(ctx, `UPDATE runs SET status=?,tokens=?,cost=?,report=?,failed_step=?,ended_at=? WHERE id=? AND status=?`, status, completion.Tokens, completion.Cost, report, completion.FailedStep, stamp(now), run.ID, RunRunning)
 		if err != nil {
 			return err
 		}
@@ -1728,6 +1844,20 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 		}
 		if len(completion.Patch) > 0 {
 			if _, err = tx.ExecContext(ctx, `INSERT INTO run_patches(run,body) VALUES(?,?)`, run.ID, completion.Patch); err != nil {
+				return err
+			}
+		}
+		if completion.Checkpoint != nil && !run.CancelRequested {
+			controlJSON := ""
+			if len(completion.Checkpoint.ControlFiles) > 0 {
+				body, err := json.Marshal(completion.Checkpoint.ControlFiles)
+				if err != nil {
+					return err
+				}
+				controlJSON = string(body)
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO run_checkpoints(run,failed_step,head_sha,patch,worktree,control_files) VALUES(?,?,?,?,?,?)`,
+				run.ID, completion.Checkpoint.FailedStep, completion.Checkpoint.HeadSHA, completion.Checkpoint.Patch, completion.Checkpoint.Worktree, controlJSON); err != nil {
 				return err
 			}
 		}

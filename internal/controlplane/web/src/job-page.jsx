@@ -1,5 +1,5 @@
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowUpRight, Ban, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Ban, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, Play, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { harnessList, waitingForRunner } from "./agents.js";
@@ -79,7 +79,7 @@ function Pipeline({ nodes, onChoose, now = Date.now() }) {
     <ol>{nodes.map((step, index) => {
       const [Icon, tone] = stepIcons[step.state] || stepIcons.unknown;
       const empty = !step.output && !step.error;
-      const meta = step.state === "held" ? stateWords.held : step.state !== "skipped" && stepTime(step, now) || stateWords[step.state];
+      const meta = step.state === "held" ? stateWords.held : step.state === "skipped" && step.outcome === "resumed" ? "Resumed" : step.state !== "skipped" && stepTime(step, now) || stateWords[step.state];
       return <li key={step.name} data-state={step.state}>
         {index > 0 && <span className="pipeline-edge" aria-hidden="true" />}
         <button type="button" className="pipeline-node" disabled={empty} onClick={() => onChoose(step.name)} aria-label={`${step.name}: ${stateWords[step.state] || step.state}`}>
@@ -124,7 +124,7 @@ function Step({ step, chosen, now }) {
       <span className="step-name">{step.name}</span>
       <span className="step-error">{step.error}</span>
       <span className="step-spend" title={spendTitle(step.cost_unknown)}>{spend(step)}</span>
-      <span className="step-time">{step.state === "skipped" ? "Skipped" : step.state === "held" ? "Held" : stepTime(step, now)}</span>
+      <span className="step-time">{step.state === "skipped" ? (step.outcome === "resumed" ? "Resumed" : "Skipped") : step.state === "held" ? "Held" : stepTime(step, now)}</span>
       <ChevronRight className="step-chevron size-4" aria-hidden="true" />
     </button>
     {open && !empty && <StepOutput text={step.output || step.error} />}
@@ -154,6 +154,7 @@ function Run({ run, number, presetSteps, waitingFor, held = false }) {
     <div className="run-head">
       <h2>Attempt {number}</h2>
       <span>{run.status === "queued" ? waitingForRunner(waitingFor) : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
+      {run.resume_from_step && <span>resumed from {run.resume_from_step}</span>}
       {run.started_at && <span>{formatDuration((run.ended_at ? Date.parse(run.ended_at) : now) - Date.parse(run.started_at))}</span>}
       {runSpend(run.stages) && <span title={spendTitle((run.stages || []).some(stage => stage.cost_unknown))}>{runSpend(run.stages)}</span>}
     </div>
@@ -187,24 +188,48 @@ function History({ entries }) {
   </section>;
 }
 
-// RunAgain starts the preset again from its first step, on the same branch.
-function RunAgain({ ticketID, onDone }) {
-  const [busy, setBusy] = useState(false);
+// resumableStep returns the failed step name when a failed job's latest run
+// failed past checkout and persisted a workspace checkpoint.
+export function resumableStep(state, latestRun, presetSteps = []) {
+  if (state !== "failed" || !latestRun || !latestRun.checkpoint) return "";
+  const stages = latestRun.stages || [];
+  const step = latestRun.failed_step || stages.find(stage => stage.state === "failed" || stage.state === "timed_out")?.name || "";
+  if (!step || step === "checkout") return "";
+  const ordered = presetSteps.length
+    ? presetSteps.map(entry => typeof entry === "string" ? entry : entry.name)
+    : stages.map(stage => stage.name);
+  if (ordered.length > 0) {
+    const index = ordered.indexOf(step);
+    const checkoutIndex = ordered.indexOf("checkout");
+    if (index <= 0) return "";
+    if (checkoutIndex >= 0 && index <= checkoutIndex) return "";
+  }
+  return step;
+}
+
+// RunAgain starts the preset again from its first step, or resumes from a
+// failed step when a saved checkpoint is available.
+function RunAgain({ ticketID, fromStep = "", onDone }) {
+  const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  async function rerun() {
-    setBusy(true);
+  async function rerun(step = "") {
+    setBusy(step ? "resume" : "full");
     setError("");
     try {
-      await api(`/api/v1/tickets/${encodeURIComponent(ticketID)}/rerun`, { method: "POST" });
+      const options = step ? { method: "POST", body: { from_step: step } } : { method: "POST" };
+      await api(`/api/v1/tickets/${encodeURIComponent(ticketID)}/rerun`, options);
       await onDone?.();
     } catch (failure) {
       setError(failure.message);
     } finally {
-      setBusy(false);
+      setBusy("");
     }
   }
   return <div className="run-again">
-    <Button variant="outline" size="sm" onClick={rerun} disabled={busy}><RotateCcw className="size-3.5" aria-hidden="true" />{busy ? "Starting" : "Run again"}</Button>
+    <div className="run-again-buttons">
+      {fromStep && <Button variant="default" size="sm" onClick={() => rerun(fromStep)} disabled={Boolean(busy)}><Play className="size-3.5" aria-hidden="true" />{busy === "resume" ? "Starting" : `Retry from ${fromStep}`}</Button>}
+      <Button variant="outline" size="sm" onClick={() => rerun("")} disabled={Boolean(busy)}><RotateCcw className="size-3.5" aria-hidden="true" />{busy === "full" ? "Starting" : "Run again"}</Button>
+    </div>
     {error && <p className="form-error" role="alert">{error}</p>}
   </div>;
 }
@@ -263,13 +288,14 @@ export function JobView({ detail, role = "admin", onChange }) {
   const result = [...runs].reverse().find(run => run.report?.summary)?.report.summary || "";
   const failure = state === "failed" ? failureReason(entries) : "";
   const attempts = runs.map((run, index) => ({ run, number: index + 1 })).reverse();
+  const retryStep = resumableStep(state, runs[runs.length - 1], presetSteps);
   return <div className="page job-page">
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
     <header className="job-head">
       <h1>{ticket.title || ticket.id}</h1>
       <div className="job-actions">
         <State value={state} />
-        {canRun && (isFinished(state) ? <RunAgain ticketID={ticket.id} onDone={onChange} /> : <CancelJob ticketID={ticket.id} onDone={onChange} />)}
+        {canRun && (isFinished(state) ? <RunAgain ticketID={ticket.id} fromStep={retryStep} onDone={onChange} /> : <CancelJob ticketID={ticket.id} onDone={onChange} />)}
       </div>
     </header>
     <dl className="job-facts">

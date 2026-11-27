@@ -183,8 +183,32 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 	for index, step := range request.Steps {
 		results[index] = protocol.StageResult{Name: step.Name, Kind: "step", State: protocol.StageSkipped}
 	}
+	resumeIdx := -1
+	checkoutIdx := -1
+	if request.ResumeFromStep != "" {
+		resumeIdx = stepIndex(request.Steps, request.ResumeFromStep)
+		if resumeIdx < 0 {
+			_ = log.close()
+			return RunResult{State: StateFailed, Error: fmt.Sprintf("resume step %q is not in the preset", request.ResumeFromStep), Stages: results}
+		}
+		checkoutIdx = stepIndex(request.Steps, "checkout")
+	}
+	restored := false
 	deadline := time.Now().Add(time.Duration(request.TimeoutMillis) * time.Millisecond)
 	for index, step := range request.Steps {
+		if resumeIdx >= 0 && index < resumeIdx && index != checkoutIdx {
+			results[index].Outcome = protocol.StageOutcomeResumed
+			continue
+		}
+		if resumeIdx >= 0 && index == resumeIdx && !restored {
+			if restoreErr := restoreCheckpoint(ctx, workspace, request.Checkpoint, log); restoreErr != nil {
+				output.State = StateFailed
+				output.FailedStep = step.Name
+				output.Error = fmt.Sprintf("restore checkpoint: %v", restoreErr)
+				break
+			}
+			restored = true
+		}
 		workspace.Environment = freshToken(ctx, request, workspace.Environment)
 		beforeResult, _ := readControlFile(workspace.Control, "result.md")
 		stderr := &lastLine{}
@@ -198,6 +222,7 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 		stepUsage(workspace.Control, entry)
 		if result.State != StateSucceeded {
 			output.State = result.State
+			output.FailedStep = step.Name
 			if err != nil {
 				entry.Error = err.Error()
 			}
@@ -209,10 +234,22 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 			// Keep an explanation the failing step left in result.md.
 			if result.State == StateFailed || result.State == StateTimedOut {
 				if summary, readErr := readControlFile(workspace.Control, "result.md"); readErr == nil && summary != "" && summary != beforeResult {
-					output.Report = &protocol.Report{Outcome: protocol.OutcomeFailed, Summary: summary}
+					output.Report = &protocol.Report{Outcome: protocol.OutcomeFailed, Summary: summary, FailedStep: step.Name}
+				}
+				if canCheckpointStep(request.Steps, index) {
+					output.Checkpoint = captureCheckpoint(workspace, request.Branch, step.Name)
 				}
 			}
 			break
+		}
+		if resumeIdx >= 0 && index == checkoutIdx && index < resumeIdx && !restored {
+			if restoreErr := restoreCheckpoint(ctx, workspace, request.Checkpoint, log); restoreErr != nil {
+				output.State = StateFailed
+				output.FailedStep = request.Steps[resumeIdx].Name
+				output.Error = fmt.Sprintf("restore checkpoint: %v", restoreErr)
+				break
+			}
+			restored = true
 		}
 	}
 	if output.State == StateSucceeded && output.Report == nil {

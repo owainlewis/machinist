@@ -275,6 +275,7 @@ a.source:hover span { text-decoration: underline; }
 .job-page .prose a { color: var(--info); overflow-wrap: anywhere; }
 .job-page .prose a:hover { text-decoration: underline; }
 .run-again, .cancel-job { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.run-again-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 /* The pipeline: one node per step, left to right, compact so 6-7 steps fit cleanly on desktop. */
 .pipeline { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: radial-gradient(circle at 1px 1px, rgb(255 255 255 / .045) 1px, transparent 0) 0 0 / 16px 16px, var(--surface); box-shadow: var(--specular); padding: 8px; }

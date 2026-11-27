@@ -259,6 +259,23 @@ var postgresMigrations = []postgresMigration{
   updated_at TEXT NOT NULL)`,
 		},
 	},
+	{
+		version: 3,
+		statements: []string{
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resume_from_step TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resume_checkpoint_run TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE runs ADD COLUMN IF NOT EXISTS failed_step TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE runs ADD COLUMN IF NOT EXISTS resume_from_step TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE runs ADD COLUMN IF NOT EXISTS checkpoint_run_id TEXT NOT NULL DEFAULT ''`,
+			`CREATE TABLE IF NOT EXISTS run_checkpoints (
+  run TEXT PRIMARY KEY,
+  failed_step TEXT NOT NULL DEFAULT '',
+  head_sha TEXT NOT NULL DEFAULT '',
+  patch BYTEA,
+  worktree BYTEA,
+  control_files TEXT NOT NULL DEFAULT '')`,
+		},
+	},
 }
 
 func postgresMaxOpenConns() (int, error) {

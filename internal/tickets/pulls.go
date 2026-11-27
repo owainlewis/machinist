@@ -221,7 +221,7 @@ func (s *Store) StewardRequeue(ctx context.Context, listed Ticket, request Stewa
 		if err = insertEntry(ctx, tx, ticket.ID, EntryCI, authorMachinist, request.Prompt, nil, now); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',steward_retries=steward_retries+1,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticket.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',resume_from_step='',resume_checkpoint_run='',steward_retries=steward_retries+1,updated_at=? WHERE id=?`, StateWorking, stamp(now), ticket.ID); err != nil {
 			return err
 		}
 		updated, err = loadTicket(ctx, tx, ticket.ID)
