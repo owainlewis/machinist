@@ -113,6 +113,13 @@ type Touches struct {
 	PerPR *float64 `json:"per_pr"`
 }
 
+// StewardStats summarises automatic PR Steward fixes and rescued pull requests
+// in the selected range.
+type StewardStats struct {
+	Retries int `json:"retries"`
+	Rescued int `json:"rescued"`
+}
+
 // StatsGroup is the jobs and spend for one preset, repository or source.
 type StatsGroup struct {
 	Name      string `json:"name"`
@@ -199,6 +206,7 @@ type Stats struct {
 	MergeGate  StatsMergeGate `json:"merge_gate"`
 	Cycle      Cycle          `json:"cycle"`
 	Touches    Touches        `json:"touches"`
+	Steward    StewardStats   `json:"steward"`
 	// Steps names every step that ran in the range, the most run first.
 	Steps []string `json:"steps"`
 }
@@ -408,6 +416,9 @@ func (s *Store) Stats(ctx context.Context, days int, repo string) (Stats, error)
 	if err := s.monthSpendStats(ctx, &stats, now, repo); err != nil {
 		return Stats{}, err
 	}
+	if err := s.stewardStats(ctx, &stats, first, repo); err != nil {
+		return Stats{}, err
+	}
 	if err := s.stepStats(ctx, &stats, first, repo, index); err != nil {
 		return Stats{}, err
 	}
@@ -415,6 +426,21 @@ func (s *Store) Stats(ctx context.Context, days int, repo string) (Stats, error)
 		return Stats{}, err
 	}
 	return stats, nil
+}
+
+// stewardStats counts PR Steward automatic retries across tickets created or
+// updated in the range and merged pull requests rescued by PR Steward in the range.
+func (s *Store) stewardStats(ctx context.Context, stats *Stats, first time.Time, repo string) error {
+	since := stamp(first)
+	retriesWhere, retriesArgs := repoClause("repo", repo, []any{since, since})
+	if err := s.q().QueryRowContext(ctx, `SELECT COALESCE(SUM(COALESCE(steward_retries,0)),0) FROM tickets WHERE (updated_at>=? OR created_at>=?)`+retriesWhere, retriesArgs...).Scan(&stats.Steward.Retries); err != nil {
+		return err
+	}
+	rescuedWhere, rescuedArgs := repoClause("repo", repo, []any{since})
+	if err := s.q().QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE merged_at>=? AND COALESCE(steward_retries,0)>0`+rescuedWhere, rescuedArgs...).Scan(&stats.Steward.Rescued); err != nil {
+		return err
+	}
+	return nil
 }
 
 // monthSpendStats computes calendar UTC month-to-date spend, tokens,
