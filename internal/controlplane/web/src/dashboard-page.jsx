@@ -5,10 +5,11 @@ import { api, SignedOutError } from "./api.js";
 import { HarnessMark } from "./harness-mark.jsx";
 import { Source } from "./source-mark.jsx";
 import {
-  availableRepos, dailyTouchTrend, dayLabel, doneRate, formatCostPerPR, formatCount, formatMedianCost,
-  formatMillis, formatPercent, formatRatio, formatSpend, formatTokens, formatUSD, linePoints, modelLabel,
-  monthLabel, monthSpendOf, niceMax, outcomes, plural, ranges, runsOn, sortBySpend, sparkPoints,
-  spendShare, statsPath, stepDays, stepSeries, tabs, touchParts, unreportedNote,
+  autoMergeRate, availableRepos, dailyTouchTrend, dayLabel, doneRate, formatCostPerPR, formatCount,
+  formatMedianCost, formatMillis, formatPercent, formatRatio, formatSpend, formatTokens, formatUSD,
+  linePoints, mergeGateRiskParts, modelLabel, monthLabel, monthSpendOf, niceMax, outcomes, plural,
+  ranges, runsOn, sortBySpend, sparkPoints, spendShare, statsPath, stepDays, stepSeries, tabs,
+  touchParts, unreportedNote,
 } from "./dashboard.js";
 
 const refreshMillis = 15_000;
@@ -138,6 +139,35 @@ function MergeSection({ cycle = {}, touches = {}, days, daily = [] }) {
   </section>;
 }
 
+// MergeGateSection summarises how often the merge gate auto-merged changes vs.
+// held them by policy or tripwire. Hidden when no verdicts exist in range.
+function MergeGateSection({ mergeGate, days }) {
+  if (!(mergeGate?.evaluated > 0)) return null;
+  const {
+    evaluated,
+    approved = 0,
+    auto_merged: autoMerged = 0,
+    held_policy: heldPolicy = 0,
+    held_tripwire: heldTripwire = 0,
+  } = mergeGate;
+  const riskNote = mergeGateRiskParts(mergeGate);
+  const approvedDetail = approved > 0
+    ? `${formatPercent(approved / evaluated)} of evaluated · ${formatCount(autoMerged)} auto-merged`
+    : `${formatPercent(approved / evaluated)} of evaluated`;
+  return <section className="dashboard-section" aria-labelledby="merge-gate-heading">
+    <div className="dashboard-section-head">
+      <h2 id="merge-gate-heading" className="label">Merge gate, for pull requests evaluated in the last {days} days</h2>
+      {riskNote && <p className="chart-note">{riskNote}</p>}
+    </div>
+    <div className="stat-tiles stat-tiles-4">
+      <StatTile label="Auto-merge rate" value={formatPercent(autoMergeRate(mergeGate))} detail={`${formatCount(autoMerged)} of ${plural(evaluated, "evaluated PR")}`} />
+      <StatTile label="Approved (low risk)" value={formatCount(approved)} detail={approvedDetail} />
+      <StatTile label="Held by policy" value={formatCount(heldPolicy)} detail={`${formatPercent(heldPolicy / evaluated)} of evaluated`} />
+      <StatTile label="Held by tripwire" value={formatCount(heldTripwire)} detail={`${formatPercent(heldTripwire / evaluated)} of evaluated`} />
+    </div>
+  </section>;
+}
+
 // GroupTable counts jobs by one thing, such as preset. name draws a group's
 // name, for groups that are more than text.
 function GroupTable({ id, title, groups = [], name = group => group.name }) {
@@ -226,6 +256,7 @@ function OverviewTab({ current }) {
         title={mtd.cost_unknown > 0 ? "Some runs used harnesses that do not report USD cost" : undefined} />
     </div>
     <MergeSection cycle={current.cycle} touches={current.touches} days={current.days} daily={current.daily} />
+    <MergeGateSection mergeGate={current.merge_gate} days={current.days} />
     <div className="chart-row">
       <LineChart id="prs-chart" title="Pull requests per day" days={current.daily} series={prSeries}
         note={<p className="chart-note">Merge rate <b>{formatPercent(current.prs?.merge_rate)}</b>{current.prs?.opened ? ` of ${plural(current.prs.opened, "opened PR")}` : ""}</p>} />

@@ -607,7 +607,7 @@ func TestStatsRoute(t *testing.T) {
 		t.Fatalf("stats = %+v", stats)
 	}
 	// The dashboard reads these even when nothing has merged yet.
-	for _, field := range []string{`"cycle":{"merged":0,`, `"touches":{"replies":0,`, `"prs":{"opened":0,`, `"steps":[]`, `"steps":{}`, `"models":[]`, `"model_steps":[]`, `"month_spend":{`, `"repositories":["owner/repo"]`} {
+	for _, field := range []string{`"cycle":{"merged":0,`, `"touches":{"replies":0,`, `"prs":{"opened":0,`, `"merge_gate":{"evaluated":0,`, `"steps":[]`, `"steps":{}`, `"models":[]`, `"model_steps":[]`, `"month_spend":{`, `"repositories":["owner/repo"]`} {
 		if !strings.Contains(string(body), field) {
 			t.Fatalf("stats lack %s: %s", field, body)
 		}
@@ -635,7 +635,7 @@ func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
 		}
 		return decodeTicket(t, body)
 	}
-	complete := func(ticket tickets.Ticket, merged bool, stages ...protocol.StageResult) {
+	complete := func(ticket tickets.Ticket, merged bool, gate *tickets.MergeGate, stages ...protocol.StageResult) {
 		t.Helper()
 		if _, err := f.store.QueueRun(ctx, ticket.ID, protocol.StepsHarness); err != nil {
 			t.Fatal(err)
@@ -646,7 +646,7 @@ func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
 		}
 		tokens, cost := protocol.Totals(stages)
 		now := time.Now().UTC()
-		transition := tickets.Transition{State: tickets.StatePRReady, PRNumber: 1, PROpenedAt: &now}
+		transition := tickets.Transition{State: tickets.StatePRReady, PRNumber: 1, PROpenedAt: &now, MergeGate: gate}
 		if merged {
 			transition.State = tickets.StateDone
 			transition.MergedAt = &now
@@ -662,11 +662,11 @@ func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
 	apiTicket := assignRepo("r-api", "owner/api")
 	tok1, cost1 := int64(10_000), 1.25
 	tok2 := int64(25_000)
-	complete(appTicket, true,
+	complete(appTicket, true, &tickets.MergeGate{Decision: "approve", Risk: "low", Reason: "Small test-backed fix."},
 		protocol.StageResult{Name: "implement", State: tickets.RunSucceeded, DurationMillis: 40_000, Tokens: &tok1, Cost: &cost1, Agents: []protocol.Agent{{Name: "coder", Harness: "claude", Model: "claude-opus-5-5"}}},
 		protocol.StageResult{Name: "review", State: tickets.RunSucceeded, DurationMillis: 20_000, Tokens: &tok2, CostUnknown: true, Agents: []protocol.Agent{{Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}}})
 	tok3, cost3 := int64(5_000), 0.50
-	complete(apiTicket, false,
+	complete(apiTicket, false, &tickets.MergeGate{Decision: "human_review", Risk: "high", Reason: "Tripwire: touches auth middleware."},
 		protocol.StageResult{Name: "implement", State: tickets.RunSucceeded, DurationMillis: 15_000, Tokens: &tok3, Cost: &cost3, Agents: []protocol.Agent{{Name: "coder", Harness: "claude", Model: "claude-opus-5-5"}}})
 
 	getStats := func(query string) tickets.Stats {
@@ -686,15 +686,24 @@ func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
 	if all.Jobs.Total != 2 || len(all.Repositories) != 2 || len(all.Models) != 2 || len(all.ModelSteps) != 2 || all.Cost != 1.75 || all.CostUnknown != 1 || all.MonthSpend.Cost != 1.75 || all.CostPerMergedPR == nil || *all.CostPerMergedPR != 1.75 {
 		t.Fatalf("all = %+v", all)
 	}
+	if all.MergeGate != (tickets.StatsMergeGate{Evaluated: 2, Approved: 1, AutoMerged: 1, HeldTripwire: 1, LowRisk: 1, HighRisk: 1}) {
+		t.Fatalf("all merge_gate = %+v", all.MergeGate)
+	}
 
 	app := getStats("?days=7&repo=owner/app")
 	if app.Repo != "owner/app" || len(app.Repositories) != 2 || app.Jobs.Total != 1 || app.Cost != 1.25 || app.CostUnknown != 1 || app.MonthSpend.Cost != 1.25 || app.CostPerMergedPR == nil || *app.CostPerMergedPR != 1.25 || len(app.Models) != 2 {
 		t.Fatalf("app = %+v", app)
 	}
+	if app.MergeGate != (tickets.StatsMergeGate{Evaluated: 1, Approved: 1, AutoMerged: 1, LowRisk: 1}) {
+		t.Fatalf("app merge_gate = %+v", app.MergeGate)
+	}
 
 	api := getStats("?days=7&repo=owner/api")
 	if api.Repo != "owner/api" || api.Jobs.Total != 1 || api.Cost != 0.50 || api.CostUnknown != 0 || api.CostPerMergedPR != nil || len(api.Models) != 1 || api.Models[0].Harness != "claude" {
 		t.Fatalf("api = %+v", api)
+	}
+	if api.MergeGate != (tickets.StatsMergeGate{Evaluated: 1, HeldTripwire: 1, HighRisk: 1}) {
+		t.Fatalf("api merge_gate = %+v", api.MergeGate)
 	}
 }
 
