@@ -297,3 +297,71 @@ func TestJobAPIMergeGateJSONSerialization(t *testing.T) {
 		t.Fatalf("listed job = %+v", listed)
 	}
 }
+
+func TestRunAPIAndAutomationsAcceptRunsOn(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+
+	// Invalid runs_on is rejected.
+	bad := runRequest("bad-label")
+	bad.RunsOn = []string{"bad label"}
+	if resp, body := f.call(t, http.MethodPost, "/machinist/run", f.token, bad); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad runs_on = %d: %s", resp.StatusCode, body)
+	}
+
+	// Valid runs_on is normalized, persisted, and returned on job endpoints.
+	req := runRequest("gpu-job")
+	req.RunsOn = []string{" GPU ", "linux", "gpu"}
+	resp, body := f.call(t, http.MethodPost, "/machinist/run", f.token, req)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("run = %d: %s", resp.StatusCode, body)
+	}
+	created := decodeJob(t, body)
+	if strings.Join(created.RunsOn, ",") != "gpu,linux" {
+		t.Fatalf("created runs_on = %v, want [gpu linux]", created.RunsOn)
+	}
+	fetched := f.getJob(t, created.ID)
+	if strings.Join(fetched.RunsOn, ",") != "gpu,linux" {
+		t.Fatalf("fetched runs_on = %v, want [gpu linux]", fetched.RunsOn)
+	}
+
+	// Automation create, manual run inheriting saved runs_on, and manual run with runs_on override.
+	resp, body = f.call(t, http.MethodPost, "/api/v1/automations", f.token, map[string]any{
+		"name":    "gpu-nightly",
+		"repo":    "owner/repo",
+		"preset":  "default",
+		"prompt":  "Run GPU benchmark.",
+		"runs_on": []string{"GPU", "vpc"},
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create automation = %d: %s", resp.StatusCode, body)
+	}
+	resp, body = f.call(t, http.MethodPost, "/api/v1/automations/gpu-nightly/run", f.token, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("run automation without override = %d: %s", resp.StatusCode, body)
+	}
+	var inherited tickets.Ticket
+	if err := json.Unmarshal(body, &inherited); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(inherited.RunsOn, ",") != "gpu,vpc" {
+		t.Fatalf("inherited automation ticket runs_on = %v, want [gpu vpc]", inherited.RunsOn)
+	}
+	if _, err := f.store.Cancel(t.Context(), inherited.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, body = f.call(t, http.MethodPost, "/api/v1/automations/gpu-nightly/run", f.token, map[string]any{
+		"runs_on": []string{"MacOS"},
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("run automation = %d: %s", resp.StatusCode, body)
+	}
+	var ticket tickets.Ticket
+	if err := json.Unmarshal(body, &ticket); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(ticket.RunsOn, ",") != "macos" {
+		t.Fatalf("automation ticket runs_on = %v, want [macos]", ticket.RunsOn)
+	}
+}

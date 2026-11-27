@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 )
 
 const (
@@ -13,7 +15,33 @@ const (
 	defaultRunnerToken = StateDir + "/runner.token"
 )
 
-var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var (
+	environmentName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	runnerLabelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+)
+
+// NormalizeLabels trims, lowercases, validates, deduplicates, and sorts runner
+// or runs_on labels. Empty input returns nil.
+func NormalizeLabels(labels []string) ([]string, error) {
+	if len(labels) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(labels))
+	normalized := make([]string, 0, len(labels))
+	for _, raw := range labels {
+		label := strings.ToLower(strings.TrimSpace(raw))
+		if !runnerLabelPattern.MatchString(label) {
+			return nil, fmt.Errorf("invalid label %q: must start with a letter or digit and contain only letters, digits, dots, hyphens and underscores", raw)
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		normalized = append(normalized, label)
+	}
+	slices.Sort(normalized)
+	return normalized, nil
+}
 
 // Runner is the configuration of one machine or cluster that runs steps.
 type Runner struct {
@@ -22,6 +50,9 @@ type Runner struct {
 	// Env names the variables passed from the runner's own environment to
 	// every step, such as ANTHROPIC_API_KEY or LINEAR_API_KEY.
 	Env []string `yaml:"env"`
+	// Labels are optional host tags this runner advertises (e.g. macos, gpu, vpc)
+	// so presets and jobs can target specific hosts with runs_on.
+	Labels []string `yaml:"labels"`
 	// Login gives steps the OS user's home, so a tool can use an existing login.
 	Login         bool   `yaml:"login"`
 	ControlPlane  string `yaml:"control_plane"`
@@ -121,6 +152,10 @@ func applyRunnerDefaults(runner Runner) (Runner, error) {
 		if !environmentName.MatchString(name) {
 			return Runner{}, fmt.Errorf("env: invalid environment variable name %q", name)
 		}
+	}
+	runner.Labels, err = NormalizeLabels(runner.Labels)
+	if err != nil {
+		return Runner{}, fmt.Errorf("labels: %w", err)
 	}
 	if runner.Kubernetes != nil && runner.Docker != nil {
 		return Runner{}, errors.New("cannot configure both docker and kubernetes")

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/protocol"
@@ -19,11 +20,16 @@ func (s *Server) poll(w http.ResponseWriter, r *http.Request, tokenName string) 
 	if !decodeJSON(w, r, maxRequestBytes, &request) {
 		return
 	}
-	if err := s.store.RecordRunner(r.Context(), tokenName, request.Kind, request.Harnesses, request.Slots, request.Probed); err != nil {
+	labels, err := config.NormalizeLabels(request.Labels)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("labels: %w", err))
+		return
+	}
+	if err := s.store.RecordRunner(r.Context(), tokenName, request.Kind, request.Harnesses, labels, request.Slots, request.Probed); err != nil {
 		writeRunError(w, err)
 		return
 	}
-	run, err := s.engine.Assign(r.Context(), tokenName, request.Harnesses, request.Probed)
+	run, err := s.engine.Assign(r.Context(), tokenName, request.Harnesses, labels, request.Probed)
 	if err != nil {
 		writeRunError(w, err)
 		return
@@ -59,18 +65,19 @@ func (s *Server) listRunners(w http.ResponseWriter, r *http.Request, _ string) {
 }
 
 // blocked groups the queued runs that no online runner can take by the
-// harnesses they wait for. specs counts the queued runs by preset and overrides.
+// harnesses and host labels they wait for. specs counts the queued runs by
+// preset and ticket-level overrides.
 func (s *Server) blocked(runners []tickets.Runner, specs []tickets.QueuedSpec) []tickets.HarnessWait {
 	online := s.onlineRunners(runners)
 	byMissing := map[string]*tickets.HarnessWait{}
 	for _, spec := range specs {
-		missing := waitingForFrom(s.state().factory, online, spec.Preset, spec.Harness, spec.Model)
-		if len(missing) == 0 {
+		missingH, missingL := waitingForFrom(s.state().factory, online, spec.Preset, spec.Harness, spec.Model, spec.RunsOn)
+		if len(missingH) == 0 && len(missingL) == 0 {
 			continue
 		}
-		key := strings.Join(missing, ",")
+		key := strings.Join(missingH, ",") + "|" + strings.Join(missingL, ",")
 		if byMissing[key] == nil {
-			byMissing[key] = &tickets.HarnessWait{Harnesses: missing}
+			byMissing[key] = &tickets.HarnessWait{Harnesses: missingH, Labels: missingL}
 		}
 		byMissing[key].Waiting += spec.Waiting
 	}
@@ -97,46 +104,64 @@ func (s *Server) onlineRunners(runners []tickets.Runner) []tickets.Runner {
 	return online
 }
 
-// waitingForFrom names the harnesses that keep every online runner from taking
-// a job of this preset and ticket-level overrides. It is empty when an online
-// runner can take one, when no runner is online, or when the preset is gone,
-// since such a job is claimed only to fail.
-func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName, harnessName, model string) []string {
+// waitingForFrom names the harnesses and runs_on labels that keep every online
+// runner from taking a job of this preset and ticket-level overrides. Both are
+// empty when an online runner can take one, when no runner is online, or when
+// the preset is gone, since such a job is claimed only to fail.
+func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName, harnessName, model string, ticketRunsOn []string) (missingH, missingL []string) {
 	if loaded == nil {
-		return nil
+		return nil, nil
 	}
 	preset, ok := loaded.Preset(presetName)
 	if !ok {
-		return nil
+		return nil, nil
 	}
-	return missingHarnesses(online, loaded.Needs(preset.WithOverride(harnessName, model)))
+	needsHarnesses := loaded.Needs(preset.WithOverride(harnessName, model))
+	needsLabels := engine.EffectiveRunsOn(preset, ticketRunsOn)
+	return missingRequirements(online, needsHarnesses, needsLabels)
 }
 
 // missingHarnesses names the harnesses in needs that the closest online runner
-// lacks, the fewest any one runner is missing, so installing them there lets
-// it take the job. It is empty when an online runner has them all, or when no
-// runner is online. A runner that did not report its harnesses, such as a
-// Kubernetes runner, may have any of them.
+// lacks.
 func missingHarnesses(online []tickets.Runner, needs []string) []string {
-	var fewest []string
-	for index, runner := range online {
-		if !runner.Probed {
-			return nil
-		}
-		var missing []string
-		for _, name := range needs {
-			if !slices.Contains(runner.Harnesses, name) {
-				missing = append(missing, name)
+	missingH, _ := missingRequirements(online, needs, nil)
+	return missingH
+}
+
+// missingRequirements names the harnesses and host labels that the closest
+// online runner lacks, the fewest total missing items (preferring runners with
+// fewer missing labels on a tie). Both are nil when an online runner satisfies
+// every requirement, or when no runner is online. A runner that did not report
+// its harnesses, such as a Kubernetes runner, may have any harness, but must
+// still advertise every required runs_on label.
+func missingRequirements(online []tickets.Runner, needsHarnesses, needsLabels []string) (fewestH, fewestL []string) {
+	bestTotal := -1
+	for _, runner := range online {
+		var missingL []string
+		for _, label := range needsLabels {
+			if !slices.Contains(runner.Labels, label) {
+				missingL = append(missingL, label)
 			}
 		}
-		if len(missing) == 0 {
-			return nil
+		var missingH []string
+		if runner.Probed {
+			for _, name := range needsHarnesses {
+				if !slices.Contains(runner.Harnesses, name) {
+					missingH = append(missingH, name)
+				}
+			}
 		}
-		if index == 0 || len(missing) < len(fewest) {
-			fewest = missing
+		total := len(missingH) + len(missingL)
+		if total == 0 {
+			return nil, nil
+		}
+		if bestTotal < 0 || total < bestTotal || (total == bestTotal && len(missingL) < len(fewestL)) {
+			bestTotal = total
+			fewestH = missingH
+			fewestL = missingL
 		}
 	}
-	return fewest
+	return fewestH, fewestL
 }
 
 // removeRunner forgets a runner that is offline and holds no running job, so

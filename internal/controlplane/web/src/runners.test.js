@@ -103,3 +103,26 @@ test("Runners says which harness queued runs wait for, and offers to remove idle
   const clear = renderToStaticMarkup(React.createElement(RunnersPage, { loaded: true, runners, queue: { waiting: 1 } }));
   assert.doesNotMatch(clear, /waiting for a runner with/);
 });
+
+test("Runners shows each runner's label pills and missing label warnings", async context => {
+  const { RunnersPage, runnerLabels, harnessWaits } = await load(context);
+  assert.deepEqual(runnerLabels({ labels: ["arm64", "macos"] }), ["arm64", "macos"]);
+  assert.deepEqual(runnerLabels({}), []);
+  assert.deepEqual(harnessWaits({ waiting: 2, blocked: [{ labels: ["gpu"], waiting: 1 }, { harnesses: ["codex"], labels: ["arm64", "macos"], waiting: 1 }] }), [
+    "1 run is waiting for a runner with label gpu",
+    "1 run is waiting for a runner with Codex and labels arm64 and macos",
+  ]);
+  const runners = [
+    { name: "mac-mini", kind: "local", harnesses: ["steps", "claude"], labels: ["arm64", "macos"], probed: true, last_contact: ago(5), jobs: [] },
+    { name: "plain-vm", kind: "local", harnesses: ["steps", "claude"], labels: [], probed: true, last_contact: ago(5), jobs: [] },
+  ];
+  const html = renderToStaticMarkup(React.createElement(RunnersPage, {
+    loaded: true,
+    runners,
+    queue: { waiting: 1, blocked: [{ labels: ["gpu"], waiting: 1 }] },
+  }));
+  assert.equal((html.match(/class="runner-labels"/g) || []).length, 1);
+  assert.match(html, /<span class="runner-label">arm64<\/span><span class="runner-label">macos<\/span>/);
+  assert.match(html, /1 run is waiting for a runner with label gpu\. No online runner has it\./);
+  assert.match(html, /Add the label to a runner in runner\.yaml/);
+});

@@ -259,6 +259,14 @@ var postgresMigrations = []postgresMigration{
   updated_at TEXT NOT NULL)`,
 		},
 	},
+	{
+		version: 3,
+		statements: []string{
+			`ALTER TABLE runners ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS runs_on TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE automations ADD COLUMN IF NOT EXISTS runs_on TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 func postgresMaxOpenConns() (int, error) {

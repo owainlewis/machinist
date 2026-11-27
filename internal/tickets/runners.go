@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
@@ -16,6 +17,7 @@ type Runner struct {
 	Name      string   `json:"name"`
 	Kind      string   `json:"kind"`
 	Harnesses []string `json:"harnesses"`
+	Labels    []string `json:"labels"`
 	// Probed is true when the runner looked up its harnesses, so a list with
 	// no agent harness means it has none, not that it did not say.
 	Probed      bool        `json:"probed"`
@@ -53,20 +55,26 @@ type Queue struct {
 	Blocked []HarnessWait `json:"blocked,omitempty"`
 }
 
-// HarnessWait is how many queued runs wait for a runner with these harnesses.
+// HarnessWait is how many queued runs wait for a runner with these harnesses
+// and/or host labels.
 type HarnessWait struct {
-	Harnesses []string `json:"harnesses"`
+	Harnesses []string `json:"harnesses,omitempty"`
+	Labels    []string `json:"labels,omitempty"`
 	Waiting   int      `json:"waiting"`
 }
 
 // RecordRunner stores what a runner said about itself when it asked for work.
-func (s *Store) RecordRunner(ctx context.Context, name, kind string, harnesses []string, slots int, probed bool) error {
+func (s *Store) RecordRunner(ctx context.Context, name, kind string, harnesses, labels []string, slots int, probed bool) error {
 	if slots < 1 {
 		slots = 1
 	}
-	_, err := s.q().ExecContext(ctx, `INSERT INTO runners(name,kind,harnesses,slots,last_contact,probed) VALUES(?,?,?,?,?,?)
-  ON CONFLICT(name) DO UPDATE SET kind=excluded.kind,harnesses=excluded.harnesses,slots=excluded.slots,last_contact=excluded.last_contact,probed=excluded.probed`,
-		name, kind, strings.Join(harnesses, ","), slots, stamp(s.now()), boolToInt(probed))
+	normalizedLabels, err := config.NormalizeLabels(labels)
+	if err != nil {
+		return err
+	}
+	_, err = s.q().ExecContext(ctx, `INSERT INTO runners(name,kind,harnesses,labels,slots,last_contact,probed) VALUES(?,?,?,?,?,?,?)
+  ON CONFLICT(name) DO UPDATE SET kind=excluded.kind,harnesses=excluded.harnesses,labels=excluded.labels,slots=excluded.slots,last_contact=excluded.last_contact,probed=excluded.probed`,
+		name, kind, strings.Join(harnesses, ","), strings.Join(normalizedLabels, ","), slots, stamp(s.now()), boolToInt(probed))
 	return err
 }
 
@@ -155,18 +163,19 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 }
 
 // QueuedSpec counts queued agent runs sharing a preset and ticket-level
-// harness/model overrides.
+// harness/model/runs_on overrides.
 type QueuedSpec struct {
 	Preset  string
 	Harness string
 	Model   string
+	RunsOn  []string
 	Waiting int
 }
 
 // QueuedSpecs counts the agent runs no runner has taken yet by preset and
-// ticket-level harness/model overrides.
+// ticket-level harness/model/runs_on overrides.
 func (s *Store) QueuedSpecs(ctx context.Context) ([]QueuedSpec, error) {
-	rows, err := s.q().QueryContext(ctx, `SELECT t.agent,COALESCE(t.harness,''),COALESCE(t.model,''),COUNT(*) FROM runs r JOIN tickets t ON t.id=r.ticket_id WHERE r.status=? AND r.kind=? GROUP BY t.agent,COALESCE(t.harness,''),COALESCE(t.model,'')`, RunQueued, RunKindAgent)
+	rows, err := s.q().QueryContext(ctx, `SELECT t.agent,COALESCE(t.harness,''),COALESCE(t.model,''),COALESCE(t.runs_on,''),COUNT(*) FROM runs r JOIN tickets t ON t.id=r.ticket_id WHERE r.status=? AND r.kind=? GROUP BY t.agent,COALESCE(t.harness,''),COALESCE(t.model,''),COALESCE(t.runs_on,'')`, RunQueued, RunKindAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -174,9 +183,11 @@ func (s *Store) QueuedSpecs(ctx context.Context) ([]QueuedSpec, error) {
 	specs := []QueuedSpec{}
 	for rows.Next() {
 		var spec QueuedSpec
-		if err := rows.Scan(&spec.Preset, &spec.Harness, &spec.Model, &spec.Waiting); err != nil {
+		var runsOn string
+		if err := rows.Scan(&spec.Preset, &spec.Harness, &spec.Model, &runsOn, &spec.Waiting); err != nil {
 			return nil, err
 		}
+		spec.RunsOn = splitLabels(runsOn)
 		specs = append(specs, spec)
 	}
 	return specs, rows.Err()
@@ -203,23 +214,26 @@ func (s *Store) QueuedPresets(ctx context.Context) (map[string]int, error) {
 }
 
 func (s *Store) listRunners(ctx context.Context) ([]Runner, error) {
-	rows, err := s.q().QueryContext(ctx, `SELECT name,kind,harnesses,slots,last_contact,probed FROM runners ORDER BY name`)
+	rows, err := s.q().QueryContext(ctx, `SELECT name,kind,harnesses,COALESCE(labels,''),slots,last_contact,probed FROM runners ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	runners := []Runner{}
 	for rows.Next() {
-		runner := Runner{Harnesses: []string{}, Jobs: []RunnerJob{}}
-		var harnesses string
+		runner := Runner{Harnesses: []string{}, Labels: []string{}, Jobs: []RunnerJob{}}
+		var harnesses, labels string
 		var contact sql.NullString
 		var probed int
-		if err := rows.Scan(&runner.Name, &runner.Kind, &harnesses, &runner.Slots, &contact, &probed); err != nil {
+		if err := rows.Scan(&runner.Name, &runner.Kind, &harnesses, &labels, &runner.Slots, &contact, &probed); err != nil {
 			return nil, err
 		}
 		runner.Probed = probed != 0
 		if harnesses != "" {
 			runner.Harnesses = strings.Split(harnesses, ",")
+		}
+		if labels != "" {
+			runner.Labels = strings.Split(labels, ",")
 		}
 		if at := parseTime(contact); at != nil {
 			runner.LastContact = *at

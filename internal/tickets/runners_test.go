@@ -21,13 +21,13 @@ func fleet(t *testing.T, store *Store) ([]Runner, Queue) {
 
 func TestRecordRunnerKeepsTheLatestDescription(t *testing.T) {
 	store := openStore(t)
-	if err := store.RecordRunner(t.Context(), "mac-mini", "local", []string{"claude"}, 0, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "mac-mini", "local", []string{"claude"}, []string{"MacOS", "arm64", "macos"}, 0, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRunner(t.Context(), "cluster", "kubernetes", []string{"claude", "codex"}, 8, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "cluster", "kubernetes", []string{"claude", "codex"}, []string{"gpu", "k8s"}, 8, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRunner(t.Context(), "mac-mini", "local", nil, 2, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "mac-mini", "local", nil, []string{"macos"}, 2, false); err != nil {
 		t.Fatal(err)
 	}
 	runners, queue := fleet(t, store)
@@ -35,10 +35,10 @@ func TestRecordRunnerKeepsTheLatestDescription(t *testing.T) {
 		t.Fatalf("runners = %+v", runners)
 	}
 	cluster, mini := runners[0], runners[1]
-	if cluster.Kind != "kubernetes" || cluster.Slots != 8 || strings.Join(cluster.Harnesses, ",") != "claude,codex" {
+	if cluster.Kind != "kubernetes" || cluster.Slots != 8 || strings.Join(cluster.Harnesses, ",") != "claude,codex" || strings.Join(cluster.Labels, ",") != "gpu,k8s" {
 		t.Fatalf("cluster = %+v", cluster)
 	}
-	if mini.Slots != 2 || mini.Harnesses == nil || len(mini.Harnesses) != 0 || mini.Jobs == nil || len(mini.Jobs) != 0 {
+	if mini.Slots != 2 || mini.Harnesses == nil || len(mini.Harnesses) != 0 || strings.Join(mini.Labels, ",") != "macos" || mini.Jobs == nil || len(mini.Jobs) != 0 {
 		t.Fatalf("mac-mini = %+v", mini)
 	}
 	if queue.Waiting != 0 || queue.Oldest != nil {
@@ -48,11 +48,11 @@ func TestRecordRunnerKeepsTheLatestDescription(t *testing.T) {
 
 func TestRecordRunnerTreatsNoSlotsAsOne(t *testing.T) {
 	store := openStore(t)
-	if err := store.RecordRunner(t.Context(), "old-runner", "", []string{"claude"}, 0, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "old-runner", "", []string{"claude"}, nil, 0, false); err != nil {
 		t.Fatal(err)
 	}
-	if runners, _ := fleet(t, store); runners[0].Slots != 1 {
-		t.Fatalf("slots = %d", runners[0].Slots)
+	if runners, _ := fleet(t, store); runners[0].Slots != 1 || runners[0].Labels == nil || len(runners[0].Labels) != 0 {
+		t.Fatalf("runner = %+v", runners[0])
 	}
 }
 
@@ -60,7 +60,7 @@ func TestTouchRunnerMovesLastContact(t *testing.T) {
 	store := openStore(t)
 	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	store.SetClock(func() time.Time { return now })
-	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, nil, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Minute)
@@ -81,7 +81,7 @@ func TestFleetShowsRunningJobsAndTheQueue(t *testing.T) {
 	queued := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	now := queued
 	store.SetClock(func() time.Time { return now })
-	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 2, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, nil, 2, false); err != nil {
 		t.Fatal(err)
 	}
 	running := createTicket(t, store, "api:1")
@@ -114,7 +114,7 @@ func TestRevokingATokenRemovesItsRunner(t *testing.T) {
 	if _, err := store.CreateToken(t.Context(), "runner-1", RoleAll); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, nil, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RevokeToken(t.Context(), "runner-1"); err != nil {
@@ -127,7 +127,7 @@ func TestRevokingATokenRemovesItsRunner(t *testing.T) {
 
 func TestFleetShowsWhatARunningJobIsDoing(t *testing.T) {
 	store := openStore(t)
-	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, 1, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "runner-1", "local", []string{"claude"}, nil, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	claim := claimRun(t, store, createTicket(t, store, "api:1"))
@@ -176,7 +176,7 @@ func TestRemoveRunnerForgetsAnIdleOfflineRunner(t *testing.T) {
 	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	store.SetClock(func() time.Time { return now })
 	for _, name := range []string{"old-laptop", "runner-1", "mac-mini"} {
-		if err := store.RecordRunner(t.Context(), name, "local", []string{"claude"}, 1, false); err != nil {
+		if err := store.RecordRunner(t.Context(), name, "local", []string{"claude"}, nil, 1, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -204,7 +204,7 @@ func TestRemoveRunnerForgetsAnIdleOfflineRunner(t *testing.T) {
 		t.Fatalf("runners = %+v", runners)
 	}
 	// A removed runner that asks for work again is back.
-	if err := store.RecordRunner(t.Context(), "old-laptop", "local", nil, 1, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "old-laptop", "local", nil, nil, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if runners, _ := fleet(t, store); len(runners) != 3 {

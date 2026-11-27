@@ -482,11 +482,12 @@ func presetsEqual(a, b factory.Preset) bool {
 		a.Timeout == b.Timeout &&
 		a.Harness == b.Harness &&
 		a.Model == b.Model &&
+		slices.Equal(a.RunsOn, b.RunsOn) &&
 		slices.Equal(a.Steps, b.Steps)
 }
 
 func automationsEqual(a, b factory.Automation) bool {
-	if a.Name != b.Name || a.Repo != b.Repo || a.Preset != b.Preset || a.Prompt != b.Prompt {
+	if a.Name != b.Name || a.Repo != b.Repo || a.Preset != b.Preset || a.Harness != b.Harness || a.Model != b.Model || a.Prompt != b.Prompt || !slices.Equal(a.RunsOn, b.RunsOn) {
 		return false
 	}
 	if (a.Cron == nil) != (b.Cron == nil) {
