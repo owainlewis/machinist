@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/inter";
-import { ChartColumn, LogOut, Rows3, Server, Settings2 } from "lucide-react";
+import { CalendarClock, ChartColumn, LogOut, Rows3, Server, Settings2 } from "lucide-react";
 import { Brand } from "@/components/ui/brand";
 import { cn } from "@/lib/utils";
 import { redirectFor, routeFromHash, settingsHref } from "@/routes";
 import { createStatusLoader } from "@/status-loader";
 import { api, SignedOutError } from "./api.js";
+import { AutomationsPage } from "./automations-view.jsx";
 import { DashboardPage } from "./dashboard-page.jsx";
 import { JobPage } from "./job-page.jsx";
 import { JobsPage } from "./jobs-page.jsx";
@@ -22,7 +23,7 @@ import "./styles.css";
 const pollMillis = 2000;
 const emptyStatus = { runners: [], queue: null };
 const defaultAuthStatus = { methods: [], token_signin_enabled: true };
-const navigation = [["dashboard", ChartColumn, "Dashboard"], ["jobs", Rows3, "Jobs"], ["runners", Server, "Runners"], ["settings", Settings2, "Settings"]];
+const navigation = [["dashboard", ChartColumn, "Dashboard"], ["jobs", Rows3, "Jobs"], ["automations", CalendarClock, "Automations"], ["runners", Server, "Runners"], ["settings", Settings2, "Settings"]];
 
 // followRedirect moves an old address, such as #/setup, to where it lives now,
 // in place, so Back does not return to it. It returns the hash to show.
@@ -151,6 +152,7 @@ function App() {
     </aside>
     <main className="app-main">
       {route.view === "jobs" && <JobsPage runners={status.runners} role={role} onSignedOut={signedOut} />}
+      {route.view === "automations" && <AutomationsPage runners={status.runners} role={role} onSignedOut={signedOut} />}
       {route.view === "new" && role !== "viewer" && <NewJobPage onSignedOut={signedOut} />}
       {route.view === "job" && <JobPage key={route.jobID} jobID={route.jobID} role={role} onSignedOut={signedOut} />}
       {route.view === "dashboard" && <DashboardPage onSignedOut={signedOut} />}

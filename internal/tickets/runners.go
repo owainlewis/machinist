@@ -38,8 +38,10 @@ type RunnerJob struct {
 	Action        string     `json:"action,omitempty"`
 	// Preset is the job's preset. The control plane fills in Agents, the
 	// agents its current step runs, from the factory.
-	Preset string           `json:"preset"`
-	Agents []protocol.Agent `json:"agents,omitempty"`
+	Preset  string           `json:"preset"`
+	Harness string           `json:"harness,omitempty"`
+	Model   string           `json:"model,omitempty"`
+	Agents  []protocol.Agent `json:"agents,omitempty"`
 }
 
 // Queue is the runs no runner has taken yet.
@@ -118,7 +120,7 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 	for index := range runners {
 		byName[runners[index].Name] = &runners[index]
 	}
-	rows, err := s.q().QueryContext(ctx, `SELECT r.runner,r.id,r.ticket_id,t.title,t.agent,r.kind,r.reviewer,r.started_at,
+	rows, err := s.q().QueryContext(ctx, `SELECT r.runner,r.id,r.ticket_id,t.title,t.agent,COALESCE(t.harness,''),COALESCE(t.model,''),r.kind,r.reviewer,r.started_at,
   COALESCE(p.step,''),p.step_started_at,COALESCE(p.action,'')
   FROM runs r JOIN tickets t ON t.id=r.ticket_id LEFT JOIN run_progress p ON p.run=r.id WHERE r.status=? ORDER BY r.started_at`, RunRunning)
 	if err != nil {
@@ -129,7 +131,7 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 		var runner string
 		var job RunnerJob
 		var started, stepStarted sql.NullString
-		if err := rows.Scan(&runner, &job.RunID, &job.TicketID, &job.Title, &job.Preset, &job.Kind, &job.Reviewer, &started, &job.Step, &stepStarted, &job.Action); err != nil {
+		if err := rows.Scan(&runner, &job.RunID, &job.TicketID, &job.Title, &job.Preset, &job.Harness, &job.Model, &job.Kind, &job.Reviewer, &started, &job.Step, &stepStarted, &job.Action); err != nil {
 			return nil, Queue{}, err
 		}
 		job.StepStartedAt = parseTime(stepStarted)
@@ -150,6 +152,34 @@ func (s *Store) Fleet(ctx context.Context) ([]Runner, Queue, error) {
 	}
 	queue.Oldest = parseTime(oldest)
 	return runners, queue, nil
+}
+
+// QueuedSpec counts queued agent runs sharing a preset and ticket-level
+// harness/model overrides.
+type QueuedSpec struct {
+	Preset  string
+	Harness string
+	Model   string
+	Waiting int
+}
+
+// QueuedSpecs counts the agent runs no runner has taken yet by preset and
+// ticket-level harness/model overrides.
+func (s *Store) QueuedSpecs(ctx context.Context) ([]QueuedSpec, error) {
+	rows, err := s.q().QueryContext(ctx, `SELECT t.agent,COALESCE(t.harness,''),COALESCE(t.model,''),COUNT(*) FROM runs r JOIN tickets t ON t.id=r.ticket_id WHERE r.status=? AND r.kind=? GROUP BY t.agent,COALESCE(t.harness,''),COALESCE(t.model,'')`, RunQueued, RunKindAgent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	specs := []QueuedSpec{}
+	for rows.Next() {
+		var spec QueuedSpec
+		if err := rows.Scan(&spec.Preset, &spec.Harness, &spec.Model, &spec.Waiting); err != nil {
+			return nil, err
+		}
+		specs = append(specs, spec)
+	}
+	return specs, rows.Err()
 }
 
 // QueuedPresets counts the agent runs no runner has taken yet by the preset

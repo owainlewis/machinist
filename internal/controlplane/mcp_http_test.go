@@ -370,6 +370,9 @@ func TestMCPRunListGetOutputAndCancelCustomJob(t *testing.T) {
 
 func TestMCPAutomationsListAndRun(t *testing.T) {
 	f := newFixture(t)
+	if err := f.store.AddProject(t.Context(), "owner/repo", "alice"); err != nil {
+		t.Fatal(err)
+	}
 	cron, err := triggers.ParseCron("0 9 * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)

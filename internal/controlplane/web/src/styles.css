@@ -103,7 +103,7 @@ code { font-size: .92em; }
   .sidebar-foot { flex-direction: row; margin: 0 0 0 auto; }
   .sidebar-foot .nav-item { width: 36px; height: 36px; justify-content: center; padding: 0; }
   .sidebar-foot .nav-item span { display: none; }
-  .app-sidebar nav { position: fixed; z-index: 40; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin: 0; overflow: visible; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--sidebar) 94%, transparent); padding: .4rem .3rem max(.4rem, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
+  .app-sidebar nav { position: fixed; z-index: 40; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; margin: 0; overflow: visible; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--sidebar) 94%, transparent); padding: .4rem .3rem max(.4rem, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
   .app-sidebar nav .nav-item { height: 3.1rem; flex-direction: column; justify-content: center; gap: .2rem; padding: 0 .1rem; color: var(--muted-foreground); font-size: .6875rem; line-height: 1rem; }
   .app-sidebar nav .nav-item-active { background: none; box-shadow: none; color: var(--foreground); }
   .app-sidebar nav .nav-item-active svg { color: var(--primary); }
@@ -727,8 +727,14 @@ a.source:hover span { text-decoration: underline; }
 .automations tbody tr { transition: background-color .12s ease; }
 .automations tbody tr:hover { background: var(--surface-raised); }
 .automation-name strong { font-size: 13.5px; font-weight: 600; letter-spacing: -.008em; }
+.automation-name-cell { display: inline-flex; align-items: center; gap: 7px; }
+.automation-source-tag { border-radius: 999px; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border); padding: 1px 7px; color: var(--faint); font-size: 10.5px; font-weight: 500; }
 .automation-detail { color: var(--muted-foreground); font-size: 12.5px; }
+.automation-preset-cell { display: flex; flex-direction: column; gap: 3px; }
+.automation-override-badge { display: inline-flex; width: fit-content; align-items: center; gap: 5px; border-radius: 999px; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border); padding: 1px 7px; color: var(--foreground); font-size: 11px; line-height: 16px; }
+.automation-override-mark { width: 12px; height: 12px; flex: none; }
 .automation-schedule code { border-radius: 5px; background: var(--muted); padding: 2px 6px; color: var(--foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.automation-manual { color: var(--muted-foreground); font-size: 12.5px; }
 .automation-tz { margin-left: 6px; color: var(--faint); font-size: 12px; }
 .automation-due { font-size: 12.5px; }
 .automation-due time { display: block; color: var(--foreground); font-weight: 500; }
@@ -740,6 +746,11 @@ a.source:hover span { text-decoration: underline; }
 .automation-outcome { max-width: 240px; overflow: hidden; color: var(--faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .automation-never { color: var(--faint); font-size: 12.5px; }
 .automation-action, .automation-action-col { text-align: right; }
+.automation-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.automation-delete-button:hover { color: var(--danger); }
+.automation-fields-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.field-optional { color: var(--faint); font-weight: 400; }
+.automations-empty-actions { display: flex; align-items: center; gap: 8px; }
 
 .automations-empty { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
 .automations-empty-head { display: flex; align-items: center; gap: 8px; color: var(--foreground); }
@@ -766,8 +777,9 @@ a.source:hover span { text-decoration: underline; }
 .modal-foot-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
 @media (max-width: 767px) {
-  .jobs-page .page-head { flex-wrap: wrap; }
-  .jobs-page .page-actions { flex-wrap: wrap; }
+  .jobs-page .page-head, .automations-page .page-head { flex-wrap: wrap; }
+  .jobs-page .page-actions, .automations-page .page-actions { flex-wrap: wrap; }
+  .automation-fields-row { grid-template-columns: 1fr; }
   .modal-head, .modal-body { padding: 14px 16px; }
 }
 

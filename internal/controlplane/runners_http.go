@@ -44,27 +44,27 @@ func (s *Server) listRunners(w http.ResponseWriter, r *http.Request, _ string) {
 	for index := range runners {
 		for jobIndex := range runners[index].Jobs {
 			job := &runners[index].Jobs[jobIndex]
-			job.Agents = s.currentAgents(job.Preset, job.Step)
+			job.Agents = s.currentAgents(job.Preset, job.Step, job.Harness, job.Model)
 		}
 	}
 	if queue.Waiting > 0 {
-		presets, err := s.store.QueuedPresets(r.Context())
+		specs, err := s.store.QueuedSpecs(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		queue.Blocked = s.blocked(runners, presets)
+		queue.Blocked = s.blocked(runners, specs)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runners": runners, "queue": queue})
 }
 
 // blocked groups the queued runs that no online runner can take by the
-// harnesses they wait for. presets counts the queued runs of each preset.
-func (s *Server) blocked(runners []tickets.Runner, presets map[string]int) []tickets.HarnessWait {
+// harnesses they wait for. specs counts the queued runs by preset and overrides.
+func (s *Server) blocked(runners []tickets.Runner, specs []tickets.QueuedSpec) []tickets.HarnessWait {
 	online := s.onlineRunners(runners)
 	byMissing := map[string]*tickets.HarnessWait{}
-	for name, count := range presets {
-		missing := s.waitingFor(online, name)
+	for _, spec := range specs {
+		missing := waitingForFrom(s.state().factory, online, spec.Preset, spec.Harness, spec.Model)
 		if len(missing) == 0 {
 			continue
 		}
@@ -72,7 +72,7 @@ func (s *Server) blocked(runners []tickets.Runner, presets map[string]int) []tic
 		if byMissing[key] == nil {
 			byMissing[key] = &tickets.HarnessWait{Harnesses: missing}
 		}
-		byMissing[key].Waiting += count
+		byMissing[key].Waiting += spec.Waiting
 	}
 	keys := make([]string, 0, len(byMissing))
 	for key := range byMissing {
@@ -97,15 +97,11 @@ func (s *Server) onlineRunners(runners []tickets.Runner) []tickets.Runner {
 	return online
 }
 
-// waitingFor names the harnesses that keep every online runner from taking a
-// job of this preset. It is empty when an online runner can take one, when no
-// runner is online, or when the preset is gone, since such a job is claimed
-// only to fail.
-func (s *Server) waitingFor(online []tickets.Runner, presetName string) []string {
-	return waitingForFrom(s.state().factory, online, presetName)
-}
-
-func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName string) []string {
+// waitingForFrom names the harnesses that keep every online runner from taking
+// a job of this preset and ticket-level overrides. It is empty when an online
+// runner can take one, when no runner is online, or when the preset is gone,
+// since such a job is claimed only to fail.
+func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName, harnessName, model string) []string {
 	if loaded == nil {
 		return nil
 	}
@@ -113,7 +109,7 @@ func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName
 	if !ok {
 		return nil
 	}
-	return missingHarnesses(online, loaded.Needs(preset))
+	return missingHarnesses(online, loaded.Needs(preset.WithOverride(harnessName, model)))
 }
 
 // missingHarnesses names the harnesses in needs that the closest online runner
@@ -253,7 +249,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, tokenName stri
 }
 
 // currentAgents names the agents a running job's current step runs.
-func (s *Server) currentAgents(presetName, step string) []protocol.Agent {
+func (s *Server) currentAgents(presetName, step, harnessName, model string) []protocol.Agent {
 	loaded := s.state().factory
 	if loaded == nil {
 		return nil
@@ -262,6 +258,7 @@ func (s *Server) currentAgents(presetName, step string) []protocol.Agent {
 	if !ok {
 		return nil
 	}
+	preset = preset.WithOverride(harnessName, model)
 	for _, candidate := range preset.Steps {
 		if candidate.Name == step {
 			return loaded.StepAgents(preset.EffectiveStep(candidate))

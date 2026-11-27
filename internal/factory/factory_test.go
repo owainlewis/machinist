@@ -482,3 +482,22 @@ model: gemini-4-neon-high
 		t.Fatalf("no-harness-child review should drop inherited model-only override: %+v", s)
 	}
 }
+
+func TestPresetWithOverridePreservesClearedStepModel(t *testing.T) {
+	preset := Preset{
+		Name:    "mixed",
+		Harness: "codex",
+		Model:   "gpt-5-codex",
+		Steps: []runner.Step{
+			{Name: "implement", Run: "machinist agent implement"},
+			{Name: "review", Run: "machinist agent review", Harness: "claude", Model: "opus"},
+		},
+	}
+	overridden := preset.WithOverride("codex", "")
+	if got := overridden.EffectiveStep(overridden.Steps[0]); got.Harness != "codex" || got.Model != "gpt-5-codex" {
+		t.Fatalf("implement step = %+v, want codex/gpt-5-codex", got)
+	}
+	if got := overridden.EffectiveStep(overridden.Steps[1]); got.Harness != "codex" || got.Model != "" {
+		t.Fatalf("review step = %+v, want codex with cleared model", got)
+	}
+}

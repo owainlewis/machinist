@@ -331,6 +331,9 @@ func TestUsageRoute(t *testing.T) {
 
 func TestAutomationRoutes(t *testing.T) {
 	f := newFixture(t)
+	if err := f.store.AddProject(t.Context(), "owner/repo", "alice"); err != nil {
+		t.Fatal(err)
+	}
 	cron, err := triggers.ParseCron("0 9 * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)
@@ -437,6 +440,129 @@ func TestAutomationRoutes(t *testing.T) {
 	badResp.Body.Close()
 	if badResp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("malformed json status = %d", badResp.StatusCode)
+	}
+}
+
+func TestAutomationCRUDAndRunOverrides(t *testing.T) {
+	f := newFixture(t)
+	if err := f.store.AddProject(t.Context(), "owner/repo", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.AddProject(t.Context(), "owner/other", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	cron, err := triggers.ParseCron("0 9 * * *", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server.schedule.Automations = []factory.Automation{{Name: "from-file", Repo: "owner/repo", Preset: "default", Prompt: "File prompt", Cron: cron}}
+
+	// Reject colliding with a file automation or invalid inputs.
+	if resp, body := f.call(t, http.MethodPost, "/api/v1/automations", f.token, map[string]string{
+		"name": "from-file", "repo": "owner/repo", "preset": "default", "prompt": "Clash",
+	}); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("file clash = %d %s", resp.StatusCode, body)
+	}
+	if resp, body := f.call(t, http.MethodPost, "/api/v1/automations", f.token, map[string]string{
+		"name": "bad-tz", "repo": "owner/repo", "preset": "default", "prompt": "Go", "timezone": "UTC",
+	}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("timezone without schedule = %d %s", resp.StatusCode, body)
+	}
+	if resp, body := f.call(t, http.MethodPost, "/api/v1/automations", f.token, map[string]string{
+		"name": "bad-harness", "repo": "owner/repo", "preset": "default", "prompt": "Go", "harness": "unknown",
+	}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad harness = %d %s", resp.StatusCode, body)
+	}
+
+	// Create a manual-only automation with harness and model.
+	resp, body := f.call(t, http.MethodPost, "/api/v1/automations", f.token, map[string]string{
+		"name":    "codex-audit",
+		"repo":    "owner/repo",
+		"preset":  "default",
+		"harness": "codex",
+		"model":   "gpt-5-codex",
+		"prompt":  "Audit the repo.",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create = %d %s", resp.StatusCode, body)
+	}
+
+	// List returns both file (editable=false) and UI (editable=true, no next_due).
+	resp, body = f.call(t, http.MethodGet, "/api/v1/automations", f.token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list = %d %s", resp.StatusCode, body)
+	}
+	var listed struct {
+		Automations []sources.AutomationStatus `json:"automations"`
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Automations) != 2 {
+		t.Fatalf("automations = %+v", listed.Automations)
+	}
+	uiItem, fileItem := listed.Automations[0], listed.Automations[1]
+	if uiItem.Name != "codex-audit" || !uiItem.Editable || uiItem.NextDue != nil || uiItem.Harness != "codex" || uiItem.Model != "gpt-5-codex" {
+		t.Fatalf("uiItem = %+v", uiItem)
+	}
+	if fileItem.Name != "from-file" || fileItem.Editable || fileItem.NextDue == nil {
+		t.Fatalf("fileItem = %+v", fileItem)
+	}
+
+	// Update UI automation (omitting timezone defaults cleanly to UTC); reject editing or deleting file automation.
+	resp, body = f.call(t, http.MethodPut, "/api/v1/automations/codex-audit", f.token, map[string]string{
+		"repo":     "owner/other",
+		"preset":   "default",
+		"harness":  "claude",
+		"model":    "opus",
+		"schedule": "0 8 * * 1-5",
+		"prompt":   "Updated audit prompt.",
+	})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"timezone":"UTC"`) {
+		t.Fatalf("update = %d %s", resp.StatusCode, body)
+	}
+	if resp, body := f.call(t, http.MethodPut, "/api/v1/automations/from-file", f.token, map[string]string{
+		"repo": "owner/repo", "preset": "default", "prompt": "No",
+	}); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("edit file = %d %s", resp.StatusCode, body)
+	}
+	if resp, body := f.call(t, http.MethodDelete, "/api/v1/automations/from-file", f.token, nil); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete file = %d %s", resp.StatusCode, body)
+	}
+
+	// Run with per-run overrides and verify ticket & job detail reflect them.
+	resp, body = f.call(t, http.MethodPost, "/api/v1/automations/codex-audit/run", f.token, map[string]string{
+		"repo":    "owner/repo",
+		"preset":  "default",
+		"harness": "codex",
+		"model":   "gpt-5.3-codex",
+		"prompt":  "One-off Codex run.",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("run override = %d %s", resp.StatusCode, body)
+	}
+	started := decodeTicket(t, body)
+	if started.Repo != "owner/repo" || started.Harness != "codex" || started.Model != "gpt-5.3-codex" {
+		t.Fatalf("started = %+v", started)
+	}
+	if _, err := f.store.Cancel(t.Context(), started.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disconnecting the automation's saved project blocks running it until updated or reconnected.
+	if removed, err := f.store.RemoveProject(t.Context(), "owner/other"); err != nil || !removed {
+		t.Fatalf("remove project = %v, %v", removed, err)
+	}
+	if resp, body := f.call(t, http.MethodPost, "/api/v1/automations/codex-audit/run", f.token, nil); resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "not connected") {
+		t.Fatalf("run disconnected = %d %s", resp.StatusCode, body)
+	}
+
+	// Delete UI automation.
+	if resp, body := f.call(t, http.MethodDelete, "/api/v1/automations/codex-audit", f.token, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete = %d %s", resp.StatusCode, body)
+	}
+	if resp, body := f.call(t, http.MethodDelete, "/api/v1/automations/codex-audit", f.token, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("second delete = %d %s", resp.StatusCode, body)
 	}
 }
 

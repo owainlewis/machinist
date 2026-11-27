@@ -1,10 +1,10 @@
 import { defaultSettingsPage, settingsPages, visibleSettingsPages } from "./settings.js";
 
-const pages = new Set(["dashboard", "jobs", "new", "runners"]);
+const pages = new Set(["dashboard", "jobs", "automations", "new", "runners"]);
 const settingsPageNames = new Set(settingsPages.map(([page]) => page));
 
-// #/dashboard shows the numbers and is where the app opens, #/jobs lists jobs, #/jobs/<id> opens one, #/new starts
-// one, #/runners lists runners and #/settings/<page> shows one page of settings.
+// #/dashboard shows the numbers and is where the app opens, #/jobs lists jobs, #/jobs/<id> opens one, #/automations
+// lists automations, #/new starts a job, #/runners lists runners and #/settings/<page> shows one page of settings.
 export function routeFromHash(hash, role = "admin") {
   const value = hash.replace(/^#\//, "");
   if (value.startsWith("jobs/") && value.slice(5)) {

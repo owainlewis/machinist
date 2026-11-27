@@ -273,6 +273,55 @@ func TestQueuedRunsSayWhichHarnessTheyWaitFor(t *testing.T) {
 	}
 }
 
+func TestBlockedQueueAccountsForTicketHarnessOverrides(t *testing.T) {
+	f := newFixture(t)
+	f.server.factory = &factory.Factory{
+		Presets: map[string]factory.Preset{
+			"claude-preset": {Name: "claude-preset", Steps: []runner.Step{{Name: "implement", Run: "machinist agent coder"}}},
+			"codex-preset":  {Name: "codex-preset", Steps: []runner.Step{{Name: "review", Run: "machinist agent reviewer"}}},
+		},
+		Agents: map[string]harness.Agent{
+			"coder":    {Name: "coder", Harness: "claude"},
+			"reviewer": {Name: "reviewer", Harness: "codex"},
+		},
+	}
+	f.server.engine.Factory = f.server.factory
+
+	// Claude preset overridden to codex -> blocked when only claude runner is online.
+	if _, _, err := f.store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source: "schedule:override-to-codex", Origin: tickets.OriginSchedule, Repo: "owner/repo",
+		Title: "override-to-codex", Body: "Run with codex", Agent: "claude-preset", Harness: "codex",
+		CreatedBy: "alice", SourceKey: "override-to-codex",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Codex preset overridden to claude -> NOT blocked when claude runner is online.
+	if _, _, err := f.store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source: "schedule:override-to-claude", Origin: tickets.OriginSchedule, Repo: "owner/repo",
+		Title: "override-to-claude", Body: "Run with claude", Agent: "codex-preset", Harness: "claude",
+		CreatedBy: "alice", SourceKey: "override-to-claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.server.engine.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.RecordRunner(t.Context(), "claude-only", "local", []string{protocol.StepsHarness, "claude"}, 1, true); err != nil {
+		t.Fatal(err)
+	}
+
+	response, body := f.call(t, http.MethodGet, "/api/v1/runners", f.token, nil)
+	var fleet struct {
+		Queue tickets.Queue `json:"queue"`
+	}
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &fleet) != nil {
+		t.Fatalf("%d: %s", response.StatusCode, body)
+	}
+	if len(fleet.Queue.Blocked) != 1 || !slices.Equal(fleet.Queue.Blocked[0].Harnesses, []string{"codex"}) || fleet.Queue.Blocked[0].Waiting != 1 {
+		t.Fatalf("blocked = %+v, want 1 waiting for [codex]", fleet.Queue.Blocked)
+	}
+}
+
 func TestMissingHarnessesNamesWhatTheClosestRunnerLacks(t *testing.T) {
 	probed := func(harnesses ...string) tickets.Runner { return tickets.Runner{Harnesses: harnesses, Probed: true} }
 	needs := []string{"agy", "claude", "codex"}

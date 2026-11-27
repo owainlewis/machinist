@@ -546,6 +546,41 @@ func TestAJobGoesOnlyToARunnerWithItsHarnesses(t *testing.T) {
 	}
 }
 
+func TestTicketHarnessAndModelOverrideRoutesAndAppliesToSteps(t *testing.T) {
+	e := newEngine(t)
+	e.Factory = &factory.Factory{
+		Presets: map[string]factory.Preset{"default": {Name: "default", Steps: []runner.Step{{Name: "implement", Run: "machinist agent implement"}}}},
+		Agents:  map[string]harness.Agent{"implement": {Name: "implement", Harness: "claude", Model: "sonnet"}},
+	}
+	if _, _, err := e.Store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source:    "schedule:audit",
+		Origin:    tickets.OriginSchedule,
+		Repo:      "owner/repo",
+		Title:     "audit",
+		Body:      "Audit the repo.",
+		Agent:     "default",
+		Harness:   "codex",
+		Model:     "gpt-5-codex",
+		CreatedBy: "alice",
+		SourceKey: "schedule:audit:manual:1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if request, err := e.Assign(t.Context(), "claude-only", []string{"steps", "claude"}, true); err != nil || request != nil {
+		t.Fatalf("claude-only runner got %v, err %v", request, err)
+	}
+	request, err := e.Assign(t.Context(), "codex-runner", []string{"steps", "codex"}, true)
+	if err != nil || request == nil {
+		t.Fatalf("codex runner got %v, err %v", request, err)
+	}
+	if len(request.Steps) != 1 || request.Steps[0].Harness != "codex" || request.Steps[0].Model != "gpt-5-codex" {
+		t.Fatalf("steps = %+v", request.Steps)
+	}
+}
+
 // An error that already ends a sentence is not given a second full stop.
 func TestAssignFailureMessagesEndWithOneFullStop(t *testing.T) {
 	// Some errors, such as GitHub's, are whole sentences.

@@ -127,22 +127,22 @@ func TestRepeatedPollCreatesOneTicket(t *testing.T) {
 
 func TestRunNowReturnsTheActiveTicket(t *testing.T) {
 	c := newSchedule(t, "0 9 * * *")
-	first, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice", "")
+	first, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice", RunOverrides{})
 	if err != nil || !created || first.CreatedBy != "alice" {
 		t.Fatalf("ticket = %+v, created = %v, err = %v", first, created, err)
 	}
-	again, created, err := c.schedule.RunNow(t.Context(), "nightly", "bob", "")
+	again, created, err := c.schedule.RunNow(t.Context(), "nightly", "bob", RunOverrides{})
 	if err != nil || created || again.ID != first.ID {
 		t.Fatalf("ticket = %+v, created = %v, err = %v", again, created, err)
 	}
-	if _, _, err := c.schedule.RunNow(t.Context(), "missing", "alice", ""); !errors.Is(err, tickets.ErrNotFound) {
+	if _, _, err := c.schedule.RunNow(t.Context(), "missing", "alice", RunOverrides{}); !errors.Is(err, tickets.ErrNotFound) {
 		t.Fatalf("error = %v", err)
 	}
 }
 
 func TestRunNowPromptOverrideAppliesOnlyToThatRun(t *testing.T) {
 	c := newSchedule(t, "0 9 * * *")
-	custom, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice", "ONE-OFF PROMPT")
+	custom, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice", RunOverrides{Prompt: "ONE-OFF PROMPT"})
 	if err != nil || !created {
 		t.Fatalf("ticket = %+v, created = %v, err = %v", custom, created, err)
 	}
@@ -157,7 +157,7 @@ func TestRunNowPromptOverrideAppliesOnlyToThatRun(t *testing.T) {
 	if err != nil || len(statuses) != 1 || statuses[0].Prompt != "THE PROMPT" {
 		t.Fatalf("statuses = %+v, err = %v", statuses, err)
 	}
-	saved, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice", "")
+	saved, created, err := c.schedule.RunNow(t.Context(), "nightly", "alice", RunOverrides{})
 	if err != nil || !created {
 		t.Fatalf("ticket = %+v, created = %v, err = %v", saved, created, err)
 	}
@@ -170,13 +170,13 @@ func TestRunNowPromptOverrideAppliesOnlyToThatRun(t *testing.T) {
 func TestStatusShowsNextDueAndLastTicket(t *testing.T) {
 	c := newSchedule(t, "0 9 * * *")
 	statuses, err := c.schedule.Status(t.Context())
-	if err != nil || len(statuses) != 1 || statuses[0].LastTicket != nil || statuses[0].Schedule != "0 9 * * *" || statuses[0].Timezone != "UTC" || statuses[0].Prompt != "THE PROMPT" {
+	if err != nil || len(statuses) != 1 || statuses[0].LastTicket != nil || statuses[0].Schedule != "0 9 * * *" || statuses[0].Timezone != "UTC" || statuses[0].Prompt != "THE PROMPT" || statuses[0].Editable {
 		t.Fatalf("statuses = %+v, err = %v", statuses, err)
 	}
-	if want := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC); !statuses[0].NextDue.Equal(want) {
+	if want := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC); statuses[0].NextDue == nil || !statuses[0].NextDue.Equal(want) {
 		t.Fatalf("next = %v", statuses[0].NextDue)
 	}
-	ticket, _, err := c.schedule.RunNow(t.Context(), "nightly", "alice", "")
+	ticket, _, err := c.schedule.RunNow(t.Context(), "nightly", "alice", RunOverrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,5 +186,92 @@ func TestStatusShowsNextDueAndLastTicket(t *testing.T) {
 	statuses, err = c.schedule.Status(t.Context())
 	if err != nil || statuses[0].LastTicket == nil || statuses[0].LastTicket.ID != ticket.ID || !strings.Contains(statuses[0].LastTicket.Outcome, "Could not reach") {
 		t.Fatalf("statuses = %+v, err = %v", statuses, err)
+	}
+}
+
+func TestStoredManualAutomationAndRunOverrides(t *testing.T) {
+	c := newSchedule(t, "0 9 * * *")
+	if _, err := c.store.CreateAutomation(t.Context(), tickets.Automation{
+		Name:    "adhoc-audit",
+		Repo:    "owner/app",
+		Preset:  "default",
+		Harness: "claude",
+		Model:   "opus",
+		Prompt:  "Audit security.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Poll ignores manual-only automations without a schedule.
+	c.poll(t)
+	c.now = c.now.Add(24 * time.Hour)
+	c.poll(t)
+	for _, ticket := range c.tickets(t) {
+		if ticket.Source == "schedule:adhoc-audit" {
+			t.Fatalf("manual automation should not be started by Poll: %+v", ticket)
+		}
+	}
+
+	statuses, err := c.schedule.Status(t.Context())
+	if err != nil || len(statuses) != 2 {
+		t.Fatalf("statuses = %+v, err = %v", statuses, err)
+	}
+	if statuses[0].Name != "adhoc-audit" || !statuses[0].Editable || statuses[0].NextDue != nil || statuses[0].Schedule != "" || statuses[0].Harness != "claude" || statuses[0].Model != "opus" {
+		t.Fatalf("manual status = %+v", statuses[0])
+	}
+
+	// Switching harness without specifying model drops the saved model for the old harness.
+	ticket, created, err := c.schedule.RunNow(t.Context(), "adhoc-audit", "alice", RunOverrides{
+		Repo:    "owner/other",
+		Preset:  "neon",
+		Harness: "codex",
+		Prompt:  "Audit auth only.",
+	})
+	if err != nil || !created {
+		t.Fatalf("run = %+v, %v, %v", ticket, created, err)
+	}
+	if ticket.Repo != "owner/other" || ticket.Agent != "neon" || ticket.Harness != "codex" || ticket.Model != "" {
+		t.Fatalf("ticket overrides = %+v", ticket)
+	}
+}
+
+func TestDisconnectedProjectStopsScheduledAndManualRuns(t *testing.T) {
+	c := newSchedule(t, "0 9 * * *")
+	c.schedule.Automations = nil
+	c.schedule.Intake = &Intake{Store: c.store}
+
+	if err := c.store.AddProject(t.Context(), "owner/dynamic", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.store.CreateAutomation(t.Context(), tickets.Automation{
+		Name:     "nightly-dynamic",
+		Repo:     "owner/dynamic",
+		Preset:   "default",
+		Prompt:   "Check dynamic repo.",
+		Schedule: "0 9 * * *",
+		Timezone: "UTC",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// First poll seeds the cursor; removing the project before the next due
+	// occurrence must block both scheduled polls and manual runs.
+	c.poll(t)
+	if removed, err := c.store.RemoveProject(t.Context(), "owner/dynamic"); err != nil || !removed {
+		t.Fatalf("remove project = %v, %v", removed, err)
+	}
+
+	c.now = time.Date(2026, 3, 1, 9, 0, 10, 0, time.UTC)
+	if err := c.schedule.Poll(t.Context()); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Poll err = %v, want ErrInvalidRequest", err)
+	}
+	if got := c.tickets(t); len(got) != 0 {
+		t.Fatalf("disconnected scheduled poll created tickets: %+v", got)
+	}
+	if _, _, err := c.schedule.RunNow(t.Context(), "nightly-dynamic", "alice", RunOverrides{}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("RunNow err = %v, want ErrInvalidRequest", err)
+	}
+	if got := c.tickets(t); len(got) != 0 {
+		t.Fatalf("disconnected RunNow created tickets: %+v", got)
 	}
 }

@@ -197,6 +197,8 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if err != nil {
 		return nil, err
 	}
+	schedule := sources.NewSchedule(store, loaded.Automations, log)
+	schedule.Intake = intake
 	server := &Server{
 		linear:          linear,
 		linearChanged:   make(chan struct{}, 1),
@@ -206,7 +208,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		engine:          ticketEngine,
 		client:          client,
 		intake:          intake,
-		schedule:        sources.NewSchedule(store, loaded.Automations, log),
+		schedule:        schedule,
 		version:         version,
 		presets:         presetViews(loaded),
 		factory:         loaded,
@@ -514,6 +516,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/team/invites/{id}/regenerate", s.requireToken(s.regenerateTeamInvite))
 	mux.HandleFunc("DELETE /api/v1/team/invites/{id}", s.requireToken(s.revokeTeamInvite))
 	mux.HandleFunc("GET /api/v1/automations", s.requireScope(tickets.ScopeRead, s.listAutomations))
+	mux.HandleFunc("POST /api/v1/automations", s.requireScope(tickets.ScopeRun, s.createAutomation))
+	mux.HandleFunc("PUT /api/v1/automations/{name}", s.requireScope(tickets.ScopeRun, s.updateAutomation))
+	mux.HandleFunc("DELETE /api/v1/automations/{name}", s.requireScope(tickets.ScopeRun, s.deleteAutomation))
 	mux.HandleFunc("POST /api/v1/automations/{name}/run", s.requireScope(tickets.ScopeRun, s.runAutomation))
 	mux.HandleFunc("POST /api/v1/reload", s.requireToken(s.reload))
 	mux.Handle("/", http.FileServer(http.FS(mustSub(webAssets, "web/dist"))))
