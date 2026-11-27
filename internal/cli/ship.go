@@ -100,12 +100,16 @@ func newVerdictCommand(options *commandOptions) *cobra.Command {
 
 // newGateCommand validates merge-gate.json and prints its decision, so a
 // script step fails immediately when the merge-gate agent wrote no valid verdict.
+// When --tripwire is set, deterministic code checks on the git diff can force
+// human_review (high risk) regardless of what the LLM judge returned.
 func newGateCommand(options *commandOptions) *cobra.Command {
-	return &cobra.Command{
+	var tripwire bool
+	var base string
+	command := &cobra.Command{
 		Use:   "gate",
 		Short: "Validate and print the decision in merge-gate.json, inside a step",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(command *cobra.Command, _ []string) error {
 			control, err := controlDirectory("gate")
 			if err != nil {
 				return err
@@ -114,10 +118,23 @@ func newGateCommand(options *commandOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if tripwire {
+				findings, err := ship.CheckTripwire(command.Context(), runGit, base)
+				if err != nil {
+					return err
+				}
+				gate, err = ship.ApplyTripwire(control, gate, findings)
+				if err != nil {
+					return err
+				}
+			}
 			fmt.Fprintf(options.stdout, "%s (%s): %s\n", gate.Decision, gate.Risk, gate.Reason)
 			return nil
 		},
 	}
+	command.Flags().BoolVar(&tripwire, "tripwire", false, "enforce deterministic tripwire checks on the git diff")
+	command.Flags().StringVar(&base, "base", "origin/HEAD", "base ref for tripwire diff checks")
+	return command
 }
 
 func controlDirectory(command string) (string, error) {

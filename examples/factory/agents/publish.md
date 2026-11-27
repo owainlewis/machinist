@@ -16,6 +16,7 @@ there is nothing to push, so never push here.
    - **Summary:** what changed and why, in plain words a reviewer can check
      against the diff. Name the files that matter.
    - **Testing:** the commands you ran and what they showed.
+   - **Not checked:** anything you did not run or verify (or "None" if everything was checked), so nobody assumes it was tested.
    - **Review:** the verdict and summary from review.json. If there is a
      first-review.json, the review asked for changes first: list each of its
      findings and whether it was addressed. Leave this out if there is no

@@ -221,8 +221,8 @@ export function GitHubPage({ onSignedOut }) {
           : <Fact name="GitHub App" hint="Set github.app in config.yaml so each run gets a token for its repository alone, and commits as the app.">
             <span className="settings-inline"><OnOff on={false} labels={["Set", "Not set"]} /><DocsLink href={`${docs}github-app.md`}>Read how</DocsLink></span>
           </Fact>}
-        <Fact name="Auto-merge" hint={settings.auto_merge ? "github.auto_merge: a job merges its pull request once checks pass and its review is clean." : "github.auto_merge is false: a person merges every pull request."}>
-          <OnOff on={settings.auto_merge} />
+        <Fact name="Auto-merge" hint={settings.auto_merge ? "github.auto_merge: merges low-risk pull requests once checks, review, and the merge gate pass." : "github.auto_merge is false (observe mode): the merge gate still evaluates and comments on every pull request, and nothing merges automatically."}>
+          <OnOff on={settings.auto_merge} labels={["On", "Observe mode"]} />
         </Fact>
       </Facts>
       <section className="settings-section" aria-labelledby="branches-title">

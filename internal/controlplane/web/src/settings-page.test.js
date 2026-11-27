@@ -626,6 +626,7 @@ test("Settings: cold loads show layout-matched skeletons, cached tab switches re
   await eventually(() => assert.match(document.querySelector(".page-sub")?.textContent || "", /Machinist is ready to take jobs\./));
   await go("#/settings/github");
   await eventually(() => assert.match(document.querySelector(".settings-facts")?.textContent || "", /machinist-bot/));
+  assert.match(document.querySelector(".settings-facts").textContent, /Auto-merge.*Observe mode/);
   await go("#/settings/linear");
   await eventually(() => assert.match(document.querySelector(".settings-howto")?.textContent || "", /LINEAR_CLIENT_ID/));
   await go("#/settings/tokens");
