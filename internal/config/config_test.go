@@ -478,3 +478,91 @@ func TestCloudRunConfigExampleLoads(t *testing.T) {
 		t.Fatalf("GitHub.App = %+v", loaded.GitHub.App)
 	}
 }
+
+func TestGitHubIssuesDefaultsAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+
+	// Omitted github_issues is disabled cleanly.
+	writeTestFile(t, path, "github:\n  handle: machinist-bot\n  repositories: [owner/one, owner/two]\n")
+	loaded, err := LoadConfig(path)
+	if err != nil || loaded.GitHubIssues.Enabled() {
+		t.Fatalf("disabled github_issues = %+v, err = %v", loaded.GitHubIssues, err)
+	}
+
+	// Minimal github_issues with allowed_users applies all defaults.
+	t.Setenv(GitHubTokenEnv, " ghp_test_token ")
+	writeTestFile(t, path, "github:\n  handle: machinist-bot\n  repositories: [owner/one, owner/two]\ngithub_issues:\n  allowed_users: [alice, \" bob \"]\n")
+	loaded, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("minimal github_issues: %v", err)
+	}
+	gi := loaded.GitHubIssues
+	if !gi.Enabled() || gi.Label != "machinist" || gi.PollSeconds != 60 || gi.PollInterval() != 60*time.Second || gi.MaxJobsPerHour != 10 || gi.Token != "ghp_test_token" {
+		t.Fatalf("github_issues defaults = %+v", gi)
+	}
+	if strings.Join(gi.AllowedUsers, ",") != "alice,bob" || len(gi.Repositories) != 0 {
+		t.Fatalf("allowed=%v repos=%v", gi.AllowedUsers, gi.Repositories)
+	}
+	if err := gi.CheckCredentials(false); err != nil {
+		t.Fatalf("CheckCredentials with GH_TOKEN: %v", err)
+	}
+
+	// Explicit fields and case-insensitive repository subset.
+	writeTestFile(t, path, `github:
+  handle: machinist-bot
+  repositories: [owner/one, owner/two]
+github_issues:
+  label: auto-fix
+  in_progress_label: working
+  allowed_users: [alice]
+  repositories: [Owner/Two, owner/two]
+  preset: fast
+  poll_seconds: 30
+  max_jobs_per_hour: 5
+`)
+	loaded, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("explicit github_issues: %v", err)
+	}
+	gi = loaded.GitHubIssues
+	if gi.Label != "auto-fix" || gi.InProgressLabel != "working" || gi.Preset != "fast" || gi.PollSeconds != 30 || gi.MaxJobsPerHour != 5 {
+		t.Fatalf("explicit github_issues = %+v", gi)
+	}
+	if strings.Join(gi.Repositories, ",") != "owner/two" {
+		t.Fatalf("repositories = %v, want [owner/two]", gi.Repositories)
+	}
+
+	// Missing GH_TOKEN passes LoadConfig, fails CheckCredentials(false), passes CheckCredentials(true).
+	t.Setenv(GitHubTokenEnv, "")
+	t.Setenv("GITHUB_TOKEN", "")
+	loaded, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig without GH_TOKEN: %v", err)
+	}
+	if err := loaded.GitHubIssues.CheckCredentials(false); err == nil || !strings.Contains(err.Error(), GitHubTokenEnv) {
+		t.Fatalf("CheckCredentials(false) = %v", err)
+	}
+	if err := loaded.GitHubIssues.CheckCredentials(true); err != nil {
+		t.Fatalf("CheckCredentials(true) = %v", err)
+	}
+
+	// Validation errors.
+	for _, tc := range []struct{ body, want string }{
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  label: machinist\n", "allowed_users"},
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  allowed_users: []\n", "allowed_users"},
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  allowed_users: [\"bad user\"]\n", "invalid GitHub login"},
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  allowed_users: [alice]\n  poll_seconds: 5\n", "poll_seconds"},
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  allowed_users: [alice]\n  poll_seconds: -1\n", "poll_seconds"},
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  allowed_users: [alice]\n  max_jobs_per_hour: -1\n", "max_jobs_per_hour"},
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  allowed_users: [alice]\n  repositories: [owner/other]\n", "must also be listed in github.repositories"},
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  allowed_users: [alice]\n  repositories: [not-a-repo]\n", "invalid repository"},
+		{"github:\n  handle: bot\ngithub_issues:\n  allowed_users: [alice]\n", "github.repositories"},
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  allowed_users: [alice]\n  label: machinist\n  in_progress_label: Machinist\n", "in_progress_label"},
+		{"github:\n  repositories: [owner/one]\ngithub_issues:\n  allowed_users: [alice]\n  token: secret\n", "unknown key token"},
+	} {
+		writeTestFile(t, path, tc.body)
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%q: err = %v, want %q", tc.body, err, tc.want)
+		}
+	}
+}

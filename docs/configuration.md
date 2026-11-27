@@ -54,6 +54,15 @@ github:
   auto_merge: true
   steward_retries: 2
 
+# github_issues:
+#   label: machinist
+#   allowed_users: [your-github-login]
+#   # repositories: [owner/name]
+#   # preset: default
+#   # in_progress_label: in-progress
+#   # poll_seconds: 60
+#   # max_jobs_per_hour: 10
+
 # notify:
 #   webhook: https://hooks.slack.com/services/...
 ```
@@ -73,6 +82,13 @@ github:
 | `github.steward_retries` | Maximum number of automatic **PR Steward** retries per job when an open pull request fails a CI check or hits a merge conflict (`DIRTY` or a conflicting branch update). Defaults to `2`; set to `0` to disable PR Steward; maximum `5`. Persisted per job across restarts, and never triggered if a person pushed commits after the review |
 | `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
 | `github.app.private_key_file` | The app's private key file. Keep it out of git |
+| `github_issues.label` | Optional trigger label on open GitHub issues that queues a job. Defaults to `machinist` |
+| `github_issues.allowed_users` | Required non-empty list of GitHub logins when `github_issues` is configured. Machinist inspects each issue's timeline (`labeled` events) and only starts jobs for issues labeled by an allowed user (failing closed when the actor is unknown). Comments by allowed users after job start trigger follow-up runs |
+| `github_issues.repositories` | Optional subset of `github.repositories` to poll for labeled issues. Defaults to all repositories in `github.repositories` |
+| `github_issues.preset` | Optional preset for GitHub Issues jobs. Defaults to `server.default_preset` |
+| `github_issues.in_progress_label` | Optional label added while Machinist is actively working on an issue and removed when the job returns, fails, or finishes |
+| `github_issues.poll_seconds` | How often Machinist polls GitHub Issues, in seconds. Minimum `10`, defaults to `60` |
+| `github_issues.max_jobs_per_hour` | Maximum number of jobs GitHub Issues can start per hour. Defaults to `10` |
 | `linear.*` | Start jobs from Linear issues. Off unless `linear.projects` or `linear.teams` is set. See [Linear](linear.md) |
 | `notify.webhook` | Optional HTTP or HTTPS URL that receives one JSON `POST` when a job opens a pull request that waits for a person, or fails. Includes a Slack-compatible `text` field plus `ticket_id`, `title`, `repo`, `state`, `created_by`, and `url` (when `server.public_url` is set). Prompts and agent output are never sent. Failed posts are logged and not retried |
 

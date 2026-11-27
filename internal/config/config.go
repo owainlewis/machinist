@@ -209,16 +209,89 @@ func (l Linear) CheckCredentials() error {
 
 // The variables that hold the app's Linear credentials.
 const (
+	// LinearClientIDEnv and siblings hold the app's Linear credentials.
 	LinearClientIDEnv     = "LINEAR_CLIENT_ID"
 	LinearClientSecretEnv = "LINEAR_CLIENT_SECRET"
 	LinearTokenEnv        = "LINEAR_API_TOKEN"
+	// GitHubTokenEnv holds a fallback GitHub token when github.app is not set.
+	GitHubTokenEnv = "GH_TOKEN"
 )
 
 const (
-	defaultLinearJobsPerHour = 20
-	defaultLinearPoll        = time.Minute
-	minLinearPoll            = 10 * time.Second
+	defaultLinearJobsPerHour       = 20
+	defaultLinearPoll              = time.Minute
+	minLinearPoll                  = 10 * time.Second
+	defaultGitHubIssuesLabel       = "machinist"
+	defaultGitHubIssuesPollSeconds = 60
+	minGitHubIssuesPollSeconds     = 10
+	defaultGitHubIssuesJobsPerHour = 10
 )
+
+var githubRepoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
+
+// GitHubIssues starts jobs from open GitHub issues carrying a trigger label,
+// by polling the GitHub REST API on an interval. It is off until allowed_users
+// is configured.
+type GitHubIssues struct {
+	// Label is the GitHub label whose application queues a job. Defaults to "machinist".
+	Label string `yaml:"label"`
+	// InProgressLabel is an optional label added when a job starts and removed
+	// when the job returns, fails, or finishes.
+	InProgressLabel string `yaml:"in_progress_label"`
+	// AllowedUsers are the GitHub logins whose label applications start jobs
+	// and whose comments trigger follow-up runs. Required when enabled.
+	AllowedUsers []string `yaml:"allowed_users"`
+	// Repositories is an optional subset of github.repositories to watch.
+	// When omitted, all repositories in github.repositories are watched.
+	Repositories []string `yaml:"repositories"`
+	// Preset is the preset GitHub Issues jobs use. Defaults to server.default_preset.
+	Preset string `yaml:"preset"`
+	// PollSeconds is how often Machinist polls GitHub Issues, in seconds. Defaults to 60.
+	PollSeconds int `yaml:"poll_seconds"`
+	// MaxJobsPerHour caps the jobs GitHub Issues can start in any hour. Defaults to 10.
+	MaxJobsPerHour int `yaml:"max_jobs_per_hour"`
+	// Token is read from GH_TOKEN (or GITHUB_TOKEN) in the environment when github.app is not set.
+	Token string `yaml:"-"`
+}
+
+// Enabled reports whether Machinist takes work from GitHub Issues.
+func (g GitHubIssues) Enabled() bool { return len(g.AllowedUsers) > 0 }
+
+// EffectiveLabel returns the configured trigger label, or the default ("machinist").
+func (g GitHubIssues) EffectiveLabel() string {
+	if g.Label == "" {
+		return defaultGitHubIssuesLabel
+	}
+	return g.Label
+}
+
+// PollInterval returns how often Machinist polls GitHub Issues.
+func (g GitHubIssues) PollInterval() time.Duration {
+	if g.PollSeconds <= 0 {
+		return defaultGitHubIssuesPollSeconds * time.Second
+	}
+	return time.Duration(g.PollSeconds) * time.Second
+}
+
+// EffectiveMaxJobsPerHour returns the configured hourly job cap, or the default (10).
+func (g GitHubIssues) EffectiveMaxJobsPerHour() int {
+	if g.MaxJobsPerHour <= 0 {
+		return defaultGitHubIssuesJobsPerHour
+	}
+	return g.MaxJobsPerHour
+}
+
+// CheckCredentials reports whether GitHub Issues, when enabled, has a GitHub App
+// or environment token to authenticate against the GitHub REST API.
+func (g GitHubIssues) CheckCredentials(hasApp bool) error {
+	if !g.Enabled() || hasApp {
+		return nil
+	}
+	if g.Token != "" {
+		return nil
+	}
+	return fmt.Errorf("github_issues: configure github.app or set %s in the environment", GitHubTokenEnv)
+}
 
 // Environment variables for GitHub OAuth sign-in and one-time admin bootstrap.
 const (
@@ -274,12 +347,13 @@ type Notify struct {
 }
 
 type Config struct {
-	Server Server `yaml:"server"`
-	Auth   Auth   `yaml:"auth"`
-	GitHub GitHub `yaml:"github"`
-	Linear Linear `yaml:"linear"`
-	Notify Notify `yaml:"notify"`
-	path   string
+	Server       Server       `yaml:"server"`
+	Auth         Auth         `yaml:"auth"`
+	GitHub       GitHub       `yaml:"github"`
+	GitHubIssues GitHubIssues `yaml:"github_issues"`
+	Linear       Linear       `yaml:"linear"`
+	Notify       Notify       `yaml:"notify"`
+	path         string
 }
 
 func (c Config) Path() string { return c.path }
@@ -322,6 +396,10 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	if err := applyGitHubDefaults(machinistConfig.GitHub, machinistConfig.Server.configDir); err != nil {
+		return Config{}, err
+	}
+	machinistConfig.GitHubIssues, err = applyGitHubIssuesDefaults(machinistConfig.GitHubIssues, machinistConfig.GitHub, os.Getenv)
+	if err != nil {
 		return Config{}, err
 	}
 	machinistConfig.Linear, err = applyLinearDefaults(machinistConfig.Linear, os.Getenv)
@@ -480,6 +558,105 @@ func applyAuthDefaults(auth Auth, getenv func(string) string) (Auth, error) {
 		auth.BootstrapAdmin = "github:" + login
 	}
 	return auth, nil
+}
+
+func applyGitHubIssuesDefaults(ghIssues GitHubIssues, github GitHub, getenv func(string) string) (GitHubIssues, error) {
+	configured := ghIssues.Label != "" ||
+		ghIssues.InProgressLabel != "" ||
+		ghIssues.AllowedUsers != nil ||
+		ghIssues.Repositories != nil ||
+		ghIssues.Preset != "" ||
+		ghIssues.PollSeconds != 0 ||
+		ghIssues.MaxJobsPerHour != 0
+	if !configured {
+		return GitHubIssues{}, nil
+	}
+
+	allowed := make([]string, 0, len(ghIssues.AllowedUsers))
+	for _, user := range ghIssues.AllowedUsers {
+		user = strings.TrimSpace(user)
+		if user == "" {
+			continue
+		}
+		if strings.ContainsAny(user, " \t\r\n/") {
+			return GitHubIssues{}, fmt.Errorf("github_issues: invalid GitHub login %q in allowed_users", user)
+		}
+		allowed = append(allowed, user)
+	}
+	if len(allowed) == 0 {
+		return GitHubIssues{}, errors.New("github_issues: list the GitHub logins allowed to label issues in allowed_users")
+	}
+	ghIssues.AllowedUsers = allowed
+
+	ghIssues.Label = strings.TrimSpace(ghIssues.Label)
+	if ghIssues.Label == "" {
+		ghIssues.Label = defaultGitHubIssuesLabel
+	}
+	ghIssues.InProgressLabel = strings.TrimSpace(ghIssues.InProgressLabel)
+	if ghIssues.InProgressLabel != "" && strings.EqualFold(ghIssues.InProgressLabel, ghIssues.Label) {
+		return GitHubIssues{}, errors.New("github_issues: in_progress_label must differ from label")
+	}
+	ghIssues.Preset = strings.TrimSpace(ghIssues.Preset)
+
+	if ghIssues.PollSeconds < 0 {
+		return GitHubIssues{}, fmt.Errorf("github_issues: poll_seconds must be at least %d", minGitHubIssuesPollSeconds)
+	}
+	if ghIssues.PollSeconds == 0 {
+		ghIssues.PollSeconds = defaultGitHubIssuesPollSeconds
+	} else if ghIssues.PollSeconds < minGitHubIssuesPollSeconds {
+		return GitHubIssues{}, fmt.Errorf("github_issues: poll_seconds must be at least %d", minGitHubIssuesPollSeconds)
+	}
+
+	if ghIssues.MaxJobsPerHour < 0 {
+		return GitHubIssues{}, errors.New("github_issues: max_jobs_per_hour must be positive")
+	}
+	if ghIssues.MaxJobsPerHour == 0 {
+		ghIssues.MaxJobsPerHour = defaultGitHubIssuesJobsPerHour
+	}
+
+	if len(ghIssues.Repositories) > 0 {
+		repos := make([]string, 0, len(ghIssues.Repositories))
+		for _, repo := range ghIssues.Repositories {
+			repo = strings.TrimSpace(repo)
+			if repo == "" || !githubRepoPattern.MatchString(repo) || strings.Contains(repo, "..") {
+				return GitHubIssues{}, fmt.Errorf("github_issues.repositories: invalid repository %q", repo)
+			}
+			canonical := ""
+			for _, listed := range github.Repositories {
+				if strings.EqualFold(listed, repo) {
+					canonical = listed
+					break
+				}
+			}
+			if canonical == "" {
+				return GitHubIssues{}, fmt.Errorf("github_issues.repositories: %s must also be listed in github.repositories", repo)
+			}
+			dup := false
+			for _, seen := range repos {
+				if strings.EqualFold(seen, canonical) {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				repos = append(repos, canonical)
+			}
+		}
+		ghIssues.Repositories = repos
+	} else {
+		if len(github.Repositories) == 0 {
+			return GitHubIssues{}, errors.New("github_issues: set at least one repository in github.repositories")
+		}
+		ghIssues.Repositories = nil
+	}
+
+	if getenv != nil {
+		ghIssues.Token = strings.TrimSpace(getenv(GitHubTokenEnv))
+		if ghIssues.Token == "" {
+			ghIssues.Token = strings.TrimSpace(getenv("GITHUB_TOKEN"))
+		}
+	}
+	return ghIssues, nil
 }
 
 func applyLinearDefaults(linear Linear, getenv func(string) string) (Linear, error) {

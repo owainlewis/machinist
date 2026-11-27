@@ -72,7 +72,7 @@ func newHolderID() string {
 	return "cp_" + hex.EncodeToString(buf)
 }
 
-// runBackgroundWorkers runs all four periodic background worker groups until
+// runBackgroundWorkers runs all periodic background worker groups until
 // ctx is cancelled and waits for every worker goroutine to return.
 func (s *Server) runBackgroundWorkers(ctx context.Context) {
 	if s.bgWorkers != nil {
@@ -80,7 +80,7 @@ func (s *Server) runBackgroundWorkers(ctx context.Context) {
 		return
 	}
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(5)
 	go func() {
 		defer wg.Done()
 		s.engine.Run(ctx)
@@ -92,6 +92,10 @@ func (s *Server) runBackgroundWorkers(ctx context.Context) {
 	go func() {
 		defer wg.Done()
 		s.runLinear(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		s.runGitHubIssues(ctx)
 	}()
 	go func() {
 		defer wg.Done()

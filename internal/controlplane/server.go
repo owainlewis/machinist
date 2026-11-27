@@ -57,9 +57,12 @@ type Server struct {
 	// linear takes work from Linear, when it is on.
 	linear        *sources.Poller
 	linearChanged chan struct{}
-	now           func() time.Time
-	presets       []presetView
-	factory       *factory.Factory
+	// githubIssues takes work from GitHub Issues, when it is on.
+	githubIssues        *sources.Poller
+	githubIssuesChanged chan struct{}
+	now                 func() time.Time
+	presets             []presetView
+	factory             *factory.Factory
 	// app is the GitHub App, or nil when there is none.
 	app             githubApp
 	appKeyHash      [32]byte
@@ -76,24 +79,26 @@ type Server struct {
 }
 
 type serverState struct {
-	config     config.Config
-	factory    *factory.Factory
-	presets    []presetView
-	app        githubApp
-	appKeyHash [32]byte
-	linear     *sources.Poller
+	config       config.Config
+	factory      *factory.Factory
+	presets      []presetView
+	app          githubApp
+	appKeyHash   [32]byte
+	linear       *sources.Poller
+	githubIssues *sources.Poller
 }
 
 func (s *Server) state() serverState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return serverState{
-		config:     s.config,
-		factory:    s.factory,
-		presets:    s.presets,
-		app:        s.app,
-		appKeyHash: s.appKeyHash,
-		linear:     s.linear,
+		config:       s.config,
+		factory:      s.factory,
+		presets:      s.presets,
+		app:          s.app,
+		appKeyHash:   s.appKeyHash,
+		linear:       s.linear,
+		githubIssues: s.githubIssues,
 	}
 }
 
@@ -107,14 +112,24 @@ func (s *Server) notifyLinear() {
 	}
 }
 
-func (s *Server) runLinear(ctx context.Context) {
+func (s *Server) notifyGitHubIssues() {
+	if s.githubIssuesChanged == nil {
+		return
+	}
+	select {
+	case s.githubIssuesChanged <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Server) runPoller(ctx context.Context, current func() *sources.Poller, changed <-chan struct{}) {
 	for {
-		poller := s.state().linear
+		poller := current()
 		if poller == nil {
 			select {
 			case <-ctx.Done():
 				return
-			case <-s.linearChanged:
+			case <-changed:
 				continue
 			}
 		}
@@ -129,11 +144,19 @@ func (s *Server) runLinear(ctx context.Context) {
 			cancelPoll()
 			<-done
 			return
-		case <-s.linearChanged:
+		case <-changed:
 			cancelPoll()
 			<-done
 		}
 	}
+}
+
+func (s *Server) runLinear(ctx context.Context) {
+	s.runPoller(ctx, func() *sources.Poller { return s.state().linear }, s.linearChanged)
+}
+
+func (s *Server) runGitHubIssues(ctx context.Context) {
+	s.runPoller(ctx, func() *sources.Poller { return s.state().githubIssues }, s.githubIssuesChanged)
 }
 
 func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Factory, version string, log io.Writer) (*Server, error) {
@@ -197,30 +220,36 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if err != nil {
 		return nil, err
 	}
+	ghIssues, err := githubIssuesPoller(machinistConfig, loaded, app, intake, store, log)
+	if err != nil {
+		return nil, err
+	}
 	schedule := sources.NewSchedule(store, loaded.Automations, log)
 	schedule.Intake = intake
 	server := &Server{
-		linear:          linear,
-		linearChanged:   make(chan struct{}, 1),
-		now:             time.Now,
-		config:          machinistConfig,
-		store:           store,
-		engine:          ticketEngine,
-		client:          client,
-		intake:          intake,
-		schedule:        schedule,
-		version:         version,
-		presets:         presetViews(loaded),
-		factory:         loaded,
-		appKeyHash:      appKeyHash,
-		log:             log,
-		csrf:            http.NewCrossOriginProtection(),
-		authLimiter:     newIPRateLimiter(authRateLimitMaxEntries, authRateLimitPerSec, authRateLimitBurst, time.Now),
-		auditLog:        newAuditLogger(log),
-		githubOAuthBase: defaultGitHubOAuthBase,
-		githubAPIBase:   defaultGitHubAPIBase,
-		oauthHTTPClient: &http.Client{Timeout: 10 * time.Second},
-		githubSem:       make(chan struct{}, maxConcurrentGitHubLookups),
+		linear:              linear,
+		linearChanged:       make(chan struct{}, 1),
+		githubIssues:        ghIssues,
+		githubIssuesChanged: make(chan struct{}, 1),
+		now:                 time.Now,
+		config:              machinistConfig,
+		store:               store,
+		engine:              ticketEngine,
+		client:              client,
+		intake:              intake,
+		schedule:            schedule,
+		version:             version,
+		presets:             presetViews(loaded),
+		factory:             loaded,
+		appKeyHash:          appKeyHash,
+		log:                 log,
+		csrf:                http.NewCrossOriginProtection(),
+		authLimiter:         newIPRateLimiter(authRateLimitMaxEntries, authRateLimitPerSec, authRateLimitBurst, time.Now),
+		auditLog:            newAuditLogger(log),
+		githubOAuthBase:     defaultGitHubOAuthBase,
+		githubAPIBase:       defaultGitHubAPIBase,
+		oauthHTTPClient:     &http.Client{Timeout: 10 * time.Second},
+		githubSem:           make(chan struct{}, maxConcurrentGitHubLookups),
 	}
 	if app != nil {
 		server.app = app
@@ -317,6 +346,77 @@ func linearPoller(ctx context.Context, machinistConfig config.Config, loaded *fa
 		Store:          store,
 		Interval:       linear.Poll,
 		MaxJobsPerHour: linear.MaxJobsPerHour,
+		Log:            log,
+	}, nil
+}
+
+// githubIssuesPoller validates the github_issues section against the factory
+// and github.repositories, and builds a sources.Poller backed by either the
+// GitHub App installation token or GH_TOKEN.
+func githubIssuesPoller(machinistConfig config.Config, loaded *factory.Factory, app *githubapp.App, intake *sources.Intake, store *tickets.Store, log io.Writer) (*sources.Poller, error) {
+	ghIssues := machinistConfig.GitHubIssues
+	if !ghIssues.Enabled() {
+		return nil, nil
+	}
+	token := ghIssues.Token
+	if app == nil && token == "" {
+		token = strings.TrimSpace(os.Getenv(config.GitHubTokenEnv))
+		if token == "" {
+			token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+		}
+	}
+	if app == nil && token == "" {
+		return nil, fmt.Errorf("github_issues: configure github.app or set %s in the environment", config.GitHubTokenEnv)
+	}
+	preset := ghIssues.Preset
+	if preset == "" {
+		preset = machinistConfig.Server.DefaultPreset
+	}
+	if _, ok := loaded.Preset(preset); !ok {
+		return nil, fmt.Errorf("github_issues.preset %q is not in the factory", preset)
+	}
+	repos := ghIssues.Repositories
+	if len(repos) == 0 {
+		repos = machinistConfig.GitHub.Repositories
+	}
+	if len(repos) == 0 {
+		return nil, errors.New("github_issues: set at least one repository in github.repositories")
+	}
+	watched := make([]string, 0, len(repos))
+	for _, repo := range repos {
+		idx := slices.IndexFunc(machinistConfig.GitHub.Repositories, func(listed string) bool {
+			return strings.EqualFold(listed, repo)
+		})
+		if idx < 0 {
+			return nil, fmt.Errorf("github_issues.repositories: %s must also be listed in github.repositories", repo)
+		}
+		canonical := machinistConfig.GitHub.Repositories[idx]
+		if !slices.ContainsFunc(watched, func(seen string) bool { return strings.EqualFold(seen, canonical) }) {
+			watched = append(watched, canonical)
+		}
+	}
+	tracker := &sources.GitHubIssues{
+		Token:           token,
+		Repositories:    watched,
+		Label:           ghIssues.EffectiveLabel(),
+		InProgressLabel: ghIssues.InProgressLabel,
+	}
+	if app != nil {
+		tracker.TokenFor = app.CachedToken
+		tracker.Token = ""
+	}
+	return &sources.Poller{
+		Tracker: tracker,
+		Rules: sources.TrackerRules{
+			AllowedUsers:         slices.Clone(ghIssues.AllowedUsers),
+			CaseInsensitiveUsers: true,
+			Preset:               preset,
+			Repositories:         watched,
+		},
+		Intake:         intake,
+		Store:          store,
+		Interval:       ghIssues.PollInterval(),
+		MaxJobsPerHour: ghIssues.EffectiveMaxJobsPerHour(),
 		Log:            log,
 	}, nil
 }

@@ -26,6 +26,17 @@ github:
   #   id: 123456
   #   private_key_file: .machinist/github-app.pem
 
+# Start jobs from GitHub Issues by applying a label. Off until allowed_users is
+# set. Uses github.app installation tokens when configured, or GH_TOKEN.
+# github_issues:
+#   label: machinist
+#   allowed_users: [<your GitHub login>]
+#   # repositories: [owner/name]   # optional subset of github.repositories
+#   # preset: default              # optional; defaults to server.default_preset
+#   # in_progress_label: in-progress
+#   poll_seconds: 60
+#   max_jobs_per_hour: 10
+
 # Start jobs from Linear. Off until projects or teams is set. The app signs in
 # with LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET from the environment, never
 # this file. Machinist polls every poll_interval. See docs/linear.md.
