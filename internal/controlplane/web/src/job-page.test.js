@@ -360,3 +360,105 @@ test("JobView shows the Merge gate panel for low, medium, and high verdicts and 
   assert.doesNotMatch(absent, /job-merge-gate/, "panel is omitted when no merge-gate fields exist");
   assert.doesNotMatch(absent, /class="risk-badge"/);
 });
+
+test("failed jobs past checkout with a checkpoint show Retry from <step> alongside Run again", { timeout: 30000 }, async context => {
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  context.after(() => server.close());
+  const { JobView, resumableStep } = await server.ssrLoadModule("/src/job-page.jsx");
+  const page = detail => renderToStaticMarkup(React.createElement(JobView, { detail }));
+  const presetSteps = [{ name: "checkout", agents: [] }, { name: "implement", agents: [] }, { name: "review", agents: [] }, { name: "publish", agents: [] }];
+
+  const failedAtReview = page({
+    ticket: { ...ticket, state: "failed" },
+    steps: presetSteps,
+    runs: [{
+      id: "run_1",
+      status: "failed",
+      failed_step: "review",
+      checkpoint: true,
+      started_at: now,
+      ended_at: now,
+      stages: [
+        { name: "checkout", state: "succeeded" },
+        { name: "implement", state: "succeeded" },
+        { name: "review", state: "failed", error: "exit 1" },
+        { name: "publish", state: "skipped" },
+      ],
+    }],
+  });
+  assert.match(failedAtReview, />Retry from review<\/button>/);
+  assert.match(failedAtReview, />Run again<\/button>/);
+
+  // Checkout failure or missing checkpoint must not show Retry from <step>.
+  const failedAtCheckout = page({
+    ticket: { ...ticket, state: "failed" },
+    steps: presetSteps,
+    runs: [{ id: "run_1", status: "failed", failed_step: "checkout", checkpoint: true, started_at: now, ended_at: now }],
+  });
+  assert.doesNotMatch(failedAtCheckout, /Retry from/);
+  assert.match(failedAtCheckout, />Run again<\/button>/);
+
+  const noCheckpoint = page({
+    ticket: { ...ticket, state: "failed" },
+    steps: presetSteps,
+    runs: [{ id: "run_1", status: "failed", failed_step: "review", checkpoint: false, started_at: now, ended_at: now }],
+  });
+  assert.doesNotMatch(noCheckpoint, /Retry from/);
+  assert.match(noCheckpoint, />Run again<\/button>/);
+
+  // Non-failed jobs never offer Retry from <step>.
+  assert.equal(resumableStep("done", { failed_step: "review", checkpoint: true }, presetSteps), "");
+  assert.equal(resumableStep("failed", { failed_step: "publish", checkpoint: true }, presetSteps), "publish");
+});
+
+test("clicking Retry from <step> posts from_step to /rerun and refreshes", { timeout: 30000 }, async context => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/jobs/t_1" });
+  const previous = new Map();
+  for (const name of ["window", "document", "navigator", "HTMLElement", "MouseEvent", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
+  }
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, method: init.method || "GET", body: init.body });
+    if (url.endsWith("/rerun")) {
+      return { ok: true, status: 200, json: async () => ({ ...ticket, state: "working" }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ events: [], cursor: 0 }) };
+  };
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root"));
+  context.after(async () => {
+    await act(async () => root.unmount());
+    await server.close();
+    dom.window.close();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  const { JobView } = await server.ssrLoadModule("/src/job-page.jsx");
+  let refreshed = 0;
+  const detail = {
+    ticket: { ...ticket, state: "failed" },
+    steps: [{ name: "checkout", agents: [] }, { name: "implement", agents: [] }, { name: "review", agents: [] }],
+    runs: [{ id: "run_1", status: "failed", failed_step: "review", checkpoint: true, started_at: now, ended_at: now }],
+  };
+  await act(async () => root.render(React.createElement(JobView, { detail, onChange: () => { refreshed++; } })));
+
+  const retryButton = [...document.querySelectorAll(".job-actions button")].find(button => button.textContent.includes("Retry from review"));
+  assert.ok(retryButton, "expected Retry from review button");
+  await act(async () => retryButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  const rerunCall = calls.find(call => call.url === "/api/v1/tickets/t_1/rerun" && call.method === "POST");
+  assert.ok(rerunCall, `calls = ${JSON.stringify(calls)}`);
+  assert.deepEqual(JSON.parse(rerunCall.body), { from_step: "review" });
+  assert.equal(refreshed, 1);
+
+  const fullButton = [...document.querySelectorAll(".job-actions button")].find(button => button.textContent.includes("Run again"));
+  assert.ok(fullButton, "expected Run again button");
+  await act(async () => fullButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  const fullCall = calls.filter(call => call.url === "/api/v1/tickets/t_1/rerun" && call.method === "POST")[1];
+  assert.equal(fullCall.body, undefined, "Run again must send no body");
+});

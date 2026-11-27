@@ -27,7 +27,7 @@ func (s *Server) writeTicket(w http.ResponseWriter, _ *http.Request, status int,
 
 func writeTicketError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, sources.ErrInvalidRequest):
+	case errors.Is(err, sources.ErrInvalidRequest), errors.Is(err, tickets.ErrNoCheckpoint), errors.Is(err, tickets.ErrInvalidResumeStep):
 		writeError(w, http.StatusBadRequest, err)
 	case errors.Is(err, tickets.ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
@@ -220,10 +220,81 @@ func presetStepsFrom(loaded *factory.Factory, name, harnessName, model string) [
 	return stepViews(loaded, preset.WithOverride(harnessName, model))
 }
 
-func (s *Server) rerunTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
-	ticket, err := s.store.Rerun(r.Context(), r.PathValue("id"), tokenName)
+func presetStepIndex(preset factory.Preset, name string) int {
+	for index, step := range preset.Steps {
+		if step.Name == name {
+			return index
+		}
+	}
+	return -1
+}
+
+func (s *Server) rerunTicketWithBody(w http.ResponseWriter, r *http.Request, id, tokenName string) (tickets.Ticket, bool) {
+	var request struct {
+		FromStep string `json:"from_step"`
+	}
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+		err := json.NewDecoder(r.Body).Decode(&request)
+		if err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return tickets.Ticket{}, false
+		}
+	}
+	fromStep := strings.TrimSpace(request.FromStep)
+	if fromStep == "" {
+		ticket, err := s.store.Rerun(r.Context(), id, tokenName)
+		if err != nil {
+			writeTicketError(w, err)
+			return tickets.Ticket{}, false
+		}
+		return ticket, true
+	}
+	existing, err := s.store.Ticket(r.Context(), id)
 	if err != nil {
 		writeTicketError(w, err)
+		return tickets.Ticket{}, false
+	}
+	if existing.State == tickets.StateWorking {
+		writeTicketError(w, tickets.ErrStillWorking)
+		return tickets.Ticket{}, false
+	}
+	if loaded := s.factoryForTicket(existing); loaded != nil {
+		if preset, ok := loaded.Preset(existing.Agent); ok {
+			resumeIdx := presetStepIndex(preset, fromStep)
+			if resumeIdx < 0 {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("step %q is not in preset %q", fromStep, existing.Agent))
+				return tickets.Ticket{}, false
+			}
+			checkoutIdx := presetStepIndex(preset, "checkout")
+			if resumeIdx == 0 || (checkoutIdx >= 0 && resumeIdx <= checkoutIdx) {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("cannot resume from step %q; use a full rerun instead", fromStep))
+				return tickets.Ticket{}, false
+			}
+			_, cp, err := s.store.LatestCheckpoint(r.Context(), id)
+			if err != nil {
+				writeTicketError(w, err)
+				return tickets.Ticket{}, false
+			}
+			if cp.FailedStep != "" {
+				if failedIdx := presetStepIndex(preset, cp.FailedStep); failedIdx >= 0 && resumeIdx > failedIdx {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("cannot resume from step %q after failed step %q", fromStep, cp.FailedStep))
+					return tickets.Ticket{}, false
+				}
+			}
+		}
+	}
+	ticket, err := s.store.RerunFromStep(r.Context(), id, tokenName, fromStep)
+	if err != nil {
+		writeTicketError(w, err)
+		return tickets.Ticket{}, false
+	}
+	return ticket, true
+}
+
+func (s *Server) rerunTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
+	ticket, ok := s.rerunTicketWithBody(w, r, r.PathValue("id"), tokenName)
+	if !ok {
 		return
 	}
 	if s.engine != nil {

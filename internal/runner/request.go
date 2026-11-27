@@ -51,6 +51,10 @@ type RunRequest struct {
 	// A local runner sets it, and each step starts with a fresh token, so no
 	// step outlives the hour a token lasts. It is never sent.
 	RefreshToken func(ctx context.Context) (string, error) `json:"-"`
+	// ResumeFromStep, when set, runs checkout (if present), restores
+	// Checkpoint, skips earlier steps, and executes from this step onward.
+	ResumeFromStep string               `json:"resume_from_step,omitempty"`
+	Checkpoint     *protocol.Checkpoint `json:"checkpoint,omitempty"`
 }
 
 // RunResult is what one run produced, on either runner type.
@@ -65,6 +69,11 @@ type RunResult struct {
 	// Ship is what the merge step left in protocol.ShipFile, for the control
 	// plane to see the pull request through its checks.
 	Ship *protocol.Ship `json:",omitempty"`
+	// FailedStep names the step that failed or timed out, when any.
+	FailedStep string `json:"failed_step,omitempty"`
+	// Checkpoint holds workspace commits, uncommitted changes and control files
+	// captured when a step after checkout fails.
+	Checkpoint *protocol.Checkpoint `json:"checkpoint,omitempty"`
 }
 
 // ValidRunID reports whether value has the form run_ and 24 hex characters.

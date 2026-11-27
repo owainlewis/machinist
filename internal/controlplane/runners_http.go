@@ -257,8 +257,8 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, tokenName stri
 		return
 	}
 	var completion protocol.Completion
-	// A completion can carry a saved patch, base64 in JSON.
-	if !decodeJSON(w, r, maxRequestBytes+2*protocol.MaxPatchBytes, &completion) {
+	// A completion can carry a saved patch and failure checkpoint, base64 in JSON.
+	if !decodeJSON(w, r, maxRequestBytes+3*protocol.MaxPatchBytes, &completion) {
 		return
 	}
 	if err := s.engine.Complete(r.Context(), r.PathValue("id"), completion); err != nil {

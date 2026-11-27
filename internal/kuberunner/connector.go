@@ -161,8 +161,8 @@ func (c Connector) runJob(ctx context.Context, name string, request runner.RunRe
 	if err = c.awaitResult(ctx, pod, events); err != nil {
 		return result, fmt.Errorf("%w%s", err, c.prepareLog(ctx, pod))
 	}
-	// The result carries a saved patch, base64 in JSON, besides the rest.
-	body, err = c.command(ctx, nil, 1<<20+2*protocol.MaxPatchBytes, "exec", pod, "-c", "agent", "--", "cat", "/exchange/result.json")
+	// The result carries a saved patch and optional failure checkpoint, base64 in JSON, besides the rest.
+	body, err = c.command(ctx, nil, 1<<20+3*protocol.MaxPatchBytes, "exec", pod, "-c", "agent", "--", "cat", "/exchange/result.json")
 	if err != nil {
 		return result, err
 	}
