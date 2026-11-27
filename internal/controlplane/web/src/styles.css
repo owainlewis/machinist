@@ -597,7 +597,7 @@ a.source:hover span { text-decoration: underline; }
 .token-confirm .ticket-meta { margin-right: 4px; }
 .token-no-prefix { color: var(--faint); }
 .token-form { display: grid; gap: 14px; }
-.token-form-fields { display: grid; grid-template-columns: minmax(0, 1fr) 200px; align-items: start; gap: 12px; }
+.token-form-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); align-items: start; gap: 12px; }
 .token-form-fields .form-error { margin-top: 6px; font-size: 13px; }
 .token-role-hint { margin-top: 6px; }
 .token-form-actions { display: flex; align-items: center; gap: 8px; }

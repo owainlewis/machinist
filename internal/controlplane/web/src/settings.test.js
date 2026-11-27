@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentFrontMatter, agentOverridden, checkLink, dayLabel, durationShort, factoryUpdateLine, githubLine, githubWarnings, groupAgents, pollLabel, roleLabel, settingsPages, stepKind, stepKindLabel, stepShellPreview, tokenLine, tokenPrefixLabel, validateTokenName } from "./settings.js";
+import { agentFrontMatter, agentOverridden, checkLink, dayLabel, durationShort, factoryUpdateLine, githubLine, githubWarnings, groupAgents, pollLabel, roleLabel, scopeLabel, settingsPages, stepKind, stepKindLabel, stepShellPreview, tokenKind, tokenKinds, tokenLine, tokenPrefixLabel, validateTokenName } from "./settings.js";
 
 test("the side nav lists one page per topic, overview first", () => {
   assert.deepEqual(settingsPages.map(([page]) => page), ["overview", "projects", "github", "linear", "tokens", "team", "presets", "account"]);
@@ -22,10 +22,24 @@ test("the poll interval reads in minutes and seconds", () => {
   assert.equal(pollLabel(0), "");
 });
 
-test("roles and token counts read as words", () => {
+test("roles, scopes and token counts read as words", () => {
   assert.equal(roleLabel("operator")[0], "Person");
+  assert.equal(roleLabel("operator", "run")[0], "Bot");
+  assert.equal(roleLabel("operator", "read")[0], "Bot");
   assert.equal(roleLabel("runner")[0], "Runner");
   assert.equal(roleLabel("all")[0], "Person and runner");
+  assert.equal(scopeLabel(""), null);
+  assert.equal(scopeLabel("run")[0], "scope: run");
+  assert.equal(scopeLabel("read")[0], "scope: read");
+  assert.deepEqual(tokenKinds.map(k => k.label), [
+    "Person (full access)",
+    "Bot — run & inspect (MCP / API)",
+    "Bot — read-only (MCP / API)",
+    "Runner",
+  ]);
+  assert.deepEqual(tokenKind("operator:run"), tokenKinds[1]);
+  assert.deepEqual(tokenKind("operator:read"), tokenKinds[2]);
+  assert.deepEqual(tokenKind("unknown"), tokenKinds[0]);
   assert.equal(tokenLine([{}, {}]), "2 active tokens.");
   assert.equal(tokenLine([{}, { revoked_at: "2026-11-20T00:00:00Z" }]), "1 active token, 1 revoked.");
   assert.equal(tokenPrefixLabel("mch_ab12"), "mch_ab12…");
