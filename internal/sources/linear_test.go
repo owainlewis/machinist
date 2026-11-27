@@ -1022,6 +1022,40 @@ func TestRunningAJobAgainAfterItsPullRequestEndedCommentsTheNewOne(t *testing.T)
 	}
 }
 
+func TestNoChangeRerunAfterEndedPRReturnsIssueWithoutRelinkingOldPR(t *testing.T) {
+	for _, ended := range []string{tickets.PRClosed, tickets.PRMerged} {
+		t.Run(ended, func(t *testing.T) {
+			p := newPolling(t)
+			job := p.started(t)
+			if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.setPR(t, job.ID, ended); err != nil {
+				t.Fatal(err)
+			}
+			p.poll(t)
+			before := len(p.linear.news("a1"))
+			if _, err := p.store.Reply(t.Context(), job.ID, "owain", []tickets.Comment{{Body: "No change needed?"}}); err != nil {
+				t.Fatal(err)
+			}
+			p.poll(t)
+			if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Nothing to change"}); err != nil {
+				t.Fatal(err)
+			}
+			p.poll(t)
+			p.poll(t)
+			if got := p.linear.stateOf("a1"); got != "s-todo" {
+				t.Fatalf("issue state = %q, want s-todo (returned)", got)
+			}
+			got := p.linear.news("a1")[before:]
+			want := "Machinist finished without a pull request: Nothing to change\n\nReply here to give it more to go on, and it will run again."
+			if len(got) != 1 || got[0] != want {
+				t.Fatalf("comments after no_change reply = %v, want [%q]", got, want)
+			}
+		})
+	}
+}
+
 func TestRunningAJobAgainOnItsOpenPullRequestDoesNotCommentItAgain(t *testing.T) {
 	p := newPolling(t)
 	job := p.started(t)
