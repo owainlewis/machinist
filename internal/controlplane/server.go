@@ -197,6 +197,8 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 	if err != nil {
 		return nil, err
 	}
+	schedule := sources.NewSchedule(store, loaded.Automations, log)
+	schedule.Intake = intake
 	server := &Server{
 		linear:          linear,
 		linearChanged:   make(chan struct{}, 1),
@@ -206,7 +208,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		engine:          ticketEngine,
 		client:          client,
 		intake:          intake,
-		schedule:        sources.NewSchedule(store, loaded.Automations, log),
+		schedule:        schedule,
 		version:         version,
 		presets:         presetViews(loaded),
 		factory:         loaded,

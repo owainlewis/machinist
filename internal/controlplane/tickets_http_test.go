@@ -331,6 +331,9 @@ func TestUsageRoute(t *testing.T) {
 
 func TestAutomationRoutes(t *testing.T) {
 	f := newFixture(t)
+	if err := f.store.AddProject(t.Context(), "owner/repo", "alice"); err != nil {
+		t.Fatal(err)
+	}
 	cron, err := triggers.ParseCron("0 9 * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)
@@ -542,6 +545,17 @@ func TestAutomationCRUDAndRunOverrides(t *testing.T) {
 	started := decodeTicket(t, body)
 	if started.Repo != "owner/repo" || started.Harness != "codex" || started.Model != "gpt-5.3-codex" {
 		t.Fatalf("started = %+v", started)
+	}
+	if _, err := f.store.Cancel(t.Context(), started.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disconnecting the automation's saved project blocks running it until updated or reconnected.
+	if removed, err := f.store.RemoveProject(t.Context(), "owner/other"); err != nil || !removed {
+		t.Fatalf("remove project = %v, %v", removed, err)
+	}
+	if resp, body := f.call(t, http.MethodPost, "/api/v1/automations/codex-audit/run", f.token, nil); resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "not connected") {
+		t.Fatalf("run disconnected = %d %s", resp.StatusCode, body)
 	}
 
 	// Delete UI automation.

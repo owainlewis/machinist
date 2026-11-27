@@ -234,3 +234,44 @@ func TestStoredManualAutomationAndRunOverrides(t *testing.T) {
 		t.Fatalf("ticket overrides = %+v", ticket)
 	}
 }
+
+func TestDisconnectedProjectStopsScheduledAndManualRuns(t *testing.T) {
+	c := newSchedule(t, "0 9 * * *")
+	c.schedule.Automations = nil
+	c.schedule.Intake = &Intake{Store: c.store}
+
+	if err := c.store.AddProject(t.Context(), "owner/dynamic", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.store.CreateAutomation(t.Context(), tickets.Automation{
+		Name:     "nightly-dynamic",
+		Repo:     "owner/dynamic",
+		Preset:   "default",
+		Prompt:   "Check dynamic repo.",
+		Schedule: "0 9 * * *",
+		Timezone: "UTC",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// First poll seeds the cursor; removing the project before the next due
+	// occurrence must block both scheduled polls and manual runs.
+	c.poll(t)
+	if removed, err := c.store.RemoveProject(t.Context(), "owner/dynamic"); err != nil || !removed {
+		t.Fatalf("remove project = %v, %v", removed, err)
+	}
+
+	c.now = time.Date(2026, 3, 1, 9, 0, 10, 0, time.UTC)
+	if err := c.schedule.Poll(t.Context()); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Poll err = %v, want ErrInvalidRequest", err)
+	}
+	if got := c.tickets(t); len(got) != 0 {
+		t.Fatalf("disconnected scheduled poll created tickets: %+v", got)
+	}
+	if _, _, err := c.schedule.RunNow(t.Context(), "nightly-dynamic", "alice", RunOverrides{}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("RunNow err = %v, want ErrInvalidRequest", err)
+	}
+	if got := c.tickets(t); len(got) != 0 {
+		t.Fatalf("disconnected RunNow created tickets: %+v", got)
+	}
+}

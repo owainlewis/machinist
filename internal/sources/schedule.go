@@ -39,6 +39,7 @@ type RunOverrides struct {
 // Schedule starts automation tickets when their cron schedules come due.
 type Schedule struct {
 	Store       *tickets.Store
+	Intake      *Intake
 	Automations []factory.Automation
 	Log         io.Writer
 	// Interval is the time between checks.
@@ -205,6 +206,16 @@ func (s *Schedule) create(ctx context.Context, automation factory.Automation, by
 	repo := overrides.Repo
 	if repo == "" {
 		repo = automation.Repo
+	}
+	if s.Intake != nil {
+		canonical, connected, err := s.Intake.repository(ctx, repo)
+		if err != nil {
+			return tickets.Ticket{}, false, err
+		}
+		if !connected {
+			return tickets.Ticket{}, false, invalid("repository %q is not connected", repo)
+		}
+		repo = canonical
 	}
 	preset := overrides.Preset
 	if preset == "" {
