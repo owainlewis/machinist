@@ -392,20 +392,32 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses, label
 	for index, step := range preset.Steps {
 		steps[index] = preset.EffectiveStep(step)
 	}
+	var checkpoint *protocol.Checkpoint
+	if claim.Run.ResumeFromStep != "" {
+		checkpoint, err = e.Store.RunCheckpoint(ctx, claim.Run.CheckpointRunID)
+		if err != nil {
+			message := "Machinist could not load the saved checkpoint for this run."
+			return nil, e.completeRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
+				return tickets.Transition{State: tickets.StateFailed, Message: message}
+			})
+		}
+	}
 	return &runner.RunRequest{
-		RunID:         claim.Run.ID,
-		TicketID:      claim.Ticket.ID,
-		Preset:        preset.Name,
-		Repository:    claim.Ticket.Repo,
-		Branch:        claim.Ticket.Branch(),
-		Vars:          map[string]string{"repo": claim.Ticket.Repo, "auto_merge": strconv.FormatBool(cfg.autoMerge)},
-		Prompt:        tickets.RenderLog(claim.Entries),
-		Files:         cfg.factory.Files,
-		Steps:         steps,
-		TimeoutMillis: timeout.Milliseconds(),
-		GitName:       gitName,
-		GitEmail:      gitEmail,
-		GitHubToken:   token,
+		RunID:          claim.Run.ID,
+		TicketID:       claim.Ticket.ID,
+		Preset:         preset.Name,
+		Repository:     claim.Ticket.Repo,
+		Branch:         claim.Ticket.Branch(),
+		Vars:           map[string]string{"repo": claim.Ticket.Repo, "auto_merge": strconv.FormatBool(cfg.autoMerge)},
+		Prompt:         tickets.RenderLog(claim.Entries),
+		Files:          cfg.factory.Files,
+		Steps:          steps,
+		TimeoutMillis:  timeout.Milliseconds(),
+		GitName:        gitName,
+		GitEmail:       gitEmail,
+		GitHubToken:    token,
+		ResumeFromStep: claim.Run.ResumeFromStep,
+		Checkpoint:     checkpoint,
 	}, nil
 }
 
@@ -448,6 +460,9 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	if len(completion.Patch) > protocol.MaxPatchBytes {
 		return fmt.Errorf("%w: the patch is larger than %d bytes", ErrInvalidCompletion, protocol.MaxPatchBytes)
 	}
+	if completion.Checkpoint != nil && completion.Checkpoint.SizeBytes() > protocol.MaxPatchBytes {
+		return fmt.Errorf("%w: the checkpoint is larger than %d bytes", ErrInvalidCompletion, protocol.MaxPatchBytes)
+	}
 	reason := completion.Error
 	report := completion.Report
 	if report != nil {
@@ -473,7 +488,19 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	if completion.State == tickets.RunSucceeded {
 		runReport = reached(report, pr)
 	}
-	return e.completeRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: runReport, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages, Patch: completion.Patch}, func(ticket tickets.Ticket, status string) tickets.Transition {
+	failedStep := completion.FailedStep
+	if failedStep == "" && completion.Checkpoint != nil {
+		failedStep = completion.Checkpoint.FailedStep
+	}
+	if failedStep == "" && (completion.State == tickets.RunFailed || completion.State == tickets.RunTimedOut) {
+		for _, stage := range completion.Stages {
+			if stage.State == tickets.RunFailed || stage.State == tickets.RunTimedOut {
+				failedStep = stage.Name
+				break
+			}
+		}
+	}
+	return e.completeRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: runReport, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages, Patch: completion.Patch, FailedStep: failedStep, Checkpoint: completion.Checkpoint}, func(ticket tickets.Ticket, status string) tickets.Transition {
 		transition := decide(status, report, reason, pr)
 		if transition.State == tickets.StateFailed && len(completion.Patch) > 0 {
 			transition.Message = sentence(transition.Message) + " " + PatchSaved

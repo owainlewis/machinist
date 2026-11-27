@@ -39,6 +39,44 @@ type Completion struct {
 	// checks, and to merge it when Ship allows. The runner is free once the
 	// run ends, so no runner waits on CI.
 	Ship *Ship `json:"ship,omitempty"`
+	// FailedStep names the step that failed or timed out, when any.
+	FailedStep string `json:"failed_step,omitempty"`
+	// Checkpoint carries workspace commits, uncommitted changes and control
+	// files saved when a step after checkout fails, so the job can retry from
+	// the failed step.
+	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+}
+
+// CheckpointControlFiles lists the $MACHINIST_DIR control files persisted in a
+// failure checkpoint and restored when retrying from a step.
+var CheckpointControlFiles = []string{
+	"review.json",
+	"first-review.json",
+	"assumptions.md",
+	"merge-gate.json",
+}
+
+// Checkpoint is the workspace state saved when a step after checkout fails,
+// bounded to MaxPatchBytes in total payload size.
+type Checkpoint struct {
+	FailedStep   string            `json:"failed_step"`
+	HeadSHA      string            `json:"head_sha,omitempty"`
+	BaseRef      string            `json:"base_ref,omitempty"`
+	Patch        []byte            `json:"patch,omitempty"`
+	Worktree     []byte            `json:"worktree,omitempty"`
+	ControlFiles map[string]string `json:"control_files,omitempty"`
+}
+
+// SizeBytes returns the total payload size of the checkpoint in bytes.
+func (c *Checkpoint) SizeBytes() int {
+	if c == nil {
+		return 0
+	}
+	total := len(c.FailedStep) + len(c.HeadSHA) + len(c.BaseRef) + len(c.Patch) + len(c.Worktree)
+	for name, body := range c.ControlFiles {
+		total += len(name) + len(body)
+	}
+	return total
 }
 
 // ShipFile is where machinist merge leaves the Ship for the control plane, in
@@ -83,8 +121,11 @@ type GitHubToken struct {
 }
 
 // StageSkipped is the state of a stage that never ran, because an earlier
-// stage ended the run.
-const StageSkipped = "skipped"
+// stage ended the run or was skipped when resuming from a checkpoint.
+const (
+	StageSkipped        = "skipped"
+	StageOutcomeResumed = "resumed"
+)
 
 // StageResult is what one stage of a run produced. State is a runner state or
 // StageSkipped. Outcome is the report outcome of an agent stage.

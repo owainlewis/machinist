@@ -17,8 +17,9 @@ const (
 
 // Report is the one result of every run. A run never asks a person anything.
 type Report struct {
-	Outcome string `json:"outcome"`
-	Summary string `json:"summary"`
+	Outcome    string `json:"outcome"`
+	Summary    string `json:"summary"`
+	FailedStep string `json:"failed_step,omitempty"`
 }
 
 func (r Report) Validate() error {

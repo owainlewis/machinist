@@ -190,9 +190,8 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request, _ string) {
 }
 
 func (s *Server) rerunJob(w http.ResponseWriter, r *http.Request, tokenName string) {
-	ticket, err := s.store.Rerun(r.Context(), r.PathValue("id"), tokenName)
-	if err != nil {
-		writeTicketError(w, err)
+	ticket, ok := s.rerunTicketWithBody(w, r, r.PathValue("id"), tokenName)
+	if !ok {
 		return
 	}
 	if s.engine != nil {

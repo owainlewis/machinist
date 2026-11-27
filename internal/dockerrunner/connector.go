@@ -35,7 +35,7 @@ const (
 	runtimeCheckTimeout   = 30 * time.Second
 	probeTimeout          = 30 * time.Second
 	defaultTailInterval   = 100 * time.Millisecond
-	maxResultBytes        = 1<<20 + 2*protocol.MaxPatchBytes
+	maxResultBytes        = 1<<20 + 3*protocol.MaxPatchBytes
 	maxEventLineBytes     = 1 << 20
 	maxDiagnosticBytes    = 4096
 	defaultNonRootUID     = 1000
