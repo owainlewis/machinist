@@ -63,7 +63,7 @@ func TestLeaderSupervisorMutualExclusionAndCleanHandoff(t *testing.T) {
 
 	ctx1, cancel1 := context.WithCancel(t.Context())
 	done1 := make(chan struct{})
-	go func() { defer close(done1); s1.runLeaderSupervisor(ctx1) }()
+	go func() { defer close(done1); s1.runLeaderSupervisorWithDrain(ctx1, nil) }()
 
 	// Wait for s1 to acquire leadership.
 	select {
@@ -76,7 +76,7 @@ func TestLeaderSupervisorMutualExclusionAndCleanHandoff(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(t.Context())
 	defer cancel2()
 	done2 := make(chan struct{})
-	go func() { defer close(done2); s2.runLeaderSupervisor(ctx2) }()
+	go func() { defer close(done2); s2.runLeaderSupervisorWithDrain(ctx2, nil) }()
 
 	select {
 	case <-s2Started:
@@ -152,7 +152,7 @@ func TestLeaderSupervisorTTLFailoverAndStuckWorkerSkipsRelease(t *testing.T) {
 
 	ctx1, cancel1 := context.WithCancel(t.Context())
 	done1 := make(chan struct{})
-	go func() { defer close(done1); s1.runLeaderSupervisor(ctx1) }()
+	go func() { defer close(done1); s1.runLeaderSupervisorWithDrain(ctx1, nil) }()
 
 	select {
 	case <-s1Started:
@@ -168,7 +168,7 @@ func TestLeaderSupervisorTTLFailoverAndStuckWorkerSkipsRelease(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(t.Context())
 	defer cancel2()
 	done2 := make(chan struct{})
-	go func() { defer close(done2); s2.runLeaderSupervisor(ctx2) }()
+	go func() { defer close(done2); s2.runLeaderSupervisorWithDrain(ctx2, nil) }()
 
 	// s2 should NOT acquire immediately (< 150ms), since s1 skipped ReleaseLease.
 	select {
@@ -217,7 +217,7 @@ func TestLeaderSupervisorStepsDownAtSafetyMarginOnDBError(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan struct{})
-	go func() { defer close(done); s.runLeaderSupervisor(ctx) }()
+	go func() { defer close(done); s.runLeaderSupervisorWithDrain(ctx, nil) }()
 
 	select {
 	case <-started:

@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -131,39 +130,6 @@ case "$method $endpoint" in
 esac
 `
 
-// Comment is a comment to place on the fake repository.
-type Comment struct {
-	ID     int64
-	Author string
-	Body   string
-	Number int
-	OnPR   bool
-}
-
-// Check is one check on a PR's head commit.
-type Check struct {
-	Name       string
-	Status     string
-	Conclusion string
-}
-
-// Review is one submitted PR review.
-type Review struct {
-	ID     string
-	Author string
-	State  string
-}
-
-// PR is the state of a pull request.
-type PR struct {
-	State    string
-	ClosedAt string
-	MergedAt string
-	HeadSHA  string
-	Checks   []Check
-	Reviews  []Review
-}
-
 // Post is a comment the code under test posted.
 type Post struct {
 	Number int
@@ -172,10 +138,8 @@ type Post struct {
 
 // GitHub is one fake repository at owner/repo.
 type GitHub struct {
-	t        testing.TB
-	dir      string
-	mu       sync.Mutex
-	comments []map[string]any
+	t   testing.TB
+	dir string
 }
 
 // Install puts a fake gh first on PATH. The token belongs to login.
@@ -190,7 +154,29 @@ func Install(t testing.TB, login string) *GitHub {
 	github := &GitHub{t: t, dir: dir}
 	github.write("user", map[string]string{"login": login})
 	github.writeText("next-pr", "7\n")
-	github.write("open-pr", prResponse(PR{State: "OPEN", HeadSHA: "abc123"}))
+	github.write("open-pr", map[string]any{
+		"data": map[string]any{
+			"repository": map[string]any{
+				"pullRequest": map[string]any{
+					"state":      "OPEN",
+					"headRefOid": "abc123",
+					"reviews":    map[string]any{"nodes": []map[string]any{}},
+					"commits": map[string]any{
+						"nodes": []map[string]any{{
+							"commit": map[string]any{
+								"statusCheckRollup": map[string]any{
+									"contexts": map[string]any{
+										"nodes":    []map[string]any{},
+										"pageInfo": map[string]bool{"hasNextPage": false},
+									},
+								},
+							},
+						}},
+					},
+				},
+			},
+		},
+	})
 	return github
 }
 
@@ -223,28 +209,6 @@ func (g *GitHub) read(name string) string {
 	return string(body)
 }
 
-// AddComment places a comment on the repository.
-func (g *GitHub) AddComment(comment Comment) {
-	g.t.Helper()
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	kind := "issues"
-	if comment.OnPR {
-		kind = "pull"
-	}
-	g.comments = append(g.comments, map[string]any{
-		"id": comment.ID, "body": comment.Body, "user": map[string]string{"login": comment.Author},
-		"html_url": fmt.Sprintf("https://github.com/owner/repo/%s/%d#issuecomment-%d", kind, comment.Number, comment.ID),
-	})
-	g.write("comments", [][]map[string]any{g.comments})
-}
-
-// SetPermission sets a login's permission on the repository.
-func (g *GitHub) SetPermission(login, permission string) {
-	g.t.Helper()
-	g.write("permission-"+login, map[string]string{"permission": permission})
-}
-
 // SetIssue sets an issue's title and text.
 func (g *GitHub) SetIssue(number int, title, body string) {
 	g.t.Helper()
@@ -273,44 +237,6 @@ func (g *GitHub) SetBranchPR(branch string, number int, state string, fork bool)
 func (g *GitHub) SetBranchPRs(branch string, list []map[string]any) {
 	g.t.Helper()
 	g.write("prlist-"+strings.ReplaceAll(branch, "/", "_"), list)
-}
-
-func prResponse(pr PR) map[string]any {
-	contexts := []map[string]any{}
-	for _, check := range pr.Checks {
-		contexts = append(contexts, map[string]any{"__typename": "CheckRun", "name": check.Name, "status": check.Status, "conclusion": check.Conclusion})
-	}
-	reviews := []map[string]any{}
-	for _, review := range pr.Reviews {
-		reviews = append(reviews, map[string]any{"id": review.ID, "state": review.State, "url": "https://github.com/owner/repo/pull/1#" + review.ID, "author": map[string]string{"login": review.Author}})
-	}
-	response := map[string]any{
-		"state": pr.State, "headRefOid": pr.HeadSHA, "reviews": map[string]any{"nodes": reviews},
-		"commits": map[string]any{"nodes": []map[string]any{{"commit": map[string]any{"statusCheckRollup": map[string]any{"contexts": map[string]any{"nodes": contexts, "pageInfo": map[string]bool{"hasNextPage": false}}}}}}},
-	}
-	if pr.ClosedAt != "" {
-		response["closedAt"] = pr.ClosedAt
-	}
-	if pr.MergedAt != "" {
-		response["mergedAt"] = pr.MergedAt
-	}
-	return map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": response}}}
-}
-
-// SetPR sets what a PR looks like to the follow-up poller.
-func (g *GitHub) SetPR(number int, pr PR) {
-	g.t.Helper()
-	g.write("pr-"+strconv.Itoa(number), prResponse(pr))
-}
-
-// SetCommits sets the author emails of a PR's commits.
-func (g *GitHub) SetCommits(number int, emails ...string) {
-	g.t.Helper()
-	commits := []map[string]any{}
-	for _, email := range emails {
-		commits = append(commits, map[string]any{"commit": map[string]any{"author": map[string]string{"email": email}}})
-	}
-	g.write("commits-"+strconv.Itoa(number), [][]map[string]any{commits})
 }
 
 // SetReviews sets a PR's reviews, as GitHub's REST API lists them.
@@ -383,12 +309,6 @@ func (g *GitHub) Posted() []Post {
 		posts = append(posts, Post{Number: parsed, Body: payload.Body})
 	}
 	return posts
-}
-
-// RefuseMerge makes GitHub refuse to merge a PR, as branch protection does.
-func (g *GitHub) RefuseMerge(number int, message string) {
-	g.t.Helper()
-	g.writeText("merge-refused-"+strconv.Itoa(number), message+"\n")
 }
 
 // SetChecks sets what gh pr checks --json prints, such as a failed check.

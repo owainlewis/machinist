@@ -182,26 +182,6 @@ func (s *Store) QueuedSpecs(ctx context.Context) ([]QueuedSpec, error) {
 	return specs, rows.Err()
 }
 
-// QueuedPresets counts the agent runs no runner has taken yet by the preset
-// of their job.
-func (s *Store) QueuedPresets(ctx context.Context) (map[string]int, error) {
-	rows, err := s.q().QueryContext(ctx, `SELECT t.agent,COUNT(*) FROM runs r JOIN tickets t ON t.id=r.ticket_id WHERE r.status=? AND r.kind=? GROUP BY t.agent`, RunQueued, RunKindAgent)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	presets := map[string]int{}
-	for rows.Next() {
-		var preset string
-		var count int
-		if err := rows.Scan(&preset, &count); err != nil {
-			return nil, err
-		}
-		presets[preset] = count
-	}
-	return presets, rows.Err()
-}
-
 func (s *Store) listRunners(ctx context.Context) ([]Runner, error) {
 	rows, err := s.q().QueryContext(ctx, `SELECT name,kind,harnesses,slots,last_contact,probed FROM runners ORDER BY name`)
 	if err != nil {
