@@ -97,14 +97,10 @@ func (s *Server) onlineRunners(runners []tickets.Runner) []tickets.Runner {
 	return online
 }
 
-// waitingFor names the harnesses that keep every online runner from taking a
-// job of this preset. It is empty when an online runner can take one, when no
-// runner is online, or when the preset is gone, since such a job is claimed
-// only to fail.
-func (s *Server) waitingFor(online []tickets.Runner, presetName string) []string {
-	return waitingForFrom(s.state().factory, online, presetName, "", "")
-}
-
+// waitingForFrom names the harnesses that keep every online runner from taking
+// a job of this preset and ticket-level overrides. It is empty when an online
+// runner can take one, when no runner is online, or when the preset is gone,
+// since such a job is claimed only to fail.
 func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName, harnessName, model string) []string {
 	if loaded == nil {
 		return nil
