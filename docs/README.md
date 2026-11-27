@@ -41,9 +41,3 @@ Start with the [quick start](../README.md#quick-start).
 | [Earlier design](designs/machinist-redesign.md) | Read the GitHub-first design the code still follows |
 | [Examples](../examples/README.md) | See the files `machinist init` installs |
 | [Issue triage demo](issue-triage-demo.md) | See a standalone GitHub Actions demo |
-
-## History
-
-These record earlier decisions, not current setup: [workflow roadmap](workflow-roadmap.md),
-[original factory spec](local-factory/spec.md) and
-[Warp observations](local-factory/warp-evidence.md).
