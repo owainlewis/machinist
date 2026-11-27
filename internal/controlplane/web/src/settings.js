@@ -48,14 +48,63 @@ export function pollLabel(seconds) {
   return rest ? `Every ${minutes}m ${rest}s` : `Every ${minutes}m`;
 }
 
+// tokenKinds lists the role and scope combinations offered when creating a token.
+export const tokenKinds = [
+  {
+    value: "operator",
+    label: "Person (full access)",
+    role: "operator",
+    scope: "",
+    hint: "Signs in to the web app and uses the API, MCP and CLI.",
+  },
+  {
+    value: "operator:run",
+    label: "Bot — run & inspect (MCP / API)",
+    role: "operator",
+    scope: "run",
+    hint: "Lists and inspects jobs, reads output, and starts, reruns or cancels jobs via MCP and the API. Cannot sign in to the web app or manage settings.",
+  },
+  {
+    value: "operator:read",
+    label: "Bot — read-only (MCP / API)",
+    role: "operator",
+    scope: "read",
+    hint: "Lists and inspects jobs, automations, stats and output via MCP and the API. Cannot start, rerun or cancel jobs.",
+  },
+  {
+    value: "runner",
+    label: "Runner",
+    role: "runner",
+    scope: "",
+    hint: "Polls for runs and reports on them.",
+  },
+];
+
+export function tokenKind(value) {
+  return tokenKinds.find(kind => kind.value === value) || tokenKinds[0];
+}
+
 // roleLabel says what a token's role lets it do.
 const roles = {
-  operator: ["Person", "Signs in to the web app and uses the API and CLI."],
+  operator: ["Person", "Signs in to the web app and uses the API, MCP and CLI."],
   runner: ["Runner", "Polls for runs and reports on them."],
   all: ["Person and runner", "Made before roles, so it can do both. Replace it with one of each."],
 };
-export function roleLabel(role) {
+export function roleLabel(role, scope = "") {
+  if (role === "operator" && scope) {
+    return ["Bot", "Scoped bot token for MCP and the API."];
+  }
   return roles[role] || [role, ""];
+}
+
+// scopeLabel describes an operator token's scope badge, or returns null when unscoped.
+const scopes = {
+  run: ["scope: run", "Can list, inspect, start, rerun, and cancel jobs via MCP and the API."],
+  read: ["scope: read", "Read-only access to jobs, automations, stats, and output via MCP and the API."],
+};
+export function scopeLabel(scope = "") {
+  if (!scope) return null;
+  return scopes[scope] || [`scope: ${scope}`, ""];
 }
 
 // tokenLine says how many tokens are active and how many are revoked.

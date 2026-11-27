@@ -12,10 +12,20 @@ export function harnessList(names = []) {
   return `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
 }
 
+// labelList names host labels for a sentence: "label macos", "labels arm64 and macos".
+export function labelList(labels = []) {
+  if (!labels.length) return "";
+  const joined = labels.length < 2 ? labels[0] : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
+  return `${labels.length === 1 ? "label" : "labels"} ${joined}`;
+}
+
 // waitingForRunner says what a queued job waits for: any runner, or one with
-// the harnesses no online runner has.
-export function waitingForRunner(harnesses = []) {
-  return harnesses.length ? `Waiting for a runner with ${harnessList(harnesses)}` : "Waiting for a runner";
+// the harnesses and/or host labels no online runner has.
+export function waitingForRunner(harnesses = [], labels = []) {
+  const parts = [];
+  if (harnesses.length) parts.push(harnessList(harnesses));
+  if (labels.length) parts.push(labelList(labels));
+  return parts.length ? `Waiting for a runner with ${parts.join(" and ")}` : "Waiting for a runner";
 }
 
 // agentSummary says what runs an agent: its model, or the harness's default

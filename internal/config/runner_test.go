@@ -148,3 +148,36 @@ docker:
 		t.Fatalf("harnesses = %q", got)
 	}
 }
+
+func TestLoadRunnerNormalizesAndValidatesLabels(t *testing.T) {
+	runner, _, err := loadRunnerBody(t, runnerBase+"labels: [\"  MacOS-15 \", gpu, macos-15, x86_64.v2]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(runner.Labels, ","); got != "gpu,macos-15,x86_64.v2" {
+		t.Fatalf("labels = %q, want gpu,macos-15,x86_64.v2", got)
+	}
+
+	empty, _, err := loadRunnerBody(t, runnerBase+"labels: []\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.Labels) != 0 {
+		t.Fatalf("empty labels = %v", empty.Labels)
+	}
+
+	for _, bad := range []string{
+		"labels: [\"\"]\n",
+		"labels: [\"   \"]\n",
+		"labels: [-leading-dash]\n",
+		"labels: [.leading-dot]\n",
+		"labels: [_leading_under]\n",
+		"labels: [\"has space\"]\n",
+		"labels: [\"bad/slash\"]\n",
+		"labels: [\"bad,comma\"]\n",
+	} {
+		if _, _, err := loadRunnerBody(t, runnerBase+bad); err == nil || !strings.Contains(err.Error(), "invalid label") {
+			t.Fatalf("%q: err = %v, want invalid label", bad, err)
+		}
+	}
+}

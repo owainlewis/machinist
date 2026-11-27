@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -22,6 +23,7 @@ type RunRequest struct {
 	Preset string            `json:"preset"`
 	Vars   map[string]string `json:"vars"`
 	Prompt string            `json:"prompt"`
+	RunsOn []string          `json:"runs_on,omitempty"`
 	// Origin is where the request came from: tickets.OriginWeb for the web
 	// app, and tickets.OriginAPI otherwise. The caller sets it, not the body.
 	Origin string `json:"-"`
@@ -36,11 +38,15 @@ func (i *Intake) Run(ctx context.Context, request RunRequest, by string) (ticket
 	if extra := unknownVars(request.Vars); len(extra) > 0 {
 		return tickets.Ticket{}, false, invalid("unknown vars: %s", strings.Join(extra, ", "))
 	}
+	runsOn, err := config.NormalizeLabels(request.RunsOn)
+	if err != nil {
+		return tickets.Ticket{}, false, invalid("runs_on: %v", err)
+	}
 	origin := request.Origin
 	if origin == "" {
 		origin = tickets.OriginAPI
 	}
-	return i.start(ctx, start{source: "run", origin: origin, key: "run:" + request.Key, preset: request.Preset, repo: request.Vars[repoVar], prompt: request.Prompt, by: by})
+	return i.start(ctx, start{source: "run", origin: origin, key: "run:" + request.Key, preset: request.Preset, repo: request.Vars[repoVar], prompt: request.Prompt, runsOn: runsOn, by: by})
 }
 
 // start is a job from any source that names its preset, repository and prompt.
@@ -48,6 +54,7 @@ func (i *Intake) Run(ctx context.Context, request RunRequest, by string) (ticket
 // of the original issue or message, if there is one.
 type start struct {
 	source, origin, link, key, preset, repo, prompt, by string
+	runsOn                                              []string
 }
 
 func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, error) {
@@ -83,6 +90,7 @@ func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, er
 		Title:     title(prompt),
 		Body:      prompt,
 		Agent:     job.preset,
+		RunsOn:    job.runsOn,
 		CreatedBy: job.by,
 		SourceKey: job.key,
 	})

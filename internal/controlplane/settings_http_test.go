@@ -478,6 +478,71 @@ func TestCreateAndRegenerateTokensFromTheWebApp(t *testing.T) {
 	}
 }
 
+func TestCreateAndRegenerateScopedBotTokensFromTheWebApp(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+
+	// Create a run-scoped bot token.
+	resp, body := f.call(t, http.MethodPost, "/api/v1/tokens", f.token, map[string]string{
+		"name":  "grokbot",
+		"role":  "operator",
+		"scope": "run",
+	})
+	runCreated := decodeAs[CreatedToken](t, resp.StatusCode, http.StatusCreated, body)
+	if runCreated.Name != "grokbot" || runCreated.Role != "operator" || runCreated.Scope != tickets.ScopeRun || !strings.HasPrefix(runCreated.Token, tickets.TokenPrefix) {
+		t.Fatalf("runCreated = %+v", runCreated)
+	}
+
+	// Create a read-scoped bot token.
+	resp, body = f.call(t, http.MethodPost, "/api/v1/tokens", f.token, map[string]string{
+		"name":  "watcher",
+		"role":  "operator",
+		"scope": "read",
+	})
+	readCreated := decodeAs[CreatedToken](t, resp.StatusCode, http.StatusCreated, body)
+	if readCreated.Name != "watcher" || readCreated.Role != "operator" || readCreated.Scope != tickets.ScopeRead || !strings.HasPrefix(readCreated.Token, tickets.TokenPrefix) {
+		t.Fatalf("readCreated = %+v", readCreated)
+	}
+
+	// GET /api/v1/tokens includes scope on scoped tokens and omits it on unscoped ones.
+	status, listBody := f.get(t, "/api/v1/tokens")
+	type tokenList struct {
+		Tokens []TokenView `json:"tokens"`
+	}
+	list := decodeAs[tokenList](t, status, http.StatusOK, listBody)
+	byName := map[string]TokenView{}
+	for _, token := range list.Tokens {
+		byName[token.Name] = token
+	}
+	if byName["grokbot"].Scope != tickets.ScopeRun || byName["watcher"].Scope != tickets.ScopeRead || byName["runner-1"].Scope != "" {
+		t.Fatalf("tokens = %+v", list.Tokens)
+	}
+
+	// Scoped tokens cannot access admin token routes, and their MCP scopes are enforced.
+	if r, _ := f.call(t, http.MethodGet, "/api/v1/tokens", runCreated.Token, nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("run token on /api/v1/tokens = %d, want 403", r.StatusCode)
+	}
+	if r, _ := f.call(t, http.MethodGet, "/api/v1/tokens", readCreated.Token, nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("read token on /api/v1/tokens = %d, want 403", r.StatusCode)
+	}
+	if res := f.mcpTool(t, readCreated.Token, "get_stats", nil); res.IsError {
+		t.Fatalf("read token get_stats failed: %s", res.Content[0].Text)
+	}
+	if res := f.mcpTool(t, readCreated.Token, "run_job", map[string]any{"repo": "owner/repo", "prompt": "Denied"}); !res.IsError || !strings.Contains(res.Content[0].Text, "scope") {
+		t.Fatalf("read token run_job = %+v, want scope error", res)
+	}
+	if res := f.mcpTool(t, runCreated.Token, "run_job", map[string]any{"repo": "owner/repo", "prompt": "Allowed"}); res.IsError {
+		t.Fatalf("run token run_job failed: %s", res.Content[0].Text)
+	}
+
+	// Regenerating preserves scope.
+	resp, body = f.call(t, http.MethodPost, "/api/v1/tokens/grokbot/regenerate", f.token, nil)
+	regen := decodeAs[CreatedToken](t, resp.StatusCode, http.StatusOK, body)
+	if regen.Token == runCreated.Token || regen.Role != "operator" || regen.Scope != tickets.ScopeRun {
+		t.Fatalf("regen = %+v", regen)
+	}
+}
+
 func TestSettingsRoutesNeedASignIn(t *testing.T) {
 	f := newFixture(t)
 	for _, route := range []struct{ method, path string }{

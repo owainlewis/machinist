@@ -3,6 +3,7 @@ package sources
 import (
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,7 @@ func TestStoredManualAutomationAndRunOverrides(t *testing.T) {
 		Preset:  "default",
 		Harness: "claude",
 		Model:   "opus",
+		RunsOn:  []string{"gpu", "vpc"},
 		Prompt:  "Audit security.",
 	}); err != nil {
 		t.Fatal(err)
@@ -216,10 +218,11 @@ func TestStoredManualAutomationAndRunOverrides(t *testing.T) {
 	if err != nil || len(statuses) != 2 {
 		t.Fatalf("statuses = %+v, err = %v", statuses, err)
 	}
-	if statuses[0].Name != "adhoc-audit" || !statuses[0].Editable || statuses[0].NextDue != nil || statuses[0].Schedule != "" || statuses[0].Harness != "claude" || statuses[0].Model != "opus" {
+	if statuses[0].Name != "adhoc-audit" || !statuses[0].Editable || statuses[0].NextDue != nil || statuses[0].Schedule != "" || statuses[0].Harness != "claude" || statuses[0].Model != "opus" || !slices.Equal(statuses[0].RunsOn, []string{"gpu", "vpc"}) {
 		t.Fatalf("manual status = %+v", statuses[0])
 	}
 
+	// Running without a runs_on override inherits the automation's saved runs_on labels.
 	// Switching harness without specifying model drops the saved model for the old harness.
 	ticket, created, err := c.schedule.RunNow(t.Context(), "adhoc-audit", "alice", RunOverrides{
 		Repo:    "owner/other",
@@ -230,7 +233,7 @@ func TestStoredManualAutomationAndRunOverrides(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("run = %+v, %v, %v", ticket, created, err)
 	}
-	if ticket.Repo != "owner/other" || ticket.Agent != "neon" || ticket.Harness != "codex" || ticket.Model != "" {
+	if ticket.Repo != "owner/other" || ticket.Agent != "neon" || ticket.Harness != "codex" || ticket.Model != "" || !slices.Equal(ticket.RunsOn, []string{"gpu", "vpc"}) {
 		t.Fatalf("ticket overrides = %+v", ticket)
 	}
 }

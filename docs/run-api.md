@@ -20,6 +20,7 @@ curl -sS -X POST "$MACHINIST_URL/machinist/run" \
 | `key` | Your ID for the request, at most 200 bytes. The same key returns the same job, so retries are safe |
 | `preset` | Optional. A preset in the factory. Without one, the job uses `default_preset`, which clones the repository, lets Claude Code do the work and opens one pull request |
 | `vars.repo` | A repository from `github.repositories`. It is the only variable today |
+| `runs_on` | Optional. List of runner labels (e.g. `["macos", "arm64"]`) a runner must advertise to claim the job. Overrides the preset's `runs_on` when set |
 | `prompt` | The work. Its first line is the job's title |
 
 The reply is the job, with `201` when it was created and `200` when the key already had one.

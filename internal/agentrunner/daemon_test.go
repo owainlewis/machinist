@@ -428,3 +428,37 @@ func waitFor(t *testing.T, condition func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func TestDaemonSendsConfiguredLabelsInPoll(t *testing.T) {
+	plane := newFakeControlPlane(fixtureRun)
+	server := httptest.NewServer(plane)
+	t.Cleanup(server.Close)
+	daemon := &Daemon{
+		config: config.Runner{
+			DataDirectory: t.TempDir(),
+			Slots:         1,
+			Labels:        []string{"gpu", "macos"},
+		},
+		client: NewClient(server.URL, "runner-token"),
+		executor: executorFunc(func(context.Context, runner.RunRequest) runner.RunResult {
+			return runner.RunResult{State: runner.StateSucceeded}
+		}),
+		log:               io.Discard,
+		pollInterval:      5 * time.Millisecond,
+		heartbeatInterval: 5 * time.Millisecond,
+		eventInterval:     5 * time.Millisecond,
+		retryInterval:     5 * time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	finished := make(chan struct{})
+	go func() { _ = daemon.Run(ctx); close(finished) }()
+	t.Cleanup(func() { cancel(); <-finished })
+
+	waitDone(t, plane)
+	plane.mu.Lock()
+	labels := plane.poll.Labels
+	plane.mu.Unlock()
+	if got := strings.Join(labels, ","); got != "gpu,macos" {
+		t.Fatalf("poll labels = %q, want gpu,macos", got)
+	}
+}

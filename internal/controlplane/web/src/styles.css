@@ -372,6 +372,8 @@ a.source:hover span { text-decoration: underline; }
 .runner-name { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .runner-harnesses { display: flex; flex-wrap: wrap; gap: 6px; }
 .runner-harness { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-foreground); font-size: 12px; }
+.runner-labels { display: flex; flex-wrap: wrap; gap: 6px; }
+.runner-label { display: inline-flex; align-items: center; padding: 1px 7px; border: 1px solid color-mix(in srgb, var(--info) 28%, var(--border)); border-radius: 999px; background: var(--info-soft); color: var(--foreground); font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; }
 .runner-name strong { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .runner-jobs { margin: 0; padding: 0 16px 12px; list-style: none; }
 .runner-jobs li { display: flex; align-items: center; gap: 16px; border-left: 2px solid var(--border); padding: 4px 0 4px 14px; font-size: 14px; }
@@ -598,7 +600,7 @@ a.source:hover span { text-decoration: underline; }
 .token-confirm .ticket-meta { margin-right: 4px; }
 .token-no-prefix { color: var(--faint); }
 .token-form { display: grid; gap: 14px; }
-.token-form-fields { display: grid; grid-template-columns: minmax(0, 1fr) 200px; align-items: start; gap: 12px; }
+.token-form-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); align-items: start; gap: 12px; }
 .token-form-fields .form-error { margin-top: 6px; font-size: 13px; }
 .token-role-hint { margin-top: 6px; }
 .token-form-actions { display: flex; align-items: center; gap: 8px; }
