@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -19,11 +20,13 @@ const (
 
 // RunRequest starts a job. Any system can send one: a tracker, a schedule or curl.
 type RunRequest struct {
-	Key    string            `json:"key"`
-	Preset string            `json:"preset"`
-	Vars   map[string]string `json:"vars"`
-	Prompt string            `json:"prompt"`
-	RunsOn []string          `json:"runs_on,omitempty"`
+	Key     string            `json:"key"`
+	Preset  string            `json:"preset"`
+	Vars    map[string]string `json:"vars"`
+	Prompt  string            `json:"prompt"`
+	Harness string            `json:"harness,omitempty"`
+	Model   string            `json:"model,omitempty"`
+	RunsOn  []string          `json:"runs_on,omitempty"`
 	// Origin is where the request came from: tickets.OriginWeb for the web
 	// app, and tickets.OriginAPI otherwise. The caller sets it, not the body.
 	Origin string `json:"-"`
@@ -38,6 +41,11 @@ func (i *Intake) Run(ctx context.Context, request RunRequest, by string) (ticket
 	if extra := unknownVars(request.Vars); len(extra) > 0 {
 		return tickets.Ticket{}, false, invalid("unknown vars: %s", strings.Join(extra, ", "))
 	}
+	harnessName := strings.TrimSpace(request.Harness)
+	if err := factory.ValidateHarnessOverride(harnessName); err != nil {
+		return tickets.Ticket{}, false, invalid("%v", err)
+	}
+	model := strings.TrimSpace(request.Model)
 	runsOn, err := config.NormalizeLabels(request.RunsOn)
 	if err != nil {
 		return tickets.Ticket{}, false, invalid("runs_on: %v", err)
@@ -46,15 +54,26 @@ func (i *Intake) Run(ctx context.Context, request RunRequest, by string) (ticket
 	if origin == "" {
 		origin = tickets.OriginAPI
 	}
-	return i.start(ctx, start{source: "run", origin: origin, key: "run:" + request.Key, preset: request.Preset, repo: request.Vars[repoVar], prompt: request.Prompt, runsOn: runsOn, by: by})
+	return i.start(ctx, start{
+		source:  "run",
+		origin:  origin,
+		key:     "run:" + request.Key,
+		preset:  request.Preset,
+		repo:    request.Vars[repoVar],
+		prompt:  request.Prompt,
+		harness: harnessName,
+		model:   model,
+		runsOn:  runsOn,
+		by:      by,
+	})
 }
 
 // start is a job from any source that names its preset, repository and prompt.
 // origin is where it came from, such as web or linear, and link is the URL
 // of the original issue or message, if there is one.
 type start struct {
-	source, origin, link, key, preset, repo, prompt, by string
-	runsOn                                              []string
+	source, origin, link, key, preset, repo, prompt, harness, model, by string
+	runsOn                                                              []string
 }
 
 func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, error) {
@@ -90,6 +109,8 @@ func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, er
 		Title:     title(prompt),
 		Body:      prompt,
 		Agent:     job.preset,
+		Harness:   job.harness,
+		Model:     job.model,
 		RunsOn:    job.runsOn,
 		CreatedBy: job.by,
 		SourceKey: job.key,
