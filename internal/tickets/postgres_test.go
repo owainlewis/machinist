@@ -104,8 +104,9 @@ func TestPostgresMigrationsIdempotent(t *testing.T) {
 	if err := store1.q().QueryRowContext(t.Context(), `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if version != 1 {
-		t.Fatalf("schema_migrations version = %d, want 1", version)
+	want := postgresMigrations[len(postgresMigrations)-1].version
+	if version != want {
+		t.Fatalf("schema_migrations version = %d, want %d", version, want)
 	}
 }
 

@@ -55,9 +55,9 @@ const (
 )
 
 var (
-	ErrNotFound     = errors.New("not found")
-	ErrRunNotActive = errors.New("run is not active")
-	ErrTicketEnded  = errors.New("ticket has ended")
+	ErrNotFound         = errors.New("not found")
+	ErrRunNotActive     = errors.New("run is not active")
+	ErrTicketEnded      = errors.New("ticket has ended")
 	ErrNotWorking       = errors.New("ticket is not working")
 	ErrTokenExists      = errors.New("an active token with this name exists")
 	ErrAutomationExists = errors.New("an automation with this name already exists")
