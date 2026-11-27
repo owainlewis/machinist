@@ -11,9 +11,9 @@ import (
 func TestCheckTripwireCleanChangePasses(t *testing.T) {
 	git := func(_ context.Context, stdout io.Writer, args ...string) (string, error) {
 		switch {
-		case len(args) >= 2 && args[0] == "diff" && args[1] == "--name-only":
+		case len(args) >= 3 && args[0] == "diff" && args[1] == "--no-renames" && args[2] == "--name-only":
 			_, _ = io.WriteString(stdout, "pkg/math/multiply.go\npkg/math/multiply_test.go\n")
-		case len(args) >= 2 && args[0] == "diff" && args[1] == "--unified=0":
+		case len(args) >= 3 && args[0] == "diff" && args[1] == "--no-renames" && args[2] == "--unified=0":
 			_, _ = io.WriteString(stdout, "+++ b/pkg/math/multiply_test.go\n+func TestMultiply(t *testing.T) {}\n")
 		default:
 			t.Fatalf("unexpected git call: %v", args)
@@ -32,15 +32,17 @@ func TestCheckTripwireCleanChangePasses(t *testing.T) {
 func TestCheckTripwireCatchesProtectedPathsAndSkippedTests(t *testing.T) {
 	git := func(_ context.Context, stdout io.Writer, args ...string) (string, error) {
 		switch {
-		case len(args) >= 2 && args[0] == "diff" && args[1] == "--name-only":
+		case len(args) >= 3 && args[0] == "diff" && args[1] == "--no-renames" && args[2] == "--name-only":
 			_, _ = io.WriteString(stdout, strings.Join([]string{
 				".github/workflows/ci.yml",
+				"ci.yml.disabled",
 				".machinist/merge-policy.md",
 				"db/migrations/004_drop_users.sql",
 				"pkg/calc/calc_test.go",
 				"web/app.test.js",
+				"src/lib.rs",
 			}, "\n")+"\n")
-		case len(args) >= 2 && args[0] == "diff" && args[1] == "--unified=0":
+		case len(args) >= 3 && args[0] == "diff" && args[1] == "--no-renames" && args[2] == "--unified=0":
 			_, _ = io.WriteString(stdout, strings.Join([]string{
 				"--- a/pkg/calc/calc_test.go",
 				"+++ b/pkg/calc/calc_test.go",
@@ -51,6 +53,10 @@ func TestCheckTripwireCatchesProtectedPathsAndSkippedTests(t *testing.T) {
 				"+++ b/web/app.test.js",
 				"@@ -5,0 +6 @@",
 				"+test.skip('broken', () => {});",
+				"--- a/src/lib.rs",
+				"+++ b/src/lib.rs",
+				"@@ -20,0 +21 @@",
+				"+#[ignore]",
 			}, "\n")+"\n")
 		default:
 			t.Fatalf("unexpected git call: %v", args)
@@ -67,6 +73,7 @@ func TestCheckTripwireCatchesProtectedPathsAndSkippedTests(t *testing.T) {
 		"modifies migration db/migrations/004_drop_users.sql",
 		"skips tests in pkg/calc/calc_test.go (t.Skip)",
 		"skips tests in web/app.test.js (test.skip)",
+		"skips tests in src/lib.rs (#[ignore])",
 	}
 	if strings.Join(findings, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("findings =\n%s\nwant:\n%s", strings.Join(findings, "\n"), strings.Join(want, "\n"))

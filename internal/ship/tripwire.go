@@ -47,7 +47,10 @@ func CheckTripwire(ctx context.Context, git Git, base string) ([]string, error) 
 		base = "origin/HEAD"
 	}
 	diffRange := base + "...HEAD"
-	namesOut, err := gitOutput(ctx, git, "diff", "--name-only", diffRange)
+	// Disable rename detection so renaming a protected file out of its folder
+	// (e.g. .github/workflows/ci.yml -> ci.yml.disabled) still surfaces the
+	// protected source path as a deletion.
+	namesOut, err := gitOutput(ctx, git, "diff", "--no-renames", "--name-only", diffRange)
 	if err != nil {
 		return nil, fmt.Errorf("tripwire could not inspect changed files: %w", err)
 	}
@@ -58,15 +61,15 @@ func CheckTripwire(ctx context.Context, git Git, base string) ([]string, error) 
 		if path == "" {
 			continue
 		}
-		if reason := protectedPathReason(path); reason != "" {
+		if reason := protectedPathReason(path); reason != "" && !slices.Contains(findings, reason) {
 			findings = append(findings, reason)
 		}
-		if isTestFile(path) {
+		if isTestFile(path) && !slices.Contains(testFiles, path) {
 			testFiles = append(testFiles, path)
 		}
 	}
 	if len(testFiles) > 0 {
-		args := append([]string{"diff", "--unified=0", "--no-color", diffRange, "--"}, testFiles...)
+		args := append([]string{"diff", "--no-renames", "--unified=0", "--no-color", diffRange, "--"}, testFiles...)
 		patchOut, err := gitOutput(ctx, git, args...)
 		if err != nil {
 			return nil, fmt.Errorf("tripwire could not inspect test diff: %w", err)
@@ -136,7 +139,7 @@ func isTestFile(path string) bool {
 		strings.Contains(base, ".spec.") ||
 		(strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py")) ||
 		strings.HasSuffix(base, "_test.py") ||
-		strings.HasSuffix(base, "_test.rs")
+		strings.HasSuffix(base, ".rs")
 }
 
 func findSkippedTests(patch string) []string {
