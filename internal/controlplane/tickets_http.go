@@ -413,11 +413,11 @@ func (s *Server) validateAutomationInput(r *http.Request, name string, req autom
 	schedule := strings.TrimSpace(req.Schedule)
 	timezone := strings.TrimSpace(req.Timezone)
 	if schedule != "" {
-		if _, err := triggers.ParseCron(schedule, timezone); err != nil {
-			return tickets.Automation{}, http.StatusBadRequest, err
-		}
 		if timezone == "" {
 			timezone = "UTC"
+		}
+		if _, err := triggers.ParseCron(schedule, timezone); err != nil {
+			return tickets.Automation{}, http.StatusBadRequest, err
 		}
 	} else if timezone != "" {
 		return tickets.Automation{}, http.StatusBadRequest, errors.New("timezone requires schedule")

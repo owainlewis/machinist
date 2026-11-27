@@ -98,7 +98,11 @@ func (s *Schedule) allAutomations(ctx context.Context) ([]resolvedAutomation, er
 			}
 			var cron *triggers.Cron
 			if strings.TrimSpace(a.Schedule) != "" {
-				parsed, err := triggers.ParseCron(a.Schedule, a.Timezone)
+				tz := strings.TrimSpace(a.Timezone)
+				if tz == "" {
+					tz = "UTC"
+				}
+				parsed, err := triggers.ParseCron(a.Schedule, tz)
 				if err != nil {
 					fmt.Fprintf(s.Log, "machinist: schedule: %s: %v\n", a.Name, err)
 				} else {

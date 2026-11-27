@@ -509,17 +509,16 @@ func TestAutomationCRUDAndRunOverrides(t *testing.T) {
 		t.Fatalf("fileItem = %+v", fileItem)
 	}
 
-	// Update UI automation; reject editing or deleting file automation.
+	// Update UI automation (omitting timezone defaults cleanly to UTC); reject editing or deleting file automation.
 	resp, body = f.call(t, http.MethodPut, "/api/v1/automations/codex-audit", f.token, map[string]string{
 		"repo":     "owner/other",
 		"preset":   "default",
 		"harness":  "claude",
 		"model":    "opus",
 		"schedule": "0 8 * * 1-5",
-		"timezone": "UTC",
 		"prompt":   "Updated audit prompt.",
 	})
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"timezone":"UTC"`) {
 		t.Fatalf("update = %d %s", resp.StatusCode, body)
 	}
 	if resp, body := f.call(t, http.MethodPut, "/api/v1/automations/from-file", f.token, map[string]string{
