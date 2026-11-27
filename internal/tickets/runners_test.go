@@ -212,7 +212,7 @@ func TestRemoveRunnerForgetsAnIdleOfflineRunner(t *testing.T) {
 	}
 }
 
-func TestQueuedPresetsCountsWaitingRunsByPreset(t *testing.T) {
+func TestQueuedSpecsCountsWaitingRunsByPreset(t *testing.T) {
 	store := openStore(t)
 	claimRun(t, store, createTicket(t, store, "api:1"))
 	for _, key := range []string{"api:2", "api:3"} {
@@ -229,12 +229,16 @@ func TestQueuedPresetsCountsWaitingRunsByPreset(t *testing.T) {
 	if _, err := store.QueueRun(t.Context(), ticket.ID, "steps"); err != nil {
 		t.Fatal(err)
 	}
-	presets, err := store.QueuedPresets(t.Context())
+	specs, err := store.QueuedSpecs(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
+	presets := map[string]int{}
+	for _, spec := range specs {
+		presets[spec.Preset] += spec.Waiting
+	}
 	preset := request("api:5").Agent
 	if len(presets) != 2 || presets[preset] != 2 || presets["review"] != 1 {
-		t.Fatalf("presets = %v", presets)
+		t.Fatalf("specs = %+v", specs)
 	}
 }

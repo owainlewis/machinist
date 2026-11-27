@@ -54,11 +54,12 @@ Focused commands are also available:
 ```sh
 just test
 python3 -m unittest discover -s deploy/kubernetes -p 'test_*.py'
+python3 -m unittest discover -s deploy/cloudrun -p 'test_*.py'
 (cd internal/controlplane/web && npm test)
 go test ./internal/runner
 ```
 
-CI requires `check`, `Linux checks`, and `macOS checks` on the current PR
+CI requires `check`, `Linux checks`, `macOS checks`, and `PostgreSQL 16 tests` on the current PR
 revision. Run frontend builds before Go checks, not concurrently: Go embeds
 `web/dist`, so replacing that directory during a build can race file discovery.
 For infrastructure changes, distinguish fake-client tests from live cluster proof.
@@ -69,7 +70,7 @@ Never put runtime archives or authentication files in build contexts.
 New tests use fake `claude` and `gh` commands. `internal/fakegh` is the fake `gh`.
 `internal/e2e` runs the real control plane and a real local runner, with the shipped
 presets. `internal/agentrunner/conformance_test.go` runs one
-suite on both runner types. On Kubernetes only `kubectl` is fake. It reads the real Job manifest
+suite on local, Docker, and Kubernetes runners. On Kubernetes only `kubectl` is fake. It reads the real Job manifest
 and starts the real sandbox code.
 
 ## Project layout
