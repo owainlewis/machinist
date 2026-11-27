@@ -112,6 +112,31 @@ func TestAssignBuildsTheRunRequest(t *testing.T) {
 	}
 }
 
+func TestAssignPassesTicketVarsAsRunRequestInputs(t *testing.T) {
+	e := newEngine(t)
+	ticket, created, err := e.Store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source:    "run",
+		Origin:    tickets.OriginAPI,
+		Repo:      "owner/repo",
+		Title:     "Deploy",
+		Body:      "Deploy staging",
+		Agent:     "default",
+		Vars:      map[string]string{"environment": "staging", "branch": "release/1", "empty": ""},
+		CreatedBy: "alice",
+		SourceKey: "run:deploy-1",
+	})
+	if err != nil || !created {
+		t.Fatalf("CreateTicket = %+v, %v, %v", ticket, created, err)
+	}
+	request := assignRun(t, e)
+	if request.Vars["repo"] != "owner/repo" || request.Vars["auto_merge"] != "false" || len(request.Vars) != 2 {
+		t.Fatalf("request.Vars = %+v, want only repo and auto_merge", request.Vars)
+	}
+	if request.Inputs["environment"] != "staging" || request.Inputs["branch"] != "release/1" || request.Inputs["empty"] != "" || len(request.Inputs) != 3 {
+		t.Fatalf("request.Inputs = %+v", request.Inputs)
+	}
+}
+
 func TestAssignGivesTheRunATokenForItsRepository(t *testing.T) {
 	e := newEngine(t)
 	asked := ""

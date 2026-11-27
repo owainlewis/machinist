@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -36,6 +37,8 @@ type RunOverrides struct {
 	OverrideModel   bool
 	RunsOn          []string
 	OverrideRunsOn  bool
+	Vars            map[string]string
+	OverrideVars    bool
 }
 
 // Schedule starts automation tickets when their cron schedules come due.
@@ -119,6 +122,7 @@ func (s *Schedule) allAutomations(ctx context.Context) ([]resolvedAutomation, er
 					Harness: a.Harness,
 					Model:   a.Model,
 					RunsOn:  slices.Clone(a.RunsOn),
+					Vars:    maps.Clone(a.Vars),
 					Prompt:  a.Prompt,
 					Cron:    cron,
 				},
@@ -243,6 +247,26 @@ func (s *Schedule) create(ctx context.Context, automation factory.Automation, by
 	if overrides.OverrideRunsOn {
 		runsOn = overrides.RunsOn
 	}
+	vars := maps.Clone(automation.Vars)
+	if overrides.OverrideVars {
+		vars = maps.Clone(overrides.Vars)
+	} else if overrides.Preset != "" && overrides.Preset != automation.Preset {
+		vars = nil
+	}
+	if s.Intake != nil {
+		_, presets := s.Intake.presetConfig()
+		if presets != nil {
+			loadedPreset, ok := presets(preset)
+			if !ok {
+				return tickets.Ticket{}, false, invalid("preset %q does not exist", preset)
+			}
+			resolvedVars, err := loadedPreset.ResolveVars(vars)
+			if err != nil {
+				return tickets.Ticket{}, false, invalid("%v", err)
+			}
+			vars = resolvedVars
+		}
+	}
 	return s.Store.CreateTicket(ctx, tickets.NewTicket{
 		Source:    source(automation),
 		Origin:    tickets.OriginSchedule,
@@ -253,6 +277,7 @@ func (s *Schedule) create(ctx context.Context, automation factory.Automation, by
 		Harness:   harnessName,
 		Model:     model,
 		RunsOn:    runsOn,
+		Vars:      vars,
 		CreatedBy: by,
 		SourceKey: "schedule:" + automation.Name + ":" + occurrence,
 	})
@@ -282,18 +307,19 @@ type LastTicket struct {
 
 // AutomationStatus is one automation as the UI shows it.
 type AutomationStatus struct {
-	Name       string      `json:"name"`
-	Repo       string      `json:"repo"`
-	Agent      string      `json:"agent"`
-	Harness    string      `json:"harness,omitempty"`
-	Model      string      `json:"model,omitempty"`
-	RunsOn     []string    `json:"runs_on,omitempty"`
-	Schedule   string      `json:"schedule"`
-	Timezone   string      `json:"timezone"`
-	NextDue    *time.Time  `json:"next_due,omitempty"`
-	Prompt     string      `json:"prompt"`
-	Editable   bool        `json:"editable"`
-	LastTicket *LastTicket `json:"last_ticket,omitempty"`
+	Name       string            `json:"name"`
+	Repo       string            `json:"repo"`
+	Agent      string            `json:"agent"`
+	Harness    string            `json:"harness,omitempty"`
+	Model      string            `json:"model,omitempty"`
+	RunsOn     []string          `json:"runs_on,omitempty"`
+	Vars       map[string]string `json:"vars,omitempty"`
+	Schedule   string            `json:"schedule"`
+	Timezone   string            `json:"timezone"`
+	NextDue    *time.Time        `json:"next_due,omitempty"`
+	Prompt     string            `json:"prompt"`
+	Editable   bool              `json:"editable"`
+	LastTicket *LastTicket       `json:"last_ticket,omitempty"`
 }
 
 // Status lists each automation with its next due time and last ticket.
@@ -312,6 +338,7 @@ func (s *Schedule) Status(ctx context.Context) ([]AutomationStatus, error) {
 			Harness:  automation.Harness,
 			Model:    automation.Model,
 			RunsOn:   slices.Clone(automation.RunsOn),
+			Vars:     maps.Clone(automation.Vars),
 			Prompt:   automation.Prompt,
 			Editable: item.editable,
 		}

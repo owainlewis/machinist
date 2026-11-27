@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -306,7 +307,12 @@ type polling struct {
 func newPolling(t *testing.T) *polling {
 	t.Helper()
 	intake, _ := newIntake(t)
-	intake.Presets = func(name string) bool { return name == "default" }
+	intake.Presets = func(name string) (factory.Preset, bool) {
+		if name == "default" {
+			return factory.Preset{Name: "default"}, true
+		}
+		return factory.Preset{}, false
+	}
 	fake := &fakeLinear{comments: map[string][]string{}}
 	server := httptest.NewServer(fake)
 	t.Cleanup(server.Close)

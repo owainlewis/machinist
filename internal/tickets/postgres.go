@@ -285,6 +285,13 @@ var postgresMigrations = []postgresMigration{
   control_files TEXT NOT NULL DEFAULT '')`,
 		},
 	},
+	{
+		version: 5,
+		statements: []string{
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS vars TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE automations ADD COLUMN IF NOT EXISTS vars TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 func postgresMaxOpenConns() (int, error) {

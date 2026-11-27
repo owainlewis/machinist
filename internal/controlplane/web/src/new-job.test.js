@@ -3,7 +3,7 @@ import test from "node:test";
 import React, { act } from "react";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
-import { canStart, harnessOptionLabel, initialPreset, keyFor, modelPlaceholder, newJobKey, runRequest, supportedHarnesses, titleOf } from "./new-job.js";
+import { canStart, harnessOptionLabel, initialInputValues, initialPreset, keyFor, modelPlaceholder, newJobKey, presetInputs, runRequest, supportedHarnesses, titleOf } from "./new-job.js";
 
 test("a new job is a run API request with a key of its own", () => {
   assert.equal(newJobKey(() => "abc"), "ui-abc");
@@ -67,6 +67,30 @@ test("a retry of the same fields keeps its key and an edit gets a new one", () =
   assert.equal(withModel.key, "ui-4");
 });
 
+test("presetInputs, initialInputValues, canStart and runRequest handle declared preset inputs", () => {
+  const deploy = {
+    name: "deploy",
+    inputs: {
+      region: { description: "AWS region", default: "us-east-1" },
+      environment: { description: "Target environment" },
+      notes: { description: "Optional notes", default: "" },
+    },
+  };
+  const declared = presetInputs(deploy);
+  assert.deepEqual(declared, [
+    { name: "environment", description: "Target environment", default: undefined, required: true },
+    { name: "notes", description: "Optional notes", default: "", required: false },
+    { name: "region", description: "AWS region", default: "us-east-1", required: false },
+  ]);
+  assert.deepEqual(initialInputValues(deploy), { environment: "", notes: "", region: "us-east-1" });
+  assert.equal(canStart({ preset: "deploy", repo: "owner/repo", prompt: "Deploy", inputs: { environment: "", region: "us-east-1" }, presetInputs: declared }), false);
+  assert.equal(canStart({ preset: "deploy", repo: "owner/repo", prompt: "Deploy", inputs: { environment: "staging", region: "us-east-1" }, presetInputs: declared }), true);
+  assert.deepEqual(
+    runRequest({ key: "ui-1", preset: "deploy", repo: "owner/repo", prompt: "Deploy", inputs: { environment: "staging", notes: "", region: "eu-west-1" }, presetInputs: declared }),
+    { key: "ui-1", preset: "deploy", vars: { repo: "owner/repo", environment: "staging", notes: "", region: "eu-west-1" }, prompt: "Deploy" },
+  );
+});
+
 test("harness labels show online status and model placeholders match the selected harness", () => {
   assert.deepEqual(supportedHarnesses, ["agy", "claude", "codex", "pi"]);
   assert.equal(harnessOptionLabel("claude", new Set()), "Claude Code");
@@ -99,6 +123,77 @@ function setupDOM() {
     },
   };
 }
+
+test("NewJobPage renders declared preset inputs, enforces required fields, and posts them in vars", { timeout: 30000 }, async context => {
+  const { dom, cleanup } = setupDOM();
+  const posted = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === "/api/v1/presets") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          default: "default",
+          presets: [
+            { name: "default", description: "Default.", steps: [{ name: "work", agents: [] }] },
+            {
+              name: "deploy",
+              description: "Deploy service.",
+              inputs: {
+                environment: { description: "Target env" },
+                region: { description: "AWS region", default: "us-east-1" },
+              },
+              steps: [{ name: "deploy", agents: [] }],
+            },
+          ],
+        }),
+      };
+    }
+    if (url === "/api/v1/repositories") {
+      return { ok: true, status: 200, json: async () => ({ repositories: ["owner/repo"] }) };
+    }
+    if (url === "/api/v1/runners") {
+      return { ok: true, status: 200, json: async () => ({ runners: [] }) };
+    }
+    if (url === "/machinist/run" && options.method === "POST") {
+      posted.push(JSON.parse(options.body));
+      return { ok: true, status: 201, json: async () => ({ id: "t_deploy1" }) };
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root"));
+  context.after(async () => {
+    await act(async () => root.unmount());
+    await server.close();
+    cleanup();
+  });
+  const { NewJobPage } = await server.ssrLoadModule("/src/new-job-page.jsx");
+  await act(async () => root.render(React.createElement(NewJobPage, { onSignedOut() {} })));
+  await eventually(() => assert.ok(document.querySelector("#new-job-preset")));
+
+  // Default preset declares no inputs.
+  assert.equal(document.querySelector(".preset-inputs"), null);
+
+  // Switch to deploy preset: inputs render with default pre-filled and required marked.
+  await choose("#new-job-preset", "deploy");
+  assert.ok(document.querySelector(".preset-inputs"));
+  assert.equal(document.querySelector("#new-job-input-region").value, "us-east-1");
+  assert.equal(document.querySelector("#new-job-input-environment").required, true);
+  assert.equal(document.querySelector("#new-job-input-region").required, false);
+
+  await type("#new-job-prompt", "Deploy release");
+  const submitBtn = () => document.querySelector('form button[type="submit"]');
+  assert.equal(submitBtn().disabled, true, "required input environment is still empty");
+
+  await type("#new-job-input-environment", "staging");
+  assert.equal(submitBtn().disabled, false);
+
+  await act(async () => submitBtn().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.equal(posted.length, 1));
+  assert.deepEqual(posted[0].vars, { repo: "owner/repo", environment: "staging", region: "us-east-1" });
+});
 
 test("NewJobPage lets you pick an optional harness and model and clears model when switching harness", { timeout: 30000 }, async context => {
   const { cleanup } = setupDOM();
