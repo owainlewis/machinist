@@ -46,18 +46,19 @@ type fakeGHComment struct {
 
 // fakeGitHub serves the GitHub REST API endpoints used by GitHubIssues.
 type fakeGitHub struct {
-	mu             sync.Mutex
-	issues         map[string]*fakeGHStoredIssue // key: "owner/repo#N"
-	comments       []fakeGHComment
-	nextCommentID  int64
-	authHeaders    []string
-	rateLimitCode  int
-	rateLimitHdr   map[string]string
-	endlessReplies bool
-	issuePageSize  int
-	closeCalls     int
-	labelAdds      int
-	labelRemoves   int
+	mu              sync.Mutex
+	issues          map[string]*fakeGHStoredIssue // key: "owner/repo#N"
+	comments        []fakeGHComment
+	nextCommentID   int64
+	authHeaders     []string
+	rateLimitCode   int
+	rateLimitHdr    map[string]string
+	endlessReplies  bool
+	issuePageSize   int
+	closeCalls      int
+	commentsQueries int
+	labelAdds       int
+	labelRemoves    int
 }
 
 func newFakeGitHub() *fakeGitHub {
@@ -148,6 +149,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// GET /repos/{owner}/{name}/issues/comments
 	if r.Method == http.MethodGet && len(rest) == 2 && rest[0] == "issues" && rest[1] == "comments" {
+		f.commentsQueries++
 		since, _ := time.Parse(time.RFC3339, r.URL.Query().Get("since"))
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		if page <= 0 {
@@ -599,7 +601,7 @@ func TestGitHubIssuesFailReturnAndFollowUpReplies(t *testing.T) {
 	// Pre-job comment must be ignored.
 	p.fake.addComment("owner/repo", 20, "alice", "Old discussion before job", job.CreatedAt.Add(-30*time.Second))
 
-	// Fail the job -> removes trigger label and in-progress label, comments reason once.
+	// Fail the job -> removes only in-progress label (keeping trigger label so replies work), comments reason once.
 	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: "Tests failed in pkg/foo"}); err != nil {
 		t.Fatal(err)
 	}
@@ -609,8 +611,8 @@ func TestGitHubIssuesFailReturnAndFollowUpReplies(t *testing.T) {
 	if iss.state != "open" {
 		t.Fatalf("failed issue should remain open, got %q", iss.state)
 	}
-	if slices.Contains(iss.labels, "machinist") || slices.Contains(iss.labels, "in-progress") {
-		t.Fatalf("expected labels removed on Fail, got %v", iss.labels)
+	if !slices.Contains(iss.labels, "machinist") || slices.Contains(iss.labels, "in-progress") {
+		t.Fatalf("expected trigger label kept and in-progress label removed on Fail, got %v", iss.labels)
 	}
 	comments := p.fake.issueComments("owner/repo", 20)
 	if len(comments) != 3 || !strings.Contains(comments[2], "Tests failed in pkg/foo") {
@@ -775,6 +777,259 @@ func TestGitHubIssuesPaginationMultiRepoTokenForAndRateLimit(t *testing.T) {
 	p.fake.mu.Unlock()
 	if _, err := p.tracker.Replies(t.Context(), p.now.Add(-time.Hour), time.Time{}); !errors.Is(err, ErrTooManyReplies) {
 		t.Fatalf("endless replies err = %v, want ErrTooManyReplies", err)
+	}
+}
+
+func TestGitHubIssuesRepliesIgnoreClosedUnlabeledAndPRComments(t *testing.T) {
+	p := newGHPolling(t, "owner/repo")
+	p.tracker.InProgressLabel = "in-progress"
+	p.poll(t)
+
+	// Start and finish a job via merged PR so the issue is closed and unlabeled.
+	p.now = p.now.Add(time.Minute)
+	p.fake.addIssue("owner/repo", 40, "Ship patch", "Details", "machinist", "alice", p.now)
+	p.poll(t)
+	job := p.tickets(t)[0]
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 77}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := p.store.Ticket(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.store.SetPRState(t.Context(), listed, tickets.PRUpdate{Number: 77, State: tickets.PRMerged, At: p.now}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+
+	iss40 := p.fake.issues["owner/repo#40"]
+	if iss40.state != "closed" || len(iss40.labels) != 0 {
+		t.Fatalf("expected closed unlabeled issue after Finish, got state=%q labels=%v", iss40.state, iss40.labels)
+	}
+	commentsBefore := len(p.fake.issueComments("owner/repo", 40))
+
+	// 1. Repo has no open labeled issues: comments endpoint must be skipped and
+	// an allowed user's comment on the closed issue must not restart the job.
+	p.fake.mu.Lock()
+	queriesBefore := p.fake.commentsQueries
+	p.fake.mu.Unlock()
+
+	p.now = p.now.Add(time.Minute)
+	p.fake.addComment("owner/repo", 40, "alice", "Thanks, looks great!", p.now)
+	p.poll(t)
+	p.poll(t)
+
+	p.fake.mu.Lock()
+	queriesAfter := p.fake.commentsQueries
+	p.fake.mu.Unlock()
+	if queriesAfter != queriesBefore {
+		t.Fatalf("comments endpoint queried %d times with no open labeled issues, want 0", queriesAfter-queriesBefore)
+	}
+	gotJob, err := p.store.Ticket(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotJob.State != tickets.StateDone || gotJob.PRNumber != 77 || gotJob.PRState != tickets.PRMerged {
+		t.Fatalf("comment on closed issue altered finished job: %+v", gotJob)
+	}
+	if iss40.state != "closed" || len(iss40.labels) != 0 {
+		t.Fatalf("comment on closed issue mutated issue state=%q labels=%v", iss40.state, iss40.labels)
+	}
+	// Only the human comment was added; no start comment was posted.
+	if got := len(p.fake.issueComments("owner/repo", 40)); got != commentsBefore+1 {
+		t.Fatalf("unexpected Machinist comments on closed issue: %v", p.fake.issueComments("owner/repo", 40))
+	}
+
+	// 2. When another open labeled issue exists in the repo, the comments endpoint
+	// is queried, but comments on closed issues, unlabeled open issues, and PRs
+	// carrying the label are still excluded by Replies.
+	p.now = p.now.Add(time.Minute)
+	p.fake.addIssue("owner/repo", 41, "Active issue", "Body", "machinist", "alice", p.now)
+	unlabeled := p.fake.addIssue("owner/repo", 42, "Unlabeled issue", "Body", "bug", "alice", p.now)
+	unlabeled.labels = []string{"bug"}
+	pr := p.fake.addIssue("owner/repo", 43, "Labeled PR", "Body", "machinist", "alice", p.now)
+	pr.isPR = true
+	p.poll(t)
+
+	p.fake.mu.Lock()
+	queriesBefore = p.fake.commentsQueries
+	p.fake.mu.Unlock()
+
+	p.now = p.now.Add(time.Minute)
+	p.fake.addComment("owner/repo", 40, "alice", "Follow-up chatter on closed issue", p.now)
+	p.fake.addComment("owner/repo", 42, "alice", "Comment on unlabeled issue", p.now.Add(time.Second))
+	p.fake.addComment("owner/repo", 43, "alice", "Comment on labeled PR", p.now.Add(2*time.Second))
+	p.poll(t)
+	p.poll(t)
+
+	p.fake.mu.Lock()
+	queriesAfter = p.fake.commentsQueries
+	p.fake.mu.Unlock()
+	if queriesAfter <= queriesBefore {
+		t.Fatalf("expected comments endpoint to be queried when an open labeled issue exists")
+	}
+	gotJob, err = p.store.Ticket(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotJob.State != tickets.StateDone || gotJob.PRNumber != 77 || gotJob.PRState != tickets.PRMerged {
+		t.Fatalf("comment on closed issue altered finished job when another issue was active: %+v", gotJob)
+	}
+	if iss40.state != "closed" || len(iss40.labels) != 0 {
+		t.Fatalf("closed issue was mutated: state=%q labels=%v", iss40.state, iss40.labels)
+	}
+	replies, err := p.tracker.Replies(t.Context(), p.now.Add(-time.Second), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replies) != 0 {
+		t.Fatalf("expected no replies for closed/unlabeled/PR issues, got %+v", replies)
+	}
+}
+
+func TestGitHubIssuesCancelWithCommentDoesNotResurrect(t *testing.T) {
+	t.Run("unlabel active issue and comment in same poll window", func(t *testing.T) {
+		p := newGHPolling(t, "owner/repo")
+		p.tracker.InProgressLabel = "in-progress"
+		p.poll(t)
+
+		p.now = p.now.Add(time.Minute)
+		p.fake.addIssue("owner/repo", 50, "Cancel me", "Body", "machinist", "alice", p.now)
+		p.poll(t)
+		job := p.tickets(t)[0]
+		commentsBefore := len(p.fake.issueComments("owner/repo", 50))
+
+		// User removes trigger label to cancel and leaves a comment in the same poll window.
+		p.now = p.now.Add(time.Minute)
+		p.fake.mu.Lock()
+		p.fake.issues["owner/repo#50"].labels = []string{"in-progress"}
+		p.fake.mu.Unlock()
+		p.fake.addComment("owner/repo", 50, "alice", "Cancelling this job.", p.now)
+
+		p.poll(t)
+		if got := p.state(t, job.ID); got != tickets.StateCancelled {
+			t.Fatalf("state after unlabel+comment poll 1 = %q, want cancelled", got)
+		}
+		// Subsequent poll must keep it cancelled and must not re-add the removed trigger label.
+		p.poll(t)
+		if got := p.state(t, job.ID); got != tickets.StateCancelled {
+			t.Fatalf("state after unlabel+comment poll 2 = %q, want cancelled", got)
+		}
+		iss := p.fake.issues["owner/repo#50"]
+		if slices.Contains(iss.labels, "machinist") {
+			t.Fatalf("trigger label was re-added to cancelled issue: %v", iss.labels)
+		}
+		if got := len(p.fake.issueComments("owner/repo", 50)); got != commentsBefore+1 {
+			t.Fatalf("unexpected Machinist comment after cancellation: %v", p.fake.issueComments("owner/repo", 50))
+		}
+	})
+
+	t.Run("close active issue and comment in same poll window", func(t *testing.T) {
+		p := newGHPolling(t, "owner/repo")
+		p.poll(t)
+
+		p.now = p.now.Add(time.Minute)
+		p.fake.addIssue("owner/repo", 51, "Close me", "Body", "machinist", "alice", p.now)
+		p.poll(t)
+		job := p.tickets(t)[0]
+
+		// User closes the issue (keeping the label) and leaves a comment in the same poll window.
+		p.now = p.now.Add(time.Minute)
+		p.fake.mu.Lock()
+		p.fake.issues["owner/repo#51"].state = "closed"
+		p.fake.mu.Unlock()
+		p.fake.addComment("owner/repo", 51, "alice", "Won't fix, closing.", p.now)
+
+		p.poll(t)
+		p.poll(t)
+		if got := p.state(t, job.ID); got != tickets.StateCancelled {
+			t.Fatalf("state after close+comment = %q, want cancelled", got)
+		}
+		if iss := p.fake.issues["owner/repo#51"]; iss.state != "closed" {
+			t.Fatalf("closed issue was reopened: state=%q", iss.state)
+		}
+	})
+
+	t.Run("unlabel failed issue then comment does not restart", func(t *testing.T) {
+		p := newGHPolling(t, "owner/repo")
+		p.poll(t)
+
+		p.now = p.now.Add(time.Minute)
+		p.fake.addIssue("owner/repo", 52, "Failed work", "Body", "machinist", "alice", p.now)
+		p.poll(t)
+		job := p.tickets(t)[0]
+		if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateFailed, Message: "Broken build"}); err != nil {
+			t.Fatal(err)
+		}
+		p.poll(t)
+
+		// User removes trigger label from the failed issue, then comments.
+		p.now = p.now.Add(time.Minute)
+		p.fake.mu.Lock()
+		p.fake.issues["owner/repo#52"].labels = nil
+		p.fake.mu.Unlock()
+		p.fake.addComment("owner/repo", 52, "alice", "I will handle this manually.", p.now)
+
+		p.poll(t)
+		p.poll(t)
+		if got := p.state(t, job.ID); got != tickets.StateFailed {
+			t.Fatalf("comment on unlabeled failed issue restarted job: state=%q", got)
+		}
+	})
+}
+
+func TestGitHubIssuesRerunFinishedJobReopensIssue(t *testing.T) {
+	p := newGHPolling(t, "owner/repo")
+	p.tracker.InProgressLabel = "in-progress"
+	p.poll(t)
+
+	p.now = p.now.Add(time.Minute)
+	p.fake.addIssue("owner/repo", 60, "Fix regression", "Details", "machinist", "alice", p.now)
+	p.poll(t)
+	job := p.tickets(t)[0]
+
+	// Finish the job via merged PR -> issue is closed and labels removed.
+	if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 101}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := p.store.Ticket(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.store.SetPRState(t.Context(), listed, tickets.PRUpdate{Number: 101, State: tickets.PRMerged, At: p.now}); err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t)
+
+	iss := p.fake.issues["owner/repo#60"]
+	if iss.state != "closed" || len(iss.labels) != 0 {
+		t.Fatalf("expected closed unlabeled issue after Finish, got state=%q labels=%v", iss.state, iss.labels)
+	}
+
+	// Explicitly rerun the finished job (e.g. POST /machinist/jobs/{id}/rerun).
+	p.now = p.now.Add(time.Minute)
+	if _, err := p.store.Rerun(t.Context(), job.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	// First poll runs Start -> must reopen the issue and re-apply labels.
+	p.poll(t)
+	if iss.state != "open" {
+		t.Fatalf("Start did not reopen closed issue on rerun: state=%q", iss.state)
+	}
+	if !slices.Contains(iss.labels, "machinist") || !slices.Contains(iss.labels, "in-progress") {
+		t.Fatalf("Start did not restore labels on rerun: %v", iss.labels)
+	}
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("state after rerun Start = %q, want working", got)
+	}
+
+	// Next poll checks States() -> must see open+labeled and keep the rerun active.
+	p.poll(t)
+	if got := p.state(t, job.ID); got != tickets.StateWorking {
+		t.Fatalf("rerun of finished job was wrongly cancelled: state=%q", got)
+	}
+	if len(p.tickets(t)) != 1 {
+		t.Fatalf("rerun created duplicate job: %+v", p.tickets(t))
 	}
 }
 

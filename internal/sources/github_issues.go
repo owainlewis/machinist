@@ -240,32 +240,77 @@ func (g *GitHubIssues) labelActor(ctx context.Context, repo string, number int, 
 	return actor, givenAt, nil
 }
 
-// Start ensures the trigger label (and optional in-progress label) is present
-// and posts a concise comment saying Machinist started a job.
+// Start ensures the issue is open, applies the trigger label (and optional
+// in-progress label), and posts a concise comment saying Machinist started a job.
 func (g *GitHubIssues) Start(ctx context.Context, issue string) error {
 	repo, number, err := parseGitHubIssue(issue)
 	if err != nil {
+		return err
+	}
+	issueEndpoint := fmt.Sprintf("%s/repos/%s/issues/%d", g.endpoint(), repo, number)
+	if _, err := g.doJSON(ctx, repo, http.MethodPatch, issueEndpoint, map[string]string{"state": "open"}, nil); err != nil {
 		return err
 	}
 	labels := []string{g.label()}
 	if inProgress := strings.TrimSpace(g.InProgressLabel); inProgress != "" {
 		labels = append(labels, inProgress)
 	}
-	endpoint := fmt.Sprintf("%s/repos/%s/issues/%d/labels", g.endpoint(), repo, number)
-	if _, err := g.doJSON(ctx, repo, http.MethodPost, endpoint, map[string]any{"labels": labels}, nil); err != nil {
+	labelsEndpoint := fmt.Sprintf("%s/repos/%s/issues/%d/labels", g.endpoint(), repo, number)
+	if _, err := g.doJSON(ctx, repo, http.MethodPost, labelsEndpoint, map[string]any{"labels": labels}, nil); err != nil {
 		return err
 	}
 	return g.Comment(ctx, issue, githubStartComment)
 }
 
+// openLabeledIssues returns the issue numbers of all open non-PR issues in
+// repo that currently carry label.
+func (g *GitHubIssues) openLabeledIssues(ctx context.Context, repo, label string) (map[int]struct{}, error) {
+	query := url.Values{
+		"state":     {"open"},
+		"labels":    {label},
+		"sort":      {"updated"},
+		"direction": {"desc"},
+		"per_page":  {strconv.Itoa(githubPageSize)},
+	}
+	nextURL := g.endpoint() + "/repos/" + repo + "/issues?" + query.Encode()
+	assigned := make(map[int]struct{})
+	for page := 0; page < maxGitHubPages && nextURL != ""; page++ {
+		var issues []githubIssue
+		link, err := g.doJSON(ctx, repo, http.MethodGet, nextURL, nil, &issues)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range issues {
+			if item.isPR() || !strings.EqualFold(item.State, "open") {
+				continue
+			}
+			if !hasGitHubLabel(item.Labels, label) {
+				continue
+			}
+			assigned[item.Number] = struct{}{}
+		}
+		nextURL = parseNextLink(link, g.endpoint())
+	}
+	return assigned, nil
+}
+
 // Replies returns comments posted by people (excluding Machinist's own status
-// comments) across all configured repositories, created after since and, when
-// until is non-zero, no later than until, oldest first.
+// comments) on open non-PR issues carrying g.Label across all configured
+// repositories, created after since and, when until is non-zero, no later than
+// until, oldest first.
 func (g *GitHubIssues) Replies(ctx context.Context, since, until time.Time) ([]Reply, error) {
+	label := g.label()
 	var replies []Reply
 	for _, repo := range g.Repositories {
 		if err := validateGitHubRepo(repo); err != nil {
 			return nil, err
+		}
+		assigned, err := g.openLabeledIssues(ctx, repo, label)
+		if err != nil {
+			return nil, err
+		}
+		if len(assigned) == 0 {
+			continue
 		}
 		query := url.Values{
 			"since":     {since.UTC().Format(time.RFC3339)},
@@ -300,6 +345,9 @@ func (g *GitHubIssues) Replies(ctx context.Context, since, until time.Time) ([]R
 				}
 				number, ok := issueNumberFromURL(comment.IssueURL)
 				if !ok {
+					continue
+				}
+				if _, ok := assigned[number]; !ok {
 					continue
 				}
 				issueRef := formatGitHubIssue(repo, number)
@@ -355,14 +403,12 @@ func (g *GitHubIssues) Return(ctx context.Context, issue, comment string) error 
 	return g.Comment(ctx, issue, comment)
 }
 
-// Fail removes the trigger label (and optional in-progress label) and comments
-// why the job failed.
+// Fail removes the optional in-progress label and comments why the job failed.
+// The trigger label is kept so the issue remains assigned to Machinist and
+// follow-up replies can restart the job.
 func (g *GitHubIssues) Fail(ctx context.Context, issue, reason string) error {
 	repo, number, err := parseGitHubIssue(issue)
 	if err != nil {
-		return err
-	}
-	if err := g.removeLabel(ctx, repo, number, g.label()); err != nil {
 		return err
 	}
 	if inProgress := strings.TrimSpace(g.InProgressLabel); inProgress != "" {
