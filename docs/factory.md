@@ -7,10 +7,11 @@ scripts, automations, or reloadable `config.yaml` settings. An invalid factory s
 or during `machinist reload` leaves the running control plane unchanged and reports the
 problem. Runs already queued or running keep the job they started with.
 
-Only `server.listen`, `server.database`, `server.tls_cert`, and `server.tls_key` in
-`config.yaml` (plus process environment variables such as `GH_TOKEN` and `LINEAR_*`) still
-need a control plane restart; `machinist reload` names any of those settings when they differ
-and does not apply them.
+Only `server.listen`, `server.public_url`, `server.trusted_proxy_hops`, `server.database`,
+`server.tls_cert`, `server.tls_key`, `auth.*`, and `notify.webhook` in `config.yaml` (plus
+process environment variables such as `GH_TOKEN` and `LINEAR_*`) still need a control plane
+restart; `machinist reload` names any of those settings when they differ and does not apply
+them.
 
 ```text
 factory/

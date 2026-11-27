@@ -5,7 +5,7 @@ This guide deploys Machinist's control plane as a stateless container on **Googl
 ## Architecture Overview
 
 *   **Control plane on Cloud Run (`--min-instances=1 --max-instances=1 --no-cpu-throttling`):** Serves the web UI, API, MCP endpoint, runner poll/heartbeat/events endpoints, and background engine loops.
-*   **PostgreSQL (`DATABASE_URL`):** Persistent storage for tickets, runs, tokens, users, invites, sessions, and `leader_leases`. SQLite is refused on Cloud Run (`K_SERVICE` set) so a misconfigured secret can never silently fall back to an ephemeral local database.
+*   **PostgreSQL (`DATABASE_URL`):** Persistent storage for jobs, runs, tokens, users, invites, sessions, and `leader_leases`. SQLite is refused on Cloud Run (`K_SERVICE` set) so a misconfigured secret can never silently fall back to an ephemeral local database.
 *   **Rolling deploy safety:** Cloud Run's `--max-instances=1` is per revision, so rolling deploys briefly overlap Revision `N-1` and Revision `N`. Machinist coordinates this automatically:
     *   Default PostgreSQL pool is `MaxOpenConns=8` (`2 × 8 = 16` connections during overlap, fitting comfortably inside Cloud SQL `db-f1-micro`; override with `DATABASE_MAX_OPEN_CONNS` `1..100`).
     *   `leader_leases` guarantees only one revision runs periodic background loops (`engine.Run`, `schedule.Run`, `runLinear`, `runAuthPrune`) at a time, with `<2s` handoff on clean `SIGTERM` shutdown.

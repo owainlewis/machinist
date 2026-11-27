@@ -77,8 +77,10 @@ control plane or interrupting running jobs:
 su - machinist -c 'cd && machinist reload'
 ```
 
-Changes to `server.listen`, `server.database`, TLS paths, or `/etc/machinist/*.env` still
-require a service restart (`machinist reload` names any setting that needs one).
+Changes to `server.listen`, `server.public_url`, `server.trusted_proxy_hops`,
+`server.database`, `server.tls_cert`, `server.tls_key`, `auth.*`, `notify.webhook`, or
+`/etc/machinist/*.env` still require a service restart (`machinist reload` names any setting
+that needs one).
 
 ## Credentials
 

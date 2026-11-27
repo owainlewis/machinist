@@ -54,11 +54,12 @@ Focused commands are also available:
 ```sh
 just test
 python3 -m unittest discover -s deploy/kubernetes -p 'test_*.py'
+python3 -m unittest discover -s deploy/cloudrun -p 'test_*.py'
 (cd internal/controlplane/web && npm test)
 go test ./internal/runner
 ```
 
-CI requires `check`, `Linux checks`, and `macOS checks` on the current PR
+CI requires `check`, `Linux checks`, `macOS checks`, and `PostgreSQL 16 tests` on the current PR
 revision. Run frontend builds before Go checks, not concurrently: Go embeds
 `web/dist`, so replacing that directory during a build can race file discovery.
 For infrastructure changes, distinguish fake-client tests from live cluster proof.

@@ -104,9 +104,13 @@ These settings still need a control plane restart to take effect (when they diff
 reload, `machinist reload` names them and does not apply them):
 
 - `server.listen`
+- `server.public_url`
+- `server.trusted_proxy_hops`
 - `server.database`
 - `server.tls_cert`
 - `server.tls_key`
+- `auth.*`
+- `notify.webhook`
 
 Environment variables read by the control plane process (`DATABASE_URL`, `GH_TOKEN`,
 `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `MACHINIST_BOOTSTRAP_ADMIN`,
@@ -189,5 +193,6 @@ and can do both; replace it with one of each.
 ## API
 
 Every route needs `Authorization: Bearer <token>` or the sign-in cookie, except `GET /healthz`,
-`POST /api/v1/session` and static assets. See the
+`GET /api/v1/auth/status`, `GET /auth/github/start`, `GET /auth/github/callback`,
+`POST /api/v1/invites/prepare`, `POST /api/v1/session`, and static assets. See the
 [design](designs/machinist-redesign.md#access) for the routes.
