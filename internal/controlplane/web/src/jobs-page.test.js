@@ -286,3 +286,51 @@ test("Board cards and List rows show Low, Medium, and High merge-gate risk badge
   assert.equal(rowByTitle("Plain queued job").querySelector(".job-risk .risk-badge"), null);
   assert.equal(rowByTitle("Legacy PR without merge gate").querySelector(".job-risk .risk-badge"), null);
 });
+
+test("Board places auto-merging PRs waiting on CI in Running with Waiting for CI status, not Review", { timeout: 30000 }, async context => {
+  const { dom, cleanup } = setupDOM("board");
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root"));
+  context.after(async () => {
+    await act(async () => root.unmount());
+    await server.close();
+    cleanup();
+  });
+
+  const tickets = [
+    {
+      ...makeTicket(1, { state: "pr_ready", source: "linear", minutesAgo: 1 }),
+      title: "Approved PR waiting on CI",
+      pr_number: 201,
+      pr_state: "open",
+      shipping: '{"since":"2026-11-27T15:00:00Z","head":"abc"}',
+    },
+    {
+      ...makeTicket(2, { state: "pr_ready", source: "linear", minutesAgo: 2 }),
+      title: "Held PR needing review",
+      pr_number: 202,
+      pr_state: "open",
+      shipping: '{"hold":"merge gate requires human review"}',
+    },
+  ];
+
+  const { JobsPage } = await server.ssrLoadModule("/src/jobs-page.jsx");
+  await act(async () => root.render(React.createElement(JobsPage, { tickets, runners: [], loaded: true })));
+
+  const runningTitles = [...document.querySelectorAll('[aria-labelledby="board-running"] .board-card-title')].map(el => el.textContent);
+  const reviewTitles = [...document.querySelectorAll('[aria-labelledby="board-needs_you"] .board-card-title')].map(el => el.textContent);
+  assert.deepEqual(runningTitles, ["Approved PR waiting on CI"]);
+  assert.deepEqual(reviewTitles, ["Held PR needing review"]);
+
+  const ciCard = document.querySelector('[aria-labelledby="board-running"] .board-card[data-state="waiting_for_ci"]');
+  assert.ok(ciCard, "expected waiting_for_ci card in Running column");
+  assert.match(ciCard.querySelector(".pill.pill-info")?.textContent || "", /Waiting for CI/);
+
+  // Switch to List view and confirm the Status column distinguishes Waiting for CI from Needs you.
+  const listButton = [...document.querySelectorAll(".range button")].find(button => button.textContent.includes("List"));
+  await act(async () => listButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  const rowByTitle = title => [...document.querySelectorAll("table.jobs tbody tr")].find(row => row.querySelector(".job-title")?.textContent === title);
+  assert.match(rowByTitle("Approved PR waiting on CI").querySelector(".pill.pill-info")?.textContent || "", /Waiting for CI/);
+  assert.match(rowByTitle("Held PR needing review").querySelector(".pill.pill-warning")?.textContent || "", /Needs you/);
+});

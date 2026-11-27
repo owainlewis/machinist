@@ -104,7 +104,7 @@ function JobBoard({ tickets, running, progress, doneTotal, onViewList }) {
       return <section key={column.key} className="board-column" aria-labelledby={`board-${column.key}`}>
         <h2 id={`board-${column.key}`} className="board-column-head"><span className="board-column-name"><span className="board-dot" data-column={column.key} aria-hidden="true" />{column.label}</span><span className="board-count">{count}</span></h2>
         {cards.length
-          ? <ul className="board-cards">{cards.map(job => <JobCard key={job.ticket.id} {...job} showState={column.key === "done"} progress={progress.get(job.ticket.id)} now={now} />)}</ul>
+          ? <ul className="board-cards">{cards.map(job => <JobCard key={job.ticket.id} {...job} showState={column.key === "done" || job.state === "waiting_for_ci"} progress={progress.get(job.ticket.id)} now={now} />)}</ul>
           : <p className="board-empty">None</p>}
         {column.key === "done" && cappedDone && <div className="board-column-foot">
           <span className="board-column-summary">Showing {cards.length} of {totalDone}</span>

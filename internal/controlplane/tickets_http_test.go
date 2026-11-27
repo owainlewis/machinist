@@ -874,3 +874,56 @@ func TestTicketAPIMergeGateJSONSerialization(t *testing.T) {
 		}
 	}
 }
+
+func TestTicketAPIShippingJSONSerialization(t *testing.T) {
+	f := newFixture(t)
+	ticket := f.assign(t, "shipping-json-1")
+
+	// Before a PR watch exists, shipping is omitted from API responses.
+	for _, path := range []string{"/api/v1/tickets/" + ticket.ID, "/api/v1/tickets", "/api/v1/tickets?view=board"} {
+		response, body := f.call(t, http.MethodGet, path, f.token, nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d: %s", path, response.StatusCode, body)
+		}
+		if strings.Contains(string(body), `"shipping"`) {
+			t.Fatalf("GET %s should omit shipping when empty: %s", path, body)
+		}
+	}
+
+	watch := `{"since":"2026-11-27T15:00:00Z","head":"abc"}`
+	if _, _, err := f.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{
+		State:    tickets.StatePRReady,
+		PRNumber: 42,
+		Shipping: watch,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response, body := f.call(t, http.MethodGet, "/api/v1/tickets/"+ticket.ID, f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET ticket: status = %d: %s", response.StatusCode, body)
+	}
+	var detail struct {
+		Ticket tickets.Ticket `json:"ticket"`
+	}
+	if err := json.Unmarshal(body, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Ticket.Shipping != watch {
+		t.Fatalf("detail ticket shipping = %q, want %q", detail.Ticket.Shipping, watch)
+	}
+
+	for _, path := range []string{"/api/v1/tickets", "/api/v1/tickets?view=board"} {
+		response, body := f.call(t, http.MethodGet, path, f.token, nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d: %s", path, response.StatusCode, body)
+		}
+		var page tickets.TicketPage
+		if err := json.Unmarshal(body, &page); err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Tickets) != 1 || page.Tickets[0].Shipping != watch {
+			t.Fatalf("GET %s tickets = %+v, want shipping %q", path, page.Tickets, watch)
+		}
+	}
+}

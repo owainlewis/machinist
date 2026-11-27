@@ -1,20 +1,36 @@
-// The UI speaks in job states, distinguishing pr_ready ("Needs you") from green Done.
+// The UI speaks in job states, distinguishing pr_ready ("Needs you" or "Waiting for CI") from green Done.
 export const stateLabels = {
   queued: "Queued",
   running: "Running",
+  waiting_for_ci: "Waiting for CI",
   needs_you: "Needs you",
   done: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
 };
 
+// isWaitingForCI reports whether a pr_ready ticket is waiting on CI checks to
+// auto-merge rather than held for human review. A JSON-encoded ship.Watch with
+// an empty or absent hold means Machinist will merge once checks pass.
+export function isWaitingForCI(ticket) {
+  if (ticket?.state !== "pr_ready" || typeof ticket.shipping !== "string" || !ticket.shipping) return false;
+  try {
+    const parsed = JSON.parse(ticket.shipping);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    return !parsed.hold;
+  } catch {
+    return false;
+  }
+}
+
 // jobState maps a ticket to its UI state. A working job is running once a
-// runner holds it, and queued until then. A job whose pull request is waiting
-// on a person shows as needs_you rather than green done.
+// runner holds it, and queued until then. A pr_ready job waiting on CI checks
+// to auto-merge shows as waiting_for_ci; one waiting on a person shows as
+// needs_you rather than green done.
 export function jobState(ticket, running = false) {
   switch (ticket?.state) {
     case "working": return running ? "running" : "queued";
-    case "pr_ready": return "needs_you";
+    case "pr_ready": return isWaitingForCI(ticket) ? "waiting_for_ci" : "needs_you";
     case "done": return "done";
     case "cancelled": return "cancelled";
     default: return "failed";
@@ -92,7 +108,7 @@ export function boardOf(tickets = [], running = new Set(), { doneLimit = boardDo
   const columns = Object.fromEntries(boardColumns.map(column => [column.key, []]));
   for (const ticket of tickets) {
     const state = jobState(ticket, running.has(ticket.id));
-    const bucket = state === "queued" || state === "running" || state === "needs_you" ? state : "done";
+    const bucket = state === "waiting_for_ci" ? "running" : state === "queued" || state === "running" || state === "needs_you" ? state : "done";
     columns[bucket].push({ ticket, state });
   }
   const at = (job, field) => Date.parse(job.ticket[field]) || 0;
