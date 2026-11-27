@@ -422,25 +422,6 @@ func (s *Store) RevokeSessionForOwner(ctx context.Context, sessionID, userID, to
 	return nil
 }
 
-// RevokeSessionBySecret marks the session matching secret as revoked.
-func (s *Store) RevokeSessionBySecret(ctx context.Context, secret string) error {
-	if !strings.HasPrefix(secret, SessionPrefix) {
-		return ErrNotFound
-	}
-	res, err := s.q().ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL`, stamp(s.now()), hashToken(secret))
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
 // ListActiveSessionsForToken lists active unexpired sessions belonging to tokenID.
 func (s *Store) ListActiveSessionsForToken(ctx context.Context, tokenID string) ([]Session, error) {
 	nowStamp := stamp(s.now())

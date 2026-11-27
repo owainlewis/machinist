@@ -7,10 +7,11 @@ scripts, automations, or reloadable `config.yaml` settings. An invalid factory s
 or during `machinist reload` leaves the running control plane unchanged and reports the
 problem. Runs already queued or running keep the job they started with.
 
-Only `server.listen`, `server.database`, `server.tls_cert`, and `server.tls_key` in
-`config.yaml` (plus process environment variables such as `GH_TOKEN` and `LINEAR_*`) still
-need a control plane restart; `machinist reload` names any of those settings when they differ
-and does not apply them.
+Only `server.listen`, `server.public_url`, `server.trusted_proxy_hops`, `server.database`,
+`server.tls_cert`, `server.tls_key`, `auth.*`, and `notify.webhook` in `config.yaml` (plus
+process environment variables such as `GH_TOKEN` and `LINEAR_*`) still need a control plane
+restart; `machinist reload` names any of those settings when they differ and does not apply
+them.
 
 ```text
 factory/
@@ -50,6 +51,7 @@ jobs that do not name one.
 # presets/default.yaml
 description: Clone the repository, run Claude Code on the prompt and open one pull request.
 timeout: 60m          # all steps together; optional
+runs_on: [macos]      # optional; require runner labels (omit to match any runner)
 
 steps:
   - name: checkout
@@ -88,24 +90,24 @@ finishes, such as Claude Code, shows none.
 
 ### Extending presets and overriding harness or model
 
-To run the same pipeline on another harness or model without copying agent prompts or
+To run the same steps on another harness or model without copying agent prompts or
 scripts, set `extends`, `harness` and `model` in a preset:
 
 ```yaml
 # presets/neon.yaml
-description: Default pipeline on Antigravity (Gemini 4 Neon).
+description: Default steps on Antigravity (Gemini 4 Neon).
 extends: default
 harness: agy
 model: gemini-4-neon-high
 ```
 
-`extends` inherits the base preset's steps, `timeout`, `harness`, `model` and (when omitted)
-`description`. You can chain `extends` across presets, and override individual steps by name
+`extends` inherits the base preset's steps, `timeout`, `harness`, `model`, `runs_on` and (when omitted)
+`description`. Set `runs_on:` on the child preset to replace the inherited host labels (or `runs_on: []` to clear them and match any runner). You can chain `extends` across presets, and override individual steps by name
 — for example, to run a cross-model review without duplicating `review.sh`:
 
 ```yaml
 # presets/neon-opus-review.yaml
-description: Default pipeline on Antigravity with Claude Opus review.
+description: Default steps on Antigravity with Claude Opus review.
 extends: neon
 
 steps:
@@ -147,7 +149,7 @@ Review the change on this branch...
 
 `machinist agent <name>` gives the agent a system prompt in three parts: where it is
 working (the repository, the branch and the control directory), then `prompts/rules.md`
-if there is one, then the agent file's prompt. The job's prompt is the task. It runs the
+if there is one, then the agent file's prompt. The job's prompt is the work. It runs the
 harness headless with every permission, prints its progress as it goes, and records the
 tokens and cost the harness reports. The step fails when the agent exits non-zero.
 
@@ -159,7 +161,7 @@ tokens and cost the harness reports. The step fails when the agent exits non-zer
 | `agy` | Google's Antigravity CLI: `agy --print <prompt> --output-format stream-json --dangerously-skip-permissions`, with the system prompt first in the prompt, since agy takes no separate one. Gemini models such as `gemini-4-neon-high`. agy reports tokens but no cost |
 
 The web app shows which agent runs each step, on which harness and model: on the New job
-form, in the job page's pipeline, and on running jobs on the board and the Runners page.
+form, on the job page, and on running jobs on the board and the Runners page.
 Machinist reads this from the step's `agent:` or from `machinist agent <name>` in its command
 or in a script from `scripts/` that it runs. Once a step has run, it shows what actually ran,
 which `machinist agent` records.
@@ -220,7 +222,7 @@ of immediately failing or abandoning it:
   the **same branch**.
 - The follow-up prompt tells the agent to fetch `origin`, merge `origin/HEAD`, resolve any
   conflicts, inspect and fix the failing check, run local checks, and commit on the branch so
-  the pipeline pushes the update and re-runs `review` and `merge-gate`.
+  the run pushes the update and re-runs `review` and `merge-gate`.
 - **Safety guardrails:** PR Steward never runs if a person pushed commits to the branch after
   the reviewed head commit, or if the pull request was already merged or closed.
 - **Metrics:** Automatic steward retries are not counted as human `reruns` touches in Dashboard
@@ -307,6 +309,7 @@ Step names are letters, digits, hyphens and underscores, and are unique in a pre
 | `MACHINIST_DIR` | The control directory, outside the workspace |
 | `MACHINIST_HARNESS` | Effective harness override for the step, when set by the preset or step; read by `machinist agent` |
 | `MACHINIST_MODEL` | Effective model override for the step, when set by the preset or step; read by `machinist agent` |
+| `MACHINIST_AUTO_MERGE` | `"true"` or `"false"`, from `github.auto_merge` in `config.yaml` |
 | `GH_TOKEN` | The runner's GitHub token, for `gh` and `git` |
 | `GIT_AUTHOR_*`, `GIT_COMMITTER_*` | The bot's name and email |
 
@@ -332,7 +335,8 @@ control directory. The publish step adds that list to the pull request under **A
 After a job ends, Machinist looks for an open pull request on `MACHINIST_BRANCH` and records
 its number on the job.
 
-`init` installs one preset, `default`: clone, implement, review, revise, publish and merge. A job that names no preset uses it. Add a preset only when a kind of job
+`init` installs one preset, `default`: `checkout`, `implement`, `review`, `revise`, `publish`,
+`merge-gate`, and `merge`. A job that names no preset uses it. Add a preset only when a job
 needs different steps, such as a separate test or review step.
 
 ## Automations
@@ -347,10 +351,11 @@ repo: owner/name
 preset: default
 harness: codex            # optional; agy, claude, codex or pi
 model: gpt-5-codex        # optional
+runs_on: [linux, gpu]     # optional; overrides the preset's runs_on
 ---
 The prompt goes here.
 ```
 
 Quote `schedule`, because a cron line can start with `*`. Omit `schedule` (and `timezone`) for a manual automation that runs only when triggered by hand or via API.
 
-`repo` must be in `github.repositories` (or added in Settings → Projects for UI-managed automations), and `preset` must name a preset. Missed scheduled runs collapse into one, and no job starts while the automation's last one is active. An automation never waits for a person: anything that would ask one fails the job instead, so one bad run cannot stop its schedule. To run one now, open **Automations** in the web app, or call `POST /api/v1/automations/<name>/run` with a token and an optional JSON body (`prompt`, `repo`, `preset`, `harness`, `model`) to override fields for that run only. Every run appears as a normal job on the **Jobs** page.
+`repo` must be in `github.repositories` (or added in Settings → Projects for UI-managed automations), and `preset` must name a preset. Missed scheduled runs collapse into one, and no job starts while the automation's last one is active. An automation never waits for a person: anything that would ask one fails the job instead, so one bad run cannot stop its schedule. To run one now, open **Automations** in the web app, or call `POST /api/v1/automations/<name>/run` with a token and an optional JSON body (`prompt`, `repo`, `preset`, `harness`, `model`, `runs_on`) to override fields for that run only. Every run appears as a normal job on the **Jobs** page.

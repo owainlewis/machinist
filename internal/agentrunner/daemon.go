@@ -98,7 +98,13 @@ func (d *Daemon) serveSlot(ctx context.Context) {
 	wait := d.pollInterval
 	for ctx.Err() == nil {
 		var request runner.RunRequest
-		poll := protocol.PollRequest{Harnesses: append(d.config.Harnesses(), d.installed...), Probed: d.installed != nil, Kind: d.config.Kind(), Slots: d.config.Slots}
+		poll := protocol.PollRequest{
+			Harnesses: append(d.config.Harnesses(), d.installed...),
+			Labels:    d.config.Labels,
+			Probed:    d.installed != nil,
+			Kind:      d.config.Kind(),
+			Slots:     d.config.Slots,
+		}
 		err := d.client.Post(ctx, "/api/v1/runners/poll", poll, &request)
 		if rejectedToken(err) {
 			if ctx.Err() == nil && !d.rejected.Swap(true) {

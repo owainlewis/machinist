@@ -32,6 +32,8 @@ func TestAgentBuildsItsTurnFromTheControlDirectory(t *testing.T) {
 	writeControl("prompt.md", "Fix the toast.")
 	t.Setenv("MACHINIST_REPO", "owner/repo")
 	t.Setenv("MACHINIST_BRANCH", "machinist/7")
+	t.Setenv("MACHINIST_HARNESS", "")
+	t.Setenv("MACHINIST_MODEL", "")
 
 	system, task, agent, err := agentTurn(control, "review")
 	if err != nil {

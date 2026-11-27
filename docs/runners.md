@@ -23,6 +23,7 @@ control_plane: http://10.0.0.5:7331
 token_file: .machinist/runner.token
 data_directory: .machinist/runner
 slots: 2
+labels: [macos, arm64]   # optional; target this host with runs_on
 env: [ANTHROPIC_API_KEY]
 ```
 
@@ -55,18 +56,29 @@ a login made on that machine. See [Credentials](credentials.md).
 When a local runner starts, it looks for `agy`, `claude`, `codex` and `pi` on its `PATH`.
 It takes only jobs whose preset's agents all use a harness it found, so a job that needs
 Antigravity waits for a runner that has it instead of failing on one that doesn't. An agent
-with its own `program` is not checked. Install a harness and restart the runner for it to
+with its own `command` is not checked. Install a harness and restart the runner for it to
 count.
 
 A Docker runner probes its image at startup for `agy`, `claude`, `codex` and `pi` (unless
 `docker.harnesses` lists them explicitly), so it reports the image's harnesses on the Runners
 page and only takes jobs its image can run.
 
-A Kubernetes runner takes any job, because its image decides which harnesses exist.
+A Kubernetes runner takes any job whose `runs_on` labels it advertises, because its image decides which harnesses exist.
 
-The Runners page shows each runner's harnesses. When no online runner can run a preset,
-the Settings overview says which harness is missing. Queued jobs that wait for one are
-named on the Runners page and on the job's page, with the harnesses they wait for. A
+### Targeting hosts with labels
+
+Set `labels:` in `runner.yaml` to advertise host capabilities such as `macos`, `gpu`, `vpc`, or `k8s`. Labels are trimmed, lowercased, deduplicated, and validated to `[a-z0-9][a-z0-9._-]*`.
+
+```yaml
+control_plane: http://10.0.0.5:7331
+labels: [macos, arm64, xcode-16]
+```
+
+A preset (via `runs_on:` in `factory/presets/*.yaml`) or a job/automation request (via `runs_on` in the API or automation front matter) can require one or more labels. A runner claims a job only when it advertises **every** label in the job's `runs_on` list. Jobs with no `runs_on` match any runner.
+
+The Runners page shows each runner's harnesses and label pills. When no online runner can run a preset,
+the Settings overview says which harness or label is missing. Queued jobs that wait for one are
+named on the Runners page and on the job's page, with the harnesses or labels they wait for. A
 `machinist agent <name>` call in a shell comment does not count.
 
 ## Docker runner
@@ -152,7 +164,7 @@ and point `proxy_url:` at an HTTP CONNECT egress proxy.
 
 ## Kubernetes runner
 
-The runner is a process in the cluster that starts one gVisor Job per job run, streaming
+The runner is a process in the cluster that starts one gVisor Job per run, streaming
 activity while it runs.
 
 ```yaml

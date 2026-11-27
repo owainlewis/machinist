@@ -25,7 +25,7 @@ func TestEngineCheckpointAssignAndFullRerun(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	req1, err := e.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, false)
+	req1, err := e.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, nil, false)
 	if err != nil || req1 == nil {
 		t.Fatalf("req1 = %+v, err = %v", req1, err)
 	}
@@ -75,7 +75,7 @@ func TestEngineCheckpointAssignAndFullRerun(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	req2, err := e.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, false)
+	req2, err := e.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, nil, false)
 	if err != nil || req2 == nil {
 		t.Fatalf("req2 = %+v, err = %v", req2, err)
 	}
@@ -93,7 +93,7 @@ func TestEngineCheckpointAssignAndFullRerun(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	req3, err := e.Assign(t.Context(), "runner-2", []string{protocol.StepsHarness}, false)
+	req3, err := e.Assign(t.Context(), "runner-2", []string{protocol.StepsHarness}, nil, false)
 	if err != nil || req3 == nil {
 		t.Fatalf("req3 = %+v, err = %v", req3, err)
 	}
@@ -111,7 +111,7 @@ func TestEngineCheckpointAssignAndFullRerun(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	req4, err := e.Assign(t.Context(), "runner-2", []string{protocol.StepsHarness}, false)
+	req4, err := e.Assign(t.Context(), "runner-2", []string{protocol.StepsHarness}, nil, false)
 	if err != nil || req4 == nil {
 		t.Fatalf("req4 = %+v, err = %v", req4, err)
 	}

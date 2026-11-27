@@ -9,7 +9,7 @@ fi
 
 machinist_version=${MACHINIST_VERSION:-}
 if [[ ! $machinist_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-  echo "set MACHINIST_VERSION to the release being installed, such as v0.2.0" >&2
+  echo "set MACHINIST_VERSION to the release being installed, such as v0.5.0" >&2
   exit 2
 fi
 

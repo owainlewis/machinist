@@ -466,11 +466,9 @@ func (c Connector) Execute(ctx context.Context, request runner.RunRequest, dataD
 	}()
 
 	var waitErr error
-	var cancelled bool
 	select {
 	case waitErr = <-waitDone:
 	case <-runCtx.Done():
-		cancelled = true
 		removed, rmErr := c.removeContainer(containerName)
 		killed := false
 		select {
@@ -502,29 +500,26 @@ func (c Connector) Execute(ctx context.Context, request runner.RunRequest, dataD
 
 	stopTail()
 
-	if !cancelled {
-		result, readErr := readResultFile(exchangeRoot, "result.json")
-		if readErr == nil {
-			return result
-		}
-		// Container exited without producing result.json (e.g. OOM, image error,
-		// or entrypoint failure). Ensure no container lingers and report cleanly.
-		_, rmErr := c.removeContainer(containerName)
-		var parts []string
-		if waitErr != nil {
-			parts = append(parts, fmt.Sprintf("docker run failed: %v", waitErr))
-		} else {
-			parts = append(parts, fmt.Sprintf("read sandbox result: %v", readErr))
-		}
-		if detail := proc.Stderr(); detail != "" {
-			parts = append(parts, detail)
-		}
-		if rmErr != nil {
-			parts = append(parts, rmErr.Error())
-		}
-		return runner.RunResult{State: stateFor(runCtx), Error: strings.Join(parts, ": ")}
+	result, readErr := readResultFile(exchangeRoot, "result.json")
+	if readErr == nil {
+		return result
 	}
-	return runner.RunResult{State: runner.StateFailed, Error: "docker run ended unexpectedly"}
+	// Container exited without producing result.json (e.g. OOM, image error,
+	// or entrypoint failure). Ensure no container lingers and report cleanly.
+	_, rmErr := c.removeContainer(containerName)
+	var parts []string
+	if waitErr != nil {
+		parts = append(parts, fmt.Sprintf("docker run failed: %v", waitErr))
+	} else {
+		parts = append(parts, fmt.Sprintf("read sandbox result: %v", readErr))
+	}
+	if detail := proc.Stderr(); detail != "" {
+		parts = append(parts, detail)
+	}
+	if rmErr != nil {
+		parts = append(parts, rmErr.Error())
+	}
+	return runner.RunResult{State: stateFor(runCtx), Error: strings.Join(parts, ": ")}
 }
 
 func (c Connector) prepareRunDirs(root string) (RunDirs, string, error) {

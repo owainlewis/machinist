@@ -35,7 +35,7 @@ func TestRerunFromStepHTTP(t *testing.T) {
 	if err := f.server.engine.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	run1, err := f.server.engine.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, false)
+	run1, err := f.server.engine.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, nil, false)
 	if err != nil || run1 == nil {
 		t.Fatalf("run1 = %+v, err = %v", run1, err)
 	}
@@ -102,7 +102,7 @@ func TestRerunFromStepHTTP(t *testing.T) {
 	if err := f.server.engine.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	run2, err := f.server.engine.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, false)
+	run2, err := f.server.engine.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, nil, false)
 	if err != nil || run2 == nil {
 		t.Fatalf("run2 = %+v, err = %v", run2, err)
 	}
@@ -133,7 +133,7 @@ func TestRerunFromStepHTTP(t *testing.T) {
 	if err := f.server.engine.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	run3, err := f.server.engine.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, false)
+	run3, err := f.server.engine.Assign(t.Context(), "runner-1", []string{protocol.StepsHarness}, nil, false)
 	if err != nil || run3 == nil {
 		t.Fatalf("run3 = %+v, err = %v", run3, err)
 	}

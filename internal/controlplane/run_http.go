@@ -30,6 +30,7 @@ type job struct {
 	SourceURL string            `json:"source_url,omitempty"`
 	Preset    string            `json:"preset"`
 	Vars      map[string]string `json:"vars"`
+	RunsOn    []string          `json:"runs_on,omitempty"`
 	Title     string            `json:"title"`
 	State     string            `json:"state"`
 	PRNumber  int               `json:"pr_number,omitempty"`
@@ -90,6 +91,7 @@ func (s *Server) job(r *http.Request, ticket tickets.Ticket) (job, error) {
 		SourceURL:         ticket.SourceURL,
 		Preset:            ticket.Agent,
 		Vars:              map[string]string{"repo": ticket.Repo},
+		RunsOn:            effectiveRunsOnFrom(s.factoryForTicket(ticket), ticket),
 		Title:             ticket.Title,
 		State:             jobState(ticket, runs),
 		PRNumber:          ticket.PRNumber,

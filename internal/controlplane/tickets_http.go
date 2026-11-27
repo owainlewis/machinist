@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/engine"
 	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/sources"
@@ -149,19 +152,41 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 	}
 	loaded := s.factoryForTicket(ticket)
 	detail := map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": presetStepsFrom(loaded, ticket.Agent, ticket.Harness, ticket.Model)}
+	if runsOn := effectiveRunsOnFrom(loaded, ticket); len(runsOn) > 0 {
+		detail["runs_on"] = runsOn
+	}
 	if len(runs) > 0 && runs[len(runs)-1].Status == tickets.RunQueued {
 		runners, _, err := s.store.Fleet(r.Context())
 		if err != nil {
 			writeTicketError(w, err)
 			return
 		}
-		// waiting_for names the harnesses no online runner has, which keep
-		// the queued run from starting.
-		if missing := waitingForFrom(loaded, s.onlineRunners(runners), ticket.Agent, ticket.Harness, ticket.Model); len(missing) > 0 {
-			detail["waiting_for"] = missing
+		// waiting_for names the harnesses and waiting_for_labels names the
+		// runs_on labels no online runner has, which keep the queued run from
+		// starting.
+		missingH, missingL := waitingForFrom(loaded, s.onlineRunners(runners), ticket.Agent, ticket.Harness, ticket.Model, ticket.RunsOn)
+		if len(missingH) > 0 {
+			detail["waiting_for"] = missingH
+		}
+		if len(missingL) > 0 {
+			detail["waiting_for_labels"] = missingL
 		}
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func effectiveRunsOnFrom(loaded *factory.Factory, ticket tickets.Ticket) []string {
+	if len(ticket.RunsOn) > 0 {
+		return ticket.RunsOn
+	}
+	if loaded == nil {
+		return nil
+	}
+	preset, ok := loaded.Preset(ticket.Agent)
+	if !ok {
+		return nil
+	}
+	return engine.EffectiveRunsOn(preset, ticket.RunsOn)
 }
 
 // factoryForTicket returns the factory that governs ticket: its pinned
@@ -425,14 +450,15 @@ func (s *Server) listAutomations(w http.ResponseWriter, r *http.Request, _ strin
 }
 
 type automationRequest struct {
-	Name     string `json:"name"`
-	Repo     string `json:"repo"`
-	Preset   string `json:"preset"`
-	Prompt   string `json:"prompt"`
-	Schedule string `json:"schedule"`
-	Timezone string `json:"timezone"`
-	Harness  string `json:"harness"`
-	Model    string `json:"model"`
+	Name     string   `json:"name"`
+	Repo     string   `json:"repo"`
+	Preset   string   `json:"preset"`
+	Prompt   string   `json:"prompt"`
+	Schedule string   `json:"schedule"`
+	Timezone string   `json:"timezone"`
+	Harness  string   `json:"harness"`
+	Model    string   `json:"model"`
+	RunsOn   []string `json:"runs_on,omitempty"`
 }
 
 func (s *Server) resolveConnectedRepo(r *http.Request, repo string) (string, error) {
@@ -481,6 +507,10 @@ func (s *Server) validateAutomationInput(r *http.Request, name string, req autom
 		return tickets.Automation{}, http.StatusBadRequest, err
 	}
 	model := strings.TrimSpace(req.Model)
+	runsOn, err := config.NormalizeLabels(req.RunsOn)
+	if err != nil {
+		return tickets.Automation{}, http.StatusBadRequest, fmt.Errorf("runs_on: %w", err)
+	}
 	schedule := strings.TrimSpace(req.Schedule)
 	timezone := strings.TrimSpace(req.Timezone)
 	if schedule != "" {
@@ -502,6 +532,7 @@ func (s *Server) validateAutomationInput(r *http.Request, name string, req autom
 		Timezone: timezone,
 		Harness:  harnessName,
 		Model:    model,
+		RunsOn:   runsOn,
 	}, http.StatusOK, nil
 }
 
@@ -581,11 +612,12 @@ func (s *Server) deleteAutomation(w http.ResponseWriter, r *http.Request, tokenN
 
 func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName string) {
 	var request struct {
-		Prompt  *string `json:"prompt"`
-		Repo    *string `json:"repo"`
-		Preset  *string `json:"preset"`
-		Harness *string `json:"harness"`
-		Model   *string `json:"model"`
+		Prompt  *string   `json:"prompt"`
+		Repo    *string   `json:"repo"`
+		Preset  *string   `json:"preset"`
+		Harness *string   `json:"harness"`
+		Model   *string   `json:"model"`
+		RunsOn  *[]string `json:"runs_on"`
 	}
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
@@ -646,6 +678,15 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 		overrides.Model = strings.TrimSpace(*request.Model)
 		overrides.OverrideModel = true
 	}
+	if request.RunsOn != nil {
+		runsOn, err := config.NormalizeLabels(*request.RunsOn)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("runs_on: %w", err))
+			return
+		}
+		overrides.RunsOn = runsOn
+		overrides.OverrideRunsOn = true
+	}
 	ticket, created, err := s.schedule.RunNow(r.Context(), r.PathValue("name"), tokenName, overrides)
 	if err != nil {
 		writeTicketError(w, err)
@@ -668,6 +709,7 @@ type presetView struct {
 	Extends       string           `json:"extends,omitempty"`
 	Harness       string           `json:"harness,omitempty"`
 	Model         string           `json:"model,omitempty"`
+	RunsOn        []string         `json:"runs_on,omitempty"`
 	TimeoutMillis int64            `json:"timeout_millis,omitempty"`
 	Steps         []presetStepView `json:"steps"`
 }
@@ -722,6 +764,7 @@ func presetViews(loaded *factory.Factory) []presetView {
 			Extends:       preset.Extends,
 			Harness:       preset.Harness,
 			Model:         preset.Model,
+			RunsOn:        slices.Clone(preset.RunsOn),
 			TimeoutMillis: preset.Timeout.Milliseconds(),
 			Steps:         presetStepViews(loaded, preset),
 		})

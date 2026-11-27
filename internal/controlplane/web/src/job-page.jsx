@@ -2,7 +2,7 @@ import React, { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useSt
 import { ArrowLeft, ArrowUpRight, Ban, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, Play, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
-import { harnessList, waitingForRunner } from "./agents.js";
+import { harnessList, labelList, waitingForRunner } from "./agents.js";
 import { State, relativeTime, useNow } from "./display.jsx";
 import { failureReason, formatDuration, isFinished, jobState, linkParts, mergeGate, noPullRequest, prLink, prState, sourceLink, sourceLinkText } from "./jobs.js";
 import { RiskBadge } from "./risk-badge.jsx";
@@ -140,7 +140,7 @@ function markHeldMerge(list, held) {
   return list.map(step => step.name === "merge" && step.state === "succeeded" ? { ...step, state: "held" } : step);
 }
 
-function Run({ run, number, presetSteps, waitingFor, held = false }) {
+function Run({ run, number, presetSteps, waitingFor, waitingForLabels = [], held = false }) {
   const { events, error, loaded } = useRunEvents(run);
   const list = markHeldMerge(steps(events, run.stages || [], run.status), held);
   const now = useNow(run.status === "running");
@@ -153,7 +153,7 @@ function Run({ run, number, presetSteps, waitingFor, held = false }) {
   return <section className="run" aria-label={`Attempt ${number}`}>
     <div className="run-head">
       <h2>Attempt {number}</h2>
-      <span>{run.status === "queued" ? waitingForRunner(waitingFor) : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
+      <span>{run.status === "queued" ? waitingForRunner(waitingFor, waitingForLabels) : `${run.status.replaceAll("_", " ")} on ${run.runner || "a runner"}`}</span>
       {run.resume_from_step && <span>resumed from {run.resume_from_step}</span>}
       {run.started_at && <span>{formatDuration((run.ended_at ? Date.parse(run.ended_at) : now) - Date.parse(run.started_at))}</span>}
       {runSpend(run.stages) && <span title={spendTitle((run.stages || []).some(stage => stage.cost_unknown))}>{runSpend(run.stages)}</span>}
@@ -280,7 +280,8 @@ function MergeGatePanel({ ticket }) {
 
 export function JobView({ detail, role = "admin", onChange }) {
   const canRun = role !== "viewer";
-  const { ticket, entries = [], runs = [], steps: presetSteps = [], waiting_for: waitingFor = [] } = detail;
+  const { ticket, entries = [], runs = [], steps: presetSteps = [], waiting_for: waitingFor = [], waiting_for_labels: waitingForLabels = [], runs_on: detailRunsOn = [] } = detail;
+  const runsOn = detailRunsOn.length ? detailRunsOn : (ticket.runs_on || []);
   const state = jobState(ticket, runs.some(run => run.status === "running"));
   const pr = prLink(ticket);
   const original = sourceLink(ticket);
@@ -289,6 +290,13 @@ export function JobView({ detail, role = "admin", onChange }) {
   const failure = state === "failed" ? failureReason(entries) : "";
   const attempts = runs.map((run, index) => ({ run, number: index + 1 })).reverse();
   const retryStep = resumableStep(state, runs[runs.length - 1], presetSteps);
+  const waitingWarning = waitingFor.length > 0 && waitingForLabels.length > 0
+    ? `No online runner has ${harnessList(waitingFor)} and ${labelList(waitingForLabels)}, which this job requires, so it cannot start. Configure a runner with them and restart the runner.`
+    : waitingFor.length > 0
+      ? `No online runner has ${harnessList(waitingFor)}, which this job's agents run, so it cannot start. Install ${waitingFor.length === 1 ? "it" : "them"} on a runner and restart the runner.`
+      : waitingForLabels.length > 0
+        ? `No online runner has ${labelList(waitingForLabels)}, which this job targets, so it cannot start. Add ${waitingForLabels.length === 1 ? "it" : "them"} to a runner in runner.yaml and restart the runner.`
+        : "";
   return <div className="page job-page">
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
     <header className="job-head">
@@ -302,11 +310,12 @@ export function JobView({ detail, role = "admin", onChange }) {
       <div><dt>Source</dt><dd className="job-source"><Source source={ticket.source} />{original && <a href={original} target="_blank" rel="noreferrer">{sourceLinkText(original)}<ArrowUpRight className="size-3.5" aria-hidden="true" /></a>}</dd></div>
       <div><dt>Repository</dt><dd>{ticket.repo}</dd></div>
       <div><dt>Preset</dt><dd>{ticket.agent}</dd></div>
+      {runsOn.length > 0 && <div><dt>Runs on</dt><dd><span className="runner-labels">{runsOn.map(label => <span key={label} className="runner-label">{label}</span>)}</span></dd></div>}
       <div><dt>Pull request</dt><dd>{pr ? <PullRequest ticket={ticket} link={pr} /> : noPullRequest(state)}</dd></div>
       <div><dt>Started by</dt><dd>{ticket.created_by}</dd></div>
       <div><dt>Created</dt><dd><time dateTime={ticket.created_at}>{relativeTime(ticket.created_at)}</time></dd></div>
     </dl>
-    {waitingFor.length > 0 && <p className="page-warning" role="status">No online runner has {harnessList(waitingFor)}, which this job's agents run, so it cannot start. Install {waitingFor.length === 1 ? "it" : "them"} on a runner and restart the runner.</p>}
+    {waitingWarning && <p className="page-warning" role="status">{waitingWarning}</p>}
     {failure && <section className="panel job-failure" aria-labelledby="job-failure">
       <h2 id="job-failure" className="label"><CircleAlert className="size-3.5" aria-hidden="true" />Why it failed</h2>
       <p className="prose"><Linked text={failure} /></p>
@@ -314,7 +323,7 @@ export function JobView({ detail, role = "admin", onChange }) {
     <MergeGatePanel ticket={ticket} />
     {result && !failure && isFinished(state) && <section className="panel" aria-labelledby="job-result"><h2 id="job-result" className="label">Result</h2><p className="prose"><Linked text={result} /></p></section>}
     {prompt && <details className="panel prompt"><summary className="label">Prompt</summary><p className="prose">{prompt}</p></details>}
-    {attempts.length ? attempts.map(({ run, number }, index) => <Run key={run.id} run={run} number={number} presetSteps={index === 0 ? presetSteps : null} waitingFor={index === 0 ? waitingFor : []} held={index === 0 && state === "needs_you"} />) : <>
+    {attempts.length ? attempts.map(({ run, number }, index) => <Run key={run.id} run={run} number={number} presetSteps={index === 0 ? presetSteps : null} waitingFor={index === 0 ? waitingFor : []} waitingForLabels={index === 0 ? waitingForLabels : []} held={index === 0 && state === "needs_you"} />) : <>
       {presetSteps.length > 0 && <Pipeline nodes={pipeline(presetSteps, [], "")} onChoose={() => {}} />}
       <p className="page-note">Waiting for a runner.</p>
     </>}

@@ -11,7 +11,7 @@ Machinist falls back to `factory/prompts/merge-policy.md`.
 
 ## How to choose a policy
 
-Don't cargo-cult one setup. Start from one question:
+Pick the policy that fits your repository. Start from one question:
 
 > *"What risks are our pull requests actually managing here — and what can a single `git revert` undo safely?"*
 

@@ -10,6 +10,8 @@ type PollRequest struct {
 	// Harnesses is "steps" and, when Probed, every agent harness the runner
 	// found installed, such as "claude".
 	Harnesses []string `json:"harnesses"`
+	// Labels are optional host tags configured on this runner (e.g. macos, gpu).
+	Labels []string `json:"labels,omitempty"`
 	// Probed says the runner looked for its harnesses. The control plane then
 	// gives it only jobs whose agents it can run. A runner that did not look,
 	// such as a Kubernetes runner or one from before this, takes any job.

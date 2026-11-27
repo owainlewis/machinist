@@ -262,6 +262,14 @@ var postgresMigrations = []postgresMigration{
 	{
 		version: 3,
 		statements: []string{
+			`ALTER TABLE runners ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS runs_on TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE automations ADD COLUMN IF NOT EXISTS runs_on TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		version: 4,
+		statements: []string{
 			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resume_from_step TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resume_checkpoint_run TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE runs ADD COLUMN IF NOT EXISTS failed_step TEXT NOT NULL DEFAULT ''`,

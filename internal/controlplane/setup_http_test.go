@@ -68,7 +68,7 @@ func TestSetupListsWhatIsMissingUntilEveryRequiredCheckPasses(t *testing.T) {
 	if setup.InstallURL != "https://github.com/apps/machinistagent/installations/new" || !strings.Contains(check(setup, "GitHub").Detail, "machinistagent[bot]") {
 		t.Fatalf("setup = %+v", setup)
 	}
-	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1, false); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, nil, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if status, setup := f.setup(t, http.MethodPost, "/api/v1/projects", map[string]string{"repo": "https://github.com/owner/repo/"}); status != http.StatusOK || !setup.Ready || len(setup.Projects) != 1 || setup.Projects[0] != (ProjectView{Repo: "owner/repo", Source: "app", AddedBy: "runner-1"}) {
@@ -133,28 +133,49 @@ func TestSetupFlagsAPresetNoOnlineRunnerCanRun(t *testing.T) {
 	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); check(setup, "Agents").Name != "" {
 		t.Fatalf("an agents check with no runner online: %+v", check(setup, "Agents"))
 	}
-	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps", "claude"}, 1, true); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps", "claude"}, nil, 1, true); err != nil {
 		t.Fatal(err)
 	}
 	_, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil)
-	if agents := check(setup, "Agents"); agents.OK || agents.Required || !strings.Contains(agents.Detail, "default needs agy and claude") {
+	if agents := check(setup, "Agents"); agents.OK || agents.Required || !strings.Contains(agents.Detail, "default needs agy and claude") || !strings.Contains(agents.Fix, "Install the missing harness") || strings.Contains(agents.Fix, "runner.yaml") {
 		t.Fatalf("agents = %+v", agents)
 	}
-	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps", "agy", "claude"}, 1, true); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps", "agy", "claude"}, nil, 1, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); !check(setup, "Agents").OK {
 		t.Fatalf("agents = %+v", check(setup, "Agents"))
 	}
 	// A runner that looked and found no agents can run none of them.
-	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1, true); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, nil, 1, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); check(setup, "Agents").OK {
 		t.Fatalf("a probed runner with no agents passed: %+v", check(setup, "Agents"))
 	}
 	// One that never looked, from an older Machinist, is taken to run anything.
-	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1, false); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, nil, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); !check(setup, "Agents").OK {
+		t.Fatalf("agents = %+v", check(setup, "Agents"))
+	}
+	// A preset with runs_on fails the check until an online runner advertises its labels,
+	// with a fix tailored to missing labels rather than missing harnesses.
+	f.server.factory.Presets["ios"] = factory.Preset{Name: "ios", RunsOn: []string{"macos"}, Steps: []runner.Step{{Name: "build", Run: "xcodebuild"}}}
+	_, setup = f.setup(t, http.MethodGet, "/api/v1/setup", nil)
+	if agents := check(setup, "Agents"); agents.OK || !strings.Contains(agents.Detail, "ios needs label macos") || !strings.Contains(agents.Fix, "runner.yaml") || !strings.Contains(agents.Fix, "runs_on") || strings.Contains(agents.Fix, "harness") {
+		t.Fatalf("agents (missing label only) = %+v", agents)
+	}
+	// When both a harness and a label are missing across presets, Fix mentions both.
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps", "claude"}, nil, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	_, setup = f.setup(t, http.MethodGet, "/api/v1/setup", nil)
+	if agents := check(setup, "Agents"); agents.OK || !strings.Contains(agents.Fix, "harness") || !strings.Contains(agents.Fix, "runner.yaml") || !strings.Contains(agents.Fix, "runs_on") {
+		t.Fatalf("agents (missing harness and label) = %+v", agents)
+	}
+	if err := f.store.RecordRunner(t.Context(), "mac-mini", "local", []string{"steps", "agy", "claude"}, []string{"macos"}, 1, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, setup := f.setup(t, http.MethodGet, "/api/v1/setup", nil); !check(setup, "Agents").OK {
@@ -165,7 +186,7 @@ func TestSetupFlagsAPresetNoOnlineRunnerCanRun(t *testing.T) {
 func TestSetupAndPresetsReportOutdatedFactoryFiles(t *testing.T) {
 	f := newFixture(t)
 	f.connect(t)
-	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, 1, false); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "vm", "local", []string{"steps"}, nil, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	// Up-to-date factory reports no Factory check and no updates.
