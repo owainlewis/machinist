@@ -348,6 +348,7 @@ a.source:hover span { text-decoration: underline; }
 
 /* The New job form. */
 .new-job { display: flex; flex-direction: column; gap: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 20px; }
+.new-job-fields-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .select-field { position: relative; display: block; }
 .select-field select.field-control { appearance: none; background-image: none; -webkit-appearance: none; -moz-appearance: none; padding-right: 34px; }
 .select-field-chevron { position: absolute; top: 50%; right: 11px; transform: translateY(-50%); color: var(--muted-foreground); pointer-events: none; }
@@ -370,6 +371,7 @@ a.source:hover span { text-decoration: underline; }
 .field-required { color: var(--danger); font-weight: 600; }
 @media (max-width: 640px) {
   .new-job { padding: 16px; }
+  .new-job-fields-row { grid-template-columns: 1fr; }
   .new-job-shortcut { display: none; }
   .preset-inputs-grid { grid-template-columns: 1fr; }
 }

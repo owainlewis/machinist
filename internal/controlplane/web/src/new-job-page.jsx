@@ -3,7 +3,8 @@ import { ArrowLeft, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { api, SignedOutError } from "./api.js";
-import { canStart, initialInputValues, initialPreset, keyFor, presetInputs, runRequest, titleOf } from "./new-job.js";
+import { onlineHarnessSet } from "./automations.js";
+import { canStart, harnessOptionLabel, initialInputValues, initialPreset, keyFor, modelPlaceholder, presetInputs, runRequest, supportedHarnesses, titleOf } from "./new-job.js";
 import { jobHref } from "./routes.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { HarnessMark } from "./harness-mark.jsx";
@@ -15,6 +16,8 @@ export function NewJobPage({ onSignedOut }) {
   const [preset, setPreset] = useState("");
   const [repo, setRepo] = useState("");
   const [inputs, setInputs] = useState({});
+  const [harness, setHarness] = useState("");
+  const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -24,11 +27,19 @@ export function NewJobPage({ onSignedOut }) {
 
   useEffect(() => {
     let stopped = false;
-    Promise.all([api("/api/v1/presets"), api("/api/v1/repositories")]).then(([presets, repositories]) => {
+    const loadRunners = api("/api/v1/runners").catch(failure => {
+      if (failure instanceof SignedOutError) throw failure;
+      return { runners: [] };
+    });
+    Promise.all([api("/api/v1/presets"), api("/api/v1/repositories"), loadRunners]).then(([presets, repositories, runners]) => {
       if (stopped) return;
       const firstPreset = initialPreset(presets.presets, presets.default);
       const firstPresetObj = presets.presets.find(item => item.name === firstPreset);
-      setOptions({ presets: presets.presets, repositories: repositories.repositories });
+      setOptions({
+        presets: presets.presets,
+        repositories: repositories.repositories,
+        runners: Array.isArray(runners?.runners) ? runners.runners : [],
+      });
       setPreset(firstPreset);
       setInputs(initialInputValues(firstPresetObj));
       setRepo(repositories.repositories[0] || "");
@@ -42,11 +53,17 @@ export function NewJobPage({ onSignedOut }) {
 
   const chosen = options?.presets.find(item => item.name === preset);
   const declaredInputs = presetInputs(chosen);
+  const onlineHarnesses = onlineHarnessSet(options?.runners);
 
   function changePreset(next) {
     setPreset(next);
     const nextPresetObj = options?.presets.find(item => item.name === next);
     setInputs(initialInputValues(nextPresetObj));
+  }
+
+  function changeHarness(next) {
+    setHarness(next);
+    if (next !== harness) setModel("");
   }
 
   const ready = canStart({ preset, repo, prompt, inputs, presetInputs: declaredInputs }) && !pending;
@@ -56,9 +73,14 @@ export function NewJobPage({ onSignedOut }) {
     setPending(true);
     setError("");
     const fields = declaredInputs.length > 0 ? { preset, repo, prompt, inputs } : { preset, repo, prompt };
+    if (harness.trim()) fields.harness = harness.trim();
+    if (model.trim()) fields.model = model.trim();
     lastKey.current = keyFor(lastKey.current, fields);
     try {
-      const job = await api("/machinist/run", { method: "POST", body: runRequest({ key: lastKey.current.key, preset, repo, prompt, inputs, presetInputs: declaredInputs }) });
+      const job = await api("/machinist/run", {
+        method: "POST",
+        body: runRequest({ key: lastKey.current.key, preset, repo, prompt, inputs, presetInputs: declaredInputs, harness, model }),
+      });
       if (mounted.current) window.location.hash = jobHref(job.id);
     } catch (failure) {
       if (!mounted.current) return;
@@ -117,6 +139,26 @@ export function NewJobPage({ onSignedOut }) {
           </div>)}
         </div>
       </fieldset>}
+      <div className="new-job-fields-row">
+        <div>
+          <label className="field-label" htmlFor="new-job-harness">Harness <span className="field-optional">(optional)</span></label>
+          <Select id="new-job-harness" value={harness} onChange={changeHarness} disabled={pending}>
+            <option value="">Preset default</option>
+            {supportedHarnesses.map(item => <option key={item} value={item}>{harnessOptionLabel(item, onlineHarnesses)}</option>)}
+          </Select>
+        </div>
+        <div>
+          <label className="field-label" htmlFor="new-job-model">Model <span className="field-optional">(optional)</span></label>
+          <input
+            id="new-job-model"
+            className="field-control"
+            value={model}
+            onChange={event => setModel(event.target.value)}
+            placeholder={modelPlaceholder(harness)}
+            disabled={pending}
+          />
+        </div>
+      </div>
       <div>
         <label className="field-label" htmlFor="new-job-prompt">Prompt</label>
         <textarea id="new-job-prompt" className="field-control new-job-prompt" rows={8} value={prompt} onChange={event => setPrompt(event.target.value)} onKeyDown={submitOnShortcut} placeholder="What should the agent do? Paste a spec or describe the change." />

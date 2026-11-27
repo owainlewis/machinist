@@ -30,6 +30,8 @@ type job struct {
 	Source    string            `json:"source"`
 	SourceURL string            `json:"source_url,omitempty"`
 	Preset    string            `json:"preset"`
+	Harness   string            `json:"harness,omitempty"`
+	Model     string            `json:"model,omitempty"`
 	Vars      map[string]string `json:"vars"`
 	RunsOn    []string          `json:"runs_on,omitempty"`
 	Title     string            `json:"title"`
@@ -94,6 +96,8 @@ func (s *Server) job(r *http.Request, ticket tickets.Ticket) (job, error) {
 		Source:            ticket.Origin,
 		SourceURL:         ticket.SourceURL,
 		Preset:            ticket.Agent,
+		Harness:           ticket.Harness,
+		Model:             ticket.Model,
 		Vars:              vars,
 		RunsOn:            effectiveRunsOnFrom(s.factoryForTicket(ticket), ticket),
 		Title:             ticket.Title,

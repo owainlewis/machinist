@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
@@ -128,6 +129,8 @@ var mcpTools = []mcpTool{
 				"prompt":     map[string]any{"type": "string", "description": "Work instructions for a custom job."},
 				"preset":     map[string]any{"type": "string", "description": "Optional factory preset name for a custom job (defaults to the configured default preset)."},
 				"vars":       map[string]any{"type": "object", "description": "Optional preset input values for a custom job (string key-value map).", "additionalProperties": map[string]any{"type": "string"}},
+				"harness":    map[string]any{"type": "string", "description": "Optional agent harness override (agy, claude, codex, or pi)."},
+				"model":      map[string]any{"type": "string", "description": "Optional model override."},
 				"key":        map[string]any{"type": "string", "description": "Optional idempotency key (at most 200 bytes) for a custom job. Reusing the same key returns the existing job."},
 			},
 			"additionalProperties": false,
@@ -499,6 +502,8 @@ type mcpJobSummary struct {
 	Title       string        `json:"title"`
 	Repo        string        `json:"repo"`
 	Preset      string        `json:"preset"`
+	Harness     string        `json:"harness,omitempty"`
+	Model       string        `json:"model,omitempty"`
 	Source      string        `json:"source"`
 	SourceURL   string        `json:"source_url,omitempty"`
 	State       string        `json:"state"`
@@ -524,6 +529,8 @@ type mcpJobDetail struct {
 	Title         string            `json:"title"`
 	Repo          string            `json:"repo"`
 	Preset        string            `json:"preset"`
+	Harness       string            `json:"harness,omitempty"`
+	Model         string            `json:"model,omitempty"`
 	Vars          map[string]string `json:"vars,omitempty"`
 	Source        string            `json:"source"`
 	SourceURL     string            `json:"source_url,omitempty"`
@@ -681,6 +688,8 @@ func (s *Server) mcpListJobs(ctx context.Context, raw []byte) (any, error) {
 			Title:       ticket.Title,
 			Repo:        ticket.Repo,
 			Preset:      ticket.Agent,
+			Harness:     ticket.Harness,
+			Model:       ticket.Model,
 			Source:      ticket.Origin,
 			SourceURL:   ticket.SourceURL,
 			State:       state,
@@ -758,6 +767,8 @@ func (s *Server) mcpRunJob(ctx context.Context, auth tickets.TokenAuth, raw []by
 		Prompt     string            `json:"prompt"`
 		Preset     string            `json:"preset"`
 		Vars       map[string]string `json:"vars"`
+		Harness    string            `json:"harness"`
+		Model      string            `json:"model"`
 		Key        string            `json:"key"`
 	}
 	if err := decodeMCPArgs(raw, &args); err != nil {
@@ -767,6 +778,8 @@ func (s *Server) mcpRunJob(ctx context.Context, auth tickets.TokenAuth, raw []by
 	repo := strings.TrimSpace(args.Repo)
 	prompt := strings.TrimSpace(args.Prompt)
 	preset := strings.TrimSpace(args.Preset)
+	harnessName := strings.TrimSpace(args.Harness)
+	model := strings.TrimSpace(args.Model)
 	key := strings.TrimSpace(args.Key)
 
 	var ticket tickets.Ticket
@@ -776,7 +789,19 @@ func (s *Server) mcpRunJob(ctx context.Context, auth tickets.TokenAuth, raw []by
 		if repo != "" || prompt != "" || preset != "" || key != "" || len(args.Vars) > 0 {
 			return nil, errors.New("specify either automation, or repo and prompt, not both")
 		}
-		ticket, created, err = s.schedule.RunNow(ctx, automation, auth.Name, sources.RunOverrides{})
+		var overrides sources.RunOverrides
+		if harnessName != "" {
+			if err := factory.ValidateHarnessOverride(harnessName); err != nil {
+				return nil, err
+			}
+			overrides.Harness = harnessName
+			overrides.OverrideHarness = true
+		}
+		if model != "" {
+			overrides.Model = model
+			overrides.OverrideModel = true
+		}
+		ticket, created, err = s.schedule.RunNow(ctx, automation, auth.Name, overrides)
 		if errors.Is(err, tickets.ErrNotFound) {
 			return nil, fmt.Errorf("automation %q not found", automation)
 		}
@@ -799,11 +824,13 @@ func (s *Server) mcpRunJob(ctx context.Context, auth tickets.TokenAuth, raw []by
 		maps.Copy(vars, args.Vars)
 		vars["repo"] = repo
 		ticket, created, err = s.intake.Run(ctx, sources.RunRequest{
-			Key:    key,
-			Preset: preset,
-			Vars:   vars,
-			Prompt: prompt,
-			Origin: tickets.OriginMCP,
+			Key:     key,
+			Preset:  preset,
+			Vars:    vars,
+			Prompt:  prompt,
+			Harness: harnessName,
+			Model:   model,
+			Origin:  tickets.OriginMCP,
 		}, auth.Name)
 		if err != nil {
 			return nil, err
@@ -925,6 +952,8 @@ func (s *Server) mcpJobDetail(ctx context.Context, ticket tickets.Ticket) (mcpJo
 		Title:         ticket.Title,
 		Repo:          ticket.Repo,
 		Preset:        ticket.Agent,
+		Harness:       ticket.Harness,
+		Model:         ticket.Model,
 		Vars:          maps.Clone(ticket.Vars),
 		Source:        ticket.Origin,
 		SourceURL:     ticket.SourceURL,

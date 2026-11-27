@@ -582,3 +582,56 @@ func TestAutomationsAPIAndRunOverridesSupportVars(t *testing.T) {
 		t.Fatalf("overridden run ticket = %+v, err = %v", overridden, err)
 	}
 }
+
+func TestRunAPIAcceptsAndReturnsHarnessAndModel(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+
+	// Invalid harness is rejected with 400 Bad Request.
+	bad := runRequest("bad-harness")
+	bad.Harness = "unknown"
+	if resp, body := f.call(t, http.MethodPost, "/machinist/run", f.token, bad); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad harness = %d: %s", resp.StatusCode, body)
+	}
+
+	// Without harness/model, the JSON response omits both fields.
+	plainReq := runRequest("plain-job")
+	resp, body := f.call(t, http.MethodPost, "/machinist/run", f.token, plainReq)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("plain run = %d: %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), `"harness"`) || strings.Contains(string(body), `"model"`) {
+		t.Fatalf("expected harness/model omitted when unset: %s", body)
+	}
+
+	// Valid harness and model are trimmed, persisted on the ticket, and returned on job endpoints.
+	req := runRequest("harness-job")
+	req.Harness = " codex "
+	req.Model = " gpt-5-codex "
+	resp, body = f.call(t, http.MethodPost, "/machinist/run", f.token, req)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("run = %d: %s", resp.StatusCode, body)
+	}
+	created := decodeJob(t, body)
+	if created.Harness != "codex" || created.Model != "gpt-5-codex" {
+		t.Fatalf("created = %+v", created)
+	}
+
+	fetched := f.getJob(t, created.ID)
+	if fetched.Harness != "codex" || fetched.Model != "gpt-5-codex" {
+		t.Fatalf("fetched = %+v", fetched)
+	}
+
+	stored, err := f.store.Ticket(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Harness != "codex" || stored.Model != "gpt-5-codex" {
+		t.Fatalf("stored ticket = %+v", stored)
+	}
+
+	resp, body = f.call(t, http.MethodGet, "/machinist/jobs", f.token, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"harness":"codex"`) || !strings.Contains(string(body), `"model":"gpt-5-codex"`) {
+		t.Fatalf("list = %d: %s", resp.StatusCode, body)
+	}
+}

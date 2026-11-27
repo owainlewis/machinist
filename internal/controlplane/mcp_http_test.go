@@ -796,3 +796,60 @@ func TestMCPRunJobSupportsPresetVars(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPRunJobAcceptsHarnessAndModel(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	cron, err := triggers.ParseCron("0 9 * * *", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server.schedule.Automations = []factory.Automation{
+		{Name: "nightly-review", Repo: "owner/repo", Preset: "default", Prompt: "Review open PRs", Cron: cron},
+	}
+	runToken := f.newScopedToken(t, "grokbot", tickets.ScopeRun)
+
+	// Custom job with harness and model overrides.
+	started := decodeMCPToolJSON[mcpRunJobResult](t, f.mcpTool(t, runToken, "run_job", map[string]any{
+		"repo":    "owner/repo",
+		"prompt":  "Refactor parser",
+		"harness": "claude",
+		"model":   "opus",
+	}))
+	if !started.Created || started.Harness != "claude" || started.Model != "opus" {
+		t.Fatalf("started = %+v", started)
+	}
+	got := decodeMCPToolJSON[mcpJobDetail](t, f.mcpTool(t, runToken, "get_job", map[string]any{"id": started.ID}))
+	if got.Harness != "claude" || got.Model != "opus" {
+		t.Fatalf("get_job = %+v", got)
+	}
+
+	// Invalid harness on custom job returns a tool error.
+	bad := f.mcpTool(t, runToken, "run_job", map[string]any{
+		"repo":    "owner/repo",
+		"prompt":  "Bad harness",
+		"harness": "nope",
+	})
+	if !bad.IsError || !strings.Contains(bad.Content[0].Text, "harness must be one of") {
+		t.Fatalf("bad custom harness = %+v", bad)
+	}
+
+	// Automation run with harness and model overrides.
+	autoStarted := decodeMCPToolJSON[mcpRunJobResult](t, f.mcpTool(t, runToken, "run_job", map[string]any{
+		"automation": "nightly-review",
+		"harness":    "codex",
+		"model":      "gpt-5-codex",
+	}))
+	if !autoStarted.Created || autoStarted.Harness != "codex" || autoStarted.Model != "gpt-5-codex" {
+		t.Fatalf("autoStarted = %+v", autoStarted)
+	}
+
+	// Invalid harness on automation run returns a tool error.
+	badAuto := f.mcpTool(t, runToken, "run_job", map[string]any{
+		"automation": "nightly-review",
+		"harness":    "invalid",
+	})
+	if !badAuto.IsError || !strings.Contains(badAuto.Content[0].Text, "harness must be one of") {
+		t.Fatalf("bad automation harness = %+v", badAuto)
+	}
+}
