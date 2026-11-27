@@ -80,7 +80,7 @@ func TestStatsSummarisesJobsAndRuns(t *testing.T) {
 
 func TestStatsWithNothingHasNoRates(t *testing.T) {
 	stats, err := openStore(t).Stats(t.Context(), 14, "")
-	if err != nil || stats.SuccessRate != nil || stats.RunMillis.Median != nil || len(stats.Daily) != 14 || stats.Presets == nil || stats.Sources == nil || stats.Models == nil || stats.ModelSteps == nil || stats.Repositories == nil || stats.CostPerMergedPR != nil || stats.MonthSpend.CostPerMergedPR != nil {
+	if err != nil || stats.SuccessRate != nil || stats.RunMillis.Median != nil || len(stats.Daily) != 14 || stats.Presets == nil || stats.Sources == nil || stats.Models == nil || stats.ModelSteps == nil || stats.Repositories == nil || stats.CostPerMergedPR != nil || stats.MonthSpend.CostPerMergedPR != nil || stats.Steward != (StewardStats{}) {
 		t.Fatalf("stats = %+v, err = %v", stats, err)
 	}
 }
@@ -458,6 +458,131 @@ func TestStatsComparesModelsAndStepsAndFiltersByRepo(t *testing.T) {
 	}
 	if len(filtered.Models) != 2 || filtered.Models[0].Steps != 3 || !approx(filtered.Models[0].Cost, 0.70) {
 		t.Fatalf("filtered models = %+v", filtered.Models)
+	}
+}
+
+func TestStatsStewardRetriesAndRescued(t *testing.T) {
+	store := openStore(t)
+	ctx := t.Context()
+
+	stewardRetry := func(ticket Ticket, pr int, attempt int, at *time.Time) Ticket {
+		t.Helper()
+		*at = at.Add(time.Minute)
+		if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{
+			State:    StatePRReady,
+			PRNumber: pr,
+			Shipping: `{"head":"sha"}`,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		listed, err := store.Ticket(ctx, ticket.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		*at = at.Add(time.Minute)
+		updated, requeued, err := store.StewardRequeue(ctx, listed, StewardRequeueRequest{
+			MaxRetries: 5,
+			Prompt:     "PR Steward fix",
+		})
+		if err != nil || !requeued || updated.StewardRetries != attempt {
+			t.Fatalf("steward retry %d: updated=%+v requeued=%v err=%v", attempt, updated, requeued, err)
+		}
+		return updated
+	}
+
+	// Ticket outside the 7-day window (created, retried, and merged on May 1): must be excluded.
+	at := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return at })
+	oldReq := request("api:old-steward")
+	oldReq.Repo = "owner/app"
+	oldTicket, _, err := store.CreateTicket(ctx, oldReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stewardRetry(oldTicket, 1, 1, &at)
+	oldMerged := at.Add(5 * time.Minute)
+	at = oldMerged
+	if _, _, err := store.Apply(ctx, oldTicket.ID, StateWorking, Transition{State: StateDone, PRNumber: 1, PROpenedAt: &oldMerged, MergedAt: &oldMerged}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ticket in owner/app: 2 steward retries and merged in range -> 2 retries, 1 rescued.
+	at = time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC)
+	reqRescuedApp := request("api:rescued-app")
+	reqRescuedApp.Repo = "owner/app"
+	rescuedApp, _, err := store.CreateTicket(ctx, reqRescuedApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stewardRetry(rescuedApp, 10, 1, &at)
+	stewardRetry(rescuedApp, 10, 2, &at)
+	mergedAppAt := at.Add(10 * time.Minute)
+	at = mergedAppAt
+	if _, _, err := store.Apply(ctx, rescuedApp.ID, StateWorking, Transition{State: StateDone, PRNumber: 10, PROpenedAt: &mergedAppAt, MergedAt: &mergedAppAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ticket in owner/app: 1 steward retry, still open (not merged) -> 1 retry, 0 rescued.
+	at = time.Date(2026, 5, 19, 9, 0, 0, 0, time.UTC)
+	reqUnmergedApp := request("api:unmerged-app")
+	reqUnmergedApp.Repo = "owner/app"
+	unmergedApp, _, err := store.CreateTicket(ctx, reqUnmergedApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stewardRetry(unmergedApp, 11, 1, &at)
+
+	// Ticket in owner/app: merged cleanly without steward retries -> 0 retries, 0 rescued.
+	at = time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	reqCleanApp := request("api:clean-app")
+	reqCleanApp.Repo = "owner/app"
+	cleanApp, _, err := store.CreateTicket(ctx, reqCleanApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanMergedAt := at.Add(5 * time.Minute)
+	at = cleanMergedAt
+	if _, _, err := store.Apply(ctx, cleanApp.ID, StateWorking, Transition{State: StateDone, PRNumber: 12, PROpenedAt: &cleanMergedAt, MergedAt: &cleanMergedAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ticket in owner/api: 1 steward retry and merged in range -> 1 retry, 1 rescued.
+	at = time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
+	reqRescuedAPI := request("api:rescued-api")
+	reqRescuedAPI.Repo = "owner/api"
+	rescuedAPI, _, err := store.CreateTicket(ctx, reqRescuedAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stewardRetry(rescuedAPI, 20, 1, &at)
+	mergedAPIAt := at.Add(5 * time.Minute)
+	at = mergedAPIAt
+	if _, _, err := store.Apply(ctx, rescuedAPI.ID, StateWorking, Transition{State: StateDone, PRNumber: 20, PROpenedAt: &mergedAPIAt, MergedAt: &mergedAPIAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := store.Stats(ctx, 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.Steward != (StewardStats{Retries: 4, Rescued: 2}) {
+		t.Fatalf("all steward = %+v, want {Retries:4 Rescued:2}", all.Steward)
+	}
+
+	app, err := store.Stats(ctx, 7, "owner/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.Steward != (StewardStats{Retries: 3, Rescued: 1}) {
+		t.Fatalf("app steward = %+v, want {Retries:3 Rescued:1}", app.Steward)
+	}
+
+	apiStats, err := store.Stats(ctx, 7, "owner/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apiStats.Steward != (StewardStats{Retries: 1, Rescued: 1}) {
+		t.Fatalf("api steward = %+v, want {Retries:1 Rescued:1}", apiStats.Steward)
 	}
 }
 
