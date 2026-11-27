@@ -13,7 +13,13 @@ const maxRecordedOutputBytes = 64 << 20
 
 const MaxEventLogBytes = 32 << 20
 
-const truncationEventReserve = 1 << 10
+const (
+	truncationEventReserve = 1 << 10
+	// stepEventReserve sets aside space per step for lifecycle events
+	// (step.started, run.started, process.started, run.completed) so a
+	// multi-step run that truncates output still fits inside MaxEventLogBytes.
+	stepEventReserve = 2 << 10
+)
 
 type Event struct {
 	Sequence int64     `json:"sequence"`
@@ -48,13 +54,13 @@ func (log *eventLog) appendOutput(stream string, data []byte) error {
 			Encoding: "base64",
 			Data:     base64.StdEncoding.EncodeToString(recorded),
 		}
-		fits, err := log.eventFits(event, truncationEventReserve)
+		body, err := log.encodeEvent(event)
 		if err != nil {
 			return err
 		}
-		if !fits {
+		if log.fileBytes+int64(len(body))+log.outputReserve() > log.fileLimit {
 			truncated = true
-		} else if err := log.writeEvent(event); err != nil {
+		} else if err := log.writeEncoded(body); err != nil {
 			return fmt.Errorf("write event log: %w", err)
 		} else {
 			log.outputBytes += int64(len(recorded))
@@ -80,17 +86,34 @@ type eventLog struct {
 	outputLimit     int64
 	fileBytes       int64
 	fileLimit       int64
+	reserveBytes    int64
 	outputTruncated bool
 }
 
 func newEventLog(path string) (*eventLog, error) {
+	return newEventLogForSteps(path, 0)
+}
+
+func newEventLogForSteps(path string, steps int) (*eventLog, error) {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create event log: %w", err)
 	}
-	return &eventLog{file: file, outputLimit: maxRecordedOutputBytes, fileLimit: MaxEventLogBytes}, nil
+	reserve := int64(truncationEventReserve)
+	if steps > 0 {
+		reserve += int64(steps) * stepEventReserve
+	}
+	return &eventLog{
+		file:         file,
+		outputLimit:  maxRecordedOutputBytes,
+		fileLimit:    MaxEventLogBytes,
+		reserveBytes: reserve,
+	}, nil
 }
 
+// append records a lifecycle event. Lifecycle events are never rejected for
+// exceeding fileLimit, which bounds recorded process output rather than step
+// state transitions.
 func (log *eventLog) append(eventType, stream, message string) error {
 	log.mu.Lock()
 	defer log.mu.Unlock()
@@ -104,12 +127,15 @@ func (log *eventLog) append(eventType, stream, message string) error {
 	return nil
 }
 
-func (log *eventLog) eventFits(event Event, reserve int64) (bool, error) {
-	body, err := log.encodeEvent(event)
-	if err != nil {
-		return false, err
+func (log *eventLog) outputReserve() int64 {
+	reserve := log.reserveBytes
+	if reserve < truncationEventReserve {
+		reserve = truncationEventReserve
 	}
-	return log.fileBytes+int64(len(body))+reserve <= log.fileLimit, nil
+	if half := log.fileLimit / 2; reserve > half && half > truncationEventReserve {
+		reserve = half
+	}
+	return reserve
 }
 
 func (log *eventLog) writeEvent(event Event) error {
@@ -117,15 +143,16 @@ func (log *eventLog) writeEvent(event Event) error {
 	if err != nil {
 		return err
 	}
-	if log.fileBytes+int64(len(body)) > log.fileLimit {
-		return fmt.Errorf("event log exceeds %d bytes", log.fileLimit)
-	}
+	return log.writeEncoded(body)
+}
+
+func (log *eventLog) writeEncoded(body []byte) error {
 	written, err := log.file.Write(body)
 	if err != nil {
 		return err
 	}
 	if written != len(body) {
-		return fmt.Errorf("write event log: wrote %d of %d bytes", written, len(body))
+		return fmt.Errorf("wrote %d of %d bytes", written, len(body))
 	}
 	log.sequence++
 	log.fileBytes += int64(written)

@@ -185,7 +185,7 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 	}
 	// Every step appends to one event log, so the sequence numbers stay
 	// continuous for the whole run.
-	log, err := newEventLog(filepath.Join(runDirectory, "events.jsonl"))
+	log, err := newEventLogForSteps(filepath.Join(runDirectory, "events.jsonl"), len(request.Steps))
 	if err != nil {
 		return RunResult{State: StateFailed, Error: err.Error()}
 	}
