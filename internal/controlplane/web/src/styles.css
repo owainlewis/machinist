@@ -207,8 +207,8 @@ a.source:hover span { text-decoration: underline; }
 .page-actions { display: flex; align-items: center; gap: 10px; }
 
 /* The board: 4 Linear-style columns (Queued, Running, In review, Done). */
-.board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start; gap: 12px; }
-.board-column { display: flex; min-width: 0; flex-direction: column; gap: 8px; border-radius: 11px; background: rgb(255 255 255 / .018); box-shadow: inset 0 0 0 1px var(--border-subtle); padding: 10px; }
+.board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: stretch; gap: 12px; }
+.board-column { display: flex; min-width: 0; min-height: calc(100vh - 220px); flex-direction: column; gap: 8px; border-radius: 11px; background: rgb(255 255 255 / .018); box-shadow: inset 0 0 0 1px var(--border-subtle); padding: 10px; }
 .board-column-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 4px; color: var(--muted-foreground); font-size: 12.5px; font-weight: 500; letter-spacing: -.005em; }
 .board-column-name { display: inline-flex; align-items: center; gap: 7px; }
 .board-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--faint); }
@@ -232,8 +232,8 @@ a.source:hover span { text-decoration: underline; }
 .board-card-step { color: var(--info, var(--primary)); font-weight: 500; font-variant-numeric: tabular-nums; }
 .board-card-action { overflow: hidden; color: var(--muted-foreground); font-family: var(--font-mono, ui-monospace, monospace); text-overflow: ellipsis; white-space: nowrap; }
 .board-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 2px; }
-.board-empty { padding: 8px 4px; color: var(--faint); font-size: 12.5px; }
-.board-column-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--border-subtle); padding: 7px 4px 2px; font-size: 12px; }
+.board-empty { margin: 0; padding: 8px 4px; color: var(--faint); font-size: 12.5px; }
+.board-column-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; border-top: 1px solid var(--border-subtle); padding: 7px 4px 2px; font-size: 12px; }
 .board-column-summary { color: var(--faint); font-variant-numeric: tabular-nums; }
 .board-view-all { color: var(--info); font-weight: 500; }
 .board-view-all:hover { text-decoration: underline; }
@@ -242,8 +242,14 @@ a.source:hover span { text-decoration: underline; }
 .pagination-summary { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .pagination-controls { display: flex; align-items: center; gap: 10px; }
 .pagination-page { color: var(--muted-foreground); font-variant-numeric: tabular-nums; white-space: nowrap; }
-@media (max-width: 1120px) { .board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 680px) { .board { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1120px) {
+  .board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .board-column { min-height: 240px; }
+}
+@media (max-width: 680px) {
+  .board { grid-template-columns: minmax(0, 1fr); }
+  .board-column { min-height: auto; }
+}
 
 /* One job: its facts, then each attempt and the steps it ran. */
 .job-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -275,6 +281,7 @@ a.source:hover span { text-decoration: underline; }
 .job-page .prose a { color: var(--info); overflow-wrap: anywhere; }
 .job-page .prose a:hover { text-decoration: underline; }
 .run-again, .cancel-job { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.run-again-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 /* The pipeline: one node per step, left to right, compact so 6-7 steps fit cleanly on desktop. */
 .pipeline { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: radial-gradient(circle at 1px 1px, rgb(255 255 255 / .045) 1px, transparent 0) 0 0 / 16px 16px, var(--surface); box-shadow: var(--specular); padding: 8px; }
@@ -338,6 +345,7 @@ a.source:hover span { text-decoration: underline; }
 
 /* The New job form. */
 .new-job { display: flex; flex-direction: column; gap: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 20px; }
+.new-job-fields-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .select-field { position: relative; display: block; }
 .select-field select.field-control { appearance: none; background-image: none; -webkit-appearance: none; -moz-appearance: none; padding-right: 34px; }
 .select-field-chevron { position: absolute; top: 50%; right: 11px; transform: translateY(-50%); color: var(--muted-foreground); pointer-events: none; }
@@ -354,6 +362,7 @@ a.source:hover span { text-decoration: underline; }
 .preset-steps li + li::before { content: "→"; margin-right: 6px; color: var(--faint); }
 @media (max-width: 640px) {
   .new-job { padding: 16px; }
+  .new-job-fields-row { grid-template-columns: 1fr; }
   .new-job-shortcut { display: none; }
 }
 

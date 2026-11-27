@@ -42,7 +42,7 @@ export function steps(events = [], stages = [], runStatus = "") {
     const step = started.get(stage.name) || { name: stage.name, output: "" };
     let state = stage.state;
     if (!state) state = going && index === named.length - 1 ? "running" : going ? "succeeded" : "unknown";
-    const result = { ...step, state, duration_millis: stage.duration_millis, error: stage.error || "", tokens: stage.tokens, cost: stage.cost, cost_unknown: !!stage.cost_unknown };
+    const result = { ...step, state, outcome: stage.outcome || "", duration_millis: stage.duration_millis, error: stage.error || "", tokens: stage.tokens, cost: stage.cost, cost_unknown: !!stage.cost_unknown };
     // Only a recorded result of a step that ran says which agents ran. A state
     // inferred while the run goes, or a skip, leaves agents unset, so the
     // pipeline shows the planned ones.

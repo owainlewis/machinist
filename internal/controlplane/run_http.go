@@ -29,6 +29,8 @@ type job struct {
 	Source    string            `json:"source"`
 	SourceURL string            `json:"source_url,omitempty"`
 	Preset    string            `json:"preset"`
+	Harness   string            `json:"harness,omitempty"`
+	Model     string            `json:"model,omitempty"`
 	Vars      map[string]string `json:"vars"`
 	RunsOn    []string          `json:"runs_on,omitempty"`
 	Title     string            `json:"title"`
@@ -90,6 +92,8 @@ func (s *Server) job(r *http.Request, ticket tickets.Ticket) (job, error) {
 		Source:            ticket.Origin,
 		SourceURL:         ticket.SourceURL,
 		Preset:            ticket.Agent,
+		Harness:           ticket.Harness,
+		Model:             ticket.Model,
 		Vars:              map[string]string{"repo": ticket.Repo},
 		RunsOn:            effectiveRunsOnFrom(s.factoryForTicket(ticket), ticket),
 		Title:             ticket.Title,
@@ -190,9 +194,8 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request, _ string) {
 }
 
 func (s *Server) rerunJob(w http.ResponseWriter, r *http.Request, tokenName string) {
-	ticket, err := s.store.Rerun(r.Context(), r.PathValue("id"), tokenName)
-	if err != nil {
-		writeTicketError(w, err)
+	ticket, ok := s.rerunTicketWithBody(w, r, r.PathValue("id"), tokenName)
+	if !ok {
 		return
 	}
 	if s.engine != nil {
