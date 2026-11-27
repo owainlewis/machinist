@@ -607,7 +607,7 @@ func TestStatsRoute(t *testing.T) {
 		t.Fatalf("stats = %+v", stats)
 	}
 	// The dashboard reads these even when nothing has merged yet.
-	for _, field := range []string{`"cycle":{"merged":0,`, `"touches":{"replies":0,`, `"prs":{"opened":0,`, `"merge_gate":{"evaluated":0,`, `"steps":[]`, `"steps":{}`, `"models":[]`, `"model_steps":[]`, `"month_spend":{`, `"repositories":["owner/repo"]`} {
+	for _, field := range []string{`"cycle":{"merged":0,`, `"touches":{"replies":0,`, `"steward":{"retries":0,"rescued":0}`, `"prs":{"opened":0,`, `"merge_gate":{"evaluated":0,`, `"steps":[]`, `"steps":{}`, `"models":[]`, `"model_steps":[]`, `"month_spend":{`, `"repositories":["owner/repo"]`} {
 		if !strings.Contains(string(body), field) {
 			t.Fatalf("stats lack %s: %s", field, body)
 		}
