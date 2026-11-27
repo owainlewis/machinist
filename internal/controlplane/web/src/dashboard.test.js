@@ -4,10 +4,11 @@ import React, { act } from "react";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 import {
-  availableRepos, dailyTouchTrend, dayLabel, doneRate, formatCostPerPR, formatMedianCost,
-  formatMillis, formatPercent, formatRatio, formatSpend, formatTokens, formatUSD, handsFreeMerges,
-  linePoints, mergedWindow, modelLabel, monthLabel, niceMax, runsOn, sortBySpend, sparkPoints,
-  spendShare, statsPath, stepDays, stepSeries, stewardDetail, touchParts, unreportedNote,
+  autoMergeRate, availableRepos, dailyTouchTrend, dayLabel, doneRate, formatCostPerPR,
+  formatMedianCost, formatMillis, formatPercent, formatRatio, formatSpend, formatTokens, formatUSD,
+  handsFreeMerges, linePoints, mergeGateRiskParts, mergedWindow, modelLabel, monthLabel, niceMax,
+  runsOn, sortBySpend, sparkPoints, spendShare, statsPath, stepDays, stepSeries, stewardDetail,
+  touchParts, unreportedNote,
 } from "./dashboard.js";
 
 test("chart tops are round numbers above the data", () => {
@@ -151,6 +152,17 @@ test("a line chart's points sit mid-column, with the top at the chart's top", ()
   assert.deepEqual(linePoints([0, 0], 0), [[25, 100], [75, 100]], "an empty range lies on the floor");
 });
 
+test("merge gate helpers compute auto-merge rate and risk summary", () => {
+  assert.equal(autoMergeRate({ evaluated: 8, auto_merged: 4 }), 0.5);
+  assert.equal(autoMergeRate({ evaluated: 4, auto_merged: 0 }), 0);
+  assert.ok(Number.isNaN(autoMergeRate({ evaluated: 0, auto_merged: 0 })));
+  assert.ok(Number.isNaN(autoMergeRate(null)));
+
+  assert.equal(mergeGateRiskParts({ evaluated: 8, low_risk: 5, medium_risk: 2, high_risk: 1 }), "5 low · 2 medium · 1 high risk");
+  assert.equal(mergeGateRiskParts({ evaluated: 0, low_risk: 0, medium_risk: 0, high_risk: 0 }), "");
+  assert.equal(mergeGateRiskParts(null), "");
+});
+
 test("Dashboard tabs show Overview, Models (with By step & cost_unknown), Spending, and filter by repo", { timeout: 30000 }, async context => {
   const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/dashboard" });
   const previous = new Map();
@@ -232,6 +244,9 @@ test("Dashboard tabs show Overview, Models (with By step & cost_unknown), Spendi
       models,
       model_steps,
       prs: { opened: 4, merged: 3, merge_rate: 0.75 },
+      merge_gate: onlyUnmetered
+        ? { evaluated: 0, approved: 0, auto_merged: 0, held_policy: 0, held_tripwire: 0, low_risk: 0, medium_risk: 0, high_risk: 0 }
+        : { evaluated: 8, approved: 5, auto_merged: 4, held_policy: 2, held_tripwire: 1, low_risk: 5, medium_risk: 2, high_risk: 1 },
       cycle: { merged: 3, reviewed: 2, to_merge: { median: 3_600_000, p90: 7_200_000 }, to_pr: { median: 600_000, p90: 1_200_000 }, to_review: { median: 1_800_000, p90: 2_400_000 }, review_to_merge: { median: 1_200_000, p90: 1_800_000 } },
       touches: { replies: 2, reruns: 1, reviews: 3, per_pr: 2 },
       steward: { retries: 3, rescued: 2 },
@@ -282,6 +297,18 @@ test("Dashboard tabs show Overview, Models (with By step & cost_unknown), Spendi
   const mergeTiles = [...document.querySelectorAll('[aria-labelledby="merge-heading"] .stat-tile')];
   assert.equal(mergeTiles.length, 4);
   assert.ok(mergeTiles[3].querySelector("svg.sparkline"), "Human touches per PR renders a daily sparkline");
+
+  const mergeGateSection = document.querySelector('[aria-labelledby="merge-gate-heading"]');
+  assert.ok(mergeGateSection, "Merge gate section renders when verdicts exist");
+  assert.match(mergeGateSection.textContent, /Merge gate, for pull requests evaluated in the last 14 days/);
+  assert.match(mergeGateSection.textContent, /5 low · 2 medium · 1 high risk/);
+  const gateTiles = [...mergeGateSection.querySelectorAll(".stat-tile")];
+  assert.equal(gateTiles.length, 4);
+  assert.match(gateTiles[0].textContent, /Auto-merge rate.*50%.*4 of 8 evaluated PRs/);
+  assert.match(gateTiles[1].textContent, /Approved \(low risk\).*5.*63% of evaluated · 4 auto-merged/);
+  assert.match(gateTiles[2].textContent, /Held by policy.*2.*25% of evaluated/);
+  assert.match(gateTiles[3].textContent, /Held by tripwire.*1.*13% of evaluated/);
+
   const execText = document.querySelector('[aria-labelledby="execution-heading"]').textContent;
   assert.match(execText, /Run success.*88%.*7 of 8 runs/);
   assert.match(execText, /Median run.*1m 20s/);
@@ -335,6 +362,11 @@ test("Dashboard tabs show Overview, Models (with By step & cost_unknown), Spendi
   assert.doesNotMatch(unmeteredSpendTiles, /\$0\.00/);
   assert.doesNotMatch(unmeteredSpendTiles, /runs unreported/, "token-only summary avoids repeating unreported run notes across tiles");
   assert.deepEqual([...document.querySelector('select[aria-label="Repository"]').options].map(o => o.value), ["", "owner/app", "owner/unmetered"]);
+
+  // Switching back to Overview for a repo with zero merge-gate evaluations hides the Merge gate section.
+  await act(async () => document.querySelector("#tab-overview").click());
+  await eventually(() => assert.ok(document.querySelector('[role="tabpanel"]#panel-overview')));
+  assert.equal(document.querySelector('[aria-labelledby="merge-gate-heading"]'), null);
 });
 
 async function eventually(check, attempts = 60) {
