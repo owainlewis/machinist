@@ -131,9 +131,10 @@ function Step({ step, chosen, now }) {
   </li>;
 }
 
-// When the merge gate holds a pull request for human review (pr_ready), the
+// When the merge gate holds a pull request for human review (needs_you), the
 // merge step exited 0 by leaving the PR open rather than merging it. Marking
-// that step as held avoids showing a misleading green checkmark on merge.
+// that step as held avoids showing a misleading green checkmark on merge while
+// keeping auto-merging PRs waiting on CI (waiting_for_ci) unheld.
 function markHeldMerge(list, held) {
   if (!held) return list;
   return list.map(step => step.name === "merge" && step.state === "succeeded" ? { ...step, state: "held" } : step);

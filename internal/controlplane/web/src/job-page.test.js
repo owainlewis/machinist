@@ -117,6 +117,45 @@ test("pr_ready stands out as Needs you, and active jobs offer Cancel instead of 
   assert.match(needsYou, />Run again<\/button>/);
   assert.doesNotMatch(needsYou, />Cancel<\/button>/);
 
+  const heldShipping = page({
+    ticket: { ...ticket, state: "pr_ready", pr_number: 13, pr_state: "open", pr_state_at: now, shipping: '{"hold":"merge gate requires human review"}' },
+    steps: [{ name: "merge-gate", agents: [] }, { name: "merge", agents: [] }],
+    runs: [{
+      id: "run_1",
+      status: "succeeded",
+      started_at: now,
+      ended_at: now,
+      stages: [
+        { name: "merge-gate", state: "succeeded", duration_millis: 12000 },
+        { name: "merge", state: "succeeded", duration_millis: 1000 },
+      ],
+    }],
+  });
+  assert.match(heldShipping, /class="pill pill-warning"[^>]*>.*<span>Needs you<\/span><\/span>/);
+  assert.match(heldShipping, /data-state="held"[^>]*>.*merge.*Held/);
+  assert.match(heldShipping, />Run again<\/button>/);
+  assert.doesNotMatch(heldShipping, />Cancel<\/button>/);
+
+  const waitingForCI = page({
+    ticket: { ...ticket, state: "pr_ready", pr_number: 14, pr_state: "open", pr_state_at: now, shipping: '{"since":"2026-11-27T15:00:00Z","head":"abc"}' },
+    steps: [{ name: "merge-gate", agents: [] }, { name: "merge", agents: [] }],
+    runs: [{
+      id: "run_1",
+      status: "succeeded",
+      started_at: now,
+      ended_at: now,
+      stages: [
+        { name: "merge-gate", state: "succeeded", duration_millis: 12000 },
+        { name: "merge", state: "succeeded", duration_millis: 1000 },
+      ],
+    }],
+  });
+  assert.match(waitingForCI, /class="pill pill-info"[^>]*>.*state-working.*<span>Waiting for CI<\/span><\/span>/);
+  assert.doesNotMatch(waitingForCI, /data-state="held"/, "auto-merging PR waiting on CI must not mark merge Held");
+  assert.doesNotMatch(waitingForCI, /Needs you/);
+  assert.match(waitingForCI, />Cancel<\/button>/);
+  assert.doesNotMatch(waitingForCI, />Run again<\/button>/);
+
   const done = page({
     ticket: { ...ticket, state: "done" },
     steps: [{ name: "merge", agents: [] }],
@@ -255,6 +294,7 @@ test("pollJob stops only on terminal states with no active run and no open or sh
   assert.equal(pollJob(null), true);
   assert.equal(pollJob({ ticket: { ...ticket, state: "working" }, runs: [] }), true);
   assert.equal(pollJob({ ticket: { ...ticket, state: "pr_ready", pr_number: 1, pr_state: "open" }, runs: [] }), true);
+  assert.equal(pollJob({ ticket: { ...ticket, state: "pr_ready", pr_number: 1, pr_state: "open", shipping: '{"since":"2026-11-27T15:00:00Z","head":"abc"}' }, runs: [] }), true);
   assert.equal(pollJob({ ticket: { ...ticket, state: "done" }, runs: [{ id: "run_1", status: "succeeded", ended_at: now }] }), false);
   assert.equal(pollJob({ ticket: { ...ticket, state: "done", pr_number: 1, pr_state: "merged" }, runs: [{ id: "run_1", status: "succeeded", ended_at: now }] }), false);
   assert.equal(pollJob({ ticket: { ...ticket, state: "failed" }, runs: [{ id: "run_1", status: "failed", ended_at: now }] }), false);

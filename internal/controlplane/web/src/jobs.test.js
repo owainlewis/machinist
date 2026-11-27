@@ -1,15 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardDoneLimit, boardOf, failureReason, filterJobs, formatDuration, isFinished, linkParts, listPageSize, jobState, mergeGate, mergeGateDecision, mergeGateRisk, newestFirst, noPullRequest, orderSources, paginationOf, prChip, prLink, prState, prSummary, quickCounts, runningJobs, runningTickets, sourceLabel, sourceLink, sourceLinkText, sourcesOf, stateLabels, ticketsPath } from "./jobs.js";
+import { boardDoneLimit, boardOf, failureReason, filterJobs, formatDuration, isFinished, isWaitingForCI, linkParts, listPageSize, jobState, mergeGate, mergeGateDecision, mergeGateRisk, newestFirst, noPullRequest, orderSources, paginationOf, prChip, prLink, prState, prSummary, quickCounts, runningJobs, runningTickets, sourceLabel, sourceLink, sourceLinkText, sourcesOf, stateLabels, ticketsPath } from "./jobs.js";
 
 test("ticket states read as the UI's job states, keeping pr_ready distinct from done", () => {
   assert.equal(jobState({ state: "working" }), "queued");
   assert.equal(jobState({ state: "working" }, true), "running");
   assert.equal(jobState({ state: "pr_ready" }), "needs_you");
+  assert.equal(jobState({ state: "pr_ready", shipping: '{"since":"2026-11-27T15:00:00Z","head":"abc"}' }), "waiting_for_ci");
+  assert.equal(jobState({ state: "pr_ready", shipping: '{"since":"2026-11-27T15:00:00Z","hold":""}' }), "waiting_for_ci");
+  assert.equal(jobState({ state: "pr_ready", shipping: '{"hold":"merge gate requires human review"}' }), "needs_you");
+  assert.equal(jobState({ state: "pr_ready", shipping: "" }), "needs_you");
+  assert.equal(jobState({ state: "pr_ready", shipping: "not-json" }), "needs_you");
+  assert.equal(jobState({ state: "pr_ready", shipping: "null" }), "needs_you");
+  assert.equal(jobState({ state: "pr_ready", shipping: "[]" }), "needs_you");
   assert.equal(jobState({ state: "done" }), "done");
   assert.equal(jobState({ state: "cancelled" }), "cancelled");
   assert.equal(jobState({ state: "failed" }), "failed");
+  assert.equal(stateLabels.waiting_for_ci, "Waiting for CI");
   assert.equal(stateLabels.needs_you, "Needs you");
+  assert.equal(isWaitingForCI({ state: "pr_ready", shipping: '{"since":"2026-11-27T15:00:00Z","head":"abc"}' }), true);
+  assert.equal(isWaitingForCI({ state: "pr_ready", shipping: '{"hold":"merge gate requires human review"}' }), false);
+  assert.equal(isWaitingForCI({ state: "pr_ready" }), false);
+  assert.equal(isWaitingForCI({ state: "pr_ready", shipping: "{invalid" }), false);
+  assert.equal(isWaitingForCI({ state: "done", shipping: '{"since":"2026-11-27T15:00:00Z","head":"abc"}' }), false);
+  assert.equal(isWaitingForCI(null), false);
+  assert.equal(isFinished("waiting_for_ci"), false);
   assert.equal(isFinished("needs_you"), true);
   assert.equal(isFinished("queued"), false);
   assert.equal(isFinished("running"), false);
@@ -38,15 +53,17 @@ test("the board puts each job in Queued, Running, Review or Done", () => {
     { id: "q_new", state: "working", created_at: at(5), updated_at: at(5) },
     { id: "q_old", state: "working", created_at: at(1), updated_at: at(1) },
     { id: "r", state: "working", created_at: at(2), updated_at: at(2) },
+    { id: "ci", state: "pr_ready", shipping: '{"since":"2026-11-19T12:03:00Z","head":"abc"}', created_at: at(1), updated_at: at(3) },
     { id: "ok", state: "done", created_at: at(0), updated_at: at(3) },
     { id: "review", state: "pr_ready", created_at: at(0), updated_at: at(2) },
+    { id: "held", state: "pr_ready", shipping: '{"hold":"merge gate requires human review"}', created_at: at(0), updated_at: at(4) },
     { id: "bad", state: "failed", created_at: at(0), updated_at: at(4) },
     { id: "stop", state: "cancelled", created_at: at(0), updated_at: at(1) },
   ];
   const board = boardOf(tickets, new Set(["r"]));
   assert.deepEqual(board.queued.map(job => job.ticket.id), ["q_old", "q_new"], "the next to run is on top");
-  assert.deepEqual(board.running.map(job => job.ticket.id), ["r"]);
-  assert.deepEqual(board.needs_you.map(job => [job.ticket.id, job.state]), [["review", "needs_you"]]);
+  assert.deepEqual(board.running.map(job => [job.ticket.id, job.state]), [["ci", "waiting_for_ci"], ["r", "running"]]);
+  assert.deepEqual(board.needs_you.map(job => [job.ticket.id, job.state]), [["held", "needs_you"], ["review", "needs_you"]]);
   assert.deepEqual(board.done.map(job => [job.ticket.id, job.state]), [["bad", "failed"], ["ok", "done"], ["stop", "cancelled"]]);
 });
 

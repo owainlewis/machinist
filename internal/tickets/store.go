@@ -230,8 +230,9 @@ type Ticket struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 	// Shipping is what the control plane keeps while it waits for the pull
 	// request's checks, to merge it or report a failed one. It is empty when
-	// nothing waits. The engine owns its contents.
-	Shipping string `json:"-"`
+	// nothing waits. Exposed in JSON so the UI can distinguish PRs waiting on
+	// CI to auto-merge from PRs held for human review.
+	Shipping string `json:"shipping,omitempty"`
 }
 
 // Branch is the one branch every run of this ticket works on.

@@ -6,6 +6,7 @@ import { stateLabels } from "./jobs.js";
 const glyphs = {
   queued: [Clock3, ""],
   running: [LoaderCircle, "pill-info"],
+  waiting_for_ci: [LoaderCircle, "pill-info"],
   needs_you: [CircleAlert, "pill-warning"],
   done: [Check, "pill-success"],
   failed: [X, "pill-danger"],
@@ -15,7 +16,7 @@ const glyphs = {
 export function State({ value }) {
   const [Icon, tone] = glyphs[value] || glyphs.cancelled;
   return <span className={cn("pill", tone)}>
-    <Icon className={cn("size-3.5", value === "running" && "state-working")} aria-hidden="true" />
+    <Icon className={cn("size-3.5", (value === "running" || value === "waiting_for_ci") && "state-working")} aria-hidden="true" />
     <span>{stateLabels[value] || value}</span>
   </span>;
 }
