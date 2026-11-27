@@ -12,10 +12,12 @@ import (
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
-// stepGH answers the merge step's one gh call.
+// stepGH answers the merge step's gh calls.
 type stepGH struct {
-	state string // "" means there is no pull request
-	calls []string
+	state    string // "" means there is no pull request
+	head     string // defaults to "sha1"
+	comments []prComment
+	calls    []string
 }
 
 func (f *stepGH) run(_ context.Context, args ...string) ([]byte, string, error) {
@@ -23,7 +25,22 @@ func (f *stepGH) run(_ context.Context, args ...string) ([]byte, string, error) 
 	if f.state == "" {
 		return nil, "no pull requests found for branch \"machinist/t_1\"", errors.New("exit status 1")
 	}
-	return []byte(`{"number":7,"url":"https://github.com/o/r/pull/7","state":"` + f.state + `","headRefOid":"sha1"}`), "", nil
+	if len(args) >= 4 && args[0] == "pr" && args[1] == "comment" && args[3] == "--body" && len(args) >= 5 {
+		f.comments = append(f.comments, prComment{Body: args[4]})
+		return nil, "", nil
+	}
+	head := f.head
+	if head == "" {
+		head = "sha1"
+	}
+	body, err := json.Marshal(pullRequest{
+		Number:     7,
+		URL:        "https://github.com/o/r/pull/7",
+		State:      f.state,
+		HeadRefOid: head,
+		Comments:   f.comments,
+	})
+	return body, "", err
 }
 
 func control(t *testing.T, review string) string {
