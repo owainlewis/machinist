@@ -266,9 +266,22 @@ func (s *Server) harnessCheck(loaded *factory.Factory, runners []tickets.Runner)
 	sort.Strings(names)
 	var stuck []string
 	for _, name := range names {
-		needs := loaded.Needs(loaded.Presets[name])
-		if len(missingHarnesses(online, needs)) > 0 {
-			stuck = append(stuck, fmt.Sprintf("%s needs %s", name, strings.Join(needs, " and ")))
+		preset := loaded.Presets[name]
+		needs := loaded.Needs(preset)
+		missingH, missingL := missingRequirements(online, needs, preset.RunsOn)
+		if len(missingH) > 0 || len(missingL) > 0 {
+			var parts []string
+			if len(missingH) > 0 {
+				parts = append(parts, strings.Join(needs, " and "))
+			}
+			if len(missingL) > 0 {
+				word := "label"
+				if len(preset.RunsOn) > 1 {
+					word = "labels"
+				}
+				parts = append(parts, word+" "+strings.Join(preset.RunsOn, " and "))
+			}
+			stuck = append(stuck, fmt.Sprintf("%s needs %s", name, strings.Join(parts, " and ")))
 		}
 	}
 	if len(stuck) > 0 {

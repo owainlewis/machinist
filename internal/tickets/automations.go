@@ -4,7 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
+
+	"github.com/owainlewis/machinist/internal/config"
 )
 
 // Automation is an automation created in the web app or API. Automations in
@@ -18,22 +22,24 @@ type Automation struct {
 	Timezone  string    `json:"timezone,omitempty"`
 	Harness   string    `json:"harness,omitempty"`
 	Model     string    `json:"model,omitempty"`
+	RunsOn    []string  `json:"runs_on,omitempty"`
 	CreatedBy string    `json:"created_by,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-const automationColumns = `name,repo,preset,prompt,schedule,timezone,harness,model,created_by,created_at,updated_at`
+const automationColumns = `name,repo,preset,prompt,schedule,timezone,harness,model,COALESCE(runs_on,''),created_by,created_at,updated_at`
 
 func scanAutomation(row scanner) (Automation, error) {
 	var a Automation
-	var created, updated string
-	if err := row.Scan(&a.Name, &a.Repo, &a.Preset, &a.Prompt, &a.Schedule, &a.Timezone, &a.Harness, &a.Model, &a.CreatedBy, &created, &updated); err != nil {
+	var runsOn, created, updated string
+	if err := row.Scan(&a.Name, &a.Repo, &a.Preset, &a.Prompt, &a.Schedule, &a.Timezone, &a.Harness, &a.Model, &runsOn, &a.CreatedBy, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Automation{}, ErrNotFound
 		}
 		return Automation{}, err
 	}
+	a.RunsOn = splitLabels(runsOn)
 	if at, err := time.Parse(time.RFC3339Nano, created); err == nil {
 		a.CreatedAt = at
 	}
@@ -69,10 +75,14 @@ func (s *Store) Automation(ctx context.Context, name string) (Automation, error)
 // CreateAutomation saves a new UI-managed automation. It returns
 // ErrAutomationExists when an automation with the same name already exists.
 func (s *Store) CreateAutomation(ctx context.Context, a Automation) (Automation, error) {
+	runsOn, err := config.NormalizeLabels(a.RunsOn)
+	if err != nil {
+		return Automation{}, fmt.Errorf("runs_on: %w", err)
+	}
 	now := stamp(s.now())
-	_, err := s.q().ExecContext(ctx,
-		`INSERT INTO automations(name,repo,preset,prompt,schedule,timezone,harness,model,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		a.Name, a.Repo, a.Preset, a.Prompt, a.Schedule, a.Timezone, a.Harness, a.Model, a.CreatedBy, now, now)
+	_, err = s.q().ExecContext(ctx,
+		`INSERT INTO automations(name,repo,preset,prompt,schedule,timezone,harness,model,runs_on,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.Name, a.Repo, a.Preset, a.Prompt, a.Schedule, a.Timezone, a.Harness, a.Model, strings.Join(runsOn, ","), a.CreatedBy, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Automation{}, ErrAutomationExists
@@ -84,10 +94,14 @@ func (s *Store) CreateAutomation(ctx context.Context, a Automation) (Automation,
 
 // UpdateAutomation updates an existing UI-managed automation by name.
 func (s *Store) UpdateAutomation(ctx context.Context, a Automation) (Automation, error) {
+	runsOn, err := config.NormalizeLabels(a.RunsOn)
+	if err != nil {
+		return Automation{}, fmt.Errorf("runs_on: %w", err)
+	}
 	now := stamp(s.now())
 	result, err := s.q().ExecContext(ctx,
-		`UPDATE automations SET repo=?,preset=?,prompt=?,schedule=?,timezone=?,harness=?,model=?,updated_at=? WHERE name=?`,
-		a.Repo, a.Preset, a.Prompt, a.Schedule, a.Timezone, a.Harness, a.Model, now, a.Name)
+		`UPDATE automations SET repo=?,preset=?,prompt=?,schedule=?,timezone=?,harness=?,model=?,runs_on=?,updated_at=? WHERE name=?`,
+		a.Repo, a.Preset, a.Prompt, a.Schedule, a.Timezone, a.Harness, a.Model, strings.Join(runsOn, ","), now, a.Name)
 	if err != nil {
 		return Automation{}, err
 	}

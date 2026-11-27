@@ -50,4 +50,9 @@ test("a queued job names the harness no online runner has", async context => {
   assert.match(page(["codex"]), /No online runner has Codex, which this job&#x27;s agents run, so it cannot start/);
   assert.match(page(undefined), /Waiting for a runner</);
   assert.doesNotMatch(page(undefined), /page-warning/);
+
+  const labelOnly = renderToStaticMarkup(React.createElement(JobView, { detail: { ticket, runs: [run], runs_on: ["arm64", "macos"], waiting_for_labels: ["arm64"] } }));
+  assert.match(labelOnly, /Waiting for a runner with label arm64/);
+  assert.match(labelOnly, /No online runner has label arm64, which this job targets, so it cannot start/);
+  assert.match(labelOnly, /<dt>Runs on<\/dt>.*runner-label.*arm64.*macos/);
 });

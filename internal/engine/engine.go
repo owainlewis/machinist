@@ -310,27 +310,46 @@ func missingPresetMessage(preset string) string {
 	return fmt.Sprintf("Preset %q is not in the factory.", preset)
 }
 
-// Assign gives the oldest queued run for these harnesses to a runner. It
-// returns nil when there is no work.
+// EffectiveRunsOn returns the host labels a job requires: ticket-level runs_on
+// when set, otherwise the preset's runs_on.
+func EffectiveRunsOn(preset factory.Preset, ticketRunsOn []string) []string {
+	if len(ticketRunsOn) > 0 {
+		return ticketRunsOn
+	}
+	return preset.RunsOn
+}
+
+// Assign gives the oldest queued run for these harnesses and labels to a runner.
+// It returns nil when there is no work.
 //
-// A probed runner, one that said which harnesses it has, gets only jobs whose
-// preset's agents it can run. The others wait for a runner that can.
-func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []string, probed bool) (*runner.RunRequest, error) {
-	var accept func(tickets.Ticket) bool
-	if probed {
-		e.mu.RLock()
-		current := e.snapshotLocked()
-		pinned := maps.Clone(e.pinned)
-		e.mu.RUnlock()
-		accept = func(ticket tickets.Ticket) bool {
-			cfg := current
-			if pin, ok := pinned[ticket.ID]; ok && pin.updatedAt.Equal(ticket.UpdatedAt) {
-				cfg = pin.config
-			}
-			preset, ok := cfg.factory.Preset(ticket.Agent)
-			// A job whose preset is gone is claimed so that it fails.
-			return !ok || HasAll(harnesses, cfg.factory.Needs(preset.WithOverride(ticket.Harness, ticket.Model)))
+// Every runner only claims jobs whose effective runs_on labels it advertises
+// (an empty runs_on matches any runner). A probed runner, one that said which
+// harnesses it has, also gets only jobs whose preset's agents it can run.
+func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses, labels []string, probed bool) (*runner.RunRequest, error) {
+	e.mu.RLock()
+	current := e.snapshotLocked()
+	pinned := maps.Clone(e.pinned)
+	e.mu.RUnlock()
+	accept := func(ticket tickets.Ticket) bool {
+		cfg := current
+		if pin, ok := pinned[ticket.ID]; ok && pin.updatedAt.Equal(ticket.UpdatedAt) {
+			cfg = pin.config
 		}
+		if cfg.factory == nil {
+			return HasAll(labels, ticket.RunsOn)
+		}
+		preset, ok := cfg.factory.Preset(ticket.Agent)
+		// A job whose preset is gone is claimed so that it fails.
+		if !ok {
+			return true
+		}
+		if !HasAll(labels, EffectiveRunsOn(preset, ticket.RunsOn)) {
+			return false
+		}
+		if !probed {
+			return true
+		}
+		return HasAll(harnesses, cfg.factory.Needs(preset.WithOverride(ticket.Harness, ticket.Model)))
 	}
 	claim, err := e.Store.ClaimRun(ctx, runnerName, harnesses, e.now().Add(LeaseDuration), accept)
 	if err != nil || claim == nil {

@@ -67,6 +67,7 @@ const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreig
 CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
   state TEXT NOT NULL, agent TEXT NOT NULL, harness TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+  runs_on TEXT NOT NULL DEFAULT '',
   pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
   origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT,
@@ -92,7 +93,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   role TEXT NOT NULL DEFAULT '', prefix TEXT NOT NULL DEFAULT '', scope TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_token_per_name ON tokens(name) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS runners (
-  name TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT '', harnesses TEXT NOT NULL DEFAULT '', slots INTEGER NOT NULL DEFAULT 1, last_contact TEXT NOT NULL);
+  name TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT '', harnesses TEXT NOT NULL DEFAULT '', labels TEXT NOT NULL DEFAULT '', slots INTEGER NOT NULL DEFAULT 1, last_contact TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS source_cursors (source TEXT NOT NULL, repo TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(source, repo));
 CREATE TABLE IF NOT EXISTS tracker_reports (ticket_id TEXT NOT NULL, kind TEXT NOT NULL, reported_at TEXT NOT NULL, PRIMARY KEY(ticket_id, kind));
 CREATE TABLE IF NOT EXISTS ignored_source_keys (key TEXT PRIMARY KEY, created_at TEXT NOT NULL);
@@ -182,6 +183,7 @@ CREATE TABLE IF NOT EXISTS automations (
   timezone TEXT NOT NULL DEFAULT '',
   harness TEXT NOT NULL DEFAULT '',
   model TEXT NOT NULL DEFAULT '',
+  runs_on TEXT NOT NULL DEFAULT '',
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL);`
@@ -209,6 +211,7 @@ type Ticket struct {
 	Agent        string     `json:"agent"`
 	Harness      string     `json:"harness,omitempty"`
 	Model        string     `json:"model,omitempty"`
+	RunsOn       []string   `json:"runs_on,omitempty"`
 	PRNumber     int        `json:"pr_number,omitempty"`
 	CreatedBy    string     `json:"created_by"`
 	HumanCommits *int       `json:"human_commits,omitempty"`
@@ -301,6 +304,7 @@ type NewTicket struct {
 	Agent       string
 	Harness     string
 	Model       string
+	RunsOn      []string
 	CreatedBy   string
 	SourceKey   string
 }
@@ -438,7 +442,7 @@ func openSQLite(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if err = addColumns(db, "runners", "probed INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err = addColumns(db, "runners", "probed INTEGER NOT NULL DEFAULT 0", "labels TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -462,7 +466,11 @@ func openSQLite(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if err = addColumns(db, "tickets", "harness TEXT NOT NULL DEFAULT ''", "model TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err = addColumns(db, "tickets", "harness TEXT NOT NULL DEFAULT ''", "model TEXT NOT NULL DEFAULT ''", "runs_on TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = addColumns(db, "automations", "runs_on TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -562,7 +570,14 @@ func nullableString(value string) any {
 	return value
 }
 
-const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,COALESCE(harness,''),COALESCE(model,''),pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
+func splitLabels(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, ",")
+}
+
+const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,COALESCE(harness,''),COALESCE(model,''),COALESCE(runs_on,''),pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
 
 type scanner interface{ Scan(...any) error }
 
@@ -570,13 +585,14 @@ func scanTicket(row scanner) (Ticket, error) {
 	var ticket Ticket
 	var issue, pr, commits sql.NullInt64
 	var merged, prStateAt sql.NullString
-	var created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &ticket.Harness, &ticket.Model, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
+	var runsOn, created, updated string
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &ticket.Harness, &ticket.Model, &runsOn, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
 		return Ticket{}, err
 	}
+	ticket.RunsOn = splitLabels(runsOn)
 	ticket.IssueNumber, ticket.PRNumber = int(issue.Int64), int(pr.Int64)
 	if commits.Valid {
 		count := int(commits.Int64)
@@ -788,6 +804,10 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 	if request.Source == "" || request.Repo == "" || request.Body == "" || request.Agent == "" || request.SourceKey == "" {
 		return Ticket{}, false, errors.New("source, repo, body, agent and source key are required")
 	}
+	runsOn, err := config.NormalizeLabels(request.RunsOn)
+	if err != nil {
+		return Ticket{}, false, fmt.Errorf("runs_on: %w", err)
+	}
 	id, err := randomHex(8)
 	if err != nil {
 		return Ticket{}, false, err
@@ -809,11 +829,11 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 		if origin == "" {
 			origin = originOf(request.Source, request.SourceKey)
 		}
-		insertQuery := `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,created_by,created_at,updated_at,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM tickets))`
+		insertQuery := `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,runs_on,created_by,created_at,updated_at,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM tickets))`
 		if s.dialect == dialectPostgres {
-			insertQuery = `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+			insertQuery = `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,runs_on,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 		}
-		if _, err = tx.ExecContext(ctx, insertQuery, id, request.Source, origin, SourceURL(request.SourceURL), request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.Harness, request.Model, request.CreatedBy, stamp(now), stamp(now)); err != nil {
+		if _, err = tx.ExecContext(ctx, insertQuery, id, request.Source, origin, SourceURL(request.SourceURL), request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.Harness, request.Model, strings.Join(runsOn, ","), request.CreatedBy, stamp(now), stamp(now)); err != nil {
 			return err
 		}
 		if err = insertEntry(ctx, tx, id, EntryRequest, request.CreatedBy, request.Body, request.SourceKey, now); err != nil {

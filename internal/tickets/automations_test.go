@@ -83,7 +83,7 @@ func TestAutomationsCRUDAndTicketOverrides(t *testing.T) {
 		t.Fatalf("second delete = %v, %v", removed, err)
 	}
 
-	// Ticket harness and model overrides round-trip.
+	// Ticket harness, model and runs_on overrides round-trip.
 	ticket, createdTicket, err := store.CreateTicket(ctx, NewTicket{
 		Source:    "schedule:audit-deps",
 		Origin:    OriginSchedule,
@@ -93,17 +93,18 @@ func TestAutomationsCRUDAndTicketOverrides(t *testing.T) {
 		Agent:     "neon",
 		Harness:   "codex",
 		Model:     "gpt-5-codex",
+		RunsOn:    []string{"GPU", "linux", "gpu"},
 		CreatedBy: "alice",
 		SourceKey: "schedule:audit-deps:manual:1",
 	})
 	if err != nil || !createdTicket {
 		t.Fatalf("create ticket = %+v, %v, %v", ticket, createdTicket, err)
 	}
-	if ticket.Harness != "codex" || ticket.Model != "gpt-5-codex" {
-		t.Fatalf("ticket overrides = harness:%q model:%q", ticket.Harness, ticket.Model)
+	if ticket.Harness != "codex" || ticket.Model != "gpt-5-codex" || len(ticket.RunsOn) != 2 || ticket.RunsOn[0] != "gpu" || ticket.RunsOn[1] != "linux" {
+		t.Fatalf("ticket overrides = harness:%q model:%q runs_on:%v", ticket.Harness, ticket.Model, ticket.RunsOn)
 	}
 	reloaded, err := store.Ticket(ctx, ticket.ID)
-	if err != nil || reloaded.Harness != "codex" || reloaded.Model != "gpt-5-codex" {
+	if err != nil || reloaded.Harness != "codex" || reloaded.Model != "gpt-5-codex" || len(reloaded.RunsOn) != 2 || reloaded.RunsOn[0] != "gpu" || reloaded.RunsOn[1] != "linux" {
 		t.Fatalf("reloaded ticket = %+v, %v", reloaded, err)
 	}
 }
