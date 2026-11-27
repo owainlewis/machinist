@@ -271,6 +271,7 @@ var postgresMigrations = []postgresMigration{
   run TEXT PRIMARY KEY,
   failed_step TEXT NOT NULL DEFAULT '',
   head_sha TEXT NOT NULL DEFAULT '',
+  base_ref TEXT NOT NULL DEFAULT '',
   patch BYTEA,
   worktree BYTEA,
   control_files TEXT NOT NULL DEFAULT '')`,

@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS run_checkpoints (
   run TEXT PRIMARY KEY,
   failed_step TEXT NOT NULL DEFAULT '',
   head_sha TEXT NOT NULL DEFAULT '',
+  base_ref TEXT NOT NULL DEFAULT '',
   patch BLOB,
   worktree BLOB,
   control_files TEXT NOT NULL DEFAULT '');
@@ -496,6 +497,10 @@ func openSQLite(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "run_checkpoints", "base_ref TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Backfill monotonic seq for upgraded SQLite databases, reconcile any
 	// pre-existing duplicate working scheduled tickets before creating the
 	// partial unique index, and install seq indexes (including leading seq
@@ -687,8 +692,8 @@ func (s *Store) RunPatch(ctx context.Context, runID string) ([]byte, error) {
 func loadRunCheckpoint(ctx context.Context, q querier, runID string) (*protocol.Checkpoint, error) {
 	var cp protocol.Checkpoint
 	var controlJSON string
-	err := q.QueryRowContext(ctx, `SELECT COALESCE(failed_step,''),COALESCE(head_sha,''),patch,worktree,COALESCE(control_files,'') FROM run_checkpoints WHERE run=?`, runID).
-		Scan(&cp.FailedStep, &cp.HeadSHA, &cp.Patch, &cp.Worktree, &controlJSON)
+	err := q.QueryRowContext(ctx, `SELECT COALESCE(failed_step,''),COALESCE(head_sha,''),COALESCE(base_ref,''),patch,worktree,COALESCE(control_files,'') FROM run_checkpoints WHERE run=?`, runID).
+		Scan(&cp.FailedStep, &cp.HeadSHA, &cp.BaseRef, &cp.Patch, &cp.Worktree, &controlJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1856,8 +1861,8 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 				}
 				controlJSON = string(body)
 			}
-			if _, err = tx.ExecContext(ctx, `INSERT INTO run_checkpoints(run,failed_step,head_sha,patch,worktree,control_files) VALUES(?,?,?,?,?,?)`,
-				run.ID, completion.Checkpoint.FailedStep, completion.Checkpoint.HeadSHA, completion.Checkpoint.Patch, completion.Checkpoint.Worktree, controlJSON); err != nil {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO run_checkpoints(run,failed_step,head_sha,base_ref,patch,worktree,control_files) VALUES(?,?,?,?,?,?,?)`,
+				run.ID, completion.Checkpoint.FailedStep, completion.Checkpoint.HeadSHA, completion.Checkpoint.BaseRef, completion.Checkpoint.Patch, completion.Checkpoint.Worktree, controlJSON); err != nil {
 				return err
 			}
 		}

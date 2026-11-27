@@ -59,6 +59,7 @@ var CheckpointControlFiles = []string{
 type Checkpoint struct {
 	FailedStep   string            `json:"failed_step"`
 	HeadSHA      string            `json:"head_sha,omitempty"`
+	BaseRef      string            `json:"base_ref,omitempty"`
 	Patch        []byte            `json:"patch,omitempty"`
 	Worktree     []byte            `json:"worktree,omitempty"`
 	ControlFiles map[string]string `json:"control_files,omitempty"`
@@ -69,7 +70,7 @@ func (c *Checkpoint) SizeBytes() int {
 	if c == nil {
 		return 0
 	}
-	total := len(c.FailedStep) + len(c.HeadSHA) + len(c.Patch) + len(c.Worktree)
+	total := len(c.FailedStep) + len(c.HeadSHA) + len(c.BaseRef) + len(c.Patch) + len(c.Worktree)
 	for name, body := range c.ControlFiles {
 		total += len(name) + len(body)
 	}

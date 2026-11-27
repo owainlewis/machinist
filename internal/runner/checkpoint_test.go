@@ -254,3 +254,223 @@ printf 'Merged commits restored.\n' > "$MACHINIST_DIR/result.md"
 		t.Fatalf("res2 = %+v", res2)
 	}
 }
+
+func runTestGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=tester",
+		"GIT_AUTHOR_EMAIL=tester@example.test",
+		"GIT_COMMITTER_NAME=tester",
+		"GIT_COMMITTER_EMAIL=tester@example.test",
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestCheckpointDropsOnGitCaptureErrors(t *testing.T) {
+	testEnv := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+	}
+
+	t.Run("unborn HEAD", func(t *testing.T) {
+		dir := t.TempDir()
+		control := t.TempDir()
+		runTestGit(t, dir, "init", "--initial-branch=main")
+		if err := os.WriteFile(filepath.Join(control, "assumptions.md"), []byte("note\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cp := captureCheckpoint(Workspace{Directory: dir, Control: control, Environment: testEnv}, "machinist/t_1", "review")
+		if cp != nil {
+			t.Fatalf("expected nil checkpoint when rev-parse HEAD fails, got %+v", cp)
+		}
+	})
+
+	t.Run("commit patch failure", func(t *testing.T) {
+		bare := initBareRemote(t)
+		dir := t.TempDir()
+		control := t.TempDir()
+		runTestGit(t, dir, "clone", "--quiet", bare, ".")
+		runTestGit(t, dir, "switch", "-c", "machinist/t_1")
+		if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runTestGit(t, dir, "add", "feature.txt")
+		runTestGit(t, dir, "commit", "-m", "Add feature")
+		if err := os.WriteFile(filepath.Join(control, "assumptions.md"), []byte("note\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Remove the loose blob object for feature.txt so rev-parse HEAD and rev-list
+		// succeed, while format-patch fails with a git object read error.
+		blobSHA := runTestGit(t, dir, "rev-parse", "HEAD:feature.txt")
+		objPath := filepath.Join(dir, ".git", "objects", blobSHA[:2], blobSHA[2:])
+		if err := os.Remove(objPath); err != nil {
+			t.Fatalf("remove blob object %s: %v", objPath, err)
+		}
+		cp := captureCheckpoint(Workspace{Directory: dir, Control: control, Environment: testEnv}, "machinist/t_1", "review")
+		if cp != nil {
+			t.Fatalf("expected nil checkpoint when commit patch capture fails, got %+v", cp)
+		}
+	})
+
+	t.Run("worktree patch failure", func(t *testing.T) {
+		bare := initBareRemote(t)
+		dir := t.TempDir()
+		control := t.TempDir()
+		runTestGit(t, dir, "clone", "--quiet", bare, ".")
+		runTestGit(t, dir, "switch", "-c", "machinist/t_1")
+		if err := os.WriteFile(filepath.Join(control, "assumptions.md"), []byte("note\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Make HEAD equal origin/HEAD so captureCommitPatch succeeds with no patch,
+		// then remove README.md's blob object from .git/objects and modify README.md
+		// so captureWorktreePatch fails during git diff --cached HEAD.
+		blobSHA := runTestGit(t, dir, "rev-parse", "HEAD:README.md")
+		objPath := filepath.Join(dir, ".git", "objects", blobSHA[:2], blobSHA[2:])
+		if err := os.Remove(objPath); err != nil {
+			t.Fatalf("remove blob object %s: %v", objPath, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("modified\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cp := captureCheckpoint(Workspace{Directory: dir, Control: control, Environment: testEnv}, "machinist/t_1", "review")
+		if cp != nil {
+			t.Fatalf("expected nil checkpoint when worktree patch capture fails, got %+v", cp)
+		}
+	})
+}
+
+func TestCheckpointResumesAmendedAndRebasedPushedBranch(t *testing.T) {
+	t.Run("amended pushed branch", func(t *testing.T) {
+		bare := initBareRemote(t)
+		// First run pushes a commit to origin/$MACHINIST_BRANCH, then amends it and fails at review.
+		req1 := stepsRequest(
+			Step{Name: "checkout", Run: checkoutScript(bare)},
+			Step{Name: "implement", Run: `
+echo "v1" > feature.txt
+git add feature.txt
+git commit -m "Add feature v1"
+git push -u origin HEAD
+echo "v2 amended" > feature.txt
+echo "extra" > extra.txt
+git add feature.txt extra.txt
+git commit --amend -m "Add feature v2 amended"
+echo "uncommitted wip" > wip.txt
+`},
+			Step{Name: "review", Run: `echo "review failed" >&2; exit 1`},
+			Step{Name: "publish", Run: `echo "published" > "$MACHINIST_DIR/result.md"`},
+		)
+		res1, _ := run(t, req1)
+		if res1.State != StateFailed || res1.FailedStep != "review" || res1.Checkpoint == nil {
+			t.Fatalf("res1 = %+v", res1)
+		}
+		if res1.Checkpoint.BaseRef != "origin/HEAD" {
+			t.Fatalf("BaseRef = %q, want origin/HEAD", res1.Checkpoint.BaseRef)
+		}
+		if len(res1.Checkpoint.Patch) == 0 {
+			t.Fatalf("expected commit patch for amended pushed branch")
+		}
+
+		// Resume in a fresh workspace: checkout switches to the old pushed origin/$MACHINIST_BRANCH,
+		// and restoreCheckpoint must reset to origin/HEAD before applying the amended patch.
+		req2 := stepsRequest(
+			Step{Name: "checkout", Run: checkoutScript(bare)},
+			Step{Name: "implement", Run: `exit 99`},
+			Step{Name: "review", Run: `
+test "$(git rev-list --count origin/HEAD..HEAD)" = "1"
+test "$(git log -1 --format=%s)" = "Add feature v2 amended"
+test "$(cat feature.txt)" = "v2 amended"
+test "$(cat extra.txt)" = "extra"
+test "$(cat wip.txt)" = "uncommitted wip"
+`},
+			Step{Name: "publish", Run: `printf 'Resumed amended branch.\n' > "$MACHINIST_DIR/result.md"`},
+		)
+		req2.ResumeFromStep = "review"
+		req2.Checkpoint = res1.Checkpoint
+
+		res2, _ := run(t, req2)
+		if res2.State != StateSucceeded || res2.Report == nil || res2.Report.Summary != "Resumed amended branch." {
+			t.Fatalf("res2 = %+v", res2)
+		}
+	})
+
+	t.Run("rebased pushed branch", func(t *testing.T) {
+		bare := initBareRemote(t)
+		// Push initial branch commit to origin/$MACHINIST_BRANCH.
+		reqPush := stepsRequest(
+			Step{Name: "checkout", Run: checkoutScript(bare)},
+			Step{Name: "implement", Run: `
+echo "branch feature" > feature.txt
+git add feature.txt
+git commit -m "Add feature"
+git push -u origin HEAD
+`},
+		)
+		resPush, _ := run(t, reqPush)
+		if resPush.State != StateSucceeded {
+			t.Fatalf("resPush = %+v", resPush)
+		}
+
+		// Advance origin/main with an upstream commit.
+		upstream := t.TempDir()
+		runTestGit(t, upstream, "clone", "--quiet", bare, ".")
+		if err := os.WriteFile(filepath.Join(upstream, "upstream.txt"), []byte("upstream\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runTestGit(t, upstream, "add", "upstream.txt")
+		runTestGit(t, upstream, "commit", "-m", "Upstream change")
+		runTestGit(t, upstream, "push", "origin", "main")
+
+		// Failed run checks out old origin/$MACHINIST_BRANCH, rebases onto origin/main, then fails at review.
+		req1 := stepsRequest(
+			Step{Name: "checkout", Run: checkoutScript(bare)},
+			Step{Name: "implement", Run: `
+git rebase origin/main
+echo "post-rebase" >> feature.txt
+git add feature.txt
+git commit -m "Follow up after rebase"
+`},
+			Step{Name: "review", Run: `echo "review failed" >&2; exit 1`},
+			Step{Name: "publish", Run: `echo "published" > "$MACHINIST_DIR/result.md"`},
+		)
+		res1, _ := run(t, req1)
+		if res1.State != StateFailed || res1.FailedStep != "review" || res1.Checkpoint == nil {
+			t.Fatalf("res1 = %+v", res1)
+		}
+		if res1.Checkpoint.BaseRef != "origin/HEAD" {
+			t.Fatalf("BaseRef = %q, want origin/HEAD", res1.Checkpoint.BaseRef)
+		}
+
+		// Resume in a fresh workspace: checkout lands on old un-rebased origin/$MACHINIST_BRANCH,
+		// and restoreCheckpoint resets to origin/HEAD before applying the rebased commits.
+		req2 := stepsRequest(
+			Step{Name: "checkout", Run: checkoutScript(bare)},
+			Step{Name: "implement", Run: `exit 99`},
+			Step{Name: "review", Run: `
+test "$(git rev-list --count origin/HEAD..HEAD)" = "2"
+test "$(cat upstream.txt)" = "upstream"
+grep -q "branch feature" feature.txt
+grep -q "post-rebase" feature.txt
+`},
+			Step{Name: "publish", Run: `printf 'Resumed rebased branch.\n' > "$MACHINIST_DIR/result.md"`},
+		)
+		req2.ResumeFromStep = "review"
+		req2.Checkpoint = res1.Checkpoint
+
+		res2, _ := run(t, req2)
+		if res2.State != StateSucceeded || res2.Report == nil || res2.Report.Summary != "Resumed rebased branch." {
+			t.Fatalf("res2 = %+v", res2)
+		}
+	})
+}

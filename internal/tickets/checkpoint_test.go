@@ -2,18 +2,13 @@ package tickets
 
 import (
 	"errors"
-	"path/filepath"
 	"testing"
 
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
 func TestCheckpointPersistAndRerunFromStep(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "machinist.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openStore(t)
 
 	ticket, _, err := store.CreateTicket(t.Context(), NewTicket{
 		Source:    "api",
@@ -45,6 +40,7 @@ func TestCheckpointPersistAndRerunFromStep(t *testing.T) {
 	wantCP := &protocol.Checkpoint{
 		FailedStep:   "review",
 		HeadSHA:      "abc123",
+		BaseRef:      "origin/HEAD",
 		Patch:        []byte("patch-bytes"),
 		Worktree:     []byte("worktree-bytes"),
 		ControlFiles: map[string]string{"assumptions.md": "note\n", "review.json": `{"verdict":"revision_needed"}`},
@@ -77,7 +73,7 @@ func TestCheckpointPersistAndRerunFromStep(t *testing.T) {
 	if err != nil || cpRunID != run1.ID {
 		t.Fatalf("LatestCheckpoint = (%q, %+v, %v)", cpRunID, gotCP, err)
 	}
-	if gotCP.FailedStep != wantCP.FailedStep || gotCP.HeadSHA != wantCP.HeadSHA || string(gotCP.Patch) != string(wantCP.Patch) || string(gotCP.Worktree) != string(wantCP.Worktree) || gotCP.ControlFiles["assumptions.md"] != "note\n" {
+	if gotCP.FailedStep != wantCP.FailedStep || gotCP.HeadSHA != wantCP.HeadSHA || gotCP.BaseRef != wantCP.BaseRef || string(gotCP.Patch) != string(wantCP.Patch) || string(gotCP.Worktree) != string(wantCP.Worktree) || gotCP.ControlFiles["assumptions.md"] != "note\n" {
 		t.Fatalf("gotCP = %+v, want %+v", gotCP, wantCP)
 	}
 

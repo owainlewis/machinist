@@ -17,7 +17,10 @@ import (
 
 const checkpointCommandTimeout = 30 * time.Second
 
-var errCheckpointTooLarge = errors.New("checkpoint exceeds maximum size")
+var (
+	errCheckpointTooLarge  = errors.New("checkpoint exceeds maximum size")
+	defaultCheckpointBases = []string{"origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"}
+)
 
 // canCheckpointStep reports whether a failure at failedIndex can save a
 // resumable checkpoint: at least one earlier step must have succeeded, and if
@@ -45,7 +48,8 @@ func stepIndex(steps []Step, name string) int {
 
 // captureCheckpoint snapshots git commits beyond the remote base, uncommitted
 // working tree changes, and $MACHINIST_DIR control files after a step failure.
-// Returns nil if the total checkpoint exceeds protocol.MaxPatchBytes.
+// Returns nil if the total checkpoint exceeds protocol.MaxPatchBytes or if any
+// git snapshot command fails in a git work tree.
 func captureCheckpoint(workspace Workspace, branch, failedStep string) *protocol.Checkpoint {
 	ctx, cancel := context.WithTimeout(context.Background(), checkpointCommandTimeout)
 	defer cancel()
@@ -58,22 +62,24 @@ func captureCheckpoint(workspace Workspace, branch, failedStep string) *protocol
 	env := checkpointGitEnv(workspace.Environment)
 	if isGitWorkTree(ctx, workspace.Directory, env) {
 		headSHA, err := gitStdout(ctx, workspace.Directory, env, "rev-parse", "--verify", "HEAD")
-		if err == nil && headSHA != "" {
-			cp.HeadSHA = headSHA
-			patch, err := captureCommitPatch(ctx, workspace, env, branch)
-			if errors.Is(err, errCheckpointTooLarge) {
-				return nil
-			}
-			if err == nil && len(patch) > 0 {
-				cp.Patch = patch
-			}
-			worktree, err := captureWorktreePatch(ctx, workspace.Directory, env)
-			if errors.Is(err, errCheckpointTooLarge) {
-				return nil
-			}
-			if err == nil && len(worktree) > 0 {
-				cp.Worktree = worktree
-			}
+		if err != nil || headSHA == "" {
+			return nil
+		}
+		cp.HeadSHA = headSHA
+		baseRef, patch, err := captureCommitPatch(ctx, workspace, env, branch)
+		if err != nil {
+			return nil
+		}
+		cp.BaseRef = baseRef
+		if len(patch) > 0 {
+			cp.Patch = patch
+		}
+		worktree, err := captureWorktreePatch(ctx, workspace.Directory, env)
+		if err != nil {
+			return nil
+		}
+		if len(worktree) > 0 {
+			cp.Worktree = worktree
 		}
 	}
 
@@ -101,7 +107,8 @@ func restoreCheckpoint(ctx context.Context, workspace Workspace, checkpoint *pro
 		restoredFiles++
 	}
 
-	if len(checkpoint.Patch) == 0 && len(checkpoint.Worktree) == 0 {
+	needsGit := len(checkpoint.Patch) > 0 || len(checkpoint.Worktree) > 0 || checkpoint.BaseRef != ""
+	if !needsGit {
 		if log != nil && restoredFiles > 0 {
 			_ = log.append("checkpoint.restored", "", fmt.Sprintf("files=%d", restoredFiles))
 		}
@@ -117,9 +124,23 @@ func restoreCheckpoint(ctx context.Context, workspace Workspace, checkpoint *pro
 	}
 
 	appliedCommits := false
-	if len(checkpoint.Patch) > 0 {
-		currentHead, _ := gitStdout(cmdCtx, workspace.Directory, env, "rev-parse", "--verify", "HEAD")
-		if checkpoint.HeadSHA == "" || currentHead != checkpoint.HeadSHA {
+	currentHead, err := gitStdout(cmdCtx, workspace.Directory, env, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return fmt.Errorf("read workspace HEAD: %w", err)
+	}
+	if checkpoint.HeadSHA == "" || currentHead != checkpoint.HeadSHA {
+		if checkpoint.BaseRef != "" {
+			baseSHA, err := resolveRestoreBase(cmdCtx, workspace.Directory, env, checkpoint.BaseRef)
+			if err != nil {
+				return fmt.Errorf("resolve checkpoint base %s: %w", checkpoint.BaseRef, err)
+			}
+			if baseSHA != "" && currentHead != baseSHA {
+				if err := runGitWithInput(cmdCtx, workspace.Directory, env, nil, "reset", "--hard", baseSHA); err != nil {
+					return fmt.Errorf("reset branch to %s: %w", checkpoint.BaseRef, err)
+				}
+			}
+		}
+		if len(checkpoint.Patch) > 0 {
 			if err := runGitWithInput(cmdCtx, workspace.Directory, env, checkpoint.Patch, "am", "--3way"); err != nil {
 				_ = runGitWithInput(cmdCtx, workspace.Directory, env, nil, "am", "--abort")
 				return fmt.Errorf("apply checkpoint commits: %w", err)
@@ -195,55 +216,107 @@ func isGitWorkTree(ctx context.Context, dir string, env []string) bool {
 	return err == nil && out == "true"
 }
 
-func resolveCheckpointBase(ctx context.Context, dir string, env []string, branch string) string {
+func isGitAncestor(ctx context.Context, dir string, env []string, ancestor, descendant string) (bool, error) {
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ancestor, descendant)
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	msg := strings.TrimSpace(stderr.String())
+	if msg == "" {
+		msg = err.Error()
+	}
+	return false, errors.New(msg)
+}
+
+func resolveCheckpointBase(ctx context.Context, dir string, env []string, branch string) (string, error) {
 	// If the job's branch already exists on origin and is an ancestor of HEAD,
 	// only capture commits beyond origin/<branch> so checkout + git am fast-forwards
 	// cleanly without replaying commits already on the remote branch.
 	if branch != "" {
 		remoteBranch := "refs/remotes/origin/" + branch
 		if _, err := gitStdout(ctx, dir, env, "rev-parse", "--verify", remoteBranch); err == nil {
-			if _, err := gitStdout(ctx, dir, env, "merge-base", "--is-ancestor", remoteBranch, "HEAD"); err == nil {
-				return remoteBranch
+			isAncestor, err := isGitAncestor(ctx, dir, env, remoteBranch, "HEAD")
+			if err != nil {
+				return "", err
+			}
+			if isAncestor {
+				return remoteBranch, nil
 			}
 		}
 	}
-	for _, candidate := range []string{"origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"} {
+	for _, candidate := range defaultCheckpointBases {
 		if _, err := gitStdout(ctx, dir, env, "rev-parse", "--verify", candidate); err == nil {
-			return candidate
+			return candidate, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
-func captureCommitPatch(ctx context.Context, workspace Workspace, env []string, branch string) ([]byte, error) {
-	base := resolveCheckpointBase(ctx, workspace.Directory, env, branch)
+func resolveRestoreBase(ctx context.Context, dir string, env []string, baseRef string) (string, error) {
+	if baseRef == "" || strings.HasPrefix(baseRef, "-") || strings.ContainsAny(baseRef, " \t\r\n\x00") {
+		return "", fmt.Errorf("invalid base ref %q", baseRef)
+	}
+	if sha, err := gitStdout(ctx, dir, env, "rev-parse", "--verify", baseRef+"^{commit}"); err == nil && sha != "" {
+		return sha, nil
+	}
+	if slices.Contains(defaultCheckpointBases, baseRef) {
+		for _, candidate := range defaultCheckpointBases {
+			if sha, err := gitStdout(ctx, dir, env, "rev-parse", "--verify", candidate+"^{commit}"); err == nil && sha != "" {
+				return sha, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("cannot resolve base ref %q", baseRef)
+}
+
+func captureCommitPatch(ctx context.Context, workspace Workspace, env []string, branch string) (string, []byte, error) {
+	base, err := resolveCheckpointBase(ctx, workspace.Directory, env, branch)
+	if err != nil {
+		return "", nil, err
+	}
 	if base == "" {
 		if saved := savedPatch(workspace.Control); len(saved) > 0 {
-			return saved, nil
+			return "", saved, nil
 		}
-		return nil, nil
+		return "", nil, nil
 	}
 	ahead, err := gitStdout(ctx, workspace.Directory, env, "rev-list", "--count", base+"..HEAD")
-	if err != nil || ahead == "" || ahead == "0" {
-		return nil, err
+	if err != nil {
+		return "", nil, err
+	}
+	if ahead == "" || ahead == "0" {
+		return base, nil, nil
 	}
 	if base == "origin/HEAD" {
 		if saved := savedPatch(workspace.Control); len(saved) > 0 {
-			return saved, nil
+			return base, saved, nil
 		}
 	}
 	commitRange := base + "..HEAD"
 	merges, err := gitStdout(ctx, workspace.Directory, env, "rev-list", "--merges", "--count", commitRange)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if merges != "0" {
 		commitRange, err = squashCheckpointRange(ctx, workspace.Directory, env, base)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 	}
-	return gitStdoutLimited(ctx, workspace.Directory, env, protocol.MaxPatchBytes, "format-patch", "--stdout", "--binary", commitRange)
+	patch, err := gitStdoutLimited(ctx, workspace.Directory, env, protocol.MaxPatchBytes, "format-patch", "--stdout", "--binary", commitRange)
+	if err != nil {
+		return "", nil, err
+	}
+	return base, patch, nil
 }
 
 func squashCheckpointRange(ctx context.Context, dir string, env []string, base string) (string, error) {
