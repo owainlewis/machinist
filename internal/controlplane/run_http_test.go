@@ -325,7 +325,7 @@ func TestRunAPIAndAutomationsAcceptRunsOn(t *testing.T) {
 		t.Fatalf("fetched runs_on = %v, want [gpu linux]", fetched.RunsOn)
 	}
 
-	// Automation create and manual run with runs_on override.
+	// Automation create, manual run inheriting saved runs_on, and manual run with runs_on override.
 	resp, body = f.call(t, http.MethodPost, "/api/v1/automations", f.token, map[string]any{
 		"name":    "gpu-nightly",
 		"repo":    "owner/repo",
@@ -336,6 +336,21 @@ func TestRunAPIAndAutomationsAcceptRunsOn(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create automation = %d: %s", resp.StatusCode, body)
 	}
+	resp, body = f.call(t, http.MethodPost, "/api/v1/automations/gpu-nightly/run", f.token, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("run automation without override = %d: %s", resp.StatusCode, body)
+	}
+	var inherited tickets.Ticket
+	if err := json.Unmarshal(body, &inherited); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(inherited.RunsOn, ",") != "gpu,vpc" {
+		t.Fatalf("inherited automation ticket runs_on = %v, want [gpu vpc]", inherited.RunsOn)
+	}
+	if _, err := f.store.Cancel(t.Context(), inherited.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+
 	resp, body = f.call(t, http.MethodPost, "/api/v1/automations/gpu-nightly/run", f.token, map[string]any{
 		"runs_on": []string{"MacOS"},
 	})

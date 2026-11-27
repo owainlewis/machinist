@@ -1024,3 +1024,44 @@ func TestReloadGetTicketWaitingForHonorsPinnedFactory(t *testing.T) {
 		t.Fatalf("claimed %s, want %s", rerunClaimed.TicketID, tReview.ID)
 	}
 }
+
+func TestReloadDetectsRunsOnChanges(t *testing.T) {
+	rf := newReloadFixture(t)
+	autoPath := filepath.Join(rf.factoryDir, "automations", "nightly.md")
+	presetPath := filepath.Join(rf.factoryDir, "presets", "default.yaml")
+
+	writeFile(t, autoPath, "---\nschedule: \"0 9 * * *\"\ntimezone: UTC\nrepo: owner/alpha\npreset: default\nruns_on:\n  - linux\n---\nRun nightly checks.\n")
+	status, res, errMsg := rf.postReload(t, rf.token)
+	if status != http.StatusOK || !slices.Contains(res.Changed, "automation added: nightly") {
+		t.Fatalf("initial reload = %d %+v err=%q", status, res, errMsg)
+	}
+
+	// Change only runs_on on both the preset and the file automation.
+	writeFile(t, presetPath, "description: Default v1.\nruns_on:\n  - macos\nsteps:\n  - name: work\n    run: echo old-step\n")
+	writeFile(t, autoPath, "---\nschedule: \"0 9 * * *\"\ntimezone: UTC\nrepo: owner/alpha\npreset: default\nruns_on:\n  - gpu\n  - vpc\n---\nRun nightly checks.\n")
+
+	status, res, errMsg = rf.postReload(t, rf.token)
+	if status != http.StatusOK {
+		t.Fatalf("runs_on reload failed: %d %q", status, errMsg)
+	}
+	for _, want := range []string{"preset updated: default", "automation updated: nightly"} {
+		if !slices.Contains(res.Changed, want) {
+			t.Fatalf("changed = %q, missing %q", res.Changed, want)
+		}
+	}
+
+	resp, body := rf.call(t, http.MethodGet, "/api/v1/presets", rf.token, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"runs_on":["macos"]`) {
+		t.Fatalf("presets = %d %s", resp.StatusCode, body)
+	}
+	resp, body = rf.call(t, http.MethodGet, "/api/v1/automations", rf.token, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"runs_on":["gpu","vpc"]`) {
+		t.Fatalf("automations = %d %s", resp.StatusCode, body)
+	}
+
+	// Reloading again with identical runs_on reports no changes.
+	status, res, errMsg = rf.postReload(t, rf.token)
+	if status != http.StatusOK || len(res.Changed) != 0 {
+		t.Fatalf("no-op reload after runs_on update = %d %+v err=%q", status, res, errMsg)
+	}
+}

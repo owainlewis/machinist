@@ -109,6 +109,7 @@ test("Automations page lists file and UI automations, creates/edits/deletes, and
       agent: "default",
       harness: "codex",
       model: "gpt-5-codex",
+      runs_on: ["gpu", "vpc"],
       schedule: "",
       timezone: "",
       prompt: "Audit outdated dependencies.",
@@ -118,6 +119,7 @@ test("Automations page lists file and UI automations, creates/edits/deletes, and
 
   const runCalls = [];
   const createCalls = [];
+  const updateCalls = [];
   const deleteCalls = [];
   let failNextRun = false;
 
@@ -137,6 +139,13 @@ test("Automations page lists file and UI automations, creates/edits/deletes, and
       createCalls.push(body);
       automations = [...automations, { ...body, agent: body.preset, editable: true }];
       return reply(201, body);
+    }
+    if (url.startsWith("/api/v1/automations/") && options.method === "PUT") {
+      const name = decodeURIComponent(url.slice("/api/v1/automations/".length));
+      const body = JSON.parse(options.body);
+      updateCalls.push({ name, body });
+      automations = automations.map(item => (item.name === name ? { ...item, ...body, agent: body.preset } : item));
+      return reply(200, { name, ...body });
     }
     if (url.startsWith("/api/v1/automations/") && options.method === "DELETE") {
       const name = decodeURIComponent(url.slice("/api/v1/automations/".length));
@@ -243,6 +252,27 @@ test("Automations page lists file and UI automations, creates/edits/deletes, and
     },
   });
   assert.equal(window.location.hash, "#/jobs/t_run_3");
+
+  // Edit UI-managed automation and verify runs_on labels are preserved on PUT.
+  const editBtn = document.querySelector('button[aria-label="Edit manual-codex-audit"]');
+  await act(async () => editBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.ok(document.querySelector("#automation-edit-prompt")));
+  await setControlValue(document.querySelector("#automation-edit-prompt"), "Audit outdated and vulnerable dependencies.");
+  await act(async () => document.querySelector('[role="dialog"] button[type="submit"]').dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.equal(updateCalls.length, 1));
+  assert.deepEqual(updateCalls[0], {
+    name: "manual-codex-audit",
+    body: {
+      repo: "owner/api",
+      preset: "default",
+      harness: "codex",
+      model: "gpt-5-codex",
+      schedule: "",
+      timezone: "",
+      prompt: "Audit outdated and vulnerable dependencies.",
+      runs_on: ["gpu", "vpc"],
+    },
+  });
 
   // Delete UI-managed automation with inline confirmation.
   const delBtn = document.querySelector('button[aria-label="Delete manual-codex-audit"]');

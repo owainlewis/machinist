@@ -2,6 +2,7 @@ package tickets
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -23,12 +24,13 @@ func TestAutomationsCRUDAndTicketOverrides(t *testing.T) {
 		Timezone:  "UTC",
 		Harness:   "codex",
 		Model:     "gpt-5-codex",
+		RunsOn:    []string{" GPU ", "linux", "gpu"},
 		CreatedBy: "alice",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if created.Name != "triage-prs" || created.Harness != "codex" || created.Model != "gpt-5-codex" || created.Schedule != "0 9 * * 1-5" {
+	if created.Name != "triage-prs" || created.Harness != "codex" || created.Model != "gpt-5-codex" || created.Schedule != "0 9 * * 1-5" || !slices.Equal(created.RunsOn, []string{"gpu", "linux"}) {
 		t.Fatalf("created = %+v", created)
 	}
 
@@ -51,8 +53,11 @@ func TestAutomationsCRUDAndTicketOverrides(t *testing.T) {
 	if err != nil || len(list) != 2 || list[0].Name != "audit-deps" || list[1].Name != "triage-prs" {
 		t.Fatalf("list = %+v, %v", list, err)
 	}
-	if list[0].Schedule != "" || list[0].Timezone != "" {
-		t.Fatalf("manual automation should have empty schedule: %+v", list[0])
+	if list[0].Schedule != "" || list[0].Timezone != "" || len(list[0].RunsOn) != 0 {
+		t.Fatalf("manual automation should have empty schedule and runs_on: %+v", list[0])
+	}
+	if !slices.Equal(list[1].RunsOn, []string{"gpu", "linux"}) {
+		t.Fatalf("listed runs_on = %v, want [gpu linux]", list[1].RunsOn)
 	}
 
 	updated, err := store.UpdateAutomation(ctx, Automation{
@@ -62,12 +67,17 @@ func TestAutomationsCRUDAndTicketOverrides(t *testing.T) {
 		Prompt:  "Updated prompt.",
 		Harness: "claude",
 		Model:   "opus",
+		RunsOn:  []string{"MacOS", "arm64"},
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.Repo != "owner/api" || updated.Preset != "opus" || updated.Schedule != "" || updated.Harness != "claude" || updated.Model != "opus" {
+	if updated.Repo != "owner/api" || updated.Preset != "opus" || updated.Schedule != "" || updated.Harness != "claude" || updated.Model != "opus" || !slices.Equal(updated.RunsOn, []string{"arm64", "macos"}) {
 		t.Fatalf("updated = %+v", updated)
+	}
+	fetched, err := store.Automation(ctx, "triage-prs")
+	if err != nil || !slices.Equal(fetched.RunsOn, []string{"arm64", "macos"}) {
+		t.Fatalf("fetched automation = %+v, %v", fetched, err)
 	}
 
 	if _, err := store.UpdateAutomation(ctx, Automation{Name: "missing", Repo: "owner/app", Preset: "default", Prompt: "x"}); !errors.Is(err, ErrNotFound) {

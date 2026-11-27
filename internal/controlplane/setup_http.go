@@ -265,6 +265,7 @@ func (s *Server) harnessCheck(loaded *factory.Factory, runners []tickets.Runner)
 	}
 	sort.Strings(names)
 	var stuck []string
+	var missingHarness, missingLabel bool
 	for _, name := range names {
 		preset := loaded.Presets[name]
 		needs := loaded.Needs(preset)
@@ -272,9 +273,11 @@ func (s *Server) harnessCheck(loaded *factory.Factory, runners []tickets.Runner)
 		if len(missingH) > 0 || len(missingL) > 0 {
 			var parts []string
 			if len(missingH) > 0 {
+				missingHarness = true
 				parts = append(parts, strings.Join(needs, " and "))
 			}
 			if len(missingL) > 0 {
+				missingLabel = true
 				word := "label"
 				if len(preset.RunsOn) > 1 {
 					word = "labels"
@@ -287,7 +290,14 @@ func (s *Server) harnessCheck(loaded *factory.Factory, runners []tickets.Runner)
 	if len(stuck) > 0 {
 		check.OK = false
 		check.Detail = "No online runner can run these presets, so their jobs wait: " + strings.Join(stuck, "; ") + "."
-		check.Fix = "Install the missing harness on a runner and restart it, or change the presets' agents."
+		switch {
+		case missingHarness && missingLabel:
+			check.Fix = "Install the missing harness or add the missing labels in runner.yaml and restart the runner, or update the presets' agents and runs_on."
+		case missingLabel:
+			check.Fix = "Add the missing labels in runner.yaml and restart the runner, or update the presets' runs_on."
+		default:
+			check.Fix = "Install the missing harness on a runner and restart it, or change the presets' agents."
+		}
 		check.Link = docs + "runners.md"
 	}
 	return check, true

@@ -189,7 +189,7 @@ function AutomationEditorDialog({ automation, onlineHarnesses, onClose, onSaved,
     if (next !== harness) setModel("");
   }
 
-  const form = { name, repo, preset, harness, model, schedule, timezone, prompt };
+  const form = { name, repo, preset, harness, model, schedule, timezone, prompt, runs_on: automation?.runs_on };
   const ready = canSaveAutomation(form, { requireName: !editing }) && !pending;
   const repoOptions = options ? (repo && !options.repositories.includes(repo) ? [repo, ...options.repositories] : options.repositories) : (repo ? [repo] : []);
   const presetNames = options ? options.presets.map(item => item.name) : [];
