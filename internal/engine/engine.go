@@ -635,7 +635,17 @@ func (e *Engine) findPR(ctx context.Context, runID string) (*PR, error) {
 	if err != nil {
 		return nil, err
 	}
-	return e.FindPR(ctx, ticket.Repo, ticket.Branch())
+	pr, err := e.FindPR(ctx, ticket.Repo, ticket.Branch())
+	if err != nil || pr == nil {
+		return nil, err
+	}
+	// Every run of a ticket reuses the same branch. When a rerun or reply
+	// cleared an already-merged or closed PR, ignore that historical PR (and
+	// any older one) unless it is currently attached or open again.
+	if (pr.Closed || pr.Merged) && pr.Number != ticket.PRNumber && pr.Number <= ticket.PreviousPRNumber {
+		return nil, nil
+	}
+	return pr, nil
 }
 
 // readReviews reads the reviews of a run's merged pull request up to mergedAt.
