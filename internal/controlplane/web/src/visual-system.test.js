@@ -59,3 +59,24 @@ test("settings sections constrain wide preset pipelines so they scroll inside th
   assert.match(styles, /\.token-revoked-section \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
   assert.match(styles, /\.preset-cards \{[^}]*min-width: 0;/);
 });
+
+test("kanban board columns stretch to equal full height on desktop and reset cleanly on mobile", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.board \{[^}]*align-items: stretch;/);
+  assert.doesNotMatch(styles, /\.board \{[^}]*align-items: start;/);
+  assert.match(styles, /\.board-column \{[^}]*min-height: calc\(100vh - 220px\);/);
+  assert.match(styles, /\.board-empty \{[^}]*margin: 0;/);
+  assert.match(styles, /\.board-column-foot \{[^}]*margin-top: auto;/);
+
+  const tabletBoardStart = styles.indexOf("@media (max-width: 1120px)");
+  assert.notEqual(tabletBoardStart, -1, "expected 2-column tablet board media query");
+  const tabletBoardBlock = styles.slice(tabletBoardStart, styles.indexOf("\n}", tabletBoardStart));
+  assert.match(tabletBoardBlock, /\.board \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(tabletBoardBlock, /\.board-column \{[^}]*min-height: 240px;/);
+
+  const mobileBoardStart = styles.indexOf("@media (max-width: 680px)");
+  assert.notEqual(mobileBoardStart, -1, "expected single-column mobile board media query");
+  const mobileBoardBlock = styles.slice(mobileBoardStart, styles.indexOf("\n}", mobileBoardStart));
+  assert.match(mobileBoardBlock, /\.board \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(mobileBoardBlock, /\.board-column \{[^}]*min-height: (?:0|auto);/);
+});
