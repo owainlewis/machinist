@@ -329,7 +329,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 			}
 			preset, ok := cfg.factory.Preset(ticket.Agent)
 			// A job whose preset is gone is claimed so that it fails.
-			return !ok || HasAll(harnesses, cfg.factory.Needs(preset))
+			return !ok || HasAll(harnesses, cfg.factory.Needs(preset.WithOverride(ticket.Harness, ticket.Model)))
 		}
 	}
 	claim, err := e.Store.ClaimRun(ctx, runnerName, harnesses, e.now().Add(LeaseDuration), accept)
@@ -368,6 +368,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses []stri
 			})
 		}
 	}
+	preset = preset.WithOverride(claim.Ticket.Harness, claim.Ticket.Model)
 	steps := make([]runner.Step, len(preset.Steps))
 	for index, step := range preset.Steps {
 		steps[index] = preset.EffectiveStep(step)

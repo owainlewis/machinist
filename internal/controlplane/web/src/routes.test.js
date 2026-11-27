@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { jobHref, redirectFor, routeFromHash, settingsHref } from "./routes.js";
 
-test("the dashboard, jobs, the new job form and runners are addressable", () => {
-  for (const view of ["dashboard", "jobs", "new", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
+test("the dashboard, jobs, automations, the new job form and runners are addressable", () => {
+  for (const view of ["dashboard", "jobs", "automations", "new", "runners"]) assert.deepEqual(routeFromHash(`#/${view}`), { view, jobID: "" });
 });
 
 test("each Settings page has its own route", () => {

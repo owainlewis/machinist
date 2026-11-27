@@ -1,10 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import { CalendarClock, ChevronLeft, ChevronRight, Columns3, List, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Columns3, List, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { AgentBadges } from "./agent-badge.jsx";
 import { api, SignedOutError } from "./api.js";
-import { AutomationsView } from "./automations-view.jsx";
 import { State, relativeTime, useNow } from "./display.jsx";
 import {
   boardColumns, boardDoneLimit, boardOf, filterJobs, formatDuration, jobState, listPageSize,
@@ -22,8 +21,7 @@ const pollMillis = 2000;
 
 function savedView() {
   try {
-    const value = localStorage.getItem(viewKey);
-    return value === "list" || value === "automations" ? value : "board";
+    return localStorage.getItem(viewKey) === "list" ? "list" : "board";
   } catch { return "board"; }
 }
 
@@ -148,7 +146,7 @@ export function JobsPage({ tickets, runners = [], loaded, error, role = "admin",
   onSignedOutRef.current = onSignedOut;
 
   useEffect(() => {
-    if (controlled || view === "automations") return undefined;
+    if (controlled) return undefined;
     let stopped = false;
     let timer;
     const path = ticketsPath({ view, source, quick, page, pageSize, doneLimit: boardDoneLimit });
@@ -274,22 +272,17 @@ export function JobsPage({ tickets, runners = [], loaded, error, role = "admin",
         <div className="range" role="group" aria-label="Show jobs as">
           <button type="button" aria-pressed={view === "board"} onClick={() => choose("board")}><Columns3 className="size-3.5" aria-hidden="true" />Board</button>
           <button type="button" aria-pressed={view === "list"} onClick={() => choose("list")}><List className="size-3.5" aria-hidden="true" />List</button>
-          <button type="button" aria-pressed={view === "automations"} onClick={() => choose("automations")}><CalendarClock className="size-3.5" aria-hidden="true" />Automations</button>
         </div>
         {canRun && <Button asChild><a href="#/new"><Plus className="size-4" aria-hidden="true" />New job</a></Button>}
       </div>
     </header>
-    {view === "automations"
-      ? <AutomationsView running={running} role={role} onSignedOut={onSignedOut} />
-      : <>
-        {pageError && <p className="form-error" role="alert">{pageError}</p>}
-        {!isLoaded && !pageError && <p className="page-note" role="status">Loading jobs</p>}
-        {isLoaded && !hasAnyJobs && !pageError && <p className="empty">No jobs yet.{canRun && <> <a href="#/new">Start one</a>, or send <code>POST /machinist/run</code>.</>}</p>}
-        {hasAnyJobs && <JobFilters counts={counts} sources={sources} source={source} quick={quick} onSource={changeSource} onQuick={changeQuick} />}
-        {hasAnyJobs && isLoaded && viewReady && shownCount === 0 && <p className="empty">No jobs match these filters. <button type="button" className="link-button" onClick={() => { changeSource(""); changeQuick(""); }}>Show all jobs</button></p>}
-        {viewReady && shownCount > 0 && (view === "board"
-          ? <JobBoard tickets={boardTickets} running={running} progress={progress} doneTotal={boardDoneTotal} onViewList={() => choose("list")} />
-          : <JobList jobs={listJobs} running={running} pagination={pagination} onPrev={() => goToPage(page - 1)} onNext={() => goToPage(page + 1)} />)}
-      </>}
+    {pageError && <p className="form-error" role="alert">{pageError}</p>}
+    {!isLoaded && !pageError && <p className="page-note" role="status">Loading jobs</p>}
+    {isLoaded && !hasAnyJobs && !pageError && <p className="empty">No jobs yet.{canRun && <> <a href="#/new">Start one</a>, or send <code>POST /machinist/run</code>.</>}</p>}
+    {hasAnyJobs && <JobFilters counts={counts} sources={sources} source={source} quick={quick} onSource={changeSource} onQuick={changeQuick} />}
+    {hasAnyJobs && isLoaded && viewReady && shownCount === 0 && <p className="empty">No jobs match these filters. <button type="button" className="link-button" onClick={() => { changeSource(""); changeQuick(""); }}>Show all jobs</button></p>}
+    {viewReady && shownCount > 0 && (view === "board"
+      ? <JobBoard tickets={boardTickets} running={running} progress={progress} doneTotal={boardDoneTotal} onViewList={() => choose("list")} />
+      : <JobList jobs={listJobs} running={running} pagination={pagination} onPrev={() => goToPage(page - 1)} onNext={() => goToPage(page + 1)} />)}
   </div>;
 }

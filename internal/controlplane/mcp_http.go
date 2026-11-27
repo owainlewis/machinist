@@ -475,9 +475,11 @@ type mcpAutomation struct {
 	Name     string            `json:"name"`
 	Repo     string            `json:"repo"`
 	Preset   string            `json:"preset"`
+	Harness  string            `json:"harness,omitempty"`
+	Model    string            `json:"model,omitempty"`
 	Schedule string            `json:"schedule"`
 	Timezone string            `json:"timezone"`
-	NextDue  time.Time         `json:"next_due"`
+	NextDue  *time.Time        `json:"next_due,omitempty"`
 	LastJob  *mcpAutomationJob `json:"last_job,omitempty"`
 }
 
@@ -586,6 +588,8 @@ func (s *Server) mcpListAutomations(ctx context.Context, raw []byte) (any, error
 			Name:     status.Name,
 			Repo:     status.Repo,
 			Preset:   status.Agent,
+			Harness:  status.Harness,
+			Model:    status.Model,
 			Schedule: status.Schedule,
 			Timezone: status.Timezone,
 			NextDue:  status.NextDue,
@@ -643,7 +647,7 @@ func (s *Server) mcpRunJob(ctx context.Context, auth tickets.TokenAuth, raw []by
 		if repo != "" || prompt != "" || preset != "" || key != "" {
 			return nil, errors.New("specify either automation, or repo and prompt, not both")
 		}
-		ticket, created, err = s.schedule.RunNow(ctx, automation, auth.Name, "")
+		ticket, created, err = s.schedule.RunNow(ctx, automation, auth.Name, sources.RunOverrides{})
 		if errors.Is(err, tickets.ErrNotFound) {
 			return nil, fmt.Errorf("automation %q not found", automation)
 		}

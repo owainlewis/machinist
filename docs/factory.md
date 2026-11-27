@@ -337,21 +337,20 @@ needs different steps, such as a separate test or review step.
 
 ## Automations
 
+Automations can be created directly on the **Automations** page in the web app (stored in the control plane database) or checked into `factory/automations/<name>.md`:
+
 ```markdown
 ---
-schedule: "0 9 * * 1-5"
+schedule: "0 9 * * 1-5"   # optional; omit for manual-only
 timezone: UTC
 repo: owner/name
 preset: default
+harness: codex            # optional; agy, claude, codex or pi
+model: gpt-5-codex        # optional
 ---
 The prompt goes here.
 ```
 
-Quote `schedule`, because a cron line can start with `*`.
+Quote `schedule`, because a cron line can start with `*`. Omit `schedule` (and `timezone`) for a manual automation that runs only when triggered by hand or via API.
 
-`repo` must be in `github.repositories`, and `preset` must name a preset. Missed runs
-collapse into one, and no job starts while the automation's last one is active. An
-automation never waits for a person: anything that would ask one fails the job instead, so
-one bad run cannot stop its schedule. To run one now, open **Jobs → Automations** in the web
-app, or call `POST /api/v1/automations/<name>/run` with a token and an optional
-`{"prompt": "..."}` JSON body to override the prompt for that run only.
+`repo` must be in `github.repositories` (or added in Settings → Projects for UI-managed automations), and `preset` must name a preset. Missed scheduled runs collapse into one, and no job starts while the automation's last one is active. An automation never waits for a person: anything that would ask one fails the job instead, so one bad run cannot stop its schedule. To run one now, open **Automations** in the web app, or call `POST /api/v1/automations/<name>/run` with a token and an optional JSON body (`prompt`, `repo`, `preset`, `harness`, `model`) to override fields for that run only. Every run appears as a normal job on the **Jobs** page.

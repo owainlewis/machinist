@@ -240,6 +240,25 @@ var postgresMigrations = []postgresMigration{
   lease_expires_at TEXT NOT NULL)`,
 		},
 	},
+	{
+		version: 2,
+		statements: []string{
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS harness TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT ''`,
+			`CREATE TABLE IF NOT EXISTS automations (
+  name TEXT PRIMARY KEY,
+  repo TEXT NOT NULL,
+  preset TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  schedule TEXT NOT NULL DEFAULT '',
+  timezone TEXT NOT NULL DEFAULT '',
+  harness TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL)`,
+		},
+	},
 }
 
 func postgresMaxOpenConns() (int, error) {

@@ -15,6 +15,7 @@ import (
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/sources"
 	"github.com/owainlewis/machinist/internal/tickets"
+	"github.com/owainlewis/machinist/internal/triggers"
 )
 
 func (s *Server) writeTicket(w http.ResponseWriter, _ *http.Request, status int, ticket tickets.Ticket) {
@@ -147,7 +148,7 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 		return
 	}
 	loaded := s.factoryForTicket(ticket)
-	detail := map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": presetStepsFrom(loaded, ticket.Agent)}
+	detail := map[string]any{"ticket": ticket, "entries": entries, "runs": runs, "figures": figures, "steps": presetStepsFrom(loaded, ticket.Agent, ticket.Harness, ticket.Model)}
 	if len(runs) > 0 && runs[len(runs)-1].Status == tickets.RunQueued {
 		runners, _, err := s.store.Fleet(r.Context())
 		if err != nil {
@@ -156,7 +157,7 @@ func (s *Server) getTicket(w http.ResponseWriter, r *http.Request, _ string) {
 		}
 		// waiting_for names the harnesses no online runner has, which keep
 		// the queued run from starting.
-		if missing := waitingForFrom(loaded, s.onlineRunners(runners), ticket.Agent); len(missing) > 0 {
+		if missing := waitingForFrom(loaded, s.onlineRunners(runners), ticket.Agent, ticket.Harness, ticket.Model); len(missing) > 0 {
 			detail["waiting_for"] = missing
 		}
 	}
@@ -180,10 +181,10 @@ func (s *Server) factoryForTicket(ticket tickets.Ticket) *factory.Factory {
 // A queued ticket pinned before a reload uses the factory it started with. A
 // preset that is gone has none.
 func (s *Server) presetStepsForTicket(ticket tickets.Ticket) []stepView {
-	return presetStepsFrom(s.factoryForTicket(ticket), ticket.Agent)
+	return presetStepsFrom(s.factoryForTicket(ticket), ticket.Agent, ticket.Harness, ticket.Model)
 }
 
-func presetStepsFrom(loaded *factory.Factory, name string) []stepView {
+func presetStepsFrom(loaded *factory.Factory, name, harnessName, model string) []stepView {
 	if loaded == nil {
 		return []stepView{}
 	}
@@ -191,7 +192,7 @@ func presetStepsFrom(loaded *factory.Factory, name string) []stepView {
 	if !ok {
 		return []stepView{}
 	}
-	return stepViews(loaded, preset)
+	return stepViews(loaded, preset.WithOverride(harnessName, model))
 }
 
 func (s *Server) rerunTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
@@ -352,9 +353,168 @@ func (s *Server) listAutomations(w http.ResponseWriter, r *http.Request, _ strin
 	writeJSON(w, http.StatusOK, map[string]any{"automations": automations})
 }
 
+type automationRequest struct {
+	Name     string `json:"name"`
+	Repo     string `json:"repo"`
+	Preset   string `json:"preset"`
+	Prompt   string `json:"prompt"`
+	Schedule string `json:"schedule"`
+	Timezone string `json:"timezone"`
+	Harness  string `json:"harness"`
+	Model    string `json:"model"`
+}
+
+func (s *Server) resolveConnectedRepo(r *http.Request, repo string) (string, error) {
+	connected, err := s.intake.Connected(r.Context())
+	if err != nil {
+		return "", err
+	}
+	for _, candidate := range connected {
+		if strings.EqualFold(candidate, repo) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("repository %q is not connected", repo)
+}
+
+func (s *Server) validateAutomationInput(r *http.Request, name string, req automationRequest) (tickets.Automation, int, error) {
+	name = strings.TrimSpace(name)
+	if !factory.ValidName(name) {
+		return tickets.Automation{}, http.StatusBadRequest, fmt.Errorf("name must start with a letter or digit and contain only letters, digits, hyphens and underscores")
+	}
+	repo := strings.TrimSpace(req.Repo)
+	if repo == "" {
+		return tickets.Automation{}, http.StatusBadRequest, errors.New("repo is required")
+	}
+	canonicalRepo, err := s.resolveConnectedRepo(r, repo)
+	if err != nil {
+		return tickets.Automation{}, http.StatusBadRequest, err
+	}
+	preset := strings.TrimSpace(req.Preset)
+	if preset == "" {
+		return tickets.Automation{}, http.StatusBadRequest, errors.New("preset is required")
+	}
+	loaded := s.state().factory
+	if loaded == nil {
+		return tickets.Automation{}, http.StatusBadRequest, fmt.Errorf("preset %q does not exist", preset)
+	}
+	if _, ok := loaded.Preset(preset); !ok {
+		return tickets.Automation{}, http.StatusBadRequest, fmt.Errorf("preset %q does not exist", preset)
+	}
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		return tickets.Automation{}, http.StatusBadRequest, errors.New("prompt is required")
+	}
+	harnessName := strings.TrimSpace(req.Harness)
+	if err := factory.ValidateHarnessOverride(harnessName); err != nil {
+		return tickets.Automation{}, http.StatusBadRequest, err
+	}
+	model := strings.TrimSpace(req.Model)
+	schedule := strings.TrimSpace(req.Schedule)
+	timezone := strings.TrimSpace(req.Timezone)
+	if schedule != "" {
+		if _, err := triggers.ParseCron(schedule, timezone); err != nil {
+			return tickets.Automation{}, http.StatusBadRequest, err
+		}
+		if timezone == "" {
+			timezone = "UTC"
+		}
+	} else if timezone != "" {
+		return tickets.Automation{}, http.StatusBadRequest, errors.New("timezone requires schedule")
+	}
+	return tickets.Automation{
+		Name:     name,
+		Repo:     canonicalRepo,
+		Preset:   preset,
+		Prompt:   prompt,
+		Schedule: schedule,
+		Timezone: timezone,
+		Harness:  harnessName,
+		Model:    model,
+	}, http.StatusOK, nil
+}
+
+func (s *Server) createAutomation(w http.ResponseWriter, r *http.Request, tokenName string) {
+	var req automationRequest
+	if !decodeJSON(w, r, maxRequestBytes, &req) {
+		return
+	}
+	automation, status, err := s.validateAutomationInput(r, req.Name, req)
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	if s.schedule.HasFileAutomation(automation.Name) {
+		writeError(w, http.StatusConflict, fmt.Errorf("an automation named %q already exists in factory/automations/", automation.Name))
+		return
+	}
+	automation.CreatedBy = tokenName
+	created, err := s.store.CreateAutomation(r.Context(), automation)
+	if err != nil {
+		if errors.Is(err, tickets.ErrAutomationExists) {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeTicketError(w, err)
+		return
+	}
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "automation.created", actorID, actorName, created.Name, "succeeded")
+	writeJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) updateAutomation(w http.ResponseWriter, r *http.Request, tokenName string) {
+	name := r.PathValue("name")
+	if s.schedule.HasFileAutomation(name) {
+		writeError(w, http.StatusConflict, errors.New("automations defined in factory/automations/ cannot be edited here"))
+		return
+	}
+	var req automationRequest
+	if !decodeJSON(w, r, maxRequestBytes, &req) {
+		return
+	}
+	automation, status, err := s.validateAutomationInput(r, name, req)
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	updated, err := s.store.UpdateAutomation(r.Context(), automation)
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "automation.updated", actorID, actorName, updated.Name, "succeeded")
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) deleteAutomation(w http.ResponseWriter, r *http.Request, tokenName string) {
+	name := r.PathValue("name")
+	if s.schedule.HasFileAutomation(name) {
+		writeError(w, http.StatusConflict, errors.New("automations defined in factory/automations/ cannot be deleted here"))
+		return
+	}
+	removed, err := s.store.DeleteAutomation(r.Context(), name)
+	if err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	if !removed {
+		writeError(w, http.StatusNotFound, tickets.ErrNotFound)
+		return
+	}
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "automation.deleted", actorID, actorName, name, "succeeded")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName string) {
 	var request struct {
-		Prompt *string `json:"prompt"`
+		Prompt  *string `json:"prompt"`
+		Repo    *string `json:"repo"`
+		Preset  *string `json:"preset"`
+		Harness *string `json:"harness"`
+		Model   *string `json:"model"`
 	}
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
@@ -364,15 +524,58 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 			return
 		}
 	}
-	var prompt string
+	var overrides sources.RunOverrides
 	if request.Prompt != nil {
-		prompt = strings.TrimSpace(*request.Prompt)
-		if prompt == "" {
+		overrides.Prompt = strings.TrimSpace(*request.Prompt)
+		if overrides.Prompt == "" {
 			writeError(w, http.StatusBadRequest, errors.New("prompt cannot be empty"))
 			return
 		}
 	}
-	ticket, created, err := s.schedule.RunNow(r.Context(), r.PathValue("name"), tokenName, prompt)
+	if request.Repo != nil {
+		repo := strings.TrimSpace(*request.Repo)
+		if repo == "" {
+			writeError(w, http.StatusBadRequest, errors.New("repo cannot be empty"))
+			return
+		}
+		canonicalRepo, err := s.resolveConnectedRepo(r, repo)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		overrides.Repo = canonicalRepo
+	}
+	if request.Preset != nil {
+		preset := strings.TrimSpace(*request.Preset)
+		if preset == "" {
+			writeError(w, http.StatusBadRequest, errors.New("preset cannot be empty"))
+			return
+		}
+		loaded := s.state().factory
+		if loaded == nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("preset %q does not exist", preset))
+			return
+		}
+		if _, ok := loaded.Preset(preset); !ok {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("preset %q does not exist", preset))
+			return
+		}
+		overrides.Preset = preset
+	}
+	if request.Harness != nil {
+		harnessName := strings.TrimSpace(*request.Harness)
+		if err := factory.ValidateHarnessOverride(harnessName); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		overrides.Harness = harnessName
+		overrides.OverrideHarness = true
+	}
+	if request.Model != nil {
+		overrides.Model = strings.TrimSpace(*request.Model)
+		overrides.OverrideModel = true
+	}
+	ticket, created, err := s.schedule.RunNow(r.Context(), r.PathValue("name"), tokenName, overrides)
 	if err != nil {
 		writeTicketError(w, err)
 		return

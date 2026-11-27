@@ -58,14 +58,16 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrRunNotActive = errors.New("run is not active")
 	ErrTicketEnded  = errors.New("ticket has ended")
-	ErrNotWorking   = errors.New("ticket is not working")
-	ErrTokenExists  = errors.New("an active token with this name exists")
+	ErrNotWorking       = errors.New("ticket is not working")
+	ErrTokenExists      = errors.New("an active token with this name exists")
+	ErrAutomationExists = errors.New("an automation with this name already exists")
 )
 
 const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
-  state TEXT NOT NULL, agent TEXT NOT NULL, pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
+  state TEXT NOT NULL, agent TEXT NOT NULL, harness TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+  pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
   origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT,
   merge_gate_decision TEXT NOT NULL DEFAULT '', merge_gate_risk TEXT NOT NULL DEFAULT '', merge_gate_reason TEXT NOT NULL DEFAULT '',
@@ -170,7 +172,19 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 CREATE TABLE IF NOT EXISTS leader_leases (
   name TEXT PRIMARY KEY,
   holder_id TEXT NOT NULL,
-  lease_expires_at TEXT NOT NULL);`
+  lease_expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS automations (
+  name TEXT PRIMARY KEY,
+  repo TEXT NOT NULL,
+  preset TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  schedule TEXT NOT NULL DEFAULT '',
+  timezone TEXT NOT NULL DEFAULT '',
+  harness TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL);`
 
 type Store struct {
 	db      *sql.DB
@@ -193,6 +207,8 @@ type Ticket struct {
 	Title        string     `json:"title"`
 	State        string     `json:"state"`
 	Agent        string     `json:"agent"`
+	Harness      string     `json:"harness,omitempty"`
+	Model        string     `json:"model,omitempty"`
 	PRNumber     int        `json:"pr_number,omitempty"`
 	CreatedBy    string     `json:"created_by"`
 	HumanCommits *int       `json:"human_commits,omitempty"`
@@ -282,6 +298,8 @@ type NewTicket struct {
 	Title       string
 	Body        string
 	Agent       string
+	Harness     string
+	Model       string
 	CreatedBy   string
 	SourceKey   string
 }
@@ -443,6 +461,10 @@ func openSQLite(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "tickets", "harness TEXT NOT NULL DEFAULT ''", "model TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Backfill monotonic seq for upgraded SQLite databases, reconcile any
 	// pre-existing duplicate working scheduled tickets before creating the
 	// partial unique index, and install seq indexes (including leading seq
@@ -539,7 +561,7 @@ func nullableString(value string) any {
 	return value
 }
 
-const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
+const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,COALESCE(harness,''),COALESCE(model,''),pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
 
 type scanner interface{ Scan(...any) error }
 
@@ -548,7 +570,7 @@ func scanTicket(row scanner) (Ticket, error) {
 	var issue, pr, commits sql.NullInt64
 	var merged, prStateAt sql.NullString
 	var created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &ticket.Harness, &ticket.Model, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
@@ -786,11 +808,11 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 		if origin == "" {
 			origin = originOf(request.Source, request.SourceKey)
 		}
-		insertQuery := `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,created_by,created_at,updated_at,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM tickets))`
+		insertQuery := `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,created_by,created_at,updated_at,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM tickets))`
 		if s.dialect == dialectPostgres {
-			insertQuery = `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
+			insertQuery = `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 		}
-		if _, err = tx.ExecContext(ctx, insertQuery, id, request.Source, origin, SourceURL(request.SourceURL), request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.CreatedBy, stamp(now), stamp(now)); err != nil {
+		if _, err = tx.ExecContext(ctx, insertQuery, id, request.Source, origin, SourceURL(request.SourceURL), request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.Harness, request.Model, request.CreatedBy, stamp(now), stamp(now)); err != nil {
 			return err
 		}
 		if err = insertEntry(ctx, tx, id, EntryRequest, request.CreatedBy, request.Body, request.SourceKey, now); err != nil {

@@ -4,15 +4,14 @@ import React, { act } from "react";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 
-function setupDOM(initialView = "board") {
-  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/jobs" });
+function setupDOM(url = "http://localhost/#/automations") {
+  const dom = new JSDOM('<div id="root"></div>', { url });
   const previous = new Map();
   for (const name of ["window", "document", "navigator", "HTMLElement", "MouseEvent", "KeyboardEvent", "Event", "localStorage", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
     previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
   }
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  dom.window.localStorage.setItem("machinist-jobs-view", initialView);
   return {
     dom,
     cleanup() {
@@ -32,16 +31,44 @@ async function eventually(check, attempts = 60) {
   }
 }
 
-async function typeInto(element, value) {
+async function setControlValue(element, value) {
   const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value").set;
+  const eventName = element.tagName === "SELECT" ? "change" : "input";
   await act(async () => {
     setter.call(element, value);
-    element.dispatchEvent(new window.Event("input", { bubbles: true }));
+    element.dispatchEvent(new window.Event(eventName, { bubbles: true }));
   });
 }
 
-test("Automations view lists automations, supports empty state, and runs as-is or with an edited prompt", { timeout: 30000 }, async context => {
-  const { dom, cleanup } = setupDOM("board");
+test("Jobs page shows only Board and List (Automations tab is removed)", { timeout: 30000 }, async context => {
+  const { dom, cleanup } = setupDOM("http://localhost/#/jobs");
+  dom.window.localStorage.setItem("machinist-jobs-view", "automations");
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root"));
+  context.after(async () => {
+    await act(async () => root.unmount());
+    await server.close();
+    cleanup();
+  });
+
+  globalThis.fetch = async url => {
+    if (url.startsWith("/api/v1/tickets")) {
+      return { ok: true, status: 200, json: async () => ({ tickets: [], total: 0, limit: 20, offset: 0, has_more: false, done_total: 0, done_limit: 20 }) };
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+
+  const { JobsPage } = await server.ssrLoadModule("/src/jobs-page.jsx");
+  await act(async () => root.render(React.createElement(JobsPage, { runners: [], onSignedOut() {} })));
+
+  await eventually(() => assert.ok(document.querySelector(".range")));
+  assert.deepEqual([...document.querySelectorAll(".range button")].map(btn => btn.textContent), ["Board", "List"]);
+  assert.equal(document.querySelector("table.automations"), null);
+});
+
+test("Automations page lists file and UI automations, creates/edits/deletes, and runs with overrides opening the job", { timeout: 30000 }, async context => {
+  const { dom, cleanup } = setupDOM("http://localhost/#/automations");
   const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
   const { createRoot } = await import("react-dom/client");
   const root = createRoot(document.getElementById("root"));
@@ -53,7 +80,6 @@ test("Automations view lists automations, supports empty state, and runs as-is o
 
   const now = Date.now();
   const nextDue1 = new Date(now + 2 * 60 * 60 * 1000).toISOString();
-  const nextDue2 = new Date(now + 26 * 60 * 60 * 1000).toISOString();
   const updatedAt = new Date(now - 5 * 60 * 1000).toISOString();
 
   let automations = [
@@ -65,6 +91,7 @@ test("Automations view lists automations, supports empty state, and runs as-is o
       timezone: "UTC",
       next_due: nextDue1,
       prompt: "Review open pull requests and summarize blockers.",
+      editable: false,
       last_ticket: {
         id: "t_last1",
         state: "done",
@@ -77,26 +104,45 @@ test("Automations view lists automations, supports empty state, and runs as-is o
       },
     },
     {
-      name: "weekly-deps",
+      name: "manual-codex-audit",
       repo: "owner/api",
-      agent: "maintainer",
-      schedule: "0 6 * * 1",
-      timezone: "America/New_York",
-      next_due: nextDue2,
+      agent: "default",
+      harness: "codex",
+      model: "gpt-5-codex",
+      schedule: "",
+      timezone: "",
       prompt: "Audit outdated dependencies.",
+      editable: true,
     },
   ];
 
   const runCalls = [];
+  const createCalls = [];
+  const deleteCalls = [];
   let failNextRun = false;
 
   globalThis.fetch = async (url, options = {}) => {
     const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
-    if (url.startsWith("/api/v1/tickets")) {
-      return reply(200, { tickets: [], total: 0, limit: 20, offset: 0, has_more: false, done_total: 0, done_limit: 20 });
+    if (url === "/api/v1/repositories") {
+      return reply(200, { repositories: ["owner/app", "owner/api"] });
     }
-    if (url === "/api/v1/automations") {
+    if (url === "/api/v1/presets") {
+      return reply(200, { default: "default", presets: [{ name: "default" }, { name: "neon" }] });
+    }
+    if (url === "/api/v1/automations" && (!options.method || options.method === "GET")) {
       return reply(200, { automations });
+    }
+    if (url === "/api/v1/automations" && options.method === "POST") {
+      const body = JSON.parse(options.body);
+      createCalls.push(body);
+      automations = [...automations, { ...body, agent: body.preset, editable: true }];
+      return reply(201, body);
+    }
+    if (url.startsWith("/api/v1/automations/") && options.method === "DELETE") {
+      const name = decodeURIComponent(url.slice("/api/v1/automations/".length));
+      deleteCalls.push(name);
+      automations = automations.filter(item => item.name !== name);
+      return { ok: true, status: 204, json: async () => null };
     }
     if (url.startsWith("/api/v1/automations/") && url.endsWith("/run") && options.method === "POST") {
       runCalls.push({ url, body: options.body ? JSON.parse(options.body) : undefined });
@@ -110,97 +156,104 @@ test("Automations view lists automations, supports empty state, and runs as-is o
     throw new Error(`unexpected ${url}`);
   };
 
-  const { JobsPage } = await server.ssrLoadModule("/src/jobs-page.jsx");
-  await act(async () => root.render(React.createElement(JobsPage, { runners: [], onSignedOut() {} })));
-
-  // View toggle shows Board, List, and Automations.
-  await eventually(() => assert.ok(document.querySelector(".range")));
-  assert.deepEqual([...document.querySelectorAll(".range button")].map(btn => btn.textContent), ["Board", "List", "Automations"]);
-
-  // Switch to Automations view.
-  const automationsBtn = [...document.querySelectorAll(".range button")].find(btn => btn.textContent === "Automations");
-  await act(async () => automationsBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  const { AutomationsPage } = await server.ssrLoadModule("/src/automations-view.jsx");
+  const runners = [{ name: "vm-runner", harnesses: ["steps", "claude", "codex"] }];
+  await act(async () => root.render(React.createElement(AutomationsPage, { runners, onSignedOut() {} })));
 
   await eventually(() => assert.equal(document.querySelectorAll("table.automations tbody tr").length, 2));
-  assert.equal(dom.window.localStorage.getItem("machinist-jobs-view"), "automations");
-  assert.equal(document.querySelector(".job-filters"), null, "job filters stay hidden in Automations view");
+  assert.equal(document.querySelector("h1").textContent, "Automations");
 
   const rows = [...document.querySelectorAll("table.automations tbody tr")];
+  // Row 0: file-based scheduled automation (no Edit/Delete buttons).
   assert.match(rows[0].textContent, /nightly-review/);
-  assert.match(rows[0].textContent, /owner\/app/);
-  assert.match(rows[0].textContent, /default/);
+  assert.match(rows[0].textContent, /File/);
   assert.match(rows[0].textContent, /0 9 \* \* 1-5/);
-  assert.match(rows[0].textContent, /UTC/);
   assert.match(rows[0].textContent, /Done/);
-  assert.match(rows[0].textContent, /Reviewed 2 PRs\./);
   assert.equal(rows[0].querySelector("a.automation-last-run").getAttribute("href"), "#/jobs/t_last1");
+  assert.equal(rows[0].querySelector('button[aria-label="Edit nightly-review"]'), null);
 
-  assert.match(rows[1].textContent, /weekly-deps/);
-  assert.match(rows[1].textContent, /owner\/api/);
-  assert.match(rows[1].textContent, /maintainer/);
-  assert.match(rows[1].textContent, /Never/);
+  // Row 1: UI-managed manual automation with Codex override.
+  assert.match(rows[1].textContent, /manual-codex-audit/);
+  assert.match(rows[1].textContent, /Codex · gpt-5-codex/);
+  assert.match(rows[1].textContent, /Manual/);
+  assert.ok(rows[1].querySelector('button[aria-label="Edit manual-codex-audit"]'));
+  assert.ok(rows[1].querySelector('button[aria-label="Delete manual-codex-audit"]'));
 
-  // Clicking Run opens the prompt dialog pre-filled with the saved prompt.
-  const firstRunButton = rows[0].querySelector(".automation-action button");
-  assert.equal(firstRunButton.textContent, "Run");
-  await act(async () => firstRunButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  // Create a new manual automation via the dialog.
+  const newBtn = [...document.querySelectorAll("header button")].find(btn => btn.textContent.includes("New automation"));
+  await act(async () => newBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.ok(document.querySelector("#automation-edit-name")));
+  await setControlValue(document.querySelector("#automation-edit-name"), "quick-lint");
+  await setControlValue(document.querySelector("#automation-edit-harness"), "codex");
+  await setControlValue(document.querySelector("#automation-edit-model"), "gpt-5.3-codex");
+  await setControlValue(document.querySelector("#automation-edit-prompt"), "Fix lint issues.");
+  await act(async () => document.querySelector('[role="dialog"] button[type="submit"]').dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
 
-  await eventually(() => assert.ok(document.querySelector('[role="dialog"]')));
-  const textarea = document.querySelector("#automation-run-prompt");
-  assert.equal(textarea.value, "Review open pull requests and summarize blockers.");
-  assert.equal(document.querySelector(".automation-prompt-edited"), null);
+  await eventually(() => assert.equal(createCalls.length, 1));
+  assert.deepEqual(createCalls[0], {
+    name: "quick-lint",
+    repo: "owner/app",
+    preset: "default",
+    harness: "codex",
+    model: "gpt-5.3-codex",
+    schedule: "",
+    timezone: "",
+    prompt: "Fix lint issues.",
+  });
+  await eventually(() => assert.equal(document.querySelectorAll("table.automations tbody tr").length, 3));
 
-  // Submitting as-is posts without a prompt override and navigates to the created job.
-  const runNowBtn = () => [...document.querySelectorAll('[role="dialog"] button[type="submit"]')][0];
-  await act(async () => runNowBtn().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
-
-  await eventually(() => assert.equal(runCalls.length, 1));
-  assert.deepEqual(runCalls[0], { url: "/api/v1/automations/nightly-review/run", body: undefined });
-  assert.equal(window.location.hash, "#/jobs/t_run_1");
-  assert.equal(document.querySelector('[role="dialog"]'), null, "dialog closes after starting");
-
-  // Reopen Run, edit the prompt, test Reset to saved, test blank validation, then run with edited prompt.
-  window.location.hash = "#/jobs";
+  // Click Run on nightly-review -> opens modal pre-filled; submit as-is -> navigates to normal job route.
+  const firstRunButton = document.querySelector('button[aria-label="Run nightly-review"]');
   await act(async () => firstRunButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
   await eventually(() => assert.ok(document.querySelector("#automation-run-prompt")));
   assert.equal(document.querySelector("#automation-run-prompt").value, "Review open pull requests and summarize blockers.");
 
-  await typeInto(document.querySelector("#automation-run-prompt"), "Focus only on security PRs.");
-  assert.ok(document.querySelector(".automation-prompt-edited"), "shows edited indicator");
+  const runNowBtn = () => document.querySelector('[role="dialog"] button[type="submit"]');
+  await act(async () => runNowBtn().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.equal(runCalls.length, 1));
+  assert.deepEqual(runCalls[0], { url: "/api/v1/automations/nightly-review/run", body: undefined });
+  assert.equal(window.location.hash, "#/jobs/t_run_1");
 
-  // Reset to saved restores the original saved prompt.
-  await act(async () => document.querySelector(".automation-reset").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
-  assert.equal(document.querySelector("#automation-run-prompt").value, "Review open pull requests and summarize blockers.");
-  assert.equal(document.querySelector(".automation-prompt-edited"), null);
+  // Reopen Run, override repo + preset + harness + model + prompt, verify Reset and submit override.
+  window.location.hash = "#/automations";
+  await act(async () => firstRunButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.ok(document.querySelector("#automation-run-harness")));
+  await setControlValue(document.querySelector("#automation-run-repo"), "owner/api");
+  await setControlValue(document.querySelector("#automation-run-preset"), "neon");
+  await setControlValue(document.querySelector("#automation-run-harness"), "codex");
+  await setControlValue(document.querySelector("#automation-run-model"), "gpt-5-codex");
+  await setControlValue(document.querySelector("#automation-run-prompt"), "Focus only on security PRs.");
+  assert.ok(document.querySelector(".automation-prompt-edited"));
 
-  // Blank prompt disables Run now.
-  await typeInto(document.querySelector("#automation-run-prompt"), "   ");
-  assert.equal(runNowBtn().disabled, true);
-
-  // API error renders alert inside dialog and stays open.
+  // Error keeps dialog open; retry succeeds and opens the job.
   failNextRun = true;
-  await typeInto(document.querySelector("#automation-run-prompt"), "Check only auth changes.");
-  assert.equal(runNowBtn().disabled, false);
   await act(async () => runNowBtn().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
   await eventually(() => assert.match(document.querySelector('[role="dialog"] [role="alert"]')?.textContent || "", /prompt cannot be empty/));
-  assert.equal(window.location.hash, "#/jobs");
 
-  // Submitting again succeeds with the edited prompt override.
   await act(async () => runNowBtn().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
   await eventually(() => assert.equal(runCalls.length, 3));
-  assert.deepEqual(runCalls[2], { url: "/api/v1/automations/nightly-review/run", body: { prompt: "Check only auth changes." } });
+  assert.deepEqual(runCalls[2], {
+    url: "/api/v1/automations/nightly-review/run",
+    body: {
+      repo: "owner/api",
+      preset: "neon",
+      harness: "codex",
+      model: "gpt-5-codex",
+      prompt: "Focus only on security PRs.",
+    },
+  });
   assert.equal(window.location.hash, "#/jobs/t_run_3");
 
-  // Escape closes an open dialog without starting a run.
-  await act(async () => firstRunButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
-  await eventually(() => assert.ok(document.querySelector('[role="dialog"]')));
-  await act(async () => window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-  await eventually(() => assert.equal(document.querySelector('[role="dialog"]'), null));
-  assert.equal(runCalls.length, 3);
+  // Delete UI-managed automation with inline confirmation.
+  const delBtn = document.querySelector('button[aria-label="Delete manual-codex-audit"]');
+  await act(async () => delBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  const confirmBtn = [...document.querySelectorAll('tr[data-automation="manual-codex-audit"] button')].find(btn => btn.textContent === "Delete");
+  await act(async () => confirmBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.deepEqual(deleteCalls, ["manual-codex-audit"]));
 });
 
-test("Automations empty state explains how to add a markdown file under factory/automations/", { timeout: 30000 }, async context => {
-  const { cleanup } = setupDOM("automations");
+test("Automations empty state offers New automation and documents factory/automations/", { timeout: 30000 }, async context => {
+  const { cleanup } = setupDOM("http://localhost/#/automations");
   const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
   const { createRoot } = await import("react-dom/client");
   const root = createRoot(document.getElementById("root"));
@@ -215,16 +268,12 @@ test("Automations empty state explains how to add a markdown file under factory/
     throw new Error(`unexpected ${url}`);
   };
 
-  const { JobsPage } = await server.ssrLoadModule("/src/jobs-page.jsx");
-  await act(async () => root.render(React.createElement(JobsPage, { runners: [], onSignedOut() {} })));
+  const { AutomationsPage } = await server.ssrLoadModule("/src/automations-view.jsx");
+  await act(async () => root.render(React.createElement(AutomationsPage, { runners: [], onSignedOut() {} })));
 
   await eventually(() => assert.ok(document.querySelector(".automations-empty")));
   const text = document.querySelector(".automations-empty").textContent;
-  assert.match(text, /No automations configured/);
+  assert.match(text, /No automations yet/);
   assert.match(text, /factory\/automations\//);
-  assert.match(text, /schedule:/);
-  assert.match(text, /timezone:/);
-  assert.match(text, /repo:/);
-  assert.match(text, /preset:/);
   assert.equal(document.querySelector("table.automations"), null);
 });

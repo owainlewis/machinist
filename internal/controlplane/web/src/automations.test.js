@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  automationExample, automationRunPath, canRunAutomation, formatDueAt, formatNextDue,
-  isPromptEdited, runAutomationBody,
+  automationExample, automationPath, automationPayload, automationRunPath,
+  canRunAutomation, canSaveAutomation, formatDueAt, formatNextDue,
+  isPromptEdited, isRunEdited, onlineHarnessSet, runAutomationBody,
 } from "./automations.js";
 
 test("formatNextDue describes future run times cleanly", () => {
@@ -25,7 +26,7 @@ test("formatDueAt formats in the given timezone and falls back safely", () => {
   assert.match(formatDueAt("2026-11-26T09:00:00Z", "Not/A_Zone"), /2026-11-26 09:00 UTC/);
 });
 
-test("runAutomationBody sends an override only when the prompt changed", () => {
+test("runAutomationBody sends overrides only for changed fields", () => {
   assert.equal(isPromptEdited("Check PRs", "Check PRs"), false);
   assert.equal(isPromptEdited("  Check PRs  ", "Check PRs"), false);
   assert.equal(isPromptEdited("Check only flaky tests", "Check PRs"), true);
@@ -37,6 +38,36 @@ test("runAutomationBody sends an override only when the prompt changed", () => {
   assert.equal(runAutomationBody("Check PRs", "Check PRs"), undefined);
   assert.equal(runAutomationBody("  Check PRs\n", "Check PRs"), undefined);
   assert.deepEqual(runAutomationBody("  Custom prompt  ", "Check PRs"), { prompt: "Custom prompt" });
+
+  const saved = { repo: "owner/app", agent: "default", harness: "claude", model: "opus", prompt: "Check PRs" };
+  assert.equal(isRunEdited({ repo: "owner/app", preset: "default", harness: "claude", model: "opus", prompt: "Check PRs" }, saved), false);
+  assert.equal(runAutomationBody({ repo: "owner/app", preset: "default", harness: "claude", model: "opus", prompt: "Check PRs" }, saved), undefined);
+  assert.deepEqual(
+    runAutomationBody({ repo: "owner/api", preset: "neon", harness: "codex", model: "gpt-5-codex", prompt: "Check PRs" }, saved),
+    { repo: "owner/api", preset: "neon", harness: "codex", model: "gpt-5-codex" },
+  );
+  assert.deepEqual(
+    runAutomationBody({ repo: "owner/app", preset: "default", harness: "", model: "", prompt: "Check PRs" }, saved),
+    { harness: "", model: "" },
+  );
+
+  assert.equal(automationPath("daily-review"), "/api/v1/automations/daily-review");
   assert.equal(automationRunPath("daily-review"), "/api/v1/automations/daily-review/run");
   assert.match(automationExample, /schedule:.*\ntimezone:.*\nrepo:.*\npreset:/);
+});
+
+test("automationPayload and canSaveAutomation handle manual and scheduled forms", () => {
+  assert.equal(canSaveAutomation({ name: "", repo: "o/r", preset: "default", prompt: "Go" }), false);
+  assert.equal(canSaveAutomation({ name: "", repo: "o/r", preset: "default", prompt: "Go" }, { requireName: false }), true);
+  assert.equal(canSaveAutomation({ name: "audit", repo: "o/r", preset: "default", prompt: "Go" }), true);
+
+  assert.deepEqual(
+    automationPayload({ name: " audit ", repo: "owner/app", preset: "default", harness: "codex", model: "gpt-5-codex", schedule: "", timezone: "UTC", prompt: " Audit " }),
+    { name: "audit", repo: "owner/app", preset: "default", harness: "codex", model: "gpt-5-codex", schedule: "", timezone: "", prompt: "Audit" },
+  );
+  assert.deepEqual(
+    automationPayload({ name: "audit", repo: "owner/app", preset: "default", schedule: "0 9 * * *", timezone: "", prompt: "Audit" }, { includeName: false }),
+    { repo: "owner/app", preset: "default", harness: "", model: "", schedule: "0 9 * * *", timezone: "UTC", prompt: "Audit" },
+  );
+  assert.deepEqual([...onlineHarnessSet([{ harnesses: ["steps", "claude", "codex"] }])], ["claude", "codex"]);
 });

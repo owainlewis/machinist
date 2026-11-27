@@ -22,6 +22,9 @@ const maxFileBytes = 1 << 20
 
 var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
+// ValidName reports whether name is a valid preset, agent, step, or automation name.
+func ValidName(name string) bool { return validName.MatchString(name) }
+
 // Preset is a straight list of steps. Every job of a preset runs the same
 // steps, in order, in one empty workspace.
 type Preset struct {
@@ -47,12 +50,31 @@ func (p Preset) EffectiveStep(step runner.Step) runner.Step {
 	return step
 }
 
+// WithOverride returns a copy of p with run-level harness and model overrides
+// applied on top of every step's effective override.
+func (p Preset) WithOverride(harnessName, model string) Preset {
+	if harnessName == "" && model == "" {
+		return p
+	}
+	overridden := p
+	overridden.Harness, overridden.Model = harness.MergeOverride(p.Harness, p.Model, harnessName, model)
+	overridden.Steps = make([]runner.Step, len(p.Steps))
+	for index, step := range p.Steps {
+		effective := p.EffectiveStep(step)
+		effective.Harness, effective.Model = harness.MergeOverride(effective.Harness, effective.Model, harnessName, model)
+		overridden.Steps[index] = effective
+	}
+	return overridden
+}
+
 type Automation struct {
-	Name   string
-	Repo   string
-	Preset string
-	Prompt string
-	Cron   *triggers.Cron
+	Name    string
+	Repo    string
+	Preset  string
+	Harness string
+	Model   string
+	Prompt  string
+	Cron    *triggers.Cron
 }
 
 type Factory struct {
@@ -194,7 +216,8 @@ type rawStep struct {
 	model             string
 }
 
-func validateHarnessOverride(value string) error {
+// ValidateHarnessOverride checks that value is empty or a supported harness name.
+func ValidateHarnessOverride(value string) error {
 	if value == "" {
 		return nil
 	}
@@ -203,6 +226,8 @@ func validateHarnessOverride(value string) error {
 	}
 	return nil
 }
+
+func validateHarnessOverride(value string) error { return ValidateHarnessOverride(value) }
 
 func parsePreset(name, body string, agents map[string]harness.Agent) (rawPreset, error) {
 	var settings struct {
@@ -476,6 +501,8 @@ func parseAutomation(name, body string) (Automation, error) {
 		Timezone string `yaml:"timezone"`
 		Repo     string `yaml:"repo"`
 		Preset   string `yaml:"preset"`
+		Harness  string `yaml:"harness"`
+		Model    string `yaml:"model"`
 	}
 	if err := config.DecodeStrict(name, []byte(front), &settings); err != nil {
 		return Automation{}, err
@@ -483,12 +510,31 @@ func parseAutomation(name, body string) (Automation, error) {
 	if settings.Repo == "" || settings.Preset == "" {
 		return Automation{}, errors.New("repo and preset are required")
 	}
+	if err := ValidateHarnessOverride(strings.TrimSpace(settings.Harness)); err != nil {
+		return Automation{}, err
+	}
 	if strings.TrimSpace(prompt) == "" {
 		return Automation{}, errors.New("prompt is empty")
 	}
-	cron, err := triggers.ParseCron(settings.Schedule, settings.Timezone)
-	if err != nil {
-		return Automation{}, err
+	var cron *triggers.Cron
+	schedule := strings.TrimSpace(settings.Schedule)
+	timezone := strings.TrimSpace(settings.Timezone)
+	if schedule != "" {
+		var err error
+		cron, err = triggers.ParseCron(schedule, timezone)
+		if err != nil {
+			return Automation{}, err
+		}
+	} else if timezone != "" {
+		return Automation{}, errors.New("timezone requires schedule")
 	}
-	return Automation{Name: name, Repo: settings.Repo, Preset: settings.Preset, Prompt: strings.TrimSpace(prompt), Cron: cron}, nil
+	return Automation{
+		Name:    name,
+		Repo:    settings.Repo,
+		Preset:  settings.Preset,
+		Harness: strings.TrimSpace(settings.Harness),
+		Model:   strings.TrimSpace(settings.Model),
+		Prompt:  strings.TrimSpace(prompt),
+		Cron:    cron,
+	}, nil
 }

@@ -102,10 +102,10 @@ func (s *Server) onlineRunners(runners []tickets.Runner) []tickets.Runner {
 // runner is online, or when the preset is gone, since such a job is claimed
 // only to fail.
 func (s *Server) waitingFor(online []tickets.Runner, presetName string) []string {
-	return waitingForFrom(s.state().factory, online, presetName)
+	return waitingForFrom(s.state().factory, online, presetName, "", "")
 }
 
-func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName string) []string {
+func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName, harnessName, model string) []string {
 	if loaded == nil {
 		return nil
 	}
@@ -113,7 +113,7 @@ func waitingForFrom(loaded *factory.Factory, online []tickets.Runner, presetName
 	if !ok {
 		return nil
 	}
-	return missingHarnesses(online, loaded.Needs(preset))
+	return missingHarnesses(online, loaded.Needs(preset.WithOverride(harnessName, model)))
 }
 
 // missingHarnesses names the harnesses in needs that the closest online runner
