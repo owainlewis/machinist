@@ -409,7 +409,8 @@ a.source:hover span { text-decoration: underline; }
 .stat-value { margin-top: 5px; font-size: 22px; line-height: 1.2; font-weight: 600; letter-spacing: -.024em; font-variant-numeric: tabular-nums; }
 .stat-detail { margin-top: 4px; color: var(--muted-foreground); font-size: 12px; }
 .dashboard-section { display: flex; flex-direction: column; gap: 10px; }
-.dashboard-section > .label { margin: 0; }
+.dashboard-section > .label, .dashboard-section-head > .label { margin: 0; }
+.dashboard-section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
 .stat-tiles-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 @media (max-width: 1180px) { .stat-tiles-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 520px) { .stat-tiles-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

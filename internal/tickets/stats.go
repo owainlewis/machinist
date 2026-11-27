@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/protocol"
@@ -70,6 +71,19 @@ type PRCounts struct {
 	// MergeRate is the share of the pull requests opened in the range that
 	// have merged, from 0 to 1. It is nil when none was opened.
 	MergeRate *float64 `json:"merge_rate"`
+}
+
+// StatsMergeGate summarises merge-gate verdicts for tickets created in the
+// selected range, optionally filtered to one repository.
+type StatsMergeGate struct {
+	Evaluated    int `json:"evaluated"`
+	Approved     int `json:"approved"`
+	AutoMerged   int `json:"auto_merged"`
+	HeldPolicy   int `json:"held_policy"`
+	HeldTripwire int `json:"held_tripwire"`
+	LowRisk      int `json:"low_risk"`
+	MediumRisk   int `json:"medium_risk"`
+	HighRisk     int `json:"high_risk"`
 }
 
 // Cycle is how long the jobs whose pull request merged in the range took,
@@ -178,12 +192,13 @@ type Stats struct {
 	Presets         []StatsGroup `json:"presets"`
 	Repos           []StatsGroup `json:"repos"`
 	// Sources groups the jobs by where they came from, such as web or linear.
-	Sources    []StatsGroup `json:"sources"`
-	Models     []ModelStats `json:"models"`
-	ModelSteps []ModelStats `json:"model_steps"`
-	PRs        PRCounts     `json:"prs"`
-	Cycle      Cycle        `json:"cycle"`
-	Touches    Touches      `json:"touches"`
+	Sources    []StatsGroup   `json:"sources"`
+	Models     []ModelStats   `json:"models"`
+	ModelSteps []ModelStats   `json:"model_steps"`
+	PRs        PRCounts       `json:"prs"`
+	MergeGate  StatsMergeGate `json:"merge_gate"`
+	Cycle      Cycle          `json:"cycle"`
+	Touches    Touches        `json:"touches"`
 	// Steps names every step that ran in the range, the most run first.
 	Steps []string `json:"steps"`
 }
@@ -380,6 +395,9 @@ func (s *Store) Stats(ctx context.Context, days int, repo string) (Stats, error)
 	if err := s.pullRequestStats(ctx, &stats, first, repo, index, presets, repos, sources); err != nil {
 		return Stats{}, err
 	}
+	if err := s.mergeGateStats(ctx, &stats, first, repo); err != nil {
+		return Stats{}, err
+	}
 	if stats.PRs.Merged > 0 && stats.HasCost {
 		perPR := stats.Cost / float64(stats.PRs.Merged)
 		stats.CostPerMergedPR = &perPR
@@ -567,6 +585,58 @@ func (s *Store) pullRequestStats(ctx context.Context, stats *Stats, first time.T
 		stats.Touches.PerPR = &perPR
 	}
 	return nil
+}
+
+const tripwireReasonPrefix = "Tripwire:"
+
+// mergeGateStats summarises merge-gate verdicts recorded on tickets created in
+// the selected range.
+func (s *Store) mergeGateStats(ctx context.Context, stats *Stats, first time.Time, repo string) error {
+	where, args := repoClause("repo", repo, []any{stamp(first)})
+	rows, err := s.q().QueryContext(ctx, `SELECT COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(pr_state,''),merged_at IS NOT NULL,COALESCE(human_reviews,0),first_review_at IS NOT NULL
+  FROM tickets WHERE created_at>=? AND COALESCE(merge_gate_decision,'')<>''`+where, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rawDecision, rawRisk, rawReason, prState string
+		var merged, hasFirstReview bool
+		var humanReviews int
+		if err := rows.Scan(&rawDecision, &rawRisk, &rawReason, &prState, &merged, &humanReviews, &hasFirstReview); err != nil {
+			return err
+		}
+		decision := strings.ToLower(strings.TrimSpace(rawDecision))
+		if decision == "" {
+			continue
+		}
+		risk := strings.ToLower(strings.TrimSpace(rawRisk))
+		reason := strings.TrimSpace(rawReason)
+
+		mg := &stats.MergeGate
+		mg.Evaluated++
+		switch risk {
+		case "low":
+			mg.LowRisk++
+		case "medium":
+			mg.MediumRisk++
+		case "high":
+			mg.HighRisk++
+		}
+		if decision == "approve" && risk == "low" {
+			mg.Approved++
+			if (prState == PRMerged || merged) && humanReviews == 0 && !hasFirstReview {
+				mg.AutoMerged++
+			}
+			continue
+		}
+		if strings.HasPrefix(reason, tripwireReasonPrefix) {
+			mg.HeldTripwire++
+		} else {
+			mg.HeldPolicy++
+		}
+	}
+	return rows.Err()
 }
 
 // stepStats counts the agent steps that ran, by the day their run ended. A

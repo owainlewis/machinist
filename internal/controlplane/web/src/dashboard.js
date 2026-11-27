@@ -190,6 +190,23 @@ export function touchParts(touches) {
   ].join(", ");
 }
 
+// autoMergeRate returns the share of merge-gate evaluated tickets that
+// auto-merged with zero human reviews, or NaN when none were evaluated.
+export function autoMergeRate(mergeGate) {
+  const evaluated = mergeGate?.evaluated || 0;
+  return evaluated > 0 ? (mergeGate.auto_merged || 0) / evaluated : NaN;
+}
+
+// mergeGateRiskParts summarises evaluated tickets by risk level.
+export function mergeGateRiskParts(mergeGate) {
+  if (!(mergeGate?.evaluated > 0)) return "";
+  return [
+    `${formatCount(mergeGate.low_risk || 0)} low`,
+    `${formatCount(mergeGate.medium_risk || 0)} medium`,
+    `${formatCount(mergeGate.high_risk || 0)} high risk`,
+  ].join(" · ");
+}
+
 // The steps a factory's presets name. Each keeps its color whatever the range,
 // so a step never changes color when another is run more.
 const knownSteps = ["implement", "review", "revise", "publish"];
