@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestDialectRebind(t *testing.T) {
@@ -63,6 +66,54 @@ func TestDialectRebind(t *testing.T) {
 	}
 	if isUniqueViolation(nil) || isUniqueViolation(errors.New("other error")) {
 		t.Fatal("unexpected unique violation match")
+	}
+
+	sqliteScheduleErr := errors.New("constraint failed: UNIQUE constraint failed: tickets.source (2067)")
+	sqliteSourceKeyErr := errors.New("constraint failed: UNIQUE constraint failed: ticket_entries.source_key (2067)")
+	pgScheduleErr := fmt.Errorf("update ticket: %w", &pgconn.PgError{
+		Code:           "23505",
+		TableName:      "tickets",
+		ConstraintName: "one_active_ticket_per_schedule",
+	})
+	pgSourceKeyErr := fmt.Errorf("insert entry: %w", &pgconn.PgError{
+		Code:           "23505",
+		TableName:      "ticket_entries",
+		ConstraintName: "ticket_entries_source_key_key",
+	})
+	pgOtherErr := &pgconn.PgError{
+		Code:           "23505",
+		TableName:      "tokens",
+		ConstraintName: "one_active_token_per_name",
+	}
+
+	for _, err := range []error{
+		sqliteScheduleErr,
+		pgScheduleErr,
+		errors.New(`ERROR: duplicate key value violates unique constraint "one_active_ticket_per_schedule" (SQLSTATE 23505)`),
+	} {
+		if !isScheduleActiveUniqueViolation(err) {
+			t.Fatalf("expected schedule unique violation match for %v", err)
+		}
+		if isSourceKeyUniqueViolation(err) {
+			t.Fatalf("schedule unique violation misclassified as source_key: %v", err)
+		}
+	}
+	for _, err := range []error{
+		sqliteSourceKeyErr,
+		pgSourceKeyErr,
+		errors.New(`ERROR: duplicate key value violates unique constraint "ticket_entries_source_key_key" (SQLSTATE 23505)`),
+	} {
+		if !isSourceKeyUniqueViolation(err) {
+			t.Fatalf("expected source_key unique violation match for %v", err)
+		}
+		if isScheduleActiveUniqueViolation(err) {
+			t.Fatalf("source_key unique violation misclassified as schedule: %v", err)
+		}
+	}
+	for _, err := range []error{nil, errors.New("other error"), pgOtherErr} {
+		if isScheduleActiveUniqueViolation(err) || isSourceKeyUniqueViolation(err) {
+			t.Fatalf("unexpected constraint match for %v", err)
+		}
 	}
 }
 
