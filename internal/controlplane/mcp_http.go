@@ -28,6 +28,9 @@ const (
 	mcpMaxOutputBytes         = 128 << 10
 	mcpMaxOutputPages         = 64
 
+	mcpJobWaitingForCI = "waiting_for_ci"
+	mcpJobNeedsYou     = "needs_you"
+
 	jsonRPCParseError     = -32700
 	jsonRPCInvalidRequest = -32600
 	jsonRPCMethodNotFound = -32601
@@ -93,7 +96,7 @@ var mcpTools = []mcpTool{
 			"type": "object",
 			"properties": map[string]any{
 				"repo":   map[string]any{"type": "string", "description": "Filter by repository in owner/name format."},
-				"state":  map[string]any{"type": "string", "description": "Filter by job state: queued, running, done, failed, or cancelled."},
+				"state":  map[string]any{"type": "string", "description": "Filter by job state: queued, running, waiting_for_ci, needs_you, done, failed, or cancelled."},
 				"source": map[string]any{"type": "string", "description": "Filter by job source (e.g. web, api, mcp, schedule, linear)."},
 				"limit":  map[string]any{"type": "integer", "description": "Maximum number of jobs to return (1-200, default 50).", "minimum": 1, "maximum": tickets.MaxTicketLimit},
 			},
@@ -132,7 +135,7 @@ var mcpTools = []mcpTool{
 	},
 	{
 		Name:        "get_job",
-		Description: "Get a job's current state, pipeline steps, latest agent action, pull request link, and run summary.",
+		Description: "Get a job's current state, pipeline steps, latest agent action, pull request link, merge gate verdict, and run summary.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -175,6 +178,34 @@ var mcpTools = []mcpTool{
 		},
 		Annotations: &mcpToolAnnotation{DestructiveHint: true},
 		scope:       tickets.ScopeRun,
+	},
+	{
+		Name:        "rerun_job",
+		Description: "Start a new attempt for an ended job.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"job_id": map[string]any{"type": "string", "description": "Job ID to rerun (e.g. t_...)."},
+			},
+			"required":             []string{"job_id"},
+			"additionalProperties": false,
+		},
+		Annotations: &mcpToolAnnotation{},
+		scope:       tickets.ScopeRun,
+	},
+	{
+		Name:        "get_stats",
+		Description: "Get throughput, pull request merge rate, cycle time, and spend metrics for recent days, optionally filtered by repository.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"days": map[string]any{"type": "integer", "description": "Number of days to include (1-90, e.g. 7, 14, or 30; default 14).", "minimum": 1, "maximum": maxStatsDays},
+				"repo": map[string]any{"type": "string", "description": "Optional repository filter in owner/name format."},
+			},
+			"additionalProperties": false,
+		},
+		Annotations: &mcpToolAnnotation{ReadOnlyHint: true},
+		scope:       tickets.ScopeRead,
 	},
 }
 
@@ -365,6 +396,10 @@ func (s *Server) handleMCPToolCall(ctx context.Context, auth tickets.TokenAuth, 
 		result, err = s.mcpGetJobOutput(ctx, args)
 	case "cancel_job":
 		result, err = s.mcpCancelJob(ctx, auth, args)
+	case "rerun_job":
+		result, err = s.mcpRerunJob(ctx, auth, args)
+	case "get_stats":
+		result, err = s.mcpGetStats(ctx, args)
 	default:
 		return jsonRPCErrorResponse(request.ID, jsonRPCInvalidParams, fmt.Sprintf("unknown tool %q", tool.Name))
 	}
@@ -407,21 +442,72 @@ func githubPRURL(repo string, number int) string {
 	return fmt.Sprintf("https://github.com/%s/pull/%d", repo, number)
 }
 
+type mcpMergeGate struct {
+	Decision string `json:"decision,omitempty"`
+	Risk     string `json:"risk,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func mcpMergeGateForTicket(ticket tickets.Ticket) *mcpMergeGate {
+	if ticket.MergeGateDecision == "" && ticket.MergeGateRisk == "" && ticket.MergeGateReason == "" {
+		return nil
+	}
+	return &mcpMergeGate{
+		Decision: ticket.MergeGateDecision,
+		Risk:     ticket.MergeGateRisk,
+		Reason:   ticket.MergeGateReason,
+	}
+}
+
+// isWaitingForCI reports whether a pr_ready ticket is waiting on CI checks to
+// auto-merge rather than held for human review. A JSON-encoded ship.Watch with
+// an empty or absent hold means Machinist will merge once checks pass.
+func isWaitingForCI(ticket tickets.Ticket) bool {
+	if ticket.State != tickets.StatePRReady {
+		return false
+	}
+	raw := strings.TrimSpace(ticket.Shipping)
+	if raw == "" || raw[0] != '{' {
+		return false
+	}
+	var watch struct {
+		Hold string `json:"hold"`
+	}
+	if err := json.Unmarshal([]byte(raw), &watch); err != nil {
+		return false
+	}
+	return watch.Hold == ""
+}
+
+// mcpJobState maps a ticket to its MCP job state, distinguishing pr_ready jobs
+// waiting on CI auto-merge ("waiting_for_ci") and held/unshipped PRs
+// ("needs_you") from merged/finished jobs ("done").
+func mcpJobState(ticket tickets.Ticket, runs []tickets.Run) string {
+	if ticket.State == tickets.StatePRReady {
+		if isWaitingForCI(ticket) {
+			return mcpJobWaitingForCI
+		}
+		return mcpJobNeedsYou
+	}
+	return jobState(ticket, runs)
+}
+
 type mcpJobSummary struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Repo        string    `json:"repo"`
-	Preset      string    `json:"preset"`
-	Source      string    `json:"source"`
-	SourceURL   string    `json:"source_url,omitempty"`
-	State       string    `json:"state"`
-	CurrentStep string    `json:"current_step,omitempty"`
-	PRNumber    int       `json:"pr_number,omitempty"`
-	PRState     string    `json:"pr_state,omitempty"`
-	PRURL       string    `json:"pr_url,omitempty"`
-	CreatedBy   string    `json:"created_by"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string        `json:"id"`
+	Title       string        `json:"title"`
+	Repo        string        `json:"repo"`
+	Preset      string        `json:"preset"`
+	Source      string        `json:"source"`
+	SourceURL   string        `json:"source_url,omitempty"`
+	State       string        `json:"state"`
+	CurrentStep string        `json:"current_step,omitempty"`
+	PRNumber    int           `json:"pr_number,omitempty"`
+	PRState     string        `json:"pr_state,omitempty"`
+	PRURL       string        `json:"pr_url,omitempty"`
+	MergeGate   *mcpMergeGate `json:"merge_gate,omitempty"`
+	CreatedBy   string        `json:"created_by"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
 }
 
 type mcpJobStep struct {
@@ -432,27 +518,28 @@ type mcpJobStep struct {
 }
 
 type mcpJobDetail struct {
-	ID            string       `json:"id"`
-	Title         string       `json:"title"`
-	Repo          string       `json:"repo"`
-	Preset        string       `json:"preset"`
-	Source        string       `json:"source"`
-	SourceURL     string       `json:"source_url,omitempty"`
-	State         string       `json:"state"`
-	CurrentStep   string       `json:"current_step,omitempty"`
-	LatestAction  string       `json:"latest_action,omitempty"`
-	Steps         []mcpJobStep `json:"steps"`
-	PRNumber      int          `json:"pr_number,omitempty"`
-	PRState       string       `json:"pr_state,omitempty"`
-	PRURL         string       `json:"pr_url,omitempty"`
-	LatestRunID   string       `json:"latest_run_id,omitempty"`
-	Summary       string       `json:"summary,omitempty"`
-	LatestMessage string       `json:"latest_message,omitempty"`
-	Tokens        int64        `json:"tokens"`
-	CostUSD       *float64     `json:"cost_usd"`
-	CreatedBy     string       `json:"created_by"`
-	CreatedAt     time.Time    `json:"created_at"`
-	UpdatedAt     time.Time    `json:"updated_at"`
+	ID            string        `json:"id"`
+	Title         string        `json:"title"`
+	Repo          string        `json:"repo"`
+	Preset        string        `json:"preset"`
+	Source        string        `json:"source"`
+	SourceURL     string        `json:"source_url,omitempty"`
+	State         string        `json:"state"`
+	CurrentStep   string        `json:"current_step,omitempty"`
+	LatestAction  string        `json:"latest_action,omitempty"`
+	Steps         []mcpJobStep  `json:"steps"`
+	PRNumber      int           `json:"pr_number,omitempty"`
+	PRState       string        `json:"pr_state,omitempty"`
+	PRURL         string        `json:"pr_url,omitempty"`
+	MergeGate     *mcpMergeGate `json:"merge_gate,omitempty"`
+	LatestRunID   string        `json:"latest_run_id,omitempty"`
+	Summary       string        `json:"summary,omitempty"`
+	LatestMessage string        `json:"latest_message,omitempty"`
+	Tokens        int64         `json:"tokens"`
+	CostUSD       *float64      `json:"cost_usd"`
+	CreatedBy     string        `json:"created_by"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
 }
 
 type mcpRunJobResult struct {
@@ -522,27 +609,64 @@ func (s *Server) mcpListJobs(ctx context.Context, raw []byte) (any, error) {
 		Source: strings.TrimSpace(args.Source),
 		Limit:  limit,
 	}
+	var prReadySubstate string
 	if state := strings.TrimSpace(args.State); state != "" {
 		switch state {
-		case JobQueued, JobRunning, JobFailed, JobCancelled, tickets.StateWorking, tickets.StatePRReady:
+		case JobQueued, JobRunning, JobDone, JobFailed, JobCancelled, tickets.StateWorking, tickets.StatePRReady:
 			filter.States = []string{state}
-		case JobDone:
-			filter.States = []string{tickets.StateDone, tickets.StatePRReady}
+		case mcpJobWaitingForCI, mcpJobNeedsYou:
+			filter.States = []string{tickets.StatePRReady}
+			prReadySubstate = state
 		default:
-			return nil, fmt.Errorf("unknown state %q; must be queued, running, done, failed, or cancelled", state)
+			return nil, fmt.Errorf("unknown state %q; must be queued, running, waiting_for_ci, needs_you, done, failed, or cancelled", state)
 		}
 	}
-	page, err := s.store.ListTicketsPage(ctx, filter)
-	if err != nil {
-		return nil, err
+
+	var matched []tickets.Ticket
+	var total int
+	var hasMore bool
+	if prReadySubstate != "" {
+		wantCI := prReadySubstate == mcpJobWaitingForCI
+		scanFilter := filter
+		scanFilter.Limit = tickets.MaxTicketLimit
+		scanFilter.Offset = 0
+		for {
+			page, err := s.store.ListTicketsPage(ctx, scanFilter)
+			if err != nil {
+				return nil, err
+			}
+			for _, ticket := range page.Tickets {
+				if isWaitingForCI(ticket) != wantCI {
+					continue
+				}
+				total++
+				if len(matched) < limit {
+					matched = append(matched, ticket)
+				}
+			}
+			if !page.HasMore || len(page.Tickets) == 0 {
+				break
+			}
+			scanFilter.Offset += len(page.Tickets)
+		}
+		hasMore = total > len(matched)
+	} else {
+		page, err := s.store.ListTicketsPage(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		matched = page.Tickets
+		total = page.Total
+		hasMore = page.HasMore
 	}
-	jobs := make([]mcpJobSummary, 0, len(page.Tickets))
-	for _, ticket := range page.Tickets {
+
+	jobs := make([]mcpJobSummary, 0, len(matched))
+	for _, ticket := range matched {
 		runs, err := s.store.Runs(ctx, ticket.ID)
 		if err != nil {
 			return nil, err
 		}
-		state := jobState(ticket, runs)
+		state := mcpJobState(ticket, runs)
 		var currentStep string
 		if state == JobRunning {
 			if currentStep, err = s.store.CurrentStep(ctx, ticket.ID); err != nil {
@@ -561,6 +685,7 @@ func (s *Server) mcpListJobs(ctx context.Context, raw []byte) (any, error) {
 			PRNumber:    ticket.PRNumber,
 			PRState:     ticket.PRState,
 			PRURL:       githubPRURL(ticket.Repo, ticket.PRNumber),
+			MergeGate:   mcpMergeGateForTicket(ticket),
 			CreatedBy:   ticket.CreatedBy,
 			CreatedAt:   ticket.CreatedAt,
 			UpdatedAt:   ticket.UpdatedAt,
@@ -568,8 +693,8 @@ func (s *Server) mcpListJobs(ctx context.Context, raw []byte) (any, error) {
 	}
 	return map[string]any{
 		"jobs":     jobs,
-		"total":    page.Total,
-		"has_more": page.HasMore,
+		"total":    total,
+		"has_more": hasMore,
 	}, nil
 }
 
@@ -601,7 +726,7 @@ func (s *Server) mcpListAutomations(ctx context.Context, raw []byte) (any, error
 			}
 			item.LastJob = &mcpAutomationJob{
 				ID:        status.LastTicket.ID,
-				State:     jobState(status.LastTicket.Ticket, runs),
+				State:     mcpJobState(status.LastTicket.Ticket, runs),
 				PRNumber:  status.LastTicket.PRNumber,
 				PRState:   status.LastTicket.PRState,
 				PRURL:     githubPRURL(status.LastTicket.Repo, status.LastTicket.PRNumber),
@@ -730,6 +855,51 @@ func (s *Server) mcpCancelJob(ctx context.Context, auth tickets.TokenAuth, raw [
 	return s.mcpJobDetail(ctx, ticket)
 }
 
+func (s *Server) mcpRerunJob(ctx context.Context, auth tickets.TokenAuth, raw []byte) (any, error) {
+	var args struct {
+		JobID string `json:"job_id"`
+	}
+	if err := decodeMCPArgs(raw, &args); err != nil {
+		return nil, err
+	}
+	id := strings.TrimSpace(args.JobID)
+	if id == "" {
+		return nil, errors.New("job_id is required")
+	}
+	ticket, err := s.store.Rerun(ctx, id, auth.Name)
+	if errors.Is(err, tickets.ErrNotFound) {
+		return nil, fmt.Errorf("job %q not found", id)
+	}
+	if errors.Is(err, tickets.ErrStillWorking) {
+		return nil, fmt.Errorf("job %q is still working", id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if s.engine != nil {
+		s.engine.UnpinBefore(ticket.ID, ticket.UpdatedAt)
+	}
+	return s.mcpJobDetail(ctx, ticket)
+}
+
+func (s *Server) mcpGetStats(ctx context.Context, raw []byte) (any, error) {
+	var args struct {
+		Days *int   `json:"days"`
+		Repo string `json:"repo"`
+	}
+	if err := decodeMCPArgs(raw, &args); err != nil {
+		return nil, err
+	}
+	days := usageDays
+	if args.Days != nil {
+		if *args.Days < 1 || *args.Days > maxStatsDays {
+			return nil, fmt.Errorf("days must be between 1 and %d", maxStatsDays)
+		}
+		days = *args.Days
+	}
+	return s.store.Stats(ctx, days, strings.TrimSpace(args.Repo))
+}
+
 func (s *Server) mcpJobDetail(ctx context.Context, ticket tickets.Ticket) (mcpJobDetail, error) {
 	runs, err := s.store.Runs(ctx, ticket.ID)
 	if err != nil {
@@ -739,7 +909,7 @@ func (s *Server) mcpJobDetail(ctx context.Context, ticket tickets.Ticket) (mcpJo
 	if err != nil {
 		return mcpJobDetail{}, err
 	}
-	state := jobState(ticket, runs)
+	state := mcpJobState(ticket, runs)
 	detail := mcpJobDetail{
 		ID:            ticket.ID,
 		Title:         ticket.Title,
@@ -751,6 +921,7 @@ func (s *Server) mcpJobDetail(ctx context.Context, ticket tickets.Ticket) (mcpJo
 		PRNumber:      ticket.PRNumber,
 		PRState:       ticket.PRState,
 		PRURL:         githubPRURL(ticket.Repo, ticket.PRNumber),
+		MergeGate:     mcpMergeGateForTicket(ticket),
 		LatestMessage: latestMessage,
 		CreatedBy:     ticket.CreatedBy,
 		CreatedAt:     ticket.CreatedAt,
@@ -903,7 +1074,7 @@ func (s *Server) mcpGetJobOutput(ctx context.Context, raw []byte) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	state := jobState(ticket, runs)
+	state := mcpJobState(ticket, runs)
 	if len(runs) == 0 {
 		return mcpJobOutput{JobID: ticket.ID, State: state, Cursor: args.After}, nil
 	}

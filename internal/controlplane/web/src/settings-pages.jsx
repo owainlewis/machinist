@@ -8,7 +8,7 @@ import { AgentBadge, AgentBadges } from "./agent-badge.jsx";
 import { agentSummary, harnessLabel } from "./agents.js";
 import { relativeTime } from "./display.jsx";
 import { HarnessMark } from "./harness-mark.jsx";
-import { agentFrontMatter, agentOverridden, dayLabel, durationShort, factoryUpdateLine, githubLine, groupAgents, pollLabel, roleLabel, stepKind, stepKindLabel, stepShellPreview, tokenLine, tokenPrefixLabel, validateTokenName } from "./settings.js";
+import { agentFrontMatter, agentOverridden, dayLabel, durationShort, factoryUpdateLine, githubLine, groupAgents, pollLabel, roleLabel, scopeLabel, stepKind, stepKindLabel, stepShellPreview, tokenKind, tokenKinds, tokenLine, tokenPrefixLabel, validateTokenName } from "./settings.js";
 import { sentence, SettingsHead } from "./setup-page.jsx";
 
 // resourceCache keeps the last loaded response per API key so switching
@@ -307,7 +307,7 @@ export function TokensPage({ onSignedOut }) {
   const { data, error, refreshing, setData } = useResource(["/api/v1/tokens"], onSignedOut);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const [role, setRole] = useState("operator");
+  const [kind, setKind] = useState("operator");
   const [revealed, setRevealed] = useState(null);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState("");
@@ -320,6 +320,7 @@ export function TokensPage({ onSignedOut }) {
   const activeTokens = tokens ? tokens.filter(token => !token.revoked_at) : null;
   const revokedTokens = tokens ? tokens.filter(token => Boolean(token.revoked_at)) : [];
   const nameCheck = validateTokenName(name);
+  const selectedKind = tokenKind(kind);
 
   useEffect(() => () => { window.clearTimeout(copyTimer.current); }, []);
 
@@ -332,7 +333,7 @@ export function TokensPage({ onSignedOut }) {
   function closeCreate() {
     setCreating(false);
     setName("");
-    setRole("operator");
+    setKind("operator");
     setFailure("");
   }
 
@@ -375,15 +376,17 @@ export function TokensPage({ onSignedOut }) {
     if (!nameCheck.name || nameCheck.error || busy) return;
     setBusy(true);
     try {
-      const created = await api("/api/v1/tokens", { method: "POST", body: { name: nameCheck.name, role } });
+      const body = { name: nameCheck.name, role: selectedKind.role };
+      if (selectedKind.scope) body.scope = selectedKind.scope;
+      const created = await api("/api/v1/tokens", { method: "POST", body });
       setData([{ tokens: created.tokens }]);
       window.clearTimeout(copyTimer.current);
-      setRevealed({ token: created.token, name: created.name, role: created.role, action: "created" });
+      setRevealed({ token: created.token, name: created.name, role: created.role, scope: created.scope, action: "created" });
       setCopied(false);
       setCopyError("");
       setCreating(false);
       setName("");
-      setRole("operator");
+      setKind("operator");
       setConfirming(null);
       setFailure("");
     } catch (problem) {
@@ -400,7 +403,7 @@ export function TokensPage({ onSignedOut }) {
       const next = await api(`/api/v1/tokens/${encodeURIComponent(token.name)}/regenerate`, { method: "POST" });
       setData([{ tokens: next.tokens }]);
       window.clearTimeout(copyTimer.current);
-      setRevealed({ token: next.token, name: next.name, role: next.role, action: "regenerated" });
+      setRevealed({ token: next.token, name: next.name, role: next.role, scope: next.scope, action: "regenerated" });
       setCopied(false);
       setCopyError("");
       setConfirming(null);
@@ -441,21 +444,20 @@ export function TokensPage({ onSignedOut }) {
     >
       {tokens && !creating && <Button size="sm" onClick={openCreate} disabled={busy}><Plus className="size-4" aria-hidden="true" />New token</Button>}
     </SettingsHead>
-    <p className="page-note">People and runners sign in with tokens. Only a token's hash and short prefix are kept, so each full token is shown once, when it is made.</p>
+    <p className="page-note">People, bots, and runners authenticate with tokens. Only a token's hash and short prefix are kept, so each full token is shown once, when it is made.</p>
     {creating && <form className="panel token-form" aria-label="New token" onSubmit={create}>
       <div className="token-form-fields">
         <div>
           <label className="field-label" htmlFor="token-name">Name</label>
-          <input id="token-name" className="field-control" value={name} onChange={event => setName(event.target.value)} placeholder="e.g. owain or mac-mini" autoComplete="off" autoFocus />
+          <input id="token-name" className="field-control" value={name} onChange={event => setName(event.target.value)} placeholder="e.g. owain, grokbot, or mac-mini" autoComplete="off" autoFocus />
           {nameCheck.error && <p className="form-error">{nameCheck.error}</p>}
         </div>
         <div>
           <label className="field-label" htmlFor="token-role">Role</label>
-          <Select id="token-role" value={role} onChange={setRole}>
-            <option value="operator">Person</option>
-            <option value="runner">Runner</option>
+          <Select id="token-role" value={kind} onChange={setKind}>
+            {tokenKinds.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
           </Select>
-          <p className="ticket-meta token-role-hint">{roleLabel(role)[1]}</p>
+          <p className="ticket-meta token-role-hint">{selectedKind.hint}</p>
         </div>
       </div>
       <div className="token-form-actions">
@@ -496,13 +498,15 @@ export function TokensPage({ onSignedOut }) {
 }
 
 function TokenRow({ token, busy, confirming, onAskRegenerate, onAskRevoke, onCancel, onRegenerate, onRevoke }) {
-  const [role, about] = roleLabel(token.role);
+  const [role, about] = roleLabel(token.role, token.scope);
+  const scope = scopeLabel(token.scope);
   const revoked = Boolean(token.revoked_at);
   return <li className="settings-row token-row" data-revoked={revoked || undefined}>
     <div className="settings-row-main">
       <strong>{token.name}</strong>
       {token.current && <span className="pill pill-info">You</span>}
       <span className="pill" title={about}>{role}</span>
+      {scope && <span className="pill" title={scope[1]}>{scope[0]}</span>}
     </div>
     <div className="token-actions">
       {revoked && <span className="pill pill-danger">Revoked</span>}
@@ -516,7 +520,7 @@ function TokenRow({ token, busy, confirming, onAskRegenerate, onAskRevoke, onCan
         <Button variant="outline" size="sm" onClick={onRegenerate} disabled={busy}>Regenerate</Button>
       </span>}
       {confirming === "revoke" && <span className="token-confirm" role="group" aria-label={`Revoke ${token.name}?`}>
-        <span className="ticket-meta">{token.current ? "This signs you out." : token.role === "runner" ? "Its runner stops." : "Its sign-ins end."}</span>
+        <span className="ticket-meta">{token.current ? "This signs you out." : token.role === "runner" ? "Its runner stops." : token.scope ? "Its API and MCP access ends." : "Its sign-ins end."}</span>
         <Button variant="ghost" size="sm" onClick={onCancel} disabled={busy}>Keep</Button>
         <Button variant="outline" size="sm" className="text-danger" onClick={onRevoke} disabled={busy}>Revoke</Button>
       </span>}

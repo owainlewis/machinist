@@ -80,13 +80,14 @@ test("Settings: a new install opens on the overview, each page has a route, and 
       : { enabled: false, allowed_users: [], teams: [], credential_env: ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"], renews: true, docs: "https://example.com/linear.md#set-it-up" });
     if (url === "/api/v1/tokens" && (!options.method || options.method === "GET")) return reply(200, { tokens });
     if (url === "/api/v1/tokens" && options.method === "POST") {
-      const { name, role } = JSON.parse(options.body);
-      created.push({ name, role });
+      const { name, role, scope } = JSON.parse(options.body);
+      created.push(scope ? { name, role, scope } : { name, role });
       if (tokens.some(token => token.name === name && !token.revoked_at)) return reply(409, { error: "an active token with this name exists" });
       const secret = `mch_abcd${"0".repeat(60)}`;
       const prefix = secret.slice(0, 8);
-      tokens = [...tokens, { name, role, prefix, created_at: now }];
-      return reply(201, { token: secret, name, role, prefix, tokens });
+      const entry = { name, role, ...(scope ? { scope } : {}), prefix, created_at: now };
+      tokens = [...tokens, entry];
+      return reply(201, { token: secret, name, role, ...(scope ? { scope } : {}), prefix, tokens });
     }
     if (url.startsWith("/api/v1/tokens/") && url.endsWith("/regenerate") && options.method === "POST") {
       const name = decodeURIComponent(url.slice("/api/v1/tokens/".length, -"/regenerate".length));
@@ -97,9 +98,9 @@ test("Settings: a new install opens on the overview, each page has a route, and 
       const prefix = secret.slice(0, 8);
       tokens = [
         ...tokens.map(token => token === existing ? { ...token, revoked_at: now, current: false } : token),
-        { name, role: existing.role, prefix, created_at: now, current: existing.current },
+        { name, role: existing.role, ...(existing.scope ? { scope: existing.scope } : {}), prefix, created_at: now, current: existing.current },
       ];
-      return reply(200, { token: secret, name, role: existing.role, prefix, tokens });
+      return reply(200, { token: secret, name, role: existing.role, ...(existing.scope ? { scope: existing.scope } : {}), prefix, tokens });
     }
     if (url.startsWith("/api/v1/tokens/") && options.method === "DELETE") {
       const name = decodeURIComponent(url.slice("/api/v1/tokens/".length));
@@ -395,8 +396,12 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   await act(async () => revokedToggle().click());
   assert.equal(document.querySelector('[aria-label="Revoked tokens"]'), null);
 
-  // Creating a new token shows the full value once with a copy button and adds its row with a prefix.
+  // Creating a new token exposes Person, Bot (run & read-only), and Runner options, shows the full value once with a copy button, and adds its row with a prefix.
   await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent.includes("New token")).click());
+  assert.deepEqual(
+    [...document.querySelectorAll("#token-role option")].map(option => option.textContent),
+    ["Person (full access)", "Bot — run & inspect (MCP / API)", "Bot — read-only (MCP / API)", "Runner"],
+  );
   await type("#token-name", "mac-mini");
   await act(async () => {
     const select = document.querySelector("#token-role");
@@ -417,6 +422,33 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   await act(async () => document.querySelector('[aria-label="Dismiss token"]').click());
   assert.equal(document.querySelector('[aria-label="New token value"]'), null);
 
+  // Creating scoped bot tokens sends role=operator with scope=run/read and shows scope badges on each row.
+  await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent.includes("New token")).click());
+  await type("#token-name", "grokbot");
+  await act(async () => {
+    const select = document.querySelector("#token-role");
+    select.value = "operator:run";
+    select.dispatchEvent(new window.Event("change", { bubbles: true }));
+  });
+  await act(async () => document.querySelector('.token-form button[type="submit"]').click());
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 4));
+  assert.deepEqual(created[1], { name: "grokbot", role: "operator", scope: "run" });
+  assert.match(document.querySelectorAll('[aria-label="Tokens"] .token-row')[3].textContent, /grokbot.*Bot.*scope: run.*mch_abcd…/);
+  await act(async () => document.querySelector('[aria-label="Dismiss token"]').click());
+
+  await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent.includes("New token")).click());
+  await type("#token-name", "watcher");
+  await act(async () => {
+    const select = document.querySelector("#token-role");
+    select.value = "operator:read";
+    select.dispatchEvent(new window.Event("change", { bubbles: true }));
+  });
+  await act(async () => document.querySelector('.token-form button[type="submit"]').click());
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 5));
+  assert.deepEqual(created[2], { name: "watcher", role: "operator", scope: "read" });
+  assert.match(document.querySelectorAll('[aria-label="Tokens"] .token-row')[4].textContent, /watcher.*Bot.*scope: read.*mch_abcd…/);
+  await act(async () => document.querySelector('[aria-label="Dismiss token"]').click());
+
   // Regenerating a legacy token asks first, reveals the new token once, updates its prefix, and keeps revoked rows hidden.
   await act(async () => document.querySelector('[aria-label="Regenerate vm-runner"]').click());
   assert.deepEqual(regenerated, [], "regenerating asks first");
@@ -434,7 +466,7 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   await eventually(() => assert.equal(heading(), "GitHub"));
   await go("#/settings/tokens");
   await eventually(() => assert.equal(heading(), "Tokens"));
-  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 3));
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 5));
   assert.equal(document.querySelector('[aria-label="New token value"]'), null);
 
   // Revoking asks first, hides the revoked token from the active list, and revoking your own signs you out.
@@ -442,7 +474,7 @@ test("Settings: a new install opens on the overview, each page has a route, and 
   assert.deepEqual(revoked, [], "revoking asks first");
   assert.match(document.querySelector('[aria-label="Revoke vm-runner?"]').textContent, /Its runner stops/);
   await act(async () => [...document.querySelectorAll('[aria-label="Revoke vm-runner?"] button')].find(button => button.textContent === "Revoke").click());
-  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 2));
+  await eventually(() => assert.equal(document.querySelectorAll('[aria-label="Tokens"] .token-row').length, 4));
   assert.match(revokedToggle().textContent, /Show revoked \(3\)/);
   assert.deepEqual(revoked, ["vm-runner"]);
   await act(async () => document.querySelector('[aria-label="Revoke alice"]').click());
