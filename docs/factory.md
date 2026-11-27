@@ -51,6 +51,7 @@ jobs that do not name one.
 # presets/default.yaml
 description: Clone the repository, run Claude Code on the prompt and open one pull request.
 timeout: 60m          # all steps together; optional
+runs_on: [macos]      # optional; require runner labels (omit to match any runner)
 
 steps:
   - name: checkout
@@ -100,8 +101,8 @@ harness: agy
 model: gemini-4-neon-high
 ```
 
-`extends` inherits the base preset's steps, `timeout`, `harness`, `model` and (when omitted)
-`description`. You can chain `extends` across presets, and override individual steps by name
+`extends` inherits the base preset's steps, `timeout`, `harness`, `model`, `runs_on` and (when omitted)
+`description`. Set `runs_on:` on the child preset to replace the inherited host labels (or `runs_on: []` to clear them and match any runner). You can chain `extends` across presets, and override individual steps by name
 — for example, to run a cross-model review without duplicating `review.sh`:
 
 ```yaml
@@ -350,10 +351,11 @@ repo: owner/name
 preset: default
 harness: codex            # optional; agy, claude, codex or pi
 model: gpt-5-codex        # optional
+runs_on: [linux, gpu]     # optional; overrides the preset's runs_on
 ---
 The prompt goes here.
 ```
 
 Quote `schedule`, because a cron line can start with `*`. Omit `schedule` (and `timezone`) for a manual automation that runs only when triggered by hand or via API.
 
-`repo` must be in `github.repositories` (or added in Settings → Projects for UI-managed automations), and `preset` must name a preset. Missed scheduled runs collapse into one, and no job starts while the automation's last one is active. An automation never waits for a person: anything that would ask one fails the job instead, so one bad run cannot stop its schedule. To run one now, open **Automations** in the web app, or call `POST /api/v1/automations/<name>/run` with a token and an optional JSON body (`prompt`, `repo`, `preset`, `harness`, `model`) to override fields for that run only. Every run appears as a normal job on the **Jobs** page.
+`repo` must be in `github.repositories` (or added in Settings → Projects for UI-managed automations), and `preset` must name a preset. Missed scheduled runs collapse into one, and no job starts while the automation's last one is active. An automation never waits for a person: anything that would ask one fails the job instead, so one bad run cannot stop its schedule. To run one now, open **Automations** in the web app, or call `POST /api/v1/automations/<name>/run` with a token and an optional JSON body (`prompt`, `repo`, `preset`, `harness`, `model`, `runs_on`) to override fields for that run only. Every run appears as a normal job on the **Jobs** page.

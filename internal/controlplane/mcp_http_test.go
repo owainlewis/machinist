@@ -140,7 +140,7 @@ func TestMCPHandshakeAndProtocol(t *testing.T) {
 		t.Fatalf("ping = %d: %s", resp.StatusCode, body)
 	}
 
-	// tools/list returns all six tools.
+	// tools/list returns all eight tools.
 	resp, body = f.mcpCall(t, runToken, map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
 	var listResp struct {
 		Result struct {
@@ -154,7 +154,7 @@ func TestMCPHandshakeAndProtocol(t *testing.T) {
 	for _, tool := range listResp.Result.Tools {
 		gotNames[tool.Name] = true
 	}
-	for _, want := range []string{"list_jobs", "list_automations", "run_job", "get_job", "get_job_output", "cancel_job"} {
+	for _, want := range []string{"list_jobs", "list_automations", "run_job", "get_job", "get_job_output", "cancel_job", "rerun_job", "get_stats"} {
 		if !gotNames[want] {
 			t.Fatalf("tools/list missing %q: %+v", want, listResp.Result.Tools)
 		}
@@ -342,7 +342,7 @@ func TestMCPRunListGetOutputAndCancelCustomJob(t *testing.T) {
 	}
 
 	finished := decodeMCPToolJSON[mcpJobDetail](t, f.mcpTool(t, botToken, "get_job", map[string]any{"id": created.ID}))
-	if finished.State != JobDone || finished.PRNumber != 42 || finished.PRState != tickets.PROpen || finished.PRURL != "https://github.com/owner/repo/pull/42" {
+	if finished.State != mcpJobNeedsYou || finished.PRNumber != 42 || finished.PRState != tickets.PROpen || finished.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Fatalf("finished = %+v", finished)
 	}
 	if finished.LatestAction != "Running go test ./..." || finished.Summary != "Opened PR #42" || finished.Tokens != 5000 || finished.CostUSD == nil || *finished.CostUSD != 0.75 {
@@ -455,6 +455,7 @@ func TestMCPScopeChecksAndTokenRevocation(t *testing.T) {
 		{"list_automations", nil},
 		{"get_job", map[string]any{"id": started.ID}},
 		{"get_job_output", map[string]any{"id": started.ID}},
+		{"get_stats", nil},
 	} {
 		res := f.mcpTool(t, readToken, tc.tool, tc.args)
 		if res.IsError {
@@ -462,7 +463,7 @@ func TestMCPScopeChecksAndTokenRevocation(t *testing.T) {
 		}
 	}
 
-	// ...but cannot call run_job or cancel_job.
+	// ...but cannot call run_job, cancel_job, or rerun_job.
 	for _, tc := range []struct {
 		tool string
 		args map[string]any
@@ -470,6 +471,7 @@ func TestMCPScopeChecksAndTokenRevocation(t *testing.T) {
 		{"run_job", map[string]any{"repo": "owner/repo", "prompt": "Unauthorized"}},
 		{"run_job", map[string]any{"automation": "nightly"}},
 		{"cancel_job", map[string]any{"id": started.ID}},
+		{"rerun_job", map[string]any{"job_id": started.ID}},
 	} {
 		res := f.mcpTool(t, readToken, tc.tool, tc.args)
 		if !res.IsError || !strings.Contains(res.Content[0].Text, "scope") {
@@ -524,5 +526,226 @@ func TestMCPScopeChecksAndTokenRevocation(t *testing.T) {
 	var replies []jsonRPCResponse
 	if err := json.Unmarshal(batchBody, &replies); err != nil || len(replies) != 2 {
 		t.Fatalf("batch replies = %+v, err = %v", replies, err)
+	}
+}
+
+func TestMCPPRReadyStatesAndMergeGate(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	readToken := f.newScopedToken(t, "watcher", tickets.ScopeRead)
+
+	// Create tickets covering waiting_for_ci, held needs_you, unshipped needs_you,
+	// non-object shipping needs_you, and done.
+	waiting := f.assign(t, "mcp-ci")
+	if _, _, err := f.store.Apply(t.Context(), waiting.ID, tickets.StateWorking, tickets.Transition{
+		State:    tickets.StatePRReady,
+		PRNumber: 101,
+		Shipping: `{"since":"2026-11-27T15:00:00Z","head":"abc123"}`,
+		MergeGate: &tickets.MergeGate{
+			Decision: "auto_merge",
+			Risk:     "low",
+			Reason:   "Scoped documentation and test update.",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	held := f.assign(t, "mcp-held")
+	if _, _, err := f.store.Apply(t.Context(), held.ID, tickets.StateWorking, tickets.Transition{
+		State:    tickets.StatePRReady,
+		PRNumber: 102,
+		Shipping: `{"since":"2026-11-27T15:00:00Z","hold":"merge gate requires human review"}`,
+		MergeGate: &tickets.MergeGate{
+			Decision: "human_review",
+			Risk:     "medium",
+			Reason:   "Modifies authentication middleware.",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	unshipped := f.assign(t, "mcp-unshipped")
+	if _, _, err := f.store.Apply(t.Context(), unshipped.ID, tickets.StateWorking, tickets.Transition{
+		State:    tickets.StatePRReady,
+		PRNumber: 103,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	badWatch := f.assign(t, "mcp-bad-watch")
+	if _, _, err := f.store.Apply(t.Context(), badWatch.ID, tickets.StateWorking, tickets.Transition{
+		State:    tickets.StatePRReady,
+		PRNumber: 104,
+		Shipping: "null",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	done := f.assign(t, "mcp-done")
+	if _, _, err := f.store.Apply(t.Context(), done.ID, tickets.StateWorking, tickets.Transition{
+		State: tickets.StateDone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// get_job reports distinct states and merge_gate when present, omitting merge_gate when absent.
+	waitingRes := f.mcpTool(t, readToken, "get_job", map[string]any{"id": waiting.ID})
+	waitingJob := decodeMCPToolJSON[mcpJobDetail](t, waitingRes)
+	if waitingJob.State != mcpJobWaitingForCI || waitingJob.MergeGate == nil || waitingJob.MergeGate.Decision != "auto_merge" || waitingJob.MergeGate.Risk != "low" || waitingJob.MergeGate.Reason != "Scoped documentation and test update." {
+		t.Fatalf("waitingJob = %+v", waitingJob)
+	}
+
+	heldJob := decodeMCPToolJSON[mcpJobDetail](t, f.mcpTool(t, readToken, "get_job", map[string]any{"id": held.ID}))
+	if heldJob.State != mcpJobNeedsYou || heldJob.MergeGate == nil || heldJob.MergeGate.Decision != "human_review" || heldJob.MergeGate.Risk != "medium" || heldJob.MergeGate.Reason != "Modifies authentication middleware." {
+		t.Fatalf("heldJob = %+v", heldJob)
+	}
+
+	unshippedRes := f.mcpTool(t, readToken, "get_job", map[string]any{"id": unshipped.ID})
+	if strings.Contains(unshippedRes.Content[0].Text, `"merge_gate"`) {
+		t.Fatalf("expected merge_gate omitted when absent: %s", unshippedRes.Content[0].Text)
+	}
+	unshippedJob := decodeMCPToolJSON[mcpJobDetail](t, unshippedRes)
+	if unshippedJob.State != mcpJobNeedsYou || unshippedJob.MergeGate != nil {
+		t.Fatalf("unshippedJob = %+v", unshippedJob)
+	}
+
+	badWatchJob := decodeMCPToolJSON[mcpJobDetail](t, f.mcpTool(t, readToken, "get_job", map[string]any{"id": badWatch.ID}))
+	if badWatchJob.State != mcpJobNeedsYou {
+		t.Fatalf("badWatchJob = %+v", badWatchJob)
+	}
+
+	doneJob := decodeMCPToolJSON[mcpJobDetail](t, f.mcpTool(t, readToken, "get_job", map[string]any{"id": done.ID}))
+	if doneJob.State != JobDone || doneJob.MergeGate != nil {
+		t.Fatalf("doneJob = %+v", doneJob)
+	}
+
+	// list_jobs filters by waiting_for_ci, needs_you (with limit/total/has_more), and done (excluding pr_ready).
+	type listResult struct {
+		Jobs    []mcpJobSummary `json:"jobs"`
+		Total   int             `json:"total"`
+		HasMore bool            `json:"has_more"`
+	}
+
+	ciList := decodeMCPToolJSON[listResult](t, f.mcpTool(t, readToken, "list_jobs", map[string]any{"state": "waiting_for_ci"}))
+	if ciList.Total != 1 || ciList.HasMore || len(ciList.Jobs) != 1 || ciList.Jobs[0].ID != waiting.ID || ciList.Jobs[0].State != mcpJobWaitingForCI || ciList.Jobs[0].MergeGate == nil || ciList.Jobs[0].MergeGate.Decision != "auto_merge" {
+		t.Fatalf("ciList = %+v", ciList)
+	}
+
+	needsList := decodeMCPToolJSON[listResult](t, f.mcpTool(t, readToken, "list_jobs", map[string]any{"state": "needs_you"}))
+	if needsList.Total != 3 || needsList.HasMore || len(needsList.Jobs) != 3 {
+		t.Fatalf("needsList = %+v", needsList)
+	}
+	seenNeeds := map[string]mcpJobSummary{}
+	for _, job := range needsList.Jobs {
+		if job.State != mcpJobNeedsYou {
+			t.Fatalf("expected needs_you state in list, got %+v", job)
+		}
+		seenNeeds[job.ID] = job
+	}
+	if seenNeeds[held.ID].MergeGate == nil || seenNeeds[held.ID].MergeGate.Risk != "medium" || seenNeeds[unshipped.ID].MergeGate != nil || seenNeeds[badWatch.ID].ID != badWatch.ID {
+		t.Fatalf("seenNeeds = %+v", seenNeeds)
+	}
+
+	needsLimited := decodeMCPToolJSON[listResult](t, f.mcpTool(t, readToken, "list_jobs", map[string]any{"state": "needs_you", "limit": 2}))
+	if needsLimited.Total != 3 || !needsLimited.HasMore || len(needsLimited.Jobs) != 2 {
+		t.Fatalf("needsLimited = %+v", needsLimited)
+	}
+
+	doneListRes := f.mcpTool(t, readToken, "list_jobs", map[string]any{"state": "done"})
+	if strings.Contains(doneListRes.Content[0].Text, `"merge_gate"`) {
+		t.Fatalf("expected merge_gate omitted on done list item: %s", doneListRes.Content[0].Text)
+	}
+	doneList := decodeMCPToolJSON[listResult](t, doneListRes)
+	if doneList.Total != 1 || len(doneList.Jobs) != 1 || doneList.Jobs[0].ID != done.ID || doneList.Jobs[0].State != JobDone {
+		t.Fatalf("doneList = %+v", doneList)
+	}
+
+	// Unknown state reports all valid states.
+	badState := f.mcpTool(t, readToken, "list_jobs", map[string]any{"state": "bogus"})
+	if !badState.IsError || !strings.Contains(badState.Content[0].Text, "waiting_for_ci") || !strings.Contains(badState.Content[0].Text, "needs_you") {
+		t.Fatalf("badState = %+v", badState)
+	}
+}
+
+func TestMCPRerunJobAndGetStats(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	if err := f.store.AddProject(t.Context(), "owner/other", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	runToken := f.newScopedToken(t, "grokbot", tickets.ScopeRun)
+	readToken := f.newScopedToken(t, "watcher", tickets.ScopeRead)
+
+	// Start a job on owner/repo and transition it to held pr_ready with a merge-gate verdict.
+	started := decodeMCPToolJSON[mcpRunJobResult](t, f.mcpTool(t, runToken, "run_job", map[string]any{
+		"repo":   "owner/repo",
+		"prompt": "Fix retry loop",
+	}))
+	if _, _, err := f.store.Apply(t.Context(), started.ID, tickets.StateWorking, tickets.Transition{
+		State:    tickets.StatePRReady,
+		PRNumber: 55,
+		Shipping: `{"hold":"human review"}`,
+		MergeGate: &tickets.MergeGate{
+			Decision: "human_review",
+			Risk:     "high",
+			Reason:   "Needs careful check.",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// rerun_job starts a new queued attempt and clears stale merge_gate.
+	rerun := decodeMCPToolJSON[mcpJobDetail](t, f.mcpTool(t, runToken, "rerun_job", map[string]any{"job_id": started.ID}))
+	if rerun.ID != started.ID || rerun.State != JobQueued || rerun.MergeGate != nil {
+		t.Fatalf("rerun = %+v", rerun)
+	}
+
+	// Calling rerun_job while the job is active returns a tool error.
+	stillWorking := f.mcpTool(t, runToken, "rerun_job", map[string]any{"job_id": started.ID})
+	if !stillWorking.IsError || !strings.Contains(stillWorking.Content[0].Text, "still working") {
+		t.Fatalf("stillWorking = %+v", stillWorking)
+	}
+
+	// Validation and not-found errors for rerun_job.
+	for _, tc := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"job_id": ""}, "job_id is required"},
+		{map[string]any{"job_id": "t_missing"}, "not found"},
+	} {
+		res := f.mcpTool(t, runToken, "rerun_job", tc.args)
+		if !res.IsError || !strings.Contains(res.Content[0].Text, tc.want) {
+			t.Fatalf("rerun_job %+v = %+v, want %q", tc.args, res, tc.want)
+		}
+	}
+
+	// Create a second job in owner/other to test get_stats repo filtering.
+	_ = decodeMCPToolJSON[mcpRunJobResult](t, f.mcpTool(t, runToken, "run_job", map[string]any{
+		"repo":   "owner/other",
+		"prompt": "Other repo task",
+	}))
+
+	// get_stats works with read scope, defaults to 14 days, and supports days & repo filters.
+	defaultStats := decodeMCPToolJSON[tickets.Stats](t, f.mcpTool(t, readToken, "get_stats", nil))
+	if defaultStats.Days != 14 || defaultStats.Repo != "" || defaultStats.Jobs.Total != 2 {
+		t.Fatalf("defaultStats = %+v", defaultStats)
+	}
+
+	repoStats := decodeMCPToolJSON[tickets.Stats](t, f.mcpTool(t, readToken, "get_stats", map[string]any{"days": 7, "repo": "owner/repo"}))
+	if repoStats.Days != 7 || repoStats.Repo != "owner/repo" || repoStats.Jobs.Total != 1 {
+		t.Fatalf("repoStats = %+v", repoStats)
+	}
+
+	thirtyStats := decodeMCPToolJSON[tickets.Stats](t, f.mcpTool(t, readToken, "get_stats", map[string]any{"days": 30}))
+	if thirtyStats.Days != 30 || thirtyStats.Jobs.Total != 2 {
+		t.Fatalf("thirtyStats = %+v", thirtyStats)
+	}
+
+	for _, badDays := range []int{0, -5, 91} {
+		res := f.mcpTool(t, readToken, "get_stats", map[string]any{"days": badDays})
+		if !res.IsError || !strings.Contains(res.Content[0].Text, "days") {
+			t.Fatalf("get_stats days=%d = %+v, want error", badDays, res)
+		}
 	}
 }

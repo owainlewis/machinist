@@ -34,6 +34,8 @@ type RunOverrides struct {
 	OverrideHarness bool
 	Model           string
 	OverrideModel   bool
+	RunsOn          []string
+	OverrideRunsOn  bool
 }
 
 // Schedule starts automation tickets when their cron schedules come due.
@@ -116,6 +118,7 @@ func (s *Schedule) allAutomations(ctx context.Context) ([]resolvedAutomation, er
 					Preset:  a.Preset,
 					Harness: a.Harness,
 					Model:   a.Model,
+					RunsOn:  slices.Clone(a.RunsOn),
 					Prompt:  a.Prompt,
 					Cron:    cron,
 				},
@@ -236,6 +239,10 @@ func (s *Schedule) create(ctx context.Context, automation factory.Automation, by
 		baseModel = overrides.Model
 	}
 	harnessName, model := harness.MergeOverride(baseHarness, baseModel, overrides.Harness, overrides.Model)
+	runsOn := automation.RunsOn
+	if overrides.OverrideRunsOn {
+		runsOn = overrides.RunsOn
+	}
 	return s.Store.CreateTicket(ctx, tickets.NewTicket{
 		Source:    source(automation),
 		Origin:    tickets.OriginSchedule,
@@ -245,6 +252,7 @@ func (s *Schedule) create(ctx context.Context, automation factory.Automation, by
 		Agent:     preset,
 		Harness:   harnessName,
 		Model:     model,
+		RunsOn:    runsOn,
 		CreatedBy: by,
 		SourceKey: "schedule:" + automation.Name + ":" + occurrence,
 	})
@@ -279,6 +287,7 @@ type AutomationStatus struct {
 	Agent      string      `json:"agent"`
 	Harness    string      `json:"harness,omitempty"`
 	Model      string      `json:"model,omitempty"`
+	RunsOn     []string    `json:"runs_on,omitempty"`
 	Schedule   string      `json:"schedule"`
 	Timezone   string      `json:"timezone"`
 	NextDue    *time.Time  `json:"next_due,omitempty"`
@@ -302,6 +311,7 @@ func (s *Schedule) Status(ctx context.Context) ([]AutomationStatus, error) {
 			Agent:    automation.Preset,
 			Harness:  automation.Harness,
 			Model:    automation.Model,
+			RunsOn:   slices.Clone(automation.RunsOn),
 			Prompt:   automation.Prompt,
 			Editable: item.editable,
 		}

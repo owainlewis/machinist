@@ -44,7 +44,7 @@ func assignRun(t *testing.T, e *Engine) *runner.RunRequest {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false)
+	request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, nil, false)
 	if err != nil || request == nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
@@ -147,7 +147,7 @@ func TestAssignFailsTheJobWhenTheAppsAccountIsUnknown(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, nil, false); err != nil || request != nil {
 		t.Fatalf("request = %+v, err = %v", request, err)
 	}
 	if message := lastMessage(t, e, ticket.ID); state(t, e, ticket.ID) != tickets.StateFailed || !strings.Contains(message, "bot account") {
@@ -164,7 +164,7 @@ func TestAssignFailsTheJobWhenNoTokenCanBeMade(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, nil, false); err != nil || request != nil {
 		t.Fatalf("request = %+v, err = %v", request, err)
 	}
 	if got := state(t, e, ticket.ID); got != tickets.StateFailed {
@@ -192,7 +192,7 @@ func TestAssignReturnsNothingWithoutMatchingWork(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"claude"}, false); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"claude"}, nil, false); err != nil || request != nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
 }
@@ -473,7 +473,7 @@ func TestPresetRemovedAfterQueueingFailsTheJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(e.Factory.Presets, "default")
-	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, nil, false); err != nil || request != nil {
 		t.Fatalf("request = %v, err = %v", request, err)
 	}
 	if got := state(t, e, ticket.ID); got != tickets.StateFailed {
@@ -530,10 +530,10 @@ func TestAJobGoesOnlyToARunnerWithItsHarnesses(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "claude-only", []string{"steps", "claude"}, true); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "claude-only", []string{"steps", "claude"}, nil, true); err != nil || request != nil {
 		t.Fatalf("a runner without agy got %v, err %v", request, err)
 	}
-	if request, err := e.Assign(t.Context(), "both", []string{"steps", "agy", "claude"}, true); err != nil || request == nil {
+	if request, err := e.Assign(t.Context(), "both", []string{"steps", "agy", "claude"}, nil, true); err != nil || request == nil {
 		t.Fatalf("a runner with both got %v, err %v", request, err)
 	}
 
@@ -541,7 +541,7 @@ func TestAJobGoesOnlyToARunnerWithItsHarnesses(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "older", []string{"steps"}, false); err != nil || request == nil {
+	if request, err := e.Assign(t.Context(), "older", []string{"steps"}, nil, false); err != nil || request == nil {
 		t.Fatalf("a runner that did not probe got %v, err %v", request, err)
 	}
 }
@@ -569,15 +569,70 @@ func TestTicketHarnessAndModelOverrideRoutesAndAppliesToSteps(t *testing.T) {
 	if err := e.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if request, err := e.Assign(t.Context(), "claude-only", []string{"steps", "claude"}, true); err != nil || request != nil {
+	if request, err := e.Assign(t.Context(), "claude-only", []string{"steps", "claude"}, nil, true); err != nil || request != nil {
 		t.Fatalf("claude-only runner got %v, err %v", request, err)
 	}
-	request, err := e.Assign(t.Context(), "codex-runner", []string{"steps", "codex"}, true)
+	request, err := e.Assign(t.Context(), "codex-runner", []string{"steps", "codex"}, nil, true)
 	if err != nil || request == nil {
 		t.Fatalf("codex runner got %v, err %v", request, err)
 	}
 	if len(request.Steps) != 1 || request.Steps[0].Harness != "codex" || request.Steps[0].Model != "gpt-5-codex" {
 		t.Fatalf("steps = %+v", request.Steps)
+	}
+}
+
+func TestAJobGoesOnlyToARunnerWithAllRunsOnLabels(t *testing.T) {
+	e := newEngine(t)
+	e.Factory = &factory.Factory{
+		Presets: map[string]factory.Preset{
+			"ios":     {Name: "ios", RunsOn: []string{"arm64", "macos"}, Steps: []runner.Step{{Name: "build", Run: "xcodebuild"}}},
+			"default": {Name: "default", Steps: []runner.Step{{Name: "work", Run: "echo hi"}}},
+		},
+	}
+	iosTicket, _, err := e.Store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source: "api", Repo: "owner/repo", Title: "iOS build", Body: "Build app", Agent: "ios", CreatedBy: "alice", SourceKey: "ios-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anyTicket, _, err := e.Store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source: "api", Repo: "owner/repo", Title: "Any host", Body: "Run anywhere", Agent: "default", CreatedBy: "alice", SourceKey: "any-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unprobed (e.g. Kubernetes) runner with only linux skips ios and claims any-host.
+	if req, err := e.Assign(t.Context(), "k8s-linux", []string{"steps"}, []string{"linux"}, false); err != nil || req == nil || req.TicketID != anyTicket.ID {
+		t.Fatalf("k8s-linux got %+v, err %v, want %s", req, err, anyTicket.ID)
+	}
+	// Runner with only one of the two required labels cannot claim ios.
+	if req, err := e.Assign(t.Context(), "macos-intel", []string{"steps"}, []string{"macos"}, true); err != nil || req != nil {
+		t.Fatalf("macos-intel got %+v, err %v, want nil", req, err)
+	}
+	// Runner advertising every required label (plus extras) claims ios.
+	if req, err := e.Assign(t.Context(), "mac-mini", []string{"steps"}, []string{"arm64", "macos", "xcode-16"}, true); err != nil || req == nil || req.TicketID != iosTicket.ID {
+		t.Fatalf("mac-mini got %+v, err %v, want %s", req, err, iosTicket.ID)
+	}
+
+	// Ticket-level runs_on overrides preset runs_on.
+	overrideTicket, _, err := e.Store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source: "run", Repo: "owner/repo", Title: "GPU job", Body: "Train", Agent: "ios", RunsOn: []string{"gpu"}, CreatedBy: "alice", SourceKey: "gpu-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if req, err := e.Assign(t.Context(), "mac-mini", []string{"steps"}, []string{"arm64", "macos"}, true); err != nil || req != nil {
+		t.Fatalf("mac-mini should not claim gpu-overridden job: %+v, %v", req, err)
+	}
+	if req, err := e.Assign(t.Context(), "gpu-vm", []string{"steps"}, []string{"gpu"}, false); err != nil || req == nil || req.TicketID != overrideTicket.ID {
+		t.Fatalf("gpu-vm got %+v, err %v, want %s", req, err, overrideTicket.ID)
 	}
 }
 
@@ -604,7 +659,7 @@ func TestAssignFailureMessagesEndWithOneFullStop(t *testing.T) {
 			if err := e.Tick(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false); err != nil {
+			if _, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, nil, false); err != nil {
 				t.Fatal(err)
 			}
 			if message := lastMessage(t, e, ticket.ID); strings.HasSuffix(message, "..") || !strings.HasSuffix(message, ".") {

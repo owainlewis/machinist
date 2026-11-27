@@ -501,3 +501,82 @@ func TestPresetWithOverridePreservesClearedStepModel(t *testing.T) {
 		t.Fatalf("review step = %+v, want codex with cleared model", got)
 	}
 }
+
+func TestPresetRunsOnInheritanceOverrideAndValidation(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"presets/base.yaml": `description: Base iOS build.
+runs_on: [" MacOS ", arm64, macos]
+steps:
+  - name: build
+    run: echo build
+`,
+		"presets/inherited.yaml": `description: Inherits runs_on from base.
+extends: base
+`,
+		"presets/overridden.yaml": `description: Overrides runs_on.
+extends: base
+runs_on: [GPU, linux]
+`,
+		"presets/cleared.yaml": `description: Clears inherited runs_on to match any runner.
+extends: base
+runs_on: []
+`,
+		"automations/nightly.md": `---
+repo: owner/repo
+preset: base
+runs_on: [VPC, "  GPU "]
+---
+Run nightly checks.
+`,
+	})
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(loaded.Presets["base"].RunsOn, ","); got != "arm64,macos" {
+		t.Fatalf("base runs_on = %q, want arm64,macos", got)
+	}
+	if got := strings.Join(loaded.Presets["inherited"].RunsOn, ","); got != "arm64,macos" {
+		t.Fatalf("inherited runs_on = %q, want arm64,macos", got)
+	}
+	if got := strings.Join(loaded.Presets["overridden"].RunsOn, ","); got != "gpu,linux" {
+		t.Fatalf("overridden runs_on = %q, want gpu,linux", got)
+	}
+	if got := loaded.Presets["cleared"].RunsOn; len(got) != 0 {
+		t.Fatalf("cleared runs_on = %v, want empty", got)
+	}
+	if len(loaded.Automations) != 1 || strings.Join(loaded.Automations[0].RunsOn, ",") != "gpu,vpc" {
+		t.Fatalf("automations = %+v", loaded.Automations)
+	}
+
+	badPresetDir := writeFiles(t, map[string]string{
+		"presets/bad.yaml": `description: Bad label.
+runs_on: ["bad label"]
+steps:
+  - name: build
+    run: echo hi
+`,
+	})
+	if _, err := Load(badPresetDir); err == nil || !strings.Contains(err.Error(), "invalid label") {
+		t.Fatalf("bad preset runs_on err = %v, want invalid label", err)
+	}
+
+	badAutoDir := writeFiles(t, map[string]string{
+		"presets/default.yaml": `description: Default.
+steps:
+  - name: build
+    run: echo hi
+`,
+		"automations/bad.md": `---
+repo: owner/repo
+preset: default
+runs_on: [-bad]
+---
+Run it.
+`,
+	})
+	if _, err := Load(badAutoDir); err == nil || !strings.Contains(err.Error(), "invalid label") {
+		t.Fatalf("bad automation runs_on err = %v, want invalid label", err)
+	}
+}

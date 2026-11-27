@@ -539,7 +539,7 @@ func TestLegacyTokensWorkWithoutPrefixAndRegenerateKeepsNameAndRole(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRunner(t.Context(), "vm-1", "local", []string{"claude"}, 1, false); err != nil {
+	if err := store.RecordRunner(t.Context(), "vm-1", "local", []string{"claude"}, nil, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	newRunner, err := store.RegenerateToken(t.Context(), "vm-1")

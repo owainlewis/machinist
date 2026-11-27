@@ -23,6 +23,7 @@ control_plane: http://10.0.0.5:7331
 token_file: .machinist/runner.token
 data_directory: .machinist/runner
 slots: 2
+labels: [macos, arm64]   # optional; target this host with runs_on
 env: [ANTHROPIC_API_KEY]
 ```
 
@@ -62,11 +63,22 @@ A Docker runner probes its image at startup for `agy`, `claude`, `codex` and `pi
 `docker.harnesses` lists them explicitly), so it reports the image's harnesses on the Runners
 page and only takes jobs its image can run.
 
-A Kubernetes runner takes any job, because its image decides which harnesses exist.
+A Kubernetes runner takes any job whose `runs_on` labels it advertises, because its image decides which harnesses exist.
 
-The Runners page shows each runner's harnesses. When no online runner can run a preset,
-the Settings overview says which harness is missing. Queued jobs that wait for one are
-named on the Runners page and on the job's page, with the harnesses they wait for. A
+### Targeting hosts with labels
+
+Set `labels:` in `runner.yaml` to advertise host capabilities such as `macos`, `gpu`, `vpc`, or `k8s`. Labels are trimmed, lowercased, deduplicated, and validated to `[a-z0-9][a-z0-9._-]*`.
+
+```yaml
+control_plane: http://10.0.0.5:7331
+labels: [macos, arm64, xcode-16]
+```
+
+A preset (via `runs_on:` in `factory/presets/*.yaml`) or a job/automation request (via `runs_on` in the API or automation front matter) can require one or more labels. A runner claims a job only when it advertises **every** label in the job's `runs_on` list. Jobs with no `runs_on` match any runner.
+
+The Runners page shows each runner's harnesses and label pills. When no online runner can run a preset,
+the Settings overview says which harness or label is missing. Queued jobs that wait for one are
+named on the Runners page and on the job's page, with the harnesses or labels they wait for. A
 `machinist agent <name>` call in a shell comment does not count.
 
 ## Docker runner

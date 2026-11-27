@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
-import { harnessLabel, harnessList } from "./agents.js";
+import { harnessLabel, harnessList, labelList } from "./agents.js";
 import { HarnessMark } from "./harness-mark.jsx";
 import { relativeTime } from "./display.jsx";
 import { formatDuration } from "./jobs.js";
@@ -28,6 +28,11 @@ export function runnerHarnesses(runner) {
   return (runner.harnesses || []).filter(name => name !== "steps");
 }
 
+// runnerLabels is the host labels a runner advertised in runner.yaml.
+export function runnerLabels(runner) {
+  return runner.labels || [];
+}
+
 export function runnerOnline(runner, now = Date.now()) {
   return now - Date.parse(runner.last_contact) < onlineWindowMillis;
 }
@@ -45,14 +50,24 @@ export function queueLine(queue, now = Date.now()) {
 }
 
 // harnessWaits says which queued runs no online runner can take, because none
-// has the harnesses their agents run.
+// has the harnesses or host labels they require.
 export function harnessWaits(queue) {
-  return (queue?.blocked || []).map(wait => `${wait.waiting === 1 ? "1 run is" : `${wait.waiting} runs are`} waiting for a runner with ${harnessList(wait.harnesses)}`);
+  return (queue?.blocked || []).map(wait => {
+    const parts = [];
+    if (wait.harnesses?.length) parts.push(harnessList(wait.harnesses));
+    if (wait.labels?.length) parts.push(labelList(wait.labels));
+    return `${wait.waiting === 1 ? "1 run is" : `${wait.waiting} runs are`} waiting for a runner with ${parts.join(" and ")}`;
+  });
 }
 
 // missingHarnesses lists, once each, the harnesses queued runs wait for.
 export function missingHarnesses(queue) {
-  return [...new Set((queue?.blocked || []).flatMap(wait => wait.harnesses))];
+  return [...new Set((queue?.blocked || []).flatMap(wait => wait.harnesses || []))];
+}
+
+// missingLabels lists, once each, the host labels queued runs wait for.
+export function missingLabels(queue) {
+  return [...new Set((queue?.blocked || []).flatMap(wait => wait.labels || []))];
 }
 
 // A runner can be removed while it is out of contact and holds no job. One
@@ -131,9 +146,10 @@ function Runner({ runner, canRemove, onChange, onSignedOut }) {
   const jobs = runner.jobs || [];
   const slots = runner.slots || 1;
   const kindLabel = runnerKindLabel(runner.kind);
+  const labels = runnerLabels(runner);
   return <li>
     <div className="runner-row">
-      <span className="runner-name"><strong>{runner.name}</strong>{kindLabel && <span className="ticket-meta">{kindLabel}</span>}{runnerHarnesses(runner).length > 0 && <span className="runner-harnesses">{runnerHarnesses(runner).map(name => <span key={name} className="runner-harness"><HarnessMark harness={name} /><span>{harnessLabel(name)}</span></span>)}</span>}</span>
+      <span className="runner-name"><strong>{runner.name}</strong>{kindLabel && <span className="ticket-meta">{kindLabel}</span>}{runnerHarnesses(runner).length > 0 && <span className="runner-harnesses">{runnerHarnesses(runner).map(name => <span key={name} className="runner-harness"><HarnessMark harness={name} /><span>{harnessLabel(name)}</span></span>)}</span>}{labels.length > 0 && <span className="runner-labels" aria-label="Runner labels">{labels.map(label => <span key={label} className="runner-label">{label}</span>)}</span>}</span>
       <span className="runner-slots"><SlotMeter busy={jobs.length} slots={slots} /><span className="ticket-meta">{jobs.length} of {slots} {slotWord(slots)} busy</span></span>
       <time className="ticket-meta" dateTime={runner.last_contact}>Last contact {relativeTime(runner.last_contact)}</time>
       <span className={online ? "pill pill-success" : "pill pill-warning"}><span className="live-dot" data-live={online || undefined} aria-hidden="true" />{online ? "Online" : "Not responding"}</span>
@@ -152,6 +168,14 @@ export function RunnersPage({ runners = [], queue, loaded, error, role = "admin"
   const canRemove = role === "admin";
   const waiting = queueLine(queue);
   const waits = harnessWaits(queue);
+  const missingH = missingHarnesses(queue);
+  const missingL = missingLabels(queue);
+  const totalMissing = missingH.length + missingL.length;
+  const blockedHint = missingH.length > 0 && missingL.length > 0
+    ? "Install the harness or add the label in runner.yaml and restart the runner, or update the presets."
+    : missingL.length > 0
+      ? "Add the label to a runner in runner.yaml and restart the runner, or update the preset's runs_on."
+      : "Install the harness on a runner and restart the runner, or change the presets' agents.";
   return <div className="page runners-page">
     <header className="page-head">
       <div>
@@ -164,8 +188,8 @@ export function RunnersPage({ runners = [], queue, loaded, error, role = "admin"
     {loaded && !runners.length && <p className="empty">No runner has connected yet. Run <code>machinist runner start</code> on a machine or cluster.</p>}
     {stalled(runners, queue) && <p className="page-warning" role="status">No runner is online, so waiting runs cannot start.</p>}
     {waits.length > 0 && <div className="page-warning" role="status">
-      <p>{waits.join(". ")}. No online runner has {missingHarnesses(queue).length === 1 ? "it" : "them"}.</p>
-      <p>Install the harness on a runner and restart the runner, or change the presets' agents.</p>
+      <p>{waits.join(". ")}. No online runner has {totalMissing === 1 ? "it" : "them"}.</p>
+      <p>{blockedHint}</p>
     </div>}
     {runners.length > 0 && <ul className="list">{runners.map(runner => <Runner key={runner.name} runner={runner} canRemove={canRemove} onChange={onChange} onSignedOut={onSignedOut} />)}</ul>}
   </div>;

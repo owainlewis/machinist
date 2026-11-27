@@ -85,6 +85,10 @@ export function automationPayload(form, { includeName = true } = {}) {
     timezone,
   };
   if (includeName) body.name = String(form?.name ?? "").trim();
+  const runsOn = Array.isArray(form?.runs_on)
+    ? form.runs_on.map(item => String(item ?? "").trim()).filter(Boolean)
+    : [];
+  if (runsOn.length > 0) body.runs_on = runsOn;
   return body;
 }
 

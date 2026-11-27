@@ -174,7 +174,7 @@ func TestRemoveRunnerForgetsOnlyAnIdleOfflineRunner(t *testing.T) {
 	lastWeek := time.Now().Add(-7 * 24 * time.Hour)
 	f.store.SetClock(func() time.Time { return lastWeek })
 	for _, name := range []string{"runner-1", "old-laptop"} {
-		if err := f.store.RecordRunner(t.Context(), name, "local", []string{protocol.StepsHarness}, 1, true); err != nil {
+		if err := f.store.RecordRunner(t.Context(), name, "local", []string{protocol.StepsHarness}, nil, 1, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -253,7 +253,7 @@ func TestQueuedRunsSayWhichHarnessTheyWaitFor(t *testing.T) {
 	if got := blocked(); len(got) != 0 {
 		t.Fatalf("with no runner online the queue waits for any runner, not a harness: %+v", got)
 	}
-	if err := f.store.RecordRunner(t.Context(), "laptop", "local", []string{protocol.StepsHarness, "claude"}, 1, true); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "laptop", "local", []string{protocol.StepsHarness, "claude"}, nil, 1, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := blocked(); len(got) != 1 || !slices.Equal(got[0].Harnesses, []string{"codex"}) || got[0].Waiting != 2 {
@@ -265,7 +265,7 @@ func TestQueuedRunsSayWhichHarnessTheyWaitFor(t *testing.T) {
 	if got := waitingFor(implement.ID); got != nil {
 		t.Fatalf("a job an online runner can take waits for no harness: %v", got)
 	}
-	if err := f.store.RecordRunner(t.Context(), "laptop", "local", []string{protocol.StepsHarness, "claude", "codex"}, 1, true); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "laptop", "local", []string{protocol.StepsHarness, "claude", "codex"}, nil, 1, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := blocked(); len(got) != 0 {
@@ -306,7 +306,7 @@ func TestBlockedQueueAccountsForTicketHarnessOverrides(t *testing.T) {
 	if err := f.server.engine.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.RecordRunner(t.Context(), "claude-only", "local", []string{protocol.StepsHarness, "claude"}, 1, true); err != nil {
+	if err := f.store.RecordRunner(t.Context(), "claude-only", "local", []string{protocol.StepsHarness, "claude"}, nil, 1, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -342,5 +342,87 @@ func TestMissingHarnessesNamesWhatTheClosestRunnerLacks(t *testing.T) {
 	}
 	if got := missingHarnesses([]tickets.Runner{probed()}, nil); got != nil {
 		t.Errorf("a job that needs nothing: missing = %v", got)
+	}
+}
+
+func TestPollRecordsLabelsAndSurfacesMissingRunsOnLabels(t *testing.T) {
+	f := newFixture(t)
+	f.server.factory = &factory.Factory{
+		Presets: map[string]factory.Preset{
+			"ios":     {Name: "ios", RunsOn: []string{"arm64", "macos"}, Steps: []runner.Step{{Name: "build", Run: "xcodebuild"}}},
+			"default": {Name: "default", Steps: []runner.Step{{Name: "work", Run: "echo hi"}}},
+		},
+	}
+	f.server.engine.Factory = f.server.factory
+
+	// Poll rejects invalid labels.
+	if resp, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{
+		Harnesses: []string{protocol.StepsHarness},
+		Labels:    []string{"bad label"},
+	}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad labels poll = %d: %s", resp.StatusCode, body)
+	}
+
+	// Poll normalizes and records runner labels.
+	if resp, body := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{
+		Harnesses: []string{protocol.StepsHarness},
+		Labels:    []string{" MacOS ", "macos"},
+		Kind:      "local",
+		Slots:     2,
+		Probed:    true,
+	}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("poll = %d: %s", resp.StatusCode, body)
+	}
+
+	iosTicket, _, err := f.store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source: "api", Repo: "owner/repo", Title: "iOS build", Body: "Build", Agent: "ios", CreatedBy: "alice", SourceKey: "ios-blocked",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.server.engine.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Runner only has [macos], so ios job (needs [arm64, macos]) is waiting for [arm64].
+	resp, body := f.call(t, http.MethodGet, "/api/v1/runners", f.token, nil)
+	var fleet struct {
+		Runners []tickets.Runner `json:"runners"`
+		Queue   tickets.Queue    `json:"queue"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &fleet) != nil {
+		t.Fatalf("%d: %s", resp.StatusCode, body)
+	}
+	if len(fleet.Runners) != 1 || !slices.Equal(fleet.Runners[0].Labels, []string{"macos"}) {
+		t.Fatalf("runners = %+v", fleet.Runners)
+	}
+	if len(fleet.Queue.Blocked) != 1 || !slices.Equal(fleet.Queue.Blocked[0].Labels, []string{"arm64"}) || len(fleet.Queue.Blocked[0].Harnesses) != 0 || fleet.Queue.Blocked[0].Waiting != 1 {
+		t.Fatalf("blocked = %+v", fleet.Queue.Blocked)
+	}
+
+	resp, body = f.call(t, http.MethodGet, "/api/v1/tickets/"+iosTicket.ID, f.token, nil)
+	var detail struct {
+		RunsOn           []string `json:"runs_on"`
+		WaitingFor       []string `json:"waiting_for"`
+		WaitingForLabels []string `json:"waiting_for_labels"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &detail) != nil {
+		t.Fatalf("%d: %s", resp.StatusCode, body)
+	}
+	if !slices.Equal(detail.RunsOn, []string{"arm64", "macos"}) || len(detail.WaitingFor) != 0 || !slices.Equal(detail.WaitingForLabels, []string{"arm64"}) {
+		t.Fatalf("detail = %+v", detail)
+	}
+
+	// Once the runner advertises both labels, polling claims the job.
+	resp, body = f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{
+		Harnesses: []string{protocol.StepsHarness},
+		Labels:    []string{"macos", "arm64"},
+		Kind:      "local",
+		Slots:     2,
+		Probed:    true,
+	})
+	var claimed runner.RunRequest
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &claimed) != nil || claimed.TicketID != iosTicket.ID {
+		t.Fatalf("claim = %d: %s", resp.StatusCode, body)
 	}
 }
