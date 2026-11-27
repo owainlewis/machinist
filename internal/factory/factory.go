@@ -57,7 +57,10 @@ func (p Preset) WithOverride(harnessName, model string) Preset {
 		return p
 	}
 	overridden := p
-	overridden.Harness, overridden.Model = harness.MergeOverride(p.Harness, p.Model, harnessName, model)
+	// Every step's effective harness/model is materialized below; clear the
+	// preset-level defaults so subsequent EffectiveStep calls do not reapply a
+	// preset model onto a step whose model was cleared by a harness switch.
+	overridden.Harness, overridden.Model = "", ""
 	overridden.Steps = make([]runner.Step, len(p.Steps))
 	for index, step := range p.Steps {
 		effective := p.EffectiveStep(step)
