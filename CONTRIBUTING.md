@@ -1,6 +1,6 @@
 # Contributing
 
-Machinist uses Go for the CLI, control plane, and workers, plus React and Vite
+Machinist uses Go for the CLI, control plane, and runners, plus React and Vite
 for the embedded browser interface.
 
 Before starting a change, search existing issues and keep the scope focused. Do

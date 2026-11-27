@@ -9,14 +9,14 @@ early-access, open-source software.
 
 - **One place for the team.** One control plane holds every job. Anyone signed in can see
   what each job is doing, step by step, and open its pull request.
-- **Runs anywhere.** A runner is a small daemon that asks the control plane for work. Start
-  one on a Mac, a VM, a hardened Docker container (or gVisor with one config line), or a
-  Kubernetes cluster. The control plane treats them all the same.
-- **A workflow you define.** A preset is a list of steps: clone, plan, build, test,
-  review, open a pull request, triage risk with a merge gate, and merge. A step runs an agent
-  (Claude Code, Codex, Pi or agy, each with its own model and prompt) or any shell command. A
-  test step is a gate an agent cannot skip.
-- **Any trigger.** The web app (including saved **Automations**), [Linear](docs/linear.md), a
+- **Runs anywhere.** A runner is a small daemon that asks the control plane for runs. Start
+  one on a Mac, a VM, Docker (with optional gVisor), or Kubernetes. The control plane treats
+  them all the same.
+- **Steps you define.** A preset is a list of steps: clone, implement, review, revise, open a
+  pull request, check risk with a merge gate, and merge. Each step runs an agent (`claude`,
+  `codex`, `pi`, or `agy`, with its own model and prompt) or a shell command. A test step is a
+  check an agent cannot skip.
+- **Any trigger.** The web app (**New job** and **Automations**), [Linear](docs/linear.md), a
   schedule, an [MCP](docs/mcp.md) bot, or `curl` against the [run API](docs/run-api.md).
 
 <img src=".github/assets/screenshot-job.png" alt="A job started from a Linear issue, running on vm-runner. Its pipeline shows checkout passed, implement running, and review, revise, publish and merge waiting, each step with its model." width="100%">
@@ -138,44 +138,40 @@ The production UI is committed, so this build does not need Node.
 
 ## Using it
 
-Jobs start from the web app's **New job** form or **Jobs → Automations** view (run as-is or
-with an edited one-off prompt), through the [run API](docs/run-api.md) from `curl`, a tracker
-or a webhook, over [MCP](docs/mcp.md) with a scoped bot token, or when a Linear issue is
-delegated to the Machinist app (see [Linear](docs/linear.md)). The web app can also run an
-ended job again:
+Jobs start from the web app (**New job** or **Automations**), the [run API](docs/run-api.md),
+[MCP](docs/mcp.md), a schedule, or [Linear](docs/linear.md). Each job runs headless from start
+to finish. When an agent has to guess, it lists each guess under **Assumptions** in the pull
+request.
 
 | Page | What it does |
 | --- | --- |
-| Dashboard | Jobs and runs over 7, 14 or 30 days: time to merge and where it goes, how often a person stepped in, pull requests opened and merged, success rate, run and wait times, tokens, runs per day by outcome and by step, and each preset and repository |
-| Jobs | Every job as a 4-column board (**Queued**, **Running**, **Review**, **Done**) or paginated list with each job's repository, preset, pull request, state, and Merge Gate risk badge (`Low`, `Medium`, `High`), plus an **Automations** view to run scheduled jobs on demand |
-| New job | Pick a repository, paste a prompt or spec, and start a job. It calls the run API |
-| Job | One job: its result, Merge Gate verdict and reason, prompt, preset steps drawn as a pipeline (showing `Held` when waiting for human review), and every attempt with live step output. **Run again** starts an ended job once more |
-| Runners | Each runner (`local`, `docker`, `docker (runsc)`, or `kubernetes`), how many of its slots are busy and with what, and how long runs have waited |
-| Settings | Overview checks, repositories/projects, GitHub App & Linear status, presets, agents, and revocable tokens (with `read` and `run` scopes for bots) |
+| Dashboard | Counts and rates over 7, 14, or 30 days: time to merge, human touches, pull requests opened and merged, success rate, run and wait times, tokens, cost, and runs per day |
+| Jobs | Every job as a 4-column board (**Queued**, **Running**, **Review**, **Done**) or list, with repository, preset, pull request, state (`Waiting for CI` or `Needs you`), and merge-gate risk badge (`Low`, `Medium`, `High`) |
+| Automations | Saved and scheduled jobs from the database or `factory/automations/`. Create, edit, and run them on demand, as-is or with one-off prompt, harness, or model overrides |
+| New job | Pick a repository, choose a preset, write a prompt, and start a job |
+| Job | One job: result, merge-gate verdict and reason, prompt, steps and their status (including `Held` when waiting for a person), and every run with live step output. **Run again** starts an ended job again |
+| Runners | Each runner (`local`, `docker`, `docker (runsc)`, or `kubernetes`), its harnesses, busy slots, and queue wait times |
+| Settings | Setup checks, projects (repositories), GitHub App, Linear, tokens (including `read` and `run` scopes), team and invites, presets and agents, and account |
 
-To stop a job, `POST /machinist/jobs/{id}/cancel`. To run an ended job again,
+To stop a job, call `POST /machinist/jobs/{id}/cancel`. To run an ended job again, call
 `POST /machinist/jobs/{id}/rerun`. After editing `config.yaml` or `factory/`, run
-`machinist reload` to apply changes live without restarting the control plane. Configure
-`notify.webhook` (and `server.public_url`) in `config.yaml` to receive a Slack-compatible
-webhook notification whenever a job needs a person or fails.
-
-Jobs run headless, from start to finish, and never stop to ask a question. When the agent
-has to guess, it says so under **Assumptions** in the pull request.
+`machinist reload` to apply changes without restarting the control plane. Set `notify.webhook`
+and `server.public_url` in `config.yaml` to send a Slack-compatible webhook when a job needs a
+person or fails.
 
 Every job uses the `default` preset unless it names another: `checkout`, `implement`,
-`review`, `revise`, `publish`, `merge-gate` (risk triage against the merge policy), and
-`merge`. When `github.auto_merge` is on (the default), low-risk pull requests approved by
-both `review` and `merge-gate` merge once their checks pass; medium- or high-risk changes
-stay open for human review in the **Review** column with their risk badge and reason. If CI
-checks fail or a parallel merge introduces a branch conflict, **PR Steward** automatically
-requeues a bounded fix/rebase run on the same branch (`github.steward_retries`, default `2`)
-without overwriting human commits. Commit `.machinist/merge-policy.md` to a repository's
-default branch to override the default policy (`factory/prompts/merge-policy.md`) for that
-repository, or set `github.auto_merge: false` to run `merge-gate` in **observe mode**
-(evaluating PRs and posting its judgment comment without merging). See
-[Merge gate and policy](docs/factory.md#merge-gate-and-policy) and
-[Merge policies](docs/merge-policies.md). Add a preset to `factory/presets/` only when a
-kind of job needs different steps.
+`review`, `revise`, `publish`, `merge-gate`, and `merge`. When `github.auto_merge` is `true`
+(the default), a pull request merges once its checks pass, `review` accepts it, and
+`merge-gate` marks it `low` risk. Medium- or high-risk pull requests stay open in **Review**
+for a person. Auto-merging pull requests waiting on checks show `Waiting for CI`. If CI fails
+or a parallel merge causes a conflict, **PR Steward** starts a fix run on the same branch up to
+`github.steward_retries` times (default `2`), without overwriting human commits. Commit
+`.machinist/merge-policy.md` to a repository's default branch to override
+`factory/prompts/merge-policy.md`. Set `github.auto_merge: false` for **observe mode**:
+`merge-gate` still comments its verdict on every pull request, and leaves every pull request
+open for a person. See [Merge gate and policy](docs/factory.md#merge-gate-and-policy) and
+[Merge policies](docs/merge-policies.md). Add a preset to `factory/presets/` only when a job
+needs different steps.
 
 ### Start jobs from Linear
 
@@ -195,24 +191,21 @@ cd internal/controlplane/web && npm ci && npm test
 The Go tests run whole jobs end to end with fake `claude` and `gh` commands and a local
 Git remote. See [Development](docs/development.md).
 
-The default preset has a second agent review the change, fixes what the review found and
-reviews it again, opens a pull request, and runs a read-only `merge-gate` step to triage
-blast radius against `prompts/merge-policy.md` or a repository's `.machinist/merge-policy.md`
-on its default branch (see [Merge gate and policy](docs/factory.md#merge-gate-and-policy)).
-The `machinist merge` step posts the merge-gate judgment as a pull request comment and hands
-the pull request to the control plane, which merges it once the repository's checks pass, the
-review accepted the change, and the merge gate approved it as low risk, so no runner waits on
-CI. That merge rule is code, and `merge-gate` runs without GitHub credentials. Set
-`github.auto_merge: false` to run in **observe mode**: `merge-gate` still evaluates every
-pull request and comments its judgment while leaving every pull request open for a person.
-How the pull request is written is in `factory/agents/publish.md`. Branch protection still
-decides what can merge. See [Security](SECURITY.md) for what a step can do.
+The default preset runs `review` with a second agent, runs `revise` to fix what `review` found
+and reviews again, opens one pull request in `publish`, and runs `merge-gate` without GitHub
+credentials to judge risk against `.machinist/merge-policy.md` on the default branch (or
+`factory/prompts/merge-policy.md`). Then `machinist merge` posts the merge-gate comment and
+hands the pull request to the control plane, so the runner does not wait on CI. The control
+plane merges it only when `github.auto_merge` is `true`, `review` accepted it, `merge-gate`
+approved it as `low` risk, and all checks pass. That merge rule is Go code, not an agent. How
+the pull request is written is in `factory/agents/publish.md`. Branch protection still decides
+what can merge. See [Security](SECURITY.md).
 
 ## How it fits together
 
-One control plane holds jobs and presets. It never runs a step. Any number
-of runners, on Macs, VMs, Docker (with optional gVisor), or Kubernetes, dial out and ask for
-work. See [Architecture](ARCHITECTURE.md).
+One control plane holds jobs, runs, and presets, backed by SQLite or PostgreSQL. It never runs
+a step. Runners on Macs, VMs, Docker (with optional gVisor), or Kubernetes dial out and ask for
+runs. See [Architecture](ARCHITECTURE.md).
 
 ## Go deeper
 
@@ -222,11 +215,13 @@ work. See [Architecture](ARCHITECTURE.md).
 | [Vision](VISION.md) | What Machinist is for, where it is, and what comes next |
 | [Run API](docs/run-api.md) | Starting jobs from any system |
 | [MCP](docs/mcp.md) | Letting bots list, run, watch and cancel jobs over MCP |
-| [Factory files](docs/factory.md) | Presets, merge gate, PR Steward and automations |
+| [Factory files](docs/factory.md) | Presets, agents, merge gate, PR Steward and automations |
 | [Merge policies](docs/merge-policies.md) | Risk-based merge policies and starter templates |
 | [Runners](docs/runners.md) | Adding local, Docker (with optional gVisor), and Kubernetes runners |
 | [Credentials](docs/credentials.md) | Which credential to use, and why |
-| [Configuration](docs/configuration.md) | Every setting (including live reload, notifications and PR Steward) |
+| [Configuration](docs/configuration.md) | Every setting (including auth, PostgreSQL, live reload, webhooks and PR Steward) |
+| [VM deployment](docs/vm-deployment.md) | Running and upgrading on a Linux VM |
+| [Cloud Run deployment](docs/cloud-run.md) | Running on Google Cloud Run with PostgreSQL |
 | [Development](docs/development.md) | Build, test and contribute |
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing. Machinist uses the
