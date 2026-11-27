@@ -79,10 +79,14 @@ func Merge(ctx context.Context, options MergeOptions) error {
 	reason := Blocker(options.AutoMerge, request)
 	if hasGate {
 		comment := FormatGateComment(gate, pr.HeadRefOid, reason == "", reason)
-		if _, stderr, err := options.GH(ctx, "pr", "comment", strconv.Itoa(pr.Number), "--body", comment); err != nil {
-			fmt.Fprintf(options.Log, "Could not post merge gate comment on pull request #%d: %s\n", pr.Number, firstLine(stderr, err))
+		if shouldCommentGate(pr.Comments, comment, pr.HeadRefOid) {
+			if _, stderr, err := options.GH(ctx, "pr", "comment", strconv.Itoa(pr.Number), "--body", comment); err != nil {
+				fmt.Fprintf(options.Log, "Could not post merge gate comment on pull request #%d: %s\n", pr.Number, firstLine(stderr, err))
+			}
+		} else {
+			fmt.Fprintf(options.Log, "Pull request #%d already has a merge gate comment for this outcome; skipping duplicate comment\n", pr.Number)
 		}
-		applyGateLabel(ctx, options, pr.Number, gate, reason == "")
+		applyGateLabel(ctx, options, pr, gate, reason == "")
 	}
 	if reason != "" {
 		fmt.Fprintf(options.Log, "Pull request #%d stays open: %s. Machinist still watches its checks.\n", pr.Number, reason)
@@ -164,17 +168,23 @@ func Blocker(autoMerge bool, request protocol.Ship) string {
 	}
 }
 
+type pullRequestLabel struct {
+	Name string `json:"name"`
+}
+
 type pullRequest struct {
-	Number     int    `json:"number"`
-	URL        string `json:"url"`
-	State      string `json:"state"`
-	HeadRefOid string `json:"headRefOid"`
+	Number     int                `json:"number"`
+	URL        string             `json:"url"`
+	State      string             `json:"state"`
+	HeadRefOid string             `json:"headRefOid"`
+	Comments   []prComment        `json:"comments"`
+	Labels     []pullRequestLabel `json:"labels"`
 }
 
 // findPR finds the pull request on the job's branch, in whatever state.
 func findPR(ctx context.Context, options MergeOptions) (pullRequest, bool, error) {
 	var pr pullRequest
-	stdout, stderr, err := options.GH(ctx, "pr", "view", options.Branch, "--json", "number,url,state,headRefOid")
+	stdout, stderr, err := options.GH(ctx, "pr", "view", options.Branch, "--json", "number,url,state,headRefOid,comments,labels")
 	if err != nil {
 		if strings.Contains(stderr, "no pull requests found") {
 			return pr, false, nil
@@ -198,20 +208,33 @@ func firstLine(stderr string, err error) string {
 	return err.Error()
 }
 
-// applyGateLabel attaches the merge-gate outcome label to the pull request on
-// a best-effort basis, creating the label in the repository if it does not yet
-// exist.
-func applyGateLabel(ctx context.Context, options MergeOptions, prNumber int, gate Gate, willAutoMerge bool) {
+// applyGateLabel attaches the current merge-gate outcome label to the pull
+// request on a best-effort basis, creating the label if it does not yet exist
+// and removing any stale merge-gate outcome labels from earlier runs.
+func applyGateLabel(ctx context.Context, options MergeOptions, pr pullRequest, gate Gate, willAutoMerge bool) {
 	label, color, desc := GateLabel(gate, willAutoMerge, options.AutoMerge)
-	num := strconv.Itoa(prNumber)
-	if _, _, err := options.GH(ctx, "pr", "edit", num, "--add-label", label); err == nil {
-		return
+	num := strconv.Itoa(pr.Number)
+	var hasTarget bool
+	var stale []string
+	for _, existing := range pr.Labels {
+		if existing.Name == label {
+			hasTarget = true
+		} else if isGateLabel(existing.Name) {
+			stale = append(stale, existing.Name)
+		}
 	}
-	if _, stderr, err := options.GH(ctx, "label", "create", label, "--color", color, "--description", desc, "--force"); err != nil {
-		fmt.Fprintf(options.Log, "Could not create merge gate label %q: %s\n", label, firstLine(stderr, err))
-		return
+	if !hasTarget {
+		if _, _, err := options.GH(ctx, "pr", "edit", num, "--add-label", label); err != nil {
+			if _, stderr, createErr := options.GH(ctx, "label", "create", label, "--color", color, "--description", desc, "--force"); createErr != nil {
+				fmt.Fprintf(options.Log, "Could not create merge gate label %q: %s\n", label, firstLine(stderr, createErr))
+			} else if _, stderr, retryErr := options.GH(ctx, "pr", "edit", num, "--add-label", label); retryErr != nil {
+				fmt.Fprintf(options.Log, "Could not label pull request #%d with %q: %s\n", pr.Number, label, firstLine(stderr, retryErr))
+			}
+		}
 	}
-	if _, stderr, err := options.GH(ctx, "pr", "edit", num, "--add-label", label); err != nil {
-		fmt.Fprintf(options.Log, "Could not label pull request #%d with %q: %s\n", prNumber, label, firstLine(stderr, err))
+	for _, old := range stale {
+		if _, stderr, err := options.GH(ctx, "pr", "edit", num, "--remove-label", old); err != nil {
+			fmt.Fprintf(options.Log, "Could not remove stale merge gate label %q from pull request #%d: %s\n", old, pr.Number, firstLine(stderr, err))
+		}
 	}
 }

@@ -154,3 +154,28 @@ func TestGateLabelAndAutoCreateFallback(t *testing.T) {
 		t.Fatalf("expected retry pr edit, got %q", calls[4])
 	}
 }
+
+func TestMergeRemovesStaleOutcomeLabelsOnRerun(t *testing.T) {
+	dir := control(t, accepted)
+	writeGate(t, dir, `{"decision":"human_review","risk":"high","reason":"Tripwire: modifies workflow file .github/workflows/ci.yml","tripwire":true}`)
+	var calls []string
+	gh := func(_ context.Context, args ...string) ([]byte, string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "pr" && args[1] == "view" {
+			return []byte(`{"number":7,"url":"https://github.com/o/r/pull/7","state":"OPEN","headRefOid":"sha2","labels":[{"name":"merge-gate:auto-merge"},{"name":"bug"}]}`), "", nil
+		}
+		return nil, "", nil
+	}
+	if err := Merge(t.Context(), MergeOptions{Control: dir, Branch: "machinist/t_1", AutoMerge: true, RequireGate: true, GH: gh}); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 gh calls (view, comment, add-label, remove-label), got %q", calls)
+	}
+	if calls[2] != "pr edit 7 --add-label merge-gate:tripwire" {
+		t.Fatalf("expected add-label call, got %q", calls[2])
+	}
+	if calls[3] != "pr edit 7 --remove-label merge-gate:auto-merge" {
+		t.Fatalf("expected stale label removal (keeping unrelated 'bug' label), got %q", calls[3])
+	}
+}
