@@ -263,6 +263,9 @@ a.source:hover span { text-decoration: underline; }
 .job-facts a:hover { text-decoration: underline; }
 .job-facts .job-source { display: inline-flex; align-items: center; gap: 8px; }
 .job-facts .job-source a { display: inline-flex; align-items: center; gap: 2px; }
+.job-inputs { display: flex; flex-wrap: wrap; gap: 6px; }
+.job-input { display: inline-flex; align-items: baseline; gap: 5px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--muted); color: var(--foreground); font-size: 12px; line-height: 18px; }
+.job-input code { color: var(--muted-foreground); font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; }
 .job-actions { display: flex; flex: none; align-items: center; gap: 8px; }
 .job-actions .pill { margin-top: 0; }
 .job-failure { border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); background: var(--danger-soft); }
@@ -359,9 +362,16 @@ a.source:hover span { text-decoration: underline; }
 .preset-steps li { display: flex; align-items: center; }
 .preset-steps li span { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--muted-foreground); background: var(--muted); border-radius: 6px; padding: 1px 7px; }
 .preset-steps li + li::before { content: "→"; margin-right: 6px; color: var(--faint); }
+.preset-inputs { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.preset-inputs > legend { padding: 0 4px; margin-bottom: 0; }
+.preset-inputs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 8px; }
+.preset-input-field .field-label { display: flex; align-items: center; gap: 6px; }
+.preset-input-field .field-label code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--foreground); }
+.field-required { color: var(--danger); font-weight: 600; }
 @media (max-width: 640px) {
   .new-job { padding: 16px; }
   .new-job-shortcut { display: none; }
+  .preset-inputs-grid { grid-template-columns: 1fr; }
 }
 
 /* Runners. */

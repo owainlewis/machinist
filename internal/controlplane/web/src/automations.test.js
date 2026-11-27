@@ -75,3 +75,27 @@ test("automationPayload and canSaveAutomation handle manual and scheduled forms"
   );
   assert.deepEqual([...onlineHarnessSet([{ harnesses: ["steps", "claude", "codex"] }])], ["claude", "codex"]);
 });
+
+test("automation helpers validate, serialize, and override preset vars", () => {
+  const declared = [
+    { name: "environment", description: "Env", default: undefined, required: true },
+    { name: "region", description: "Region", default: "us-east-1", required: false },
+  ];
+  assert.equal(canSaveAutomation({ name: "deploy", repo: "o/r", preset: "deploy", prompt: "Go", vars: { environment: "", region: "us-east-1" } }, { presetInputs: declared }), false);
+  assert.equal(canSaveAutomation({ name: "deploy", repo: "o/r", preset: "deploy", prompt: "Go", vars: { environment: "staging", region: "us-east-1" } }, { presetInputs: declared }), true);
+  assert.deepEqual(
+    automationPayload({ name: "deploy", repo: "o/r", preset: "deploy", prompt: "Go", vars: { environment: "staging" } }, { presetInputs: declared }),
+    { name: "deploy", repo: "o/r", preset: "deploy", prompt: "Go", harness: "", model: "", schedule: "", timezone: "", vars: { environment: "staging", region: "us-east-1" } },
+  );
+
+  const saved = { repo: "o/r", agent: "deploy", harness: "", model: "", prompt: "Go", vars: { environment: "staging", region: "us-east-1" } };
+  assert.equal(isRunEdited({ repo: "o/r", preset: "deploy", harness: "", model: "", prompt: "Go", vars: { environment: "staging", region: "us-east-1" } }, saved, declared), false);
+  assert.equal(runAutomationBody({ repo: "o/r", preset: "deploy", harness: "", model: "", prompt: "Go", vars: { environment: "staging", region: "us-east-1" } }, saved, declared), undefined);
+  assert.equal(isRunEdited({ repo: "o/r", preset: "deploy", harness: "", model: "", prompt: "Go", vars: { environment: "prod", region: "us-east-1" } }, saved, declared), true);
+  assert.deepEqual(
+    runAutomationBody({ repo: "o/r", preset: "deploy", harness: "", model: "", prompt: "Go", vars: { environment: "prod", region: "us-east-1" } }, saved, declared),
+    { vars: { environment: "prod", region: "us-east-1" } },
+  );
+  assert.equal(canRunAutomation("Go", { environment: "" }, declared), false);
+  assert.equal(canRunAutomation("Go", { environment: "prod" }, declared), true);
+});

@@ -749,3 +749,50 @@ func TestMCPRerunJobAndGetStats(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPRunJobSupportsPresetVars(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	regionDefault := "us-east-1"
+	f.server.factory.Presets["deploy"] = factory.Preset{
+		Name:        "deploy",
+		Description: "Deploy service.",
+		Inputs: map[string]factory.Input{
+			"environment": {Description: "Target environment"},
+			"region":      {Description: "Region", Default: &regionDefault},
+		},
+		Steps: []runner.Step{{Name: "deploy", Run: "true"}},
+	}
+	f.server.schedule.Automations = []factory.Automation{
+		{Name: "nightly", Repo: "owner/repo", Preset: "default", Prompt: "Check"},
+	}
+	runToken := f.newScopedToken(t, "grokbot", tickets.ScopeRun)
+
+	// Valid custom job with preset inputs applies defaults and persists vars.
+	created := decodeMCPToolJSON[mcpRunJobResult](t, f.mcpTool(t, runToken, "run_job", map[string]any{
+		"repo":   "owner/repo",
+		"preset": "deploy",
+		"prompt": "Deploy staging",
+		"vars":   map[string]string{"environment": "staging"},
+	}))
+	if !created.Created || created.Vars["environment"] != "staging" || created.Vars["region"] != "us-east-1" || len(created.Vars) != 2 {
+		t.Fatalf("created = %+v", created)
+	}
+	got := decodeMCPToolJSON[mcpJobDetail](t, f.mcpTool(t, runToken, "get_job", map[string]any{"id": created.ID}))
+	if got.Vars["environment"] != "staging" || got.Vars["region"] != "us-east-1" {
+		t.Fatalf("get_job vars = %+v", got.Vars)
+	}
+
+	// Missing required var, unknown var, reserved repo in vars, and vars with automation all return tool errors.
+	for name, args := range map[string]map[string]any{
+		"missing required": {"repo": "owner/repo", "preset": "deploy", "prompt": "Deploy"},
+		"unknown var":      {"repo": "owner/repo", "preset": "deploy", "prompt": "Deploy", "vars": map[string]string{"environment": "staging", "bogus": "1"}},
+		"reserved repo":    {"repo": "owner/repo", "preset": "deploy", "prompt": "Deploy", "vars": map[string]string{"repo": "owner/other", "environment": "staging"}},
+		"with automation":  {"automation": "nightly", "vars": map[string]string{"environment": "staging"}},
+	} {
+		res := f.mcpTool(t, runToken, "run_job", args)
+		if !res.IsError {
+			t.Fatalf("%s: expected tool error, got %+v", name, res)
+		}
+	}
+}

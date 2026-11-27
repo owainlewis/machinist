@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -84,13 +85,16 @@ func (s *Server) job(r *http.Request, ticket tickets.Ticket) (job, error) {
 	if ticket.Source == "run" {
 		key = strings.TrimPrefix(key, "run:")
 	}
+	vars := make(map[string]string, len(ticket.Vars)+1)
+	maps.Copy(vars, ticket.Vars)
+	vars["repo"] = ticket.Repo
 	view := job{
 		ID:                ticket.ID,
 		Key:               key,
 		Source:            ticket.Origin,
 		SourceURL:         ticket.SourceURL,
 		Preset:            ticket.Agent,
-		Vars:              map[string]string{"repo": ticket.Repo},
+		Vars:              vars,
 		RunsOn:            effectiveRunsOnFrom(s.factoryForTicket(ticket), ticket),
 		Title:             ticket.Title,
 		State:             jobState(ticket, runs),

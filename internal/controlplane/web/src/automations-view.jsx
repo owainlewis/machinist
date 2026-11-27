@@ -12,6 +12,7 @@ import {
 import { State, relativeTime } from "./display.jsx";
 import { HarnessMark } from "./harness-mark.jsx";
 import { jobState, runningJobs } from "./jobs.js";
+import { initialInputValues, presetInputs } from "./new-job.js";
 import { jobHref } from "./routes.js";
 import { createStatusLoader } from "./status-loader.js";
 
@@ -155,6 +156,7 @@ function AutomationEditorDialog({ automation, onlineHarnesses, onClose, onSaved,
   const [model, setModel] = useState(automation?.model || "");
   const [schedule, setSchedule] = useState(automation?.schedule || "");
   const [timezone, setTimezone] = useState(automation?.timezone || "UTC");
+  const [vars, setVars] = useState(() => (automation?.vars ? { ...automation.vars } : {}));
   const [prompt, setPrompt] = useState(automation?.prompt || "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
@@ -162,6 +164,7 @@ function AutomationEditorDialog({ automation, onlineHarnesses, onClose, onSaved,
   const nameRef = useRef(null);
   const promptRef = useRef(null);
   const onCloseRef = useRef(onClose);
+  const varsInitialized = useRef(false);
   onCloseRef.current = onClose;
 
   useEffect(() => {
@@ -172,9 +175,15 @@ function AutomationEditorDialog({ automation, onlineHarnesses, onClose, onSaved,
 
   useEffect(() => {
     if (!options) return;
+    const nextPreset = preset || options.defaultPreset || options.presets[0]?.name || "";
     setRepo(current => current || options.repositories[0] || "");
-    setPreset(current => current || options.defaultPreset || options.presets[0]?.name || "");
-  }, [options]);
+    setPreset(current => current || nextPreset);
+    if (!varsInitialized.current && nextPreset) {
+      varsInitialized.current = true;
+      const presetObj = options.presets.find(item => item.name === nextPreset);
+      setVars(initialInputValues(presetObj, editing && nextPreset === automation?.agent ? automation?.vars : null));
+    }
+  }, [options, preset, editing, automation]);
 
   useEffect(() => {
     const onKeyDown = event => {
@@ -189,8 +198,16 @@ function AutomationEditorDialog({ automation, onlineHarnesses, onClose, onSaved,
     if (next !== harness) setModel("");
   }
 
-  const form = { name, repo, preset, harness, model, schedule, timezone, prompt, runs_on: automation?.runs_on };
-  const ready = canSaveAutomation(form, { requireName: !editing }) && !pending;
+  function changePreset(next) {
+    setPreset(next);
+    const nextObj = options?.presets.find(item => item.name === next);
+    setVars(initialInputValues(nextObj, editing && next === automation?.agent ? automation?.vars : null));
+  }
+
+  const selectedPreset = options?.presets.find(item => item.name === preset);
+  const declaredInputs = presetInputs(selectedPreset);
+  const form = { name, repo, preset, harness, model, schedule, timezone, prompt, runs_on: automation?.runs_on, vars };
+  const ready = canSaveAutomation(form, { requireName: !editing, presetInputs: declaredInputs }) && !pending;
   const repoOptions = options ? (repo && !options.repositories.includes(repo) ? [repo, ...options.repositories] : options.repositories) : (repo ? [repo] : []);
   const presetNames = options ? options.presets.map(item => item.name) : [];
   const presetOptions = options ? (preset && !presetNames.includes(preset) ? [preset, ...presetNames] : presetNames) : (preset ? [preset] : []);
@@ -203,7 +220,7 @@ function AutomationEditorDialog({ automation, onlineHarnesses, onClose, onSaved,
     try {
       const path = editing ? automationPath(automation.name) : "/api/v1/automations";
       const method = editing ? "PUT" : "POST";
-      await api(path, { method, body: automationPayload(form, { includeName: !editing }) });
+      await api(path, { method, body: automationPayload(form, { includeName: !editing, presetInputs: declaredInputs }) });
       if (!mounted.current) return;
       onSaved?.();
       onClose();
@@ -256,11 +273,33 @@ function AutomationEditorDialog({ automation, onlineHarnesses, onClose, onSaved,
           </div>
           <div>
             <label className="field-label" htmlFor="automation-edit-preset">Preset</label>
-            <Select id="automation-edit-preset" value={preset} onChange={setPreset} disabled={pending || !presetOptions.length}>
+            <Select id="automation-edit-preset" value={preset} onChange={changePreset} disabled={pending || !presetOptions.length}>
               {presetOptions.map(item => <option key={item} value={item}>{item}</option>)}
             </Select>
           </div>
         </div>
+        {declaredInputs.length > 0 && <fieldset className="preset-inputs">
+          <legend className="field-label">Inputs</legend>
+          <div className="preset-inputs-grid">
+            {declaredInputs.map(item => <div key={item.name} className="preset-input-field">
+              <label className="field-label" htmlFor={`automation-edit-var-${item.name}`}>
+                <code>{item.name}</code>
+                {item.required ? <span className="field-required" aria-label="required">*</span> : <span className="field-optional">(optional)</span>}
+              </label>
+              <input
+                id={`automation-edit-var-${item.name}`}
+                className="field-control"
+                value={vars[item.name] ?? ""}
+                onChange={event => setVars(current => ({ ...current, [item.name]: event.target.value }))}
+                onKeyDown={submitOnShortcut}
+                placeholder={item.default !== undefined ? item.default : ""}
+                required={item.required}
+                disabled={pending}
+              />
+              {item.description && <p className="field-hint">{item.description}</p>}
+            </div>)}
+          </div>
+        </fieldset>}
         <div className="automation-fields-row">
           <div>
             <label className="field-label" htmlFor="automation-edit-harness">Harness <span className="field-optional">(optional)</span></label>
@@ -338,12 +377,14 @@ function RunAutomationDialog({ automation, running, onlineHarnesses, onClose, on
   const [preset, setPreset] = useState(automation.agent || "");
   const [harness, setHarness] = useState(automation.harness || "");
   const [model, setModel] = useState(automation.model || "");
+  const [vars, setVars] = useState(() => (automation.vars ? { ...automation.vars } : {}));
   const [prompt, setPrompt] = useState(automation.prompt || "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const mounted = useRef(true);
   const textareaRef = useRef(null);
   const onCloseRef = useRef(onClose);
+  const varsInitialized = useRef(false);
   onCloseRef.current = onClose;
 
   useEffect(() => {
@@ -351,6 +392,13 @@ function RunAutomationDialog({ automation, running, onlineHarnesses, onClose, on
     textareaRef.current?.focus();
     return () => { mounted.current = false; };
   }, []);
+
+  useEffect(() => {
+    if (!options || varsInitialized.current) return;
+    varsInitialized.current = true;
+    const presetObj = options.presets.find(item => item.name === preset);
+    setVars(initialInputValues(presetObj, automation.vars));
+  }, [options, preset, automation]);
 
   useEffect(() => {
     const onKeyDown = event => {
@@ -365,17 +413,27 @@ function RunAutomationDialog({ automation, running, onlineHarnesses, onClose, on
     if (next !== harness) setModel("");
   }
 
+  function changePreset(next) {
+    setPreset(next);
+    const nextObj = options?.presets.find(item => item.name === next);
+    setVars(initialInputValues(nextObj, next === automation.agent ? automation.vars : null));
+  }
+
   function resetToSaved() {
     setRepo(automation.repo || "");
     setPreset(automation.agent || "");
     setHarness(automation.harness || "");
     setModel(automation.model || "");
+    const savedPresetObj = options?.presets.find(item => item.name === (automation.agent || ""));
+    setVars(initialInputValues(savedPresetObj, automation.vars));
     setPrompt(automation.prompt || "");
   }
 
-  const current = { repo, preset, harness, model, prompt };
-  const edited = isRunEdited(current, automation);
-  const ready = canRunAutomation(prompt) && Boolean(repo && preset) && !pending;
+  const selectedPreset = options?.presets.find(item => item.name === preset);
+  const declaredInputs = presetInputs(selectedPreset);
+  const current = declaredInputs.length > 0 ? { repo, preset, harness, model, prompt, vars } : { repo, preset, harness, model, prompt };
+  const edited = isRunEdited(current, automation, declaredInputs);
+  const ready = canRunAutomation(prompt, vars, declaredInputs) && Boolean(repo && preset) && !pending;
   const activeTicket = automation.last_ticket?.state === "working" ? automation.last_ticket : null;
   const activeState = activeTicket ? jobState(activeTicket, running.has(activeTicket.id)) : "";
   const repoOptions = options ? (repo && !options.repositories.includes(repo) ? [repo, ...options.repositories] : options.repositories) : [repo].filter(Boolean);
@@ -388,7 +446,7 @@ function RunAutomationDialog({ automation, running, onlineHarnesses, onClose, on
     setPending(true);
     setError("");
     try {
-      const body = runAutomationBody(current, automation);
+      const body = runAutomationBody(current, automation, declaredInputs);
       const ticket = await api(automationRunPath(automation.name), { method: "POST", body });
       if (!mounted.current) return;
       onClose();
@@ -433,11 +491,33 @@ function RunAutomationDialog({ automation, running, onlineHarnesses, onClose, on
           </div>
           <div>
             <label className="field-label" htmlFor="automation-run-preset">Preset</label>
-            <Select id="automation-run-preset" value={preset} onChange={setPreset} disabled={pending || !presetOptions.length}>
+            <Select id="automation-run-preset" value={preset} onChange={changePreset} disabled={pending || !presetOptions.length}>
               {presetOptions.map(item => <option key={item} value={item}>{item}</option>)}
             </Select>
           </div>
         </div>
+        {declaredInputs.length > 0 && <fieldset className="preset-inputs">
+          <legend className="field-label">Inputs</legend>
+          <div className="preset-inputs-grid">
+            {declaredInputs.map(item => <div key={item.name} className="preset-input-field">
+              <label className="field-label" htmlFor={`automation-run-var-${item.name}`}>
+                <code>{item.name}</code>
+                {item.required ? <span className="field-required" aria-label="required">*</span> : <span className="field-optional">(optional)</span>}
+              </label>
+              <input
+                id={`automation-run-var-${item.name}`}
+                className="field-control"
+                value={vars[item.name] ?? ""}
+                onChange={event => setVars(current => ({ ...current, [item.name]: event.target.value }))}
+                onKeyDown={submitOnShortcut}
+                placeholder={item.default !== undefined ? item.default : ""}
+                required={item.required}
+                disabled={pending}
+              />
+              {item.description && <p className="field-hint">{item.description}</p>}
+            </div>)}
+          </div>
+        </fieldset>}
         <div className="automation-fields-row">
           <div>
             <label className="field-label" htmlFor="automation-run-harness">Harness</label>

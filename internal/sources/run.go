@@ -3,7 +3,6 @@ package sources
 import (
 	"context"
 	"errors"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -13,7 +12,7 @@ import (
 
 const (
 	maxTitleRunes = 80
-	// repoVar is the one variable every preset takes until presets declare their own.
+	// repoVar is the built-in repository variable required on every run request.
 	repoVar = "repo"
 )
 
@@ -35,9 +34,6 @@ func (i *Intake) Run(ctx context.Context, request RunRequest, by string) (ticket
 	if request.Key == "" || len(request.Key) > maxRequestIDBytes {
 		return tickets.Ticket{}, false, invalid("key is required and at most %d bytes", maxRequestIDBytes)
 	}
-	if extra := unknownVars(request.Vars); len(extra) > 0 {
-		return tickets.Ticket{}, false, invalid("unknown vars: %s", strings.Join(extra, ", "))
-	}
 	runsOn, err := config.NormalizeLabels(request.RunsOn)
 	if err != nil {
 		return tickets.Ticket{}, false, invalid("runs_on: %v", err)
@@ -46,7 +42,7 @@ func (i *Intake) Run(ctx context.Context, request RunRequest, by string) (ticket
 	if origin == "" {
 		origin = tickets.OriginAPI
 	}
-	return i.start(ctx, start{source: "run", origin: origin, key: "run:" + request.Key, preset: request.Preset, repo: request.Vars[repoVar], prompt: request.Prompt, runsOn: runsOn, by: by})
+	return i.start(ctx, start{source: "run", origin: origin, key: "run:" + request.Key, preset: request.Preset, repo: request.Vars[repoVar], vars: request.Vars, prompt: request.Prompt, runsOn: runsOn, by: by})
 }
 
 // start is a job from any source that names its preset, repository and prompt.
@@ -54,6 +50,7 @@ func (i *Intake) Run(ctx context.Context, request RunRequest, by string) (ticket
 // of the original issue or message, if there is one.
 type start struct {
 	source, origin, link, key, preset, repo, prompt, by string
+	vars                                                map[string]string
 	runsOn                                              []string
 }
 
@@ -68,7 +65,11 @@ func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, er
 	if job.preset == "" {
 		job.preset = defaultPreset
 	}
-	if presets == nil || !presets(job.preset) {
+	if presets == nil {
+		return tickets.Ticket{}, false, invalid("preset %q does not exist", job.preset)
+	}
+	preset, ok := presets(job.preset)
+	if !ok {
 		return tickets.Ticket{}, false, invalid("preset %q does not exist", job.preset)
 	}
 	repository, connected, err := i.repository(ctx, job.repo)
@@ -77,6 +78,20 @@ func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, er
 	}
 	if !connected {
 		return tickets.Ticket{}, false, invalid("vars.repo %q is not connected", job.repo)
+	}
+	var inputVars map[string]string
+	for name, value := range job.vars {
+		if name == repoVar {
+			continue
+		}
+		if inputVars == nil {
+			inputVars = make(map[string]string, len(job.vars))
+		}
+		inputVars[name] = value
+	}
+	resolvedVars, err := preset.ResolveVars(inputVars)
+	if err != nil {
+		return tickets.Ticket{}, false, invalid("%v", err)
 	}
 	prompt := strings.TrimSpace(job.prompt)
 	if prompt == "" {
@@ -91,20 +106,10 @@ func (i *Intake) start(ctx context.Context, job start) (tickets.Ticket, bool, er
 		Body:      prompt,
 		Agent:     job.preset,
 		RunsOn:    job.runsOn,
+		Vars:      resolvedVars,
 		CreatedBy: job.by,
 		SourceKey: job.key,
 	})
-}
-
-func unknownVars(vars map[string]string) []string {
-	extra := []string{}
-	for name := range vars {
-		if name != repoVar {
-			extra = append(extra, name)
-		}
-	}
-	sort.Strings(extra)
-	return extra
 }
 
 // title is the prompt's first line, cut to a length a list can show.

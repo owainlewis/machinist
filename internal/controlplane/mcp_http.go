@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -126,6 +127,7 @@ var mcpTools = []mcpTool{
 				"repo":       map[string]any{"type": "string", "description": "Connected repository (owner/name) for a custom job."},
 				"prompt":     map[string]any{"type": "string", "description": "Work instructions for a custom job."},
 				"preset":     map[string]any{"type": "string", "description": "Optional factory preset name for a custom job (defaults to the configured default preset)."},
+				"vars":       map[string]any{"type": "object", "description": "Optional preset input values for a custom job (string key-value map).", "additionalProperties": map[string]any{"type": "string"}},
 				"key":        map[string]any{"type": "string", "description": "Optional idempotency key (at most 200 bytes) for a custom job. Reusing the same key returns the existing job."},
 			},
 			"additionalProperties": false,
@@ -518,28 +520,29 @@ type mcpJobStep struct {
 }
 
 type mcpJobDetail struct {
-	ID            string        `json:"id"`
-	Title         string        `json:"title"`
-	Repo          string        `json:"repo"`
-	Preset        string        `json:"preset"`
-	Source        string        `json:"source"`
-	SourceURL     string        `json:"source_url,omitempty"`
-	State         string        `json:"state"`
-	CurrentStep   string        `json:"current_step,omitempty"`
-	LatestAction  string        `json:"latest_action,omitempty"`
-	Steps         []mcpJobStep  `json:"steps"`
-	PRNumber      int           `json:"pr_number,omitempty"`
-	PRState       string        `json:"pr_state,omitempty"`
-	PRURL         string        `json:"pr_url,omitempty"`
-	MergeGate     *mcpMergeGate `json:"merge_gate,omitempty"`
-	LatestRunID   string        `json:"latest_run_id,omitempty"`
-	Summary       string        `json:"summary,omitempty"`
-	LatestMessage string        `json:"latest_message,omitempty"`
-	Tokens        int64         `json:"tokens"`
-	CostUSD       *float64      `json:"cost_usd"`
-	CreatedBy     string        `json:"created_by"`
-	CreatedAt     time.Time     `json:"created_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
+	ID            string            `json:"id"`
+	Title         string            `json:"title"`
+	Repo          string            `json:"repo"`
+	Preset        string            `json:"preset"`
+	Vars          map[string]string `json:"vars,omitempty"`
+	Source        string            `json:"source"`
+	SourceURL     string            `json:"source_url,omitempty"`
+	State         string            `json:"state"`
+	CurrentStep   string            `json:"current_step,omitempty"`
+	LatestAction  string            `json:"latest_action,omitempty"`
+	Steps         []mcpJobStep      `json:"steps"`
+	PRNumber      int               `json:"pr_number,omitempty"`
+	PRState       string            `json:"pr_state,omitempty"`
+	PRURL         string            `json:"pr_url,omitempty"`
+	MergeGate     *mcpMergeGate     `json:"merge_gate,omitempty"`
+	LatestRunID   string            `json:"latest_run_id,omitempty"`
+	Summary       string            `json:"summary,omitempty"`
+	LatestMessage string            `json:"latest_message,omitempty"`
+	Tokens        int64             `json:"tokens"`
+	CostUSD       *float64          `json:"cost_usd"`
+	CreatedBy     string            `json:"created_by"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
 type mcpRunJobResult struct {
@@ -750,11 +753,12 @@ func newMCPKey() (string, error) {
 
 func (s *Server) mcpRunJob(ctx context.Context, auth tickets.TokenAuth, raw []byte) (any, error) {
 	var args struct {
-		Automation string `json:"automation"`
-		Repo       string `json:"repo"`
-		Prompt     string `json:"prompt"`
-		Preset     string `json:"preset"`
-		Key        string `json:"key"`
+		Automation string            `json:"automation"`
+		Repo       string            `json:"repo"`
+		Prompt     string            `json:"prompt"`
+		Preset     string            `json:"preset"`
+		Vars       map[string]string `json:"vars"`
+		Key        string            `json:"key"`
 	}
 	if err := decodeMCPArgs(raw, &args); err != nil {
 		return nil, err
@@ -769,7 +773,7 @@ func (s *Server) mcpRunJob(ctx context.Context, auth tickets.TokenAuth, raw []by
 	var created bool
 	var err error
 	if automation != "" {
-		if repo != "" || prompt != "" || preset != "" || key != "" {
+		if repo != "" || prompt != "" || preset != "" || key != "" || len(args.Vars) > 0 {
 			return nil, errors.New("specify either automation, or repo and prompt, not both")
 		}
 		ticket, created, err = s.schedule.RunNow(ctx, automation, auth.Name, sources.RunOverrides{})
@@ -783,15 +787,21 @@ func (s *Server) mcpRunJob(ctx context.Context, auth tickets.TokenAuth, raw []by
 		if repo == "" || prompt == "" {
 			return nil, errors.New("provide either automation, or both repo and prompt")
 		}
+		if _, hasRepo := args.Vars["repo"]; hasRepo {
+			return nil, errors.New("vars must not include reserved key \"repo\"; pass repo as a top-level argument")
+		}
 		if key == "" {
 			if key, err = newMCPKey(); err != nil {
 				return nil, err
 			}
 		}
+		vars := make(map[string]string, len(args.Vars)+1)
+		maps.Copy(vars, args.Vars)
+		vars["repo"] = repo
 		ticket, created, err = s.intake.Run(ctx, sources.RunRequest{
 			Key:    key,
 			Preset: preset,
-			Vars:   map[string]string{"repo": repo},
+			Vars:   vars,
 			Prompt: prompt,
 			Origin: tickets.OriginMCP,
 		}, auth.Name)
@@ -915,6 +925,7 @@ func (s *Server) mcpJobDetail(ctx context.Context, ticket tickets.Ticket) (mcpJo
 		Title:         ticket.Title,
 		Repo:          ticket.Repo,
 		Preset:        ticket.Agent,
+		Vars:          maps.Clone(ticket.Vars),
 		Source:        ticket.Origin,
 		SourceURL:     ticket.SourceURL,
 		State:         state,

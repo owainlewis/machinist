@@ -4,6 +4,7 @@ package factory
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/harness"
@@ -18,12 +20,69 @@ import (
 	"github.com/owainlewis/machinist/internal/triggers"
 )
 
-const maxFileBytes = 1 << 20
+const (
+	maxFileBytes = 1 << 20
+	// MaxInputBytes caps the UTF-8 byte length of a preset input default or value.
+	MaxInputBytes = 1024
+	// ReservedInputRepo is the built-in repo variable, which presets cannot redeclare.
+	ReservedInputRepo = "repo"
+)
 
-var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+var (
+	validName      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+	validInputName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+)
 
 // ValidName reports whether name is a valid preset, agent, step, or automation name.
 func ValidName(name string) bool { return validName.MatchString(name) }
+
+// ValidInputName reports whether name is a valid preset input name.
+func ValidInputName(name string) bool { return validInputName.MatchString(name) }
+
+// ValidateInputValue checks that an input default or runtime value is valid UTF-8,
+// contains no NUL bytes, and is at most MaxInputBytes bytes long.
+func ValidateInputValue(name, value string) error {
+	if strings.ContainsRune(value, '\x00') {
+		return fmt.Errorf("var %q must not contain NUL bytes", name)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("var %q must be valid UTF-8", name)
+	}
+	if len(value) > MaxInputBytes {
+		return fmt.Errorf("var %q must be at most %d bytes", name, MaxInputBytes)
+	}
+	return nil
+}
+
+// Input is one declared variable on a preset. A nil Default means the input is
+// required; a non-nil Default (including empty string) makes it optional.
+type Input struct {
+	Description string  `json:"description,omitempty"`
+	Default     *string `json:"default,omitempty"`
+}
+
+// Required reports whether this input must be supplied by the caller.
+func (in Input) Required() bool { return in.Default == nil }
+
+func cloneInput(in Input) Input {
+	copied := Input{Description: in.Description}
+	if in.Default != nil {
+		value := *in.Default
+		copied.Default = &value
+	}
+	return copied
+}
+
+func cloneInputs(inputs map[string]Input) map[string]Input {
+	if len(inputs) == 0 {
+		return nil
+	}
+	copied := make(map[string]Input, len(inputs))
+	for name, in := range inputs {
+		copied[name] = cloneInput(in)
+	}
+	return copied
+}
 
 // Preset is a straight list of steps. Every job of a preset runs the same
 // steps, in order, in one empty workspace.
@@ -43,7 +102,69 @@ type Preset struct {
 	// RunsOn names the runner labels a host must advertise to claim jobs of
 	// this preset. Empty matches any runner.
 	RunsOn []string
+	// Inputs are the named parameters this preset accepts, injected into steps
+	// as MACHINIST_INPUT_<UPPER(NAME)>.
+	Inputs map[string]Input
 	Steps  []runner.Step
+}
+
+// RequiredInputs returns the sorted names of inputs that have no default.
+func (p Preset) RequiredInputs() []string {
+	var required []string
+	for name, in := range p.Inputs {
+		if in.Required() {
+			required = append(required, name)
+		}
+	}
+	sort.Strings(required)
+	return required
+}
+
+// ResolveVars validates provided preset input vars (excluding built-in repo)
+// against p.Inputs, checks value limits, rejects unknown or missing required
+// inputs, and applies defaults. It returns nil when the preset declares no inputs.
+func (p Preset) ResolveVars(provided map[string]string) (map[string]string, error) {
+	var unknown []string
+	for name := range provided {
+		if _, ok := p.Inputs[name]; !ok {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, fmt.Errorf("unknown vars: %s", strings.Join(unknown, ", "))
+	}
+	for _, name := range slices.Sorted(maps.Keys(provided)) {
+		if err := ValidateInputValue(name, provided[name]); err != nil {
+			return nil, err
+		}
+	}
+	if len(p.Inputs) == 0 {
+		return nil, nil
+	}
+	var missing []string
+	resolved := make(map[string]string, len(p.Inputs))
+	for _, name := range slices.Sorted(maps.Keys(p.Inputs)) {
+		spec := p.Inputs[name]
+		value, ok := provided[name]
+		if ok {
+			if spec.Required() && value == "" {
+				missing = append(missing, name)
+				continue
+			}
+			resolved[name] = value
+			continue
+		}
+		if spec.Required() {
+			missing = append(missing, name)
+			continue
+		}
+		resolved[name] = *spec.Default
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("missing required vars: %s", strings.Join(missing, ", "))
+	}
+	return resolved, nil
 }
 
 // EffectiveStep returns step with preset-level harness and model overrides
@@ -80,6 +201,7 @@ type Automation struct {
 	Harness string
 	Model   string
 	RunsOn  []string
+	Vars    map[string]string
 	Prompt  string
 	Cron    *triggers.Cron
 }
@@ -212,6 +334,7 @@ type rawPreset struct {
 	model       string
 	runsOn      []string
 	hasRunsOn   bool
+	inputs      map[string]Input
 	steps       []rawStep
 }
 
@@ -246,7 +369,11 @@ func parsePreset(name, body string, agents map[string]harness.Agent) (rawPreset,
 		Harness     string    `yaml:"harness"`
 		Model       string    `yaml:"model"`
 		RunsOn      *[]string `yaml:"runs_on"`
-		Steps       []struct {
+		Inputs      map[string]struct {
+			Description string  `yaml:"description"`
+			Default     *string `yaml:"default"`
+		} `yaml:"inputs"`
+		Steps []struct {
 			Name        string `yaml:"name"`
 			Run         string `yaml:"run"`
 			Agent       string `yaml:"agent"`
@@ -274,6 +401,30 @@ func parsePreset(name, body string, agents map[string]harness.Agent) (rawPreset,
 			return rawPreset{}, fmt.Errorf("runs_on: %w", err)
 		}
 	}
+	var inputs map[string]Input
+	if len(settings.Inputs) > 0 {
+		inputs = make(map[string]Input, len(settings.Inputs))
+		for _, inputName := range slices.Sorted(maps.Keys(settings.Inputs)) {
+			if inputName == ReservedInputRepo {
+				return rawPreset{}, fmt.Errorf("input %q is reserved", inputName)
+			}
+			if !validInputName.MatchString(inputName) {
+				return rawPreset{}, fmt.Errorf("input %q: invalid name (must match ^[a-z][a-z0-9_]*$)", inputName)
+			}
+			rawInput := settings.Inputs[inputName]
+			in := Input{
+				Description: strings.Join(strings.Fields(rawInput.Description), " "),
+			}
+			if rawInput.Default != nil {
+				if err := ValidateInputValue(inputName, *rawInput.Default); err != nil {
+					return rawPreset{}, fmt.Errorf("input %s default: %w", inputName, err)
+				}
+				val := *rawInput.Default
+				in.Default = &val
+			}
+			inputs[inputName] = in
+		}
+	}
 	preset := rawPreset{
 		name:        name,
 		extends:     settings.Extends,
@@ -283,6 +434,7 @@ func parsePreset(name, body string, agents map[string]harness.Agent) (rawPreset,
 		model:       strings.TrimSpace(settings.Model),
 		runsOn:      runsOn,
 		hasRunsOn:   hasRunsOn,
+		inputs:      inputs,
 	}
 	if preset.extends == "" && len(settings.Steps) == 0 {
 		return rawPreset{}, errors.New("a preset needs at least one step")
@@ -371,6 +523,7 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 			timeout:     base.timeout,
 			runsOn:      slices.Clone(base.runsOn),
 			hasRunsOn:   base.hasRunsOn,
+			inputs:      cloneInputs(base.inputs),
 			steps:       append([]rawStep(nil), base.steps...),
 		}
 		if current.description != "" {
@@ -382,6 +535,25 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 		if current.hasRunsOn {
 			merged.runsOn = slices.Clone(current.runsOn)
 			merged.hasRunsOn = true
+		}
+		if len(current.inputs) > 0 {
+			if merged.inputs == nil {
+				merged.inputs = make(map[string]Input, len(current.inputs))
+			}
+			for inputName, override := range current.inputs {
+				if existing, ok := merged.inputs[inputName]; ok {
+					if override.Description != "" {
+						existing.Description = override.Description
+					}
+					if override.Default != nil {
+						val := *override.Default
+						existing.Default = &val
+					}
+					merged.inputs[inputName] = existing
+					continue
+				}
+				merged.inputs[inputName] = cloneInput(override)
+			}
 		}
 		merged.harness, merged.model = harness.MergeOverride(base.harness, base.model, current.harness, current.model)
 		// Switching the preset harness invalidates inherited model-only step
@@ -453,6 +625,7 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 			Harness:     done.harness,
 			Model:       done.model,
 			RunsOn:      slices.Clone(done.runsOn),
+			Inputs:      cloneInputs(done.inputs),
 			Steps:       steps,
 		}
 	}
@@ -461,15 +634,23 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 
 // Validate checks what depends on the control plane's own configuration.
 func (f *Factory) Validate(defaultPreset string, repositories []string) error {
-	if _, ok := f.Presets[defaultPreset]; !ok {
+	def, ok := f.Presets[defaultPreset]
+	if !ok {
 		return fmt.Errorf("default_preset %q is not in the factory", defaultPreset)
 	}
+	if required := def.RequiredInputs(); len(required) > 0 {
+		return fmt.Errorf("default_preset %q declares required inputs (%s) and cannot be used as default_preset", defaultPreset, strings.Join(required, ", "))
+	}
 	for _, automation := range f.Automations {
-		if _, ok := f.Presets[automation.Preset]; !ok {
+		preset, ok := f.Presets[automation.Preset]
+		if !ok {
 			return fmt.Errorf("automation %s: preset %q is not in the factory", automation.Name, automation.Preset)
 		}
 		if !slices.Contains(repositories, automation.Repo) {
 			return fmt.Errorf("automation %s: repository %q is not in github.repositories", automation.Name, automation.Repo)
+		}
+		if _, err := preset.ResolveVars(automation.Vars); err != nil {
+			return fmt.Errorf("automation %s: %w", automation.Name, err)
 		}
 	}
 	return nil
@@ -524,13 +705,14 @@ func parseAutomation(name, body string) (Automation, error) {
 		return Automation{}, errors.New("front matter is not closed with ---")
 	}
 	var settings struct {
-		Schedule string   `yaml:"schedule"`
-		Timezone string   `yaml:"timezone"`
-		Repo     string   `yaml:"repo"`
-		Preset   string   `yaml:"preset"`
-		Harness  string   `yaml:"harness"`
-		Model    string   `yaml:"model"`
-		RunsOn   []string `yaml:"runs_on"`
+		Schedule string            `yaml:"schedule"`
+		Timezone string            `yaml:"timezone"`
+		Repo     string            `yaml:"repo"`
+		Preset   string            `yaml:"preset"`
+		Harness  string            `yaml:"harness"`
+		Model    string            `yaml:"model"`
+		RunsOn   []string          `yaml:"runs_on"`
+		Vars     map[string]string `yaml:"vars"`
 	}
 	if err := config.DecodeStrict(name, []byte(front), &settings); err != nil {
 		return Automation{}, err
@@ -560,6 +742,10 @@ func parseAutomation(name, body string) (Automation, error) {
 	} else if timezone != "" {
 		return Automation{}, errors.New("timezone requires schedule")
 	}
+	var vars map[string]string
+	if len(settings.Vars) > 0 {
+		vars = maps.Clone(settings.Vars)
+	}
 	return Automation{
 		Name:    name,
 		Repo:    settings.Repo,
@@ -567,6 +753,7 @@ func parseAutomation(name, body string) (Automation, error) {
 		Harness: strings.TrimSpace(settings.Harness),
 		Model:   strings.TrimSpace(settings.Model),
 		RunsOn:  runsOn,
+		Vars:    vars,
 		Prompt:  strings.TrimSpace(prompt),
 		Cron:    cron,
 	}, nil

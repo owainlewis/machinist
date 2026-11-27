@@ -451,3 +451,45 @@ func TestStepsPassHarnessAndModelOverridesWithoutLeaking(t *testing.T) {
 		t.Fatalf("env.log =\n%q\nwant\n%q", string(got), want)
 	}
 }
+
+func TestStepsReceivePresetInputsWithoutCollidingWithBuiltins(t *testing.T) {
+	request := stepsRequest(Step{
+		Name: "inspect",
+		Run:  `printf '%s|%s|%s|%s|%s|%s|%s|%s' "$MACHINIST_REPO" "$MACHINIST_AUTO_MERGE" "$MACHINIST_BRANCH" "$MACHINIST_PRESET" "$MACHINIST_INPUT_ENVIRONMENT" "$MACHINIST_INPUT_BRANCH" "$MACHINIST_INPUT_AUTO_MERGE" "${MACHINIST_INPUT_EMPTY+set}:${MACHINIST_INPUT_EMPTY}" > out`,
+	})
+	request.Vars["auto_merge"] = "false"
+	request.Inputs = map[string]string{
+		"environment": "staging",
+		"branch":      "release/2026",
+		"auto_merge":  "true",
+		"empty":       "",
+	}
+	result, workspace := run(t, request)
+	if result.State != StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+	out, err := os.ReadFile(filepath.Join(workspace.Directory, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "owner/repo|false|machinist/t_1|coding|staging|release/2026|true|set:"
+	if string(out) != want {
+		t.Fatalf("out = %q, want %q", string(out), want)
+	}
+
+	// Invalid input names and NUL values are rejected by PrepareWorkspace.
+	for name, inputs := range map[string]map[string]string{
+		"reserved repo": {"repo": "owner/evil"},
+		"bad name":      {"Bad-Name": "x"},
+		"NUL value":     {"env": "bad\x00val"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := stepsRequest(Step{Name: "x", Run: "true"})
+			bad.Inputs = inputs
+			root := t.TempDir()
+			if _, err := PrepareWorkspace(WorkspaceOptions{Request: bad, Root: root, GitHubToken: "token", Home: filepath.Join(root, "home")}); err == nil {
+				t.Fatalf("%s: expected error", name)
+			}
+		})
+	}
+}

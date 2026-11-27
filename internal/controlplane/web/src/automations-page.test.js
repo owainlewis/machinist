@@ -307,3 +307,84 @@ test("Automations empty state offers New automation and documents factory/automa
   assert.match(text, /factory\/automations\//);
   assert.equal(document.querySelector("table.automations"), null);
 });
+
+test("Automations dialogs edit and override preset vars when the selected preset declares inputs", { timeout: 30000 }, async context => {
+  const { dom, cleanup } = setupDOM("http://localhost/#/automations");
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root"));
+  context.after(async () => {
+    await act(async () => root.unmount());
+    await server.close();
+    cleanup();
+  });
+
+  let automations = [];
+  const createdBodies = [];
+  const runBodies = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
+    if (url === "/api/v1/repositories") return reply(200, { repositories: ["owner/app"] });
+    if (url === "/api/v1/presets") {
+      return reply(200, {
+        default: "default",
+        presets: [
+          { name: "default" },
+          {
+            name: "deploy",
+            inputs: {
+              environment: { description: "Target environment" },
+              region: { description: "Cloud region", default: "us-east-1" },
+            },
+          },
+        ],
+      });
+    }
+    if (url === "/api/v1/automations" && (!options.method || options.method === "GET")) {
+      return reply(200, { automations });
+    }
+    if (url === "/api/v1/automations" && options.method === "POST") {
+      const body = JSON.parse(options.body);
+      createdBodies.push(body);
+      automations = [...automations, { ...body, agent: body.preset, editable: true }];
+      return reply(201, body);
+    }
+    if (url === "/api/v1/automations/deploy-staging/run" && options.method === "POST") {
+      runBodies.push(options.body ? JSON.parse(options.body) : undefined);
+      return reply(201, { id: "t_deploy_run", state: "working", repo: "owner/app", agent: "deploy" });
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+
+  const { AutomationsPage } = await server.ssrLoadModule("/src/automations-view.jsx");
+  await act(async () => root.render(React.createElement(AutomationsPage, { runners: [], onSignedOut() {} })));
+  await eventually(() => assert.ok(document.querySelector(".automations-empty")));
+
+  // Create automation with deploy preset -> vars inputs render and save in POST payload.
+  const newBtn = [...document.querySelectorAll("header button")].find(btn => btn.textContent.includes("New automation"));
+  await act(async () => newBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.ok(document.querySelector("#automation-edit-preset")));
+  await setControlValue(document.querySelector("#automation-edit-name"), "deploy-staging");
+  await setControlValue(document.querySelector("#automation-edit-preset"), "deploy");
+  await eventually(() => assert.ok(document.querySelector("#automation-edit-var-environment")));
+  assert.equal(document.querySelector("#automation-edit-var-region").value, "us-east-1");
+  await setControlValue(document.querySelector("#automation-edit-prompt"), "Deploy staging build.");
+  assert.equal(document.querySelector('[role="dialog"] button[type="submit"]').disabled, true);
+  await setControlValue(document.querySelector("#automation-edit-var-environment"), "staging");
+  assert.equal(document.querySelector('[role="dialog"] button[type="submit"]').disabled, false);
+  await act(async () => document.querySelector('[role="dialog"] button[type="submit"]').dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+
+  await eventually(() => assert.equal(createdBodies.length, 1));
+  assert.deepEqual(createdBodies[0].vars, { environment: "staging", region: "us-east-1" });
+
+  // Open Run dialog, override environment -> sends vars override.
+  await eventually(() => assert.ok(document.querySelector('button[aria-label="Run deploy-staging"]')));
+  await act(async () => document.querySelector('button[aria-label="Run deploy-staging"]').dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.ok(document.querySelector("#automation-run-var-environment")));
+  assert.equal(document.querySelector("#automation-run-var-environment").value, "staging");
+  await setControlValue(document.querySelector("#automation-run-var-environment"), "prod");
+  assert.ok(document.querySelector(".automation-prompt-edited"));
+  await act(async () => document.querySelector('[role="dialog"] button[type="submit"]').dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await eventually(() => assert.equal(runBodies.length, 1));
+  assert.deepEqual(runBodies[0], { vars: { environment: "prod", region: "us-east-1" } });
+});
