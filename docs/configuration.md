@@ -69,18 +69,23 @@ github:
 
 | Key | Meaning |
 | --- | --- |
-| `listen` | Address for the UI, API and runners. Keep it private. On a loopback address, requests whose Host is not `localhost`, `127.0.0.1` or `[::1]` get 421, which blocks DNS rebinding |
-| `public_url` | Base URL of the web app, such as `https://machinist.example.com`. Used to link to jobs in webhook notifications (`<public_url>/#/jobs/<id>`). Without it, notifications have no link |
-| `database` | The SQLite file. Back this up |
+| `listen` | Address for the UI, API and runners. Defaults to `127.0.0.1:7331` (or `:$PORT` when `PORT` is set on Cloud Run or with `public_url`). On loopback, requests whose Host is not `localhost`, `127.0.0.1` or `[::1]` get 421, blocking DNS rebinding |
+| `public_url` | Base URL of the web app, such as `https://machinist.example.com`. Used for GitHub OAuth callbacks, invite links, and job links in webhook posts (`<public_url>/#/jobs/<id>`) |
+| `trusted_proxy_hops` | Number of reverse proxies in front of the control plane (`0` to `10`, default `0`). Set `1` on Cloud Run, or `2` behind an HTTPS Load Balancer |
+| `database` | SQLite file path (default `.machinist/tickets.db`) or a PostgreSQL URL (`postgres://` or `postgresql://`). Overridden by the `DATABASE_URL` environment variable. Back this up |
 | `factory` | The factory directory |
 | `default_preset` | The preset a job uses when it names none |
 | `run_timeout` | The deadline for one run, when its preset sets none |
 | `tls_cert`, `tls_key` | Serve HTTPS, and mark the sign-in cookie Secure |
+| `auth.github.enabled` | Turn on GitHub OAuth sign-in for people. Needs `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` in the environment |
+| `auth.disable_token_signin` | Turn off token sign-in at `POST /api/v1/session`. Defaults to `true` when `auth.github.enabled` is `true`, and `false` otherwise |
+| `auth.allow_token_only_public` | Allow token-only sign-in when `public_url` is not loopback. Defaults to `false` |
+| `auth.bootstrap_admin` | First admin account in `github:<login>` format. Overridden by `MACHINIST_BOOTSTRAP_ADMIN`. Inert after the first admin signs in |
 | `github.handle` | The bot's login. Use a dedicated account. With a GitHub App, runs commit as the app's bot account instead |
-| `github.repositories` | Repositories Machinist works on. You can also add them on the Settings > Projects page, with no restart. Automations can only name repositories listed here; `linear.projects` and `linear.teams` can also name repositories added on Settings > Projects |
-| `github.auto_merge` | Controls auto-merge for pull requests. On (`true`) by default: the control plane auto-merges low-risk pull requests once checks pass, `review` accepted the change, and the default preset's `merge-gate` step approved them as `low` risk (medium- and high-risk pull requests stay open for a person). Set to `false` to run in **observe mode**: `merge-gate` still evaluates every pull request and posts its judgment comment without merging. Steps see it as `MACHINIST_AUTO_MERGE` |
-| `github.steward_retries` | Maximum number of automatic **PR Steward** retries per job when an open pull request fails a CI check or hits a merge conflict (`DIRTY` or a conflicting branch update). Defaults to `2`; set to `0` to disable PR Steward; maximum `5`. Persisted per job across restarts, and never triggered if a person pushed commits after the review |
-| `github.app.id` | The [GitHub App](github-app.md)'s App ID. Set it to give each run a short-lived token |
+| `github.repositories` | Repositories Machinist works on. You can also add them on Settings → Projects, with no restart. File-backed automations name repositories listed here; UI-managed automations and `linear.projects` / `linear.teams` can also use repositories added on Settings → Projects |
+| `github.auto_merge` | Controls auto-merge for pull requests. On (`true`) by default: the control plane merges low-risk pull requests once checks pass, `review` accepted the change, and `merge-gate` approved them as `low` risk. Medium- and high-risk pull requests stay open for a person. Set `false` for **observe mode**: `merge-gate` comments its verdict without merging. Steps see it as `MACHINIST_AUTO_MERGE` |
+| `github.steward_retries` | Maximum automatic **PR Steward** retries per job when an open pull request fails CI or hits a merge conflict (`DIRTY` or a conflicting branch update). Defaults to `2`; `0` disables; max `5`. Never runs if a person pushed commits after the review |
+| `github.app.id` | The [GitHub App](github-app.md)'s App ID. Gives each run a short-lived token |
 | `github.app.private_key_file` | The app's private key file. Keep it out of git |
 | `github_issues.label` | Optional trigger label on open GitHub issues that queues a job. Defaults to `machinist` |
 | `github_issues.allowed_users` | Required non-empty list of GitHub logins when `github_issues` is configured. Machinist inspects each issue's timeline (`labeled` events) and only starts jobs for issues labeled by an allowed user (failing closed when the actor is unknown). Comments by allowed users after job start trigger follow-up runs |
@@ -90,7 +95,7 @@ github:
 | `github_issues.poll_seconds` | How often Machinist polls GitHub Issues, in seconds. Minimum `10`, defaults to `60` |
 | `github_issues.max_jobs_per_hour` | Maximum number of jobs GitHub Issues can start per hour. Defaults to `10` |
 | `linear.*` | Start jobs from Linear issues. Off unless `linear.projects` or `linear.teams` is set. See [Linear](linear.md) |
-| `notify.webhook` | Optional HTTP or HTTPS URL that receives one JSON `POST` when a job opens a pull request that waits for a person, or fails. Includes a Slack-compatible `text` field plus `ticket_id`, `title`, `repo`, `state`, `created_by`, and `url` (when `server.public_url` is set). Prompts and agent output are never sent. Failed posts are logged and not retried |
+| `notify.webhook` | Optional HTTP or HTTPS URL (overridden by `NOTIFY_WEBHOOK_URL`) that gets one JSON `POST` when a job needs a person or fails. Sends a Slack-compatible `text` field plus `ticket_id`, `title`, `repo`, `state`, `created_by`, and `url` (when `server.public_url` is set). Prompts and agent output are never sent |
 
 ### Reloading without a restart
 
@@ -115,12 +120,18 @@ These settings still need a control plane restart to take effect (when they diff
 reload, `machinist reload` names them and does not apply them):
 
 - `server.listen`
+- `server.public_url`
+- `server.trusted_proxy_hops`
 - `server.database`
 - `server.tls_cert`
 - `server.tls_key`
+- `auth.*`
+- `notify.webhook`
 
-Environment variables read by the control plane process (`GH_TOKEN`, `LINEAR_CLIENT_ID`,
-`LINEAR_CLIENT_SECRET`, `LINEAR_API_TOKEN`) also need a restart when changed.
+Environment variables read by the control plane process (`DATABASE_URL`, `GH_TOKEN`,
+`GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `MACHINIST_BOOTSTRAP_ADMIN`,
+`NOTIFY_WEBHOOK_URL`, `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `LINEAR_API_TOKEN`) also
+need a restart when changed.
 
 ### Merge gate, observe mode and per-repository policy
 
@@ -159,32 +170,45 @@ See [Runners](runners.md) for each type.
 | `docker.*` | Makes this a hardened Docker container runner (with optional `runtime: runsc` for gVisor) |
 | `kubernetes.*` | Makes this a Kubernetes runner |
 
-## Tokens
+## Tokens, invites and users
 
 ```sh
-machinist token create <name>            # for a person: the web app, the API and the CLI
-machinist token create <name> --runner   # for a runner
+machinist token create <name>                # full operator token: web app, API and MCP
+machinist token create <name> --scope run    # scoped bot token: list, inspect, run and cancel jobs
+machinist token create <name> --scope read   # read-only bot token: list and inspect jobs
+machinist token create <name> --runner       # runner token: take runs and report on them
 ```
 
 ```sh
 machinist token list
-```
-
-```sh
 machinist token revoke <name>
 ```
 
-These open the database directly, so they work before the server has started. Revoking a
-token ends its sign-ins.
+When using GitHub OAuth sign-in, manage team invites and users with:
 
-A person's token can do everything except take runs. A runner's token can poll for runs and
-report on the runs it was given, and gets 403 anywhere else, so it cannot read other jobs,
-start work or sign in. One runner cannot report on another's run. `init` makes the `local`
-runner a runner's token. A token made before tokens had roles shows as `any` in
-`machinist token list` and can do both. Replace it with one of each.
+```sh
+machinist invite create --github <login> --role member   # admin, member, or viewer
+machinist invite list
+machinist invite revoke <id>
+
+machinist user list
+machinist user set-role <id-or-login> <role>
+machinist user disable <id-or-login>
+machinist user enable <id-or-login>
+```
+
+These commands open the database directly (SQLite or `DATABASE_URL`), so they work before the
+server starts. Revoking a token or disabling a user ends their active sessions.
+
+A full operator token can do everything except take runs. A scoped token (`read` or `run`)
+cannot sign in to the web app or manage tokens and projects. A runner token can poll for runs
+and report on its own runs, and gets 403 anywhere else. `init` makes the `local` runner a
+runner token. A token made before tokens had roles shows as `any` in `machinist token list`
+and can do both; replace it with one of each.
 
 ## API
 
 Every route needs `Authorization: Bearer <token>` or the sign-in cookie, except `GET /healthz`,
-`POST /api/v1/session` and static assets. See the
+`GET /api/v1/auth/status`, `GET /auth/github/start`, `GET /auth/github/callback`,
+`POST /api/v1/invites/prepare`, `POST /api/v1/session`, and static assets. See the
 [design](designs/machinist-redesign.md#access) for the routes.

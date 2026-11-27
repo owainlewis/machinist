@@ -53,7 +53,6 @@ func (log *eventLog) appendOutput(stream string, data []byte) error {
 			return err
 		}
 		if !fits {
-			recorded = nil
 			truncated = true
 		} else if err := log.writeEvent(event); err != nil {
 			return fmt.Errorf("write event log: %w", err)

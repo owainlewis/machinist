@@ -32,8 +32,9 @@ file in your repository. It runs Codex on your VM every weekday at 9, and anyone
 
 ## Design rules
 
-- **Files in git are the source of truth.** `config.yaml`, saved jobs, presets, prompts
-  and scripts change by pull request. The web app runs them but never edits them.
+- **Files in git are the source of truth.** `config.yaml`, presets, agents, prompts, and
+  scripts change by pull request. Automations can live in `factory/automations/` or be created
+  in the web app.
 - **Ship no example jobs.** Machinist installs one preset, `default`, and no saved jobs.
   Each team writes the jobs it uses.
 - **A preset is a straight list of shell steps.** Steps run in order in one workspace, and
@@ -58,17 +59,18 @@ Built and merged:
   Kubernetes runners, schedules, and headless jobs.
 - YAML configuration in the repository, created by `machinist init`, with live reload via
   `machinist reload` (no control-plane restart needed for factory, repository, or Linear edits).
-- One-off jobs with only the `default` preset, the **New job** form, and **Automations** in
-  the web app (`Jobs → Automations`, each with its schedule, last result, **Run**, and **Run**
-  with an edited one-off prompt).
+- One-off jobs with the `default` preset, the **New job** form, and a top-level
+  **Automations** section (file-backed or database-backed, with optional cron schedules and
+  one-off prompt, harness, or model overrides).
+- PostgreSQL (`DATABASE_URL`), database-backed `leader_leases`, Cloud Run packaging, GitHub
+  OAuth sign-in, database invites, and 3-role RBAC (`admin`, `member`, `viewer`).
 - An **MCP server** (`POST /mcp`) so bots and team assistants can list jobs and automations,
   run jobs, follow status and output, and cancel jobs using scoped bearer tokens (`read` and
   `run`), each revocable on its own.
-- The web app: a dashboard, jobs as a 4-column board (**Queued**, **Running**, **Review**,
-  **Done**) or paginated list with Merge Gate risk badges (`Low`, `Medium`, `High`), each job
-  drawn as a pipeline (with a Merge Gate panel, `Held` state on `merge`, and **Run again**),
-  runners, and a Settings area with one page per topic where repositories can be added as
-  projects.
+- The web app: Dashboard, Jobs (4-column board or paginated list with `Waiting for CI`,
+  `Needs you`, and merge-gate risk badges), Automations, each job's step view (with merge-gate
+  verdict, `Held` state on `merge`, and **Run again**), Runners, and Settings (projects, GitHub
+  App, Linear, tokens, team, presets, agents, and account).
 - Live runs across local, Docker, and Kubernetes runners. Each step's agent messages and
   actions stream to the job page as they happen. The board shows the current step and elapsed
   time, and each step records its agent, harness, model, tokens and cost. A failed job says

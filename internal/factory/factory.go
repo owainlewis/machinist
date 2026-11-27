@@ -40,7 +40,10 @@ type Preset struct {
 	// step sets its own override.
 	Harness string
 	Model   string
-	Steps   []runner.Step
+	// RunsOn names the runner labels a host must advertise to claim jobs of
+	// this preset. Empty matches any runner.
+	RunsOn []string
+	Steps  []runner.Step
 }
 
 // EffectiveStep returns step with preset-level harness and model overrides
@@ -76,6 +79,7 @@ type Automation struct {
 	Preset  string
 	Harness string
 	Model   string
+	RunsOn  []string
 	Prompt  string
 	Cron    *triggers.Cron
 }
@@ -206,6 +210,8 @@ type rawPreset struct {
 	timeout     time.Duration
 	harness     string
 	model       string
+	runsOn      []string
+	hasRunsOn   bool
 	steps       []rawStep
 }
 
@@ -234,11 +240,12 @@ func validateHarnessOverride(value string) error { return ValidateHarnessOverrid
 
 func parsePreset(name, body string, agents map[string]harness.Agent) (rawPreset, error) {
 	var settings struct {
-		Description string `yaml:"description"`
-		Extends     string `yaml:"extends"`
-		Timeout     string `yaml:"timeout"`
-		Harness     string `yaml:"harness"`
-		Model       string `yaml:"model"`
+		Description string    `yaml:"description"`
+		Extends     string    `yaml:"extends"`
+		Timeout     string    `yaml:"timeout"`
+		Harness     string    `yaml:"harness"`
+		Model       string    `yaml:"model"`
+		RunsOn      *[]string `yaml:"runs_on"`
 		Steps       []struct {
 			Name        string `yaml:"name"`
 			Run         string `yaml:"run"`
@@ -259,6 +266,14 @@ func parsePreset(name, body string, agents map[string]harness.Agent) (rawPreset,
 	if err := validateHarnessOverride(settings.Harness); err != nil {
 		return rawPreset{}, err
 	}
+	var runsOn []string
+	hasRunsOn := settings.RunsOn != nil
+	if hasRunsOn {
+		runsOn, err = config.NormalizeLabels(*settings.RunsOn)
+		if err != nil {
+			return rawPreset{}, fmt.Errorf("runs_on: %w", err)
+		}
+	}
 	preset := rawPreset{
 		name:        name,
 		extends:     settings.Extends,
@@ -266,6 +281,8 @@ func parsePreset(name, body string, agents map[string]harness.Agent) (rawPreset,
 		timeout:     timeout,
 		harness:     settings.Harness,
 		model:       strings.TrimSpace(settings.Model),
+		runsOn:      runsOn,
+		hasRunsOn:   hasRunsOn,
 	}
 	if preset.extends == "" && len(settings.Steps) == 0 {
 		return rawPreset{}, errors.New("a preset needs at least one step")
@@ -352,6 +369,8 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 			extends:     current.extends,
 			description: base.description,
 			timeout:     base.timeout,
+			runsOn:      slices.Clone(base.runsOn),
+			hasRunsOn:   base.hasRunsOn,
 			steps:       append([]rawStep(nil), base.steps...),
 		}
 		if current.description != "" {
@@ -359,6 +378,10 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 		}
 		if current.timeout > 0 {
 			merged.timeout = current.timeout
+		}
+		if current.hasRunsOn {
+			merged.runsOn = slices.Clone(current.runsOn)
+			merged.hasRunsOn = true
 		}
 		merged.harness, merged.model = harness.MergeOverride(base.harness, base.model, current.harness, current.model)
 		// Switching the preset harness invalidates inherited model-only step
@@ -429,6 +452,7 @@ func resolvePresets(raw map[string]rawPreset) (map[string]Preset, error) {
 			Timeout:     done.timeout,
 			Harness:     done.harness,
 			Model:       done.model,
+			RunsOn:      slices.Clone(done.runsOn),
 			Steps:       steps,
 		}
 	}
@@ -500,12 +524,13 @@ func parseAutomation(name, body string) (Automation, error) {
 		return Automation{}, errors.New("front matter is not closed with ---")
 	}
 	var settings struct {
-		Schedule string `yaml:"schedule"`
-		Timezone string `yaml:"timezone"`
-		Repo     string `yaml:"repo"`
-		Preset   string `yaml:"preset"`
-		Harness  string `yaml:"harness"`
-		Model    string `yaml:"model"`
+		Schedule string   `yaml:"schedule"`
+		Timezone string   `yaml:"timezone"`
+		Repo     string   `yaml:"repo"`
+		Preset   string   `yaml:"preset"`
+		Harness  string   `yaml:"harness"`
+		Model    string   `yaml:"model"`
+		RunsOn   []string `yaml:"runs_on"`
 	}
 	if err := config.DecodeStrict(name, []byte(front), &settings); err != nil {
 		return Automation{}, err
@@ -515,6 +540,10 @@ func parseAutomation(name, body string) (Automation, error) {
 	}
 	if err := ValidateHarnessOverride(strings.TrimSpace(settings.Harness)); err != nil {
 		return Automation{}, err
+	}
+	runsOn, err := config.NormalizeLabels(settings.RunsOn)
+	if err != nil {
+		return Automation{}, fmt.Errorf("runs_on: %w", err)
 	}
 	if strings.TrimSpace(prompt) == "" {
 		return Automation{}, errors.New("prompt is empty")
@@ -537,6 +566,7 @@ func parseAutomation(name, body string) (Automation, error) {
 		Preset:  settings.Preset,
 		Harness: strings.TrimSpace(settings.Harness),
 		Model:   strings.TrimSpace(settings.Model),
+		RunsOn:  runsOn,
 		Prompt:  strings.TrimSpace(prompt),
 		Cron:    cron,
 	}, nil

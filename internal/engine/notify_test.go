@@ -412,7 +412,7 @@ func TestWebhookNotifiesOnEngineFailurePaths(t *testing.T) {
 		if err := e.Tick(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if run, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, false); err != nil || run != nil {
+		if run, err := e.Assign(t.Context(), "runner-1", []string{"steps"}, nil, false); err != nil || run != nil {
 			t.Fatalf("run = %v, err = %v", run, err)
 		}
 		notifier.Wait()

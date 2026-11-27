@@ -104,13 +104,9 @@ func (s *Server) runBackgroundWorkers(ctx context.Context) {
 	wg.Wait()
 }
 
-// runLeaderSupervisor coordinates the four periodic background worker groups
-// behind a database-backed leader lease so overlapping control-plane revisions
-// never run duplicate background loops.
-func (s *Server) runLeaderSupervisor(ctx context.Context) {
-	s.runLeaderSupervisorWithDrain(ctx, nil)
-}
-
+// runLeaderSupervisorWithDrain coordinates the four periodic background worker
+// groups behind a database-backed leader lease so overlapping control-plane
+// revisions never run duplicate background loops.
 func (s *Server) runLeaderSupervisorWithDrain(ctx context.Context, drainCtx context.Context) {
 	if s.store == nil {
 		s.runBackgroundWorkers(ctx)

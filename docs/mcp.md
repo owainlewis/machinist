@@ -40,7 +40,7 @@ curl -sS -X POST "$MACHINIST_URL/mcp" \
 | `list_jobs` | `read` | List jobs newest first, optionally filtered by `repo`, `state` (`queued`, `running`, `waiting_for_ci`, `needs_you`, `done`, `failed`, `cancelled`), `source` and `limit`; includes optional `merge_gate` |
 | `list_automations` | `read` | List automations with their schedule, `next_due` and `last_job` |
 | `run_job` | `run` | Start a job by `automation` name, or a custom job with `repo` and `prompt` (optional `preset`, `key`) |
-| `get_job` | `read` | Get a job's `state` (including `waiting_for_ci` and `needs_you`), pipeline `steps`, `current_step`, `latest_action`, `pr_url`, optional `merge_gate` (`decision`, `risk`, `reason`) and summary |
+| `get_job` | `read` | Get a job's `state` (including `waiting_for_ci` and `needs_you`), `steps`, `current_step`, `latest_action`, `pr_url`, optional `merge_gate` (`decision`, `risk`, `reason`) and summary |
 | `get_job_output` | `read` | Read decoded run output, optionally filtered by `step` or tailed incrementally with `after` |
 | `cancel_job` | `run` | Cancel an active job; its pull request stays open |
 | `rerun_job` | `run` | Start a new attempt for an ended job (`job_id`) |

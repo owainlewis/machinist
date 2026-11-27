@@ -69,5 +69,9 @@ test("automationPayload and canSaveAutomation handle manual and scheduled forms"
     automationPayload({ name: "audit", repo: "owner/app", preset: "default", schedule: "0 9 * * *", timezone: "", prompt: "Audit" }, { includeName: false }),
     { repo: "owner/app", preset: "default", harness: "", model: "", schedule: "0 9 * * *", timezone: "UTC", prompt: "Audit" },
   );
+  assert.deepEqual(
+    automationPayload({ name: "audit", repo: "owner/app", preset: "default", schedule: "", timezone: "", prompt: "Audit", runs_on: [" gpu ", "vpc", ""] }, { includeName: false }),
+    { repo: "owner/app", preset: "default", harness: "", model: "", schedule: "", timezone: "", prompt: "Audit", runs_on: ["gpu", "vpc"] },
+  );
   assert.deepEqual([...onlineHarnessSet([{ harnesses: ["steps", "claude", "codex"] }])], ["claude", "codex"]);
 });

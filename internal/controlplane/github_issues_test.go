@@ -143,7 +143,7 @@ func TestLeaderSupervisorRunsGitHubIssuesPoller(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		srv.runLeaderSupervisor(ctx)
+		srv.runLeaderSupervisorWithDrain(ctx, nil)
 	}()
 
 	deadline := time.Now().Add(3 * time.Second)

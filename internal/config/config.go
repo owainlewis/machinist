@@ -358,18 +358,6 @@ type Config struct {
 
 func (c Config) Path() string { return c.path }
 
-// ResolvedCommand is the process and timeout for one run.
-type ResolvedCommand struct {
-	Adapter    string
-	Name       string
-	Executor   string
-	Command    []string
-	Model      string
-	Timeout    time.Duration
-	Definition string
-	Hash       string
-}
-
 func LoadConfig(path string) (Config, error) {
 	if path == "" {
 		defaultPath, err := defaultConfigPath("config.yaml")
