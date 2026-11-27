@@ -62,8 +62,11 @@ func TestMergeWithLowRiskApprovedGateCommentsAndAllowsAutoMerge(t *testing.T) {
 	if result := readFile(t, directory, "result.md"); result != "Merges once its checks pass: https://github.com/o/r/pull/7" {
 		t.Fatalf("result.md = %q", result)
 	}
-	if len(gh.calls) != 2 || !strings.HasPrefix(gh.calls[1], "pr comment 7 --body ") || !strings.Contains(gh.calls[1], "Approved for auto-merge") {
+	if len(gh.calls) != 3 || !strings.HasPrefix(gh.calls[1], "pr comment 7 --body ") || !strings.Contains(gh.calls[1], "Approved for auto-merge") {
 		t.Fatalf("expected PR judgment comment, calls = %q", gh.calls)
+	}
+	if gh.calls[2] != "pr edit 7 --add-label merge-gate:auto-merge" {
+		t.Fatalf("expected auto-merge label call, got %q", gh.calls[2])
 	}
 }
 
@@ -91,8 +94,11 @@ func TestMergeWithHighRiskGateCommentsAndBlocksAutoMerge(t *testing.T) {
 	if result := readFile(t, directory, "result.md"); !strings.Contains(result, "Left open: "+wantHold) {
 		t.Fatalf("result.md = %q", result)
 	}
-	if len(gh.calls) != 2 || !strings.Contains(gh.calls[1], "Human review required") || !strings.Contains(gh.calls[1], "dropping legacy_tokens") {
+	if len(gh.calls) != 3 || !strings.Contains(gh.calls[1], "Human review required") || !strings.Contains(gh.calls[1], "dropping legacy_tokens") {
 		t.Fatalf("expected escalation comment on PR, calls = %q", gh.calls)
+	}
+	if gh.calls[2] != "pr edit 7 --add-label merge-gate:human-review" {
+		t.Fatalf("expected human-review label call, got %q", gh.calls[2])
 	}
 	if strings.Count(gh.calls[1], "dropping legacy_tokens") != 1 || !strings.Contains(gh.calls[1], "- **Next step:** Left open for human review.") {
 		t.Fatalf("comment should not duplicate reason: %q", gh.calls[1])

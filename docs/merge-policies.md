@@ -48,5 +48,6 @@ Run observe mode for a week:
 
 - **Default-branch policy:** Loaded from `origin/HEAD`, never the PR working tree.
 - **No GitHub credentials:** `scripts/merge-gate.sh` unsets `GH_TOKEN` and `GITHUB_TOKEN` before invoking the judge agent.
+- **Deterministic tripwire:** `machinist gate --tripwire` scans the git diff in plain Go and forces `human_review` (`high` risk) if a pull request touches `.github/workflows/`, `.machinist/merge-policy.md`, `MERGE_POLICY.md`, SQL migrations, or adds skipped tests (`t.Skip`, `.skip(`, `@pytest.mark.skip`, `#[ignore]`) — regardless of what the LLM judge returned.
 - **Untrusted-input framing:** The judge prompt treats diffs, commit messages, and comments as untrusted data, never instructions.
-- **Deterministic merge execution:** Plain Go code (`machinist merge --require-gate`) executes the merge only when `github.auto_merge` is `true`, `review.json` is `accepted`, `merge-gate.json` is `approve` + `low`, every CI check passed, and the PR head SHA has not changed since review.
+- **Deterministic merge execution & PR labels:** Plain Go code (`machinist merge --require-gate`) posts the gate comment, labels each PR with its outcome (`merge-gate:auto-merge`, `merge-gate:human-review`, `merge-gate:tripwire`, or `merge-gate:observe`), and executes the merge only when `github.auto_merge` is `true`, `review.json` is `accepted`, `merge-gate.json` is `approve` + `low`, every CI check passed, and the PR head SHA has not changed since review.

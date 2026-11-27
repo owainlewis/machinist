@@ -33,11 +33,13 @@ const (
 	RiskHigh   = "high"
 )
 
-// Gate is the structured judgment written by the merge-gate agent.
+// Gate is the structured judgment written by the merge-gate agent (and
+// optionally overridden by the deterministic tripwire).
 type Gate struct {
 	Decision string `json:"decision"`
 	Risk     string `json:"risk"`
 	Reason   string `json:"reason"`
+	Tripwire bool   `json:"tripwire,omitempty"`
 }
 
 // ErrNoGate means the control directory has no merge-gate.json.
@@ -108,7 +110,9 @@ func FormatGateComment(gate Gate, head string, willAutoMerge bool, hold string) 
 	}
 	heading := "Machinist Merge Gate — Human review required"
 	nextStep := "Left open for human review."
-	if willAutoMerge {
+	if gate.Tripwire {
+		heading = "Machinist Merge Gate — Human review required (tripwire)"
+	} else if willAutoMerge {
 		heading = "Machinist Merge Gate — Approved for auto-merge"
 		nextStep = "Will auto-merge automatically once CI checks pass."
 	} else if gate.Decision == GateApprove && gate.Risk == RiskLow {
@@ -136,4 +140,19 @@ func FormatGateComment(gate Gate, head string, willAutoMerge bool, hold string) 
 	fmt.Fprintf(&b, "- **Judgment:** %s\n", strings.Join(strings.Fields(gate.Reason), " "))
 	fmt.Fprintf(&b, "- **Next step:** %s", nextStep)
 	return b.String()
+}
+
+// GateLabel returns the GitHub label name, hex color (without #), and short
+// description for a merge-gate outcome so teams can count gate results weekly.
+func GateLabel(gate Gate, willAutoMerge bool, autoMergeEnabled bool) (name, color, description string) {
+	switch {
+	case gate.Tripwire:
+		return "merge-gate:tripwire", "b60205", "Held by deterministic merge-gate tripwire"
+	case willAutoMerge:
+		return "merge-gate:auto-merge", "0e8a16", "Approved by merge gate for auto-merge"
+	case !autoMergeEnabled && gate.Decision == GateApprove && gate.Risk == RiskLow:
+		return "merge-gate:observe", "1d76db", "Approved by merge gate in observe mode"
+	default:
+		return "merge-gate:human-review", "d93f0b", "Held by merge gate for human review"
+	}
 }

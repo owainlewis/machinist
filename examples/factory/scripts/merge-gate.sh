@@ -12,4 +12,4 @@ if [ -f "$MACHINIST_DIR/review.json" ] && [ "$(machinist verdict)" != accepted ]
   exit 0
 fi
 env -u GH_TOKEN -u GITHUB_TOKEN machinist agent merge-gate
-machinist gate
+machinist gate --tripwire

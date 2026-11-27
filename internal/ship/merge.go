@@ -82,6 +82,7 @@ func Merge(ctx context.Context, options MergeOptions) error {
 		if _, stderr, err := options.GH(ctx, "pr", "comment", strconv.Itoa(pr.Number), "--body", comment); err != nil {
 			fmt.Fprintf(options.Log, "Could not post merge gate comment on pull request #%d: %s\n", pr.Number, firstLine(stderr, err))
 		}
+		applyGateLabel(ctx, options, pr.Number, gate, reason == "")
 	}
 	if reason != "" {
 		fmt.Fprintf(options.Log, "Pull request #%d stays open: %s. Machinist still watches its checks.\n", pr.Number, reason)
@@ -195,4 +196,22 @@ func firstLine(stderr string, err error) string {
 		return line
 	}
 	return err.Error()
+}
+
+// applyGateLabel attaches the merge-gate outcome label to the pull request on
+// a best-effort basis, creating the label in the repository if it does not yet
+// exist.
+func applyGateLabel(ctx context.Context, options MergeOptions, prNumber int, gate Gate, willAutoMerge bool) {
+	label, color, desc := GateLabel(gate, willAutoMerge, options.AutoMerge)
+	num := strconv.Itoa(prNumber)
+	if _, _, err := options.GH(ctx, "pr", "edit", num, "--add-label", label); err == nil {
+		return
+	}
+	if _, stderr, err := options.GH(ctx, "label", "create", label, "--color", color, "--description", desc, "--force"); err != nil {
+		fmt.Fprintf(options.Log, "Could not create merge gate label %q: %s\n", label, firstLine(stderr, err))
+		return
+	}
+	if _, stderr, err := options.GH(ctx, "pr", "edit", num, "--add-label", label); err != nil {
+		fmt.Fprintf(options.Log, "Could not label pull request #%d with %q: %s\n", prNumber, label, firstLine(stderr, err))
+	}
 }
