@@ -1369,6 +1369,46 @@ func (s *Store) Cancel(ctx context.Context, ticketID, by string) (Ticket, error)
 	return ticket, err
 }
 
+// DeleteTicket permanently removes a ticket and every row belonging to it or
+// its runs. It returns ErrNotFound when the ticket does not exist and
+// ErrStillWorking when the ticket is still working or has a queued or running
+// run.
+func (s *Store) DeleteTicket(ctx context.Context, ticketID string) error {
+	return s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		if ticket.State == StateWorking {
+			return ErrStillWorking
+		}
+		var active int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND status IN (?,?)`, ticketID, RunQueued, RunRunning).Scan(&active); err != nil {
+			return err
+		}
+		if active > 0 {
+			return ErrStillWorking
+		}
+		for _, stmt := range []string{
+			`DELETE FROM run_activity_events WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_progress WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_stages WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_patches WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_checkpoints WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM runs WHERE ticket_id=?`,
+			`DELETE FROM ticket_entries WHERE ticket_id=?`,
+			`DELETE FROM tracker_reports WHERE ticket_id=?`,
+			`DELETE FROM human_touches WHERE ticket_id=?`,
+			`DELETE FROM tickets WHERE id=?`,
+		} {
+			if _, err = tx.ExecContext(ctx, stmt, ticketID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // ErrStillWorking means a ticket has a run going or about to, so it cannot run again yet.
 var ErrStillWorking = errors.New("the job is still running")
 

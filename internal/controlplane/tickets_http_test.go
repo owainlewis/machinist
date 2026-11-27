@@ -990,3 +990,88 @@ func TestPresetsRouteIncludesDeclaredInputs(t *testing.T) {
 		t.Fatalf("ref = %s", deployInputs["ref"])
 	}
 }
+
+func TestDeleteTicketAndJobEndpoints(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	var logs bytes.Buffer
+	f.server.auditLog = newAuditLogger(&logs)
+
+	adminTok := f.newToken(t, "admin-op", tickets.RoleOperator)
+	runTok := f.newScopedToken(t, "run-op", tickets.ScopeRun)
+	readTok := f.newScopedToken(t, "read-op", tickets.ScopeRead)
+	runnerTok := f.newToken(t, "runner-op", tickets.RoleRunner)
+
+	// Active (working) ticket cannot be deleted via either route (409 Conflict).
+	active := f.assign(t, "del-active")
+	for _, path := range []string{"/api/v1/tickets/" + active.ID, "/machinist/jobs/" + active.ID} {
+		if resp, body := f.call(t, http.MethodDelete, path, adminTok, nil); resp.StatusCode != http.StatusConflict {
+			t.Fatalf("DELETE active %s = %d, want 409: %s", path, resp.StatusCode, body)
+		}
+	}
+
+	// Missing ticket returns 404 Not Found for admin, 403 Forbidden for non-admin tokens, 401 unauthenticated.
+	for _, path := range []string{"/api/v1/tickets/t_missing", "/machinist/jobs/t_missing"} {
+		if resp, _ := f.call(t, http.MethodDelete, path, "", nil); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("unauth DELETE %s = %d, want 401", path, resp.StatusCode)
+		}
+		for name, tok := range map[string]string{"run": runTok, "read": readTok, "runner": runnerTok} {
+			if resp, body := f.call(t, http.MethodDelete, path, tok, nil); resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("%s DELETE %s = %d, want 403: %s", name, path, resp.StatusCode, body)
+			}
+		}
+		if resp, body := f.call(t, http.MethodDelete, path, adminTok, nil); resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("admin DELETE %s = %d, want 404: %s", path, resp.StatusCode, body)
+		}
+	}
+
+	// Cancel active ticket, pin it via Reload, and delete via /api/v1/tickets/{id}.
+	if _, err := f.store.Cancel(t.Context(), active.ID, "admin-op"); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := f.store.Ticket(t.Context(), active.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server.engine.Reload([]tickets.Ticket{cancelled}, testFactory(), time.Minute, "machinist-bot", false, 0, nil, nil)
+	if f.server.engine.PinnedFactory(cancelled.ID, cancelled.UpdatedAt) == nil {
+		t.Fatal("expected ticket to be pinned before delete")
+	}
+
+	// Non-admin tokens still get 403 on a deletable ticket.
+	for name, tok := range map[string]string{"run": runTok, "read": readTok, "runner": runnerTok} {
+		if resp, body := f.call(t, http.MethodDelete, "/api/v1/tickets/"+cancelled.ID, tok, nil); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s DELETE deletable = %d, want 403: %s", name, resp.StatusCode, body)
+		}
+	}
+
+	// Admin deletes via /api/v1/tickets/{id} -> 204, unpinned, removed, and audited.
+	if resp, body := f.call(t, http.MethodDelete, "/api/v1/tickets/"+cancelled.ID, adminTok, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /api/v1/tickets/%s = %d, want 204: %s", cancelled.ID, resp.StatusCode, body)
+	}
+	if f.server.engine.PinnedFactory(cancelled.ID, cancelled.UpdatedAt) != nil {
+		t.Fatal("expected reload pin to be dropped after delete")
+	}
+	if resp, _ := f.call(t, http.MethodGet, "/api/v1/tickets/"+cancelled.ID, adminTok, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET deleted ticket = %d, want 404", resp.StatusCode)
+	}
+
+	// Admin deletes a pr_ready job via /machinist/jobs/{id} -> 204, removed, and audited.
+	prReady := f.assign(t, "del-pr-ready")
+	if _, _, err := f.store.Apply(t.Context(), prReady.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 42}); err != nil {
+		t.Fatal(err)
+	}
+	if resp, body := f.call(t, http.MethodDelete, "/machinist/jobs/"+prReady.ID, adminTok, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /machinist/jobs/%s = %d, want 204: %s", prReady.ID, resp.StatusCode, body)
+	}
+	if resp, _ := f.call(t, http.MethodGet, "/machinist/jobs/"+prReady.ID, adminTok, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET deleted job = %d, want 404", resp.StatusCode)
+	}
+
+	logOutput := logs.String()
+	for _, id := range []string{cancelled.ID, prReady.ID} {
+		if !strings.Contains(logOutput, `"action":"job.deleted"`) || !strings.Contains(logOutput, `"target":"`+id+`"`) {
+			t.Fatalf("missing job.deleted audit entry for %s in:\n%s", id, logOutput)
+		}
+	}
+}
