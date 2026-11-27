@@ -3,7 +3,7 @@
 The `Luna issue triage` GitHub Action runs when the repository owner opens an
 issue. It uses Codex with `gpt-6-luna` to choose `bug`, `enhancement`,
 `documentation`, or `needs-human`. Issues from other authors are skipped for
-this public-repository demo. No Machinist server or worker is involved.
+this public-repository demo. No Machinist control plane or runner is involved.
 
 ## Setup and demo
 

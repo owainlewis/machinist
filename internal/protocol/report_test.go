@@ -5,30 +5,30 @@ import (
 	"testing"
 )
 
-func TestParseReportAcceptsEachOutcome(t *testing.T) {
-	for _, body := range []string{
-		`{"outcome":"pr_ready","summary":"Opened"}`,
-		`{"outcome":"no_change","summary":"Nothing to do"}`,
-		`{"outcome":"failed","summary":"Tests cannot run"}`,
+func TestReportValidateAcceptsEachOutcome(t *testing.T) {
+	for _, report := range []Report{
+		{Outcome: OutcomePRReady, Summary: "Opened"},
+		{Outcome: OutcomeNoChange, Summary: "Nothing to do"},
+		{Outcome: OutcomeFailed, Summary: "Tests cannot run"},
 	} {
-		if _, err := ParseReport([]byte(body)); err != nil {
-			t.Fatalf("%s: %v", body, err)
+		if err := report.Validate(); err != nil {
+			t.Fatalf("%+v: %v", report, err)
 		}
 	}
 }
 
-func TestParseReportRejectsInvalidReports(t *testing.T) {
-	for _, test := range []struct{ body, want string }{
-		{`{"outcome":"complete","summary":"old"}`, "not one of"},
-		{`{"outcome":"pr_ready","summary":"  "}`, "summary is empty"},
-		{`{"outcome":"needs_input","summary":"Stuck"}`, "not one of"},
-		{`{"outcome":"failed","summary":"Stuck","question":"Which API?"}`, "expected one JSON object"},
-		{`{"outcome":"pr_ready","summary":"x","pr_url":"https://example.test"}`, "expected one JSON object"},
-		{`{"outcome":"pr_ready","summary":"x"} {}`, "expected one JSON object"},
-		{`Done: {"outcome":"pr_ready","summary":"x"}`, "expected one JSON object"},
+func TestReportValidateRejectsInvalidReports(t *testing.T) {
+	for _, test := range []struct {
+		report Report
+		want   string
+	}{
+		{Report{Outcome: "complete", Summary: "old"}, "not one of"},
+		{Report{Outcome: OutcomePRReady, Summary: "  "}, "summary is empty"},
+		{Report{Outcome: "needs_input", Summary: "Stuck"}, "not one of"},
+		{Report{Outcome: OutcomeMerged, Summary: "Merged"}, "not one of"},
 	} {
-		if _, err := ParseReport([]byte(test.body)); err == nil || !strings.Contains(err.Error(), test.want) {
-			t.Fatalf("%s: error = %v, want %q", test.body, err, test.want)
+		if err := test.report.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("%+v: error = %v, want %q", test.report, err, test.want)
 		}
 	}
 }
