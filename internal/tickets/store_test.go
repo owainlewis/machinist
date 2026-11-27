@@ -1127,8 +1127,22 @@ func TestReplyAfterAMergeForgetsTheMergedPullRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.PRNumber != 0 || again.MergedAt != nil || again.PRState != "" {
-		t.Fatalf("stale pull request: number = %d, merged_at = %v, state = %q", again.PRNumber, again.MergedAt, again.PRState)
+	if again.PRNumber != 0 || again.MergedAt != nil || again.PRState != "" || again.PreviousPRNumber != 7 {
+		t.Fatalf("stale pull request: number = %d, previous = %d, merged_at = %v, state = %q", again.PRNumber, again.PreviousPRNumber, again.MergedAt, again.PRState)
+	}
+	// A subsequent rerun after failing with no PR preserves PreviousPRNumber.
+	second := claimRun(t, store, again).Run
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: second.ID, Status: RunFailed}, func(Ticket, string) Transition {
+		return Transition{State: StateFailed, Message: "boom"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	third, err := store.Rerun(t.Context(), ticket.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.PRNumber != 0 || third.PreviousPRNumber != 7 {
+		t.Fatalf("after second rerun: number = %d, previous = %d", third.PRNumber, third.PreviousPRNumber)
 	}
 }
 
