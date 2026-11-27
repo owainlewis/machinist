@@ -17,7 +17,7 @@ and the job fails.
 | Permission | Access | Used for |
 | --- | --- | --- |
 | Contents | Read and write | Clone and push the job's branch |
-| Pull requests | Read and write | Open and update the draft pull request, and track it after the run |
+| Pull requests | Read and write | Open and update the pull request, and track it after the run |
 | Issues | Read and write | Read issues and post comments |
 | Checks | Read | Read CI results on the pull request |
 | Commit statuses | Read | Read CI results that use statuses |

@@ -69,7 +69,7 @@ Never put runtime archives or authentication files in build contexts.
 New tests use fake `claude` and `gh` commands. `internal/fakegh` is the fake `gh`.
 `internal/e2e` runs the real control plane and a real local runner, with the shipped
 presets. `internal/agentrunner/conformance_test.go` runs one
-suite on both runner types. On Kubernetes only `kubectl` is fake. It reads the real Job manifest
+suite on local, Docker, and Kubernetes runners. On Kubernetes only `kubectl` is fake. It reads the real Job manifest
 and starts the real sandbox code.
 
 ## Project layout

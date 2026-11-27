@@ -10,7 +10,7 @@ GitHub and Linear rather than taking webhooks.
 As root, on Ubuntu or Debian, with the release you want:
 
 ```sh
-MACHINIST_VERSION=v0.2.0 bash scripts/setup-vm.sh
+MACHINIST_VERSION=v0.5.0 bash scripts/setup-vm.sh
 ```
 
 It installs Machinist, Git, the GitHub CLI, Claude Code and Codex, runs `machinist init` as the
@@ -128,7 +128,7 @@ Open `http://127.0.0.1:7331` and sign in with the token.
 - `journalctl -u machinist-runner -f` follows the runner as it works, and
   `journalctl -u machinist-control-plane -f` follows the control plane.
 
-For a first real job, select **New job**, pick a repository and give it a small task, such
+For a first real job, select **New job**, pick a repository and give it a small prompt, such
 as adding a section to the README. The job page shows each step as it runs, and the job
 ends with a pull request, which merges once its checks pass when `github.auto_merge` is on. If it fails, the page shows which step failed and why.
 
@@ -200,5 +200,5 @@ systemctl restart machinist-control-plane machinist-runner
 ## Back up
 
 Back up `.machinist/tickets.db` with a consistent SQLite copy, and your factory
-directory. GitHub holds branches and pull requests, but not ticket history or the ledger.
+directory. GitHub holds branches and pull requests, but not job history or the ledger.
 Run one control plane per database.

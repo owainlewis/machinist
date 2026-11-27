@@ -44,9 +44,9 @@ their job Secret, so this local token check does not apply to them.
 | Anthropic API key, `ANTHROPIC_API_KEY` | Yes | Yes | Billed to the key owner |
 | Bedrock, Google Cloud or Foundry variables | Yes | Yes | Billed through the provider |
 | OpenAI API key, `OPENAI_API_KEY` | Yes | Yes | A Codex step runs `codex login --with-api-key` itself |
-| Claude login, `login = true` | No | Yes | Local runners only |
+| Claude login, `login: true` | No | Yes | Local runners only |
 | Claude `setup-token`, `CLAUDE_CODE_OAUTH_TOKEN` | No | Yes | Local or Kubernetes |
-| ChatGPT login, `login = true` | No | Yes | Local runners only, with `slots = 1` |
+| ChatGPT login, `login: true` | No | Yes | Local runners only, with `slots: 1` |
 
 This table is a reading of the vendor pages below, not legal advice. Check your own
 agreement with each provider.

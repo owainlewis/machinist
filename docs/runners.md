@@ -55,7 +55,7 @@ a login made on that machine. See [Credentials](credentials.md).
 When a local runner starts, it looks for `agy`, `claude`, `codex` and `pi` on its `PATH`.
 It takes only jobs whose preset's agents all use a harness it found, so a job that needs
 Antigravity waits for a runner that has it instead of failing on one that doesn't. An agent
-with its own `program` is not checked. Install a harness and restart the runner for it to
+with its own `command` is not checked. Install a harness and restart the runner for it to
 count.
 
 A Docker runner probes its image at startup for `agy`, `claude`, `codex` and `pi` (unless
@@ -152,7 +152,7 @@ and point `proxy_url:` at an HTTP CONNECT egress proxy.
 
 ## Kubernetes runner
 
-The runner is a process in the cluster that starts one gVisor Job per job run, streaming
+The runner is a process in the cluster that starts one gVisor Job per run, streaming
 activity while it runs.
 
 ```yaml
