@@ -220,7 +220,7 @@ function AutomationEditorDialog({ automation, onlineHarnesses, onClose, onSaved,
     try {
       const path = editing ? automationPath(automation.name) : "/api/v1/automations";
       const method = editing ? "PUT" : "POST";
-      await api(path, { method, body: automationPayload(form, { includeName: !editing, presetInputs: declaredInputs }) });
+      await api(path, { method, body: automationPayload(form, { includeName: !editing, presetInputs: selectedPreset ? declaredInputs : undefined }) });
       if (!mounted.current) return;
       onSaved?.();
       onClose();

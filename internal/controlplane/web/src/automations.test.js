@@ -87,6 +87,14 @@ test("automation helpers validate, serialize, and override preset vars", () => {
     automationPayload({ name: "deploy", repo: "o/r", preset: "deploy", prompt: "Go", vars: { environment: "staging" } }, { presetInputs: declared }),
     { name: "deploy", repo: "o/r", preset: "deploy", prompt: "Go", harness: "", model: "", schedule: "", timezone: "", vars: { environment: "staging", region: "us-east-1" } },
   );
+  assert.deepEqual(
+    automationPayload({ name: "deploy", repo: "o/r", preset: "deploy", prompt: "Go", vars: { environment: "staging", region: "us-east-1" } }, { includeName: false, presetInputs: undefined }),
+    { repo: "o/r", preset: "deploy", prompt: "Go", harness: "", model: "", schedule: "", timezone: "", vars: { environment: "staging", region: "us-east-1" } },
+  );
+  assert.deepEqual(
+    automationPayload({ name: "deploy", repo: "o/r", preset: "default", prompt: "Go", vars: { environment: "staging" } }, { includeName: false, presetInputs: [] }),
+    { repo: "o/r", preset: "default", prompt: "Go", harness: "", model: "", schedule: "", timezone: "" },
+  );
 
   const saved = { repo: "o/r", agent: "deploy", harness: "", model: "", prompt: "Go", vars: { environment: "staging", region: "us-east-1" } };
   assert.equal(isRunEdited({ repo: "o/r", preset: "deploy", harness: "", model: "", prompt: "Go", vars: { environment: "staging", region: "us-east-1" } }, saved, declared), false);
