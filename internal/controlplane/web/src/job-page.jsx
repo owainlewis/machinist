@@ -282,6 +282,9 @@ export function JobView({ detail, role = "admin", onChange }) {
   const canRun = role !== "viewer";
   const { ticket, entries = [], runs = [], steps: presetSteps = [], waiting_for: waitingFor = [], waiting_for_labels: waitingForLabels = [], runs_on: detailRunsOn = [] } = detail;
   const runsOn = detailRunsOn.length ? detailRunsOn : (ticket.runs_on || []);
+  const jobInputs = Object.entries(ticket.vars || {})
+    .filter(([name, value]) => name !== "repo" && value !== "" && value != null)
+    .sort(([a], [b]) => a.localeCompare(b));
   const state = jobState(ticket, runs.some(run => run.status === "running"));
   const pr = prLink(ticket);
   const original = sourceLink(ticket);
@@ -311,6 +314,7 @@ export function JobView({ detail, role = "admin", onChange }) {
       <div><dt>Repository</dt><dd>{ticket.repo}</dd></div>
       <div><dt>Preset</dt><dd>{ticket.agent}</dd></div>
       {runsOn.length > 0 && <div><dt>Runs on</dt><dd><span className="runner-labels">{runsOn.map(label => <span key={label} className="runner-label">{label}</span>)}</span></dd></div>}
+      {jobInputs.length > 0 && <div><dt>Inputs</dt><dd><span className="job-inputs">{jobInputs.map(([name, value]) => <span key={name} className="job-input"><code>{name}</code><span>{value}</span></span>)}</span></dd></div>}
       <div><dt>Pull request</dt><dd>{pr ? <PullRequest ticket={ticket} link={pr} /> : noPullRequest(state)}</dd></div>
       <div><dt>Started by</dt><dd>{ticket.created_by}</dd></div>
       <div><dt>Created</dt><dd><time dateTime={ticket.created_at}>{relativeTime(ticket.created_at)}</time></dd></div>

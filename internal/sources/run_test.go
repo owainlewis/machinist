@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/owainlewis/machinist/internal/factory"
 )
 
 func TestTitleIsTheFirstLineCutToFit(t *testing.T) {
@@ -19,7 +21,9 @@ func TestTitleIsTheFirstLineCutToFit(t *testing.T) {
 
 func TestRunValidatesAndStoresHarnessAndModel(t *testing.T) {
 	intake, _ := newIntake(t)
-	intake.Presets = func(name string) bool { return name == "default" }
+	intake.Presets = func(name string) (factory.Preset, bool) {
+		return factory.Preset{Name: name}, name == "default"
+	}
 
 	// Valid harness and model are trimmed and stored on the ticket.
 	ticket, created, err := intake.Run(t.Context(), RunRequest{

@@ -462,3 +462,28 @@ test("clicking Retry from <step> posts from_step to /rerun and refreshes", { tim
   const fullCall = calls.filter(call => call.url === "/api/v1/tickets/t_1/rerun" && call.method === "POST")[1];
   assert.equal(fullCall.body, undefined, "Run again must send no body");
 });
+
+test("JobView displays non-empty job inputs under job facts and omits empty ones", { timeout: 30000 }, async context => {
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  context.after(() => server.close());
+  const { JobView } = await server.ssrLoadModule("/src/job-page.jsx");
+  const page = vars => renderToStaticMarkup(React.createElement(JobView, {
+    detail: {
+      ticket: { ...ticket, state: "done", vars },
+      runs: [{ id: "run_1", status: "succeeded", started_at: now, ended_at: now }],
+    },
+  }));
+
+  const withInputs = page({ region: "us-east-1", environment: "staging", notes: "", repo: "owner/repo" });
+  assert.match(withInputs, /<dt>Inputs<\/dt>/);
+  assert.match(withInputs, /<code>environment<\/code><span>staging<\/span>/);
+  assert.match(withInputs, /<code>region<\/code><span>us-east-1<\/span>/);
+  assert.doesNotMatch(withInputs, /<code>notes<\/code>/, "empty input value is omitted");
+  assert.doesNotMatch(withInputs, /<code>repo<\/code>/, "built-in repo is omitted from Inputs");
+
+  const onlyEmpty = page({ notes: "" });
+  assert.doesNotMatch(onlyEmpty, /<dt>Inputs<\/dt>/);
+
+  const absent = page(undefined);
+  assert.doesNotMatch(absent, /<dt>Inputs<\/dt>/);
+});

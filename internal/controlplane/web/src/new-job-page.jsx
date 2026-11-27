@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { api, SignedOutError } from "./api.js";
 import { onlineHarnessSet } from "./automations.js";
-import { canStart, harnessOptionLabel, initialPreset, keyFor, modelPlaceholder, runRequest, supportedHarnesses, titleOf } from "./new-job.js";
+import { canStart, harnessOptionLabel, initialInputValues, initialPreset, keyFor, modelPlaceholder, presetInputs, runRequest, supportedHarnesses, titleOf } from "./new-job.js";
 import { jobHref } from "./routes.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { HarnessMark } from "./harness-mark.jsx";
@@ -15,6 +15,7 @@ export function NewJobPage({ onSignedOut }) {
   const [options, setOptions] = useState(null);
   const [preset, setPreset] = useState("");
   const [repo, setRepo] = useState("");
+  const [inputs, setInputs] = useState({});
   const [harness, setHarness] = useState("");
   const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -32,12 +33,15 @@ export function NewJobPage({ onSignedOut }) {
     });
     Promise.all([api("/api/v1/presets"), api("/api/v1/repositories"), loadRunners]).then(([presets, repositories, runners]) => {
       if (stopped) return;
+      const firstPreset = initialPreset(presets.presets, presets.default);
+      const firstPresetObj = presets.presets.find(item => item.name === firstPreset);
       setOptions({
         presets: presets.presets,
         repositories: repositories.repositories,
         runners: Array.isArray(runners?.runners) ? runners.runners : [],
       });
-      setPreset(initialPreset(presets.presets, presets.default));
+      setPreset(firstPreset);
+      setInputs(initialInputValues(firstPresetObj));
       setRepo(repositories.repositories[0] || "");
     }).catch(failure => {
       if (stopped) return;
@@ -47,23 +51,36 @@ export function NewJobPage({ onSignedOut }) {
     return () => { stopped = true; };
   }, [onSignedOut]);
 
+  const chosen = options?.presets.find(item => item.name === preset);
+  const declaredInputs = presetInputs(chosen);
+  const onlineHarnesses = onlineHarnessSet(options?.runners);
+
+  function changePreset(next) {
+    setPreset(next);
+    const nextPresetObj = options?.presets.find(item => item.name === next);
+    setInputs(initialInputValues(nextPresetObj));
+  }
+
   function changeHarness(next) {
     setHarness(next);
     if (next !== harness) setModel("");
   }
 
-  const ready = canStart({ preset, repo, prompt }) && !pending;
+  const ready = canStart({ preset, repo, prompt, inputs, presetInputs: declaredInputs }) && !pending;
   async function submit(event) {
     event.preventDefault();
     if (!ready) return;
     setPending(true);
     setError("");
-    const fields = { preset, repo, prompt };
+    const fields = declaredInputs.length > 0 ? { preset, repo, prompt, inputs } : { preset, repo, prompt };
     if (harness.trim()) fields.harness = harness.trim();
     if (model.trim()) fields.model = model.trim();
     lastKey.current = keyFor(lastKey.current, fields);
     try {
-      const job = await api("/machinist/run", { method: "POST", body: runRequest({ key: lastKey.current.key, ...fields }) });
+      const job = await api("/machinist/run", {
+        method: "POST",
+        body: runRequest({ key: lastKey.current.key, preset, repo, prompt, inputs, presetInputs: declaredInputs, harness, model }),
+      });
       if (mounted.current) window.location.hash = jobHref(job.id);
     } catch (failure) {
       if (!mounted.current) return;
@@ -76,8 +93,6 @@ export function NewJobPage({ onSignedOut }) {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) submit(event);
   }
 
-  const chosen = options?.presets.find(item => item.name === preset);
-  const onlineHarnesses = onlineHarnessSet(options?.runners);
   const title = titleOf(prompt);
   return <div className="page new-job-page">
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
@@ -93,7 +108,7 @@ export function NewJobPage({ onSignedOut }) {
       </div>
       <div>
         <label className="field-label" htmlFor="new-job-preset">Preset</label>
-        <Select id="new-job-preset" value={preset} onChange={setPreset} aria-describedby="new-job-preset-about">
+        <Select id="new-job-preset" value={preset} onChange={changePreset} aria-describedby="new-job-preset-about">
           {options.presets.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
         </Select>
         {chosen && <div id="new-job-preset-about" className="preset-about">
@@ -102,6 +117,28 @@ export function NewJobPage({ onSignedOut }) {
           {presetAgents(chosen).length > 0 && <p className="preset-agents"><span className="preset-agents-label">Agents</span><AgentBadges agents={presetAgents(chosen)} /></p>}
         </div>}
       </div>
+      {declaredInputs.length > 0 && <fieldset className="preset-inputs">
+        <legend className="field-label">Inputs</legend>
+        <div className="preset-inputs-grid">
+          {declaredInputs.map(item => <div key={item.name} className="preset-input-field">
+            <label className="field-label" htmlFor={`new-job-input-${item.name}`}>
+              <code>{item.name}</code>
+              {item.required ? <span className="field-required" aria-label="required">*</span> : <span className="field-optional">(optional)</span>}
+            </label>
+            <input
+              id={`new-job-input-${item.name}`}
+              className="field-control"
+              value={inputs[item.name] ?? ""}
+              onChange={event => setInputs(current => ({ ...current, [item.name]: event.target.value }))}
+              onKeyDown={submitOnShortcut}
+              placeholder={item.default !== undefined ? item.default : ""}
+              required={item.required}
+              disabled={pending}
+            />
+            {item.description && <p className="field-hint">{item.description}</p>}
+          </div>)}
+        </div>
+      </fieldset>}
       <div className="new-job-fields-row">
         <div>
           <label className="field-label" htmlFor="new-job-harness">Harness <span className="field-optional">(optional)</span></label>

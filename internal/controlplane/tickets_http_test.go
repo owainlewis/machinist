@@ -936,3 +936,57 @@ func TestTicketAPIShippingJSONSerialization(t *testing.T) {
 		}
 	}
 }
+
+func TestPresetsRouteIncludesDeclaredInputs(t *testing.T) {
+	f := newFixture(t)
+	staging := "staging"
+	empty := ""
+	loaded := &factory.Factory{
+		Presets: map[string]factory.Preset{
+			"default": {
+				Name:        "default",
+				Description: "Default.",
+				Steps:       []runner.Step{{Name: "work", Run: "true"}},
+			},
+			"deploy": {
+				Name:        "deploy",
+				Description: "Deploy service.",
+				Inputs: map[string]factory.Input{
+					"environment": {Description: "Target environment", Default: &staging},
+					"notes":       {Description: "Optional notes", Default: &empty},
+					"ref":         {Description: "Git ref to deploy"},
+				},
+				Steps: []runner.Step{{Name: "deploy", Run: "true"}},
+			},
+		},
+	}
+	f.server.factory = loaded
+	f.server.presets = presetViews(loaded)
+
+	response, body := f.call(t, http.MethodGet, "/api/v1/presets", f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	var payload struct {
+		Presets []struct {
+			Name   string                     `json:"name"`
+			Inputs map[string]json.RawMessage `json:"inputs"`
+		} `json:"presets"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("%v: %s", err, body)
+	}
+	if len(payload.Presets) != 2 || payload.Presets[0].Inputs != nil {
+		t.Fatalf("presets = %s", body)
+	}
+	deployInputs := payload.Presets[1].Inputs
+	if string(deployInputs["environment"]) != `{"description":"Target environment","default":"staging"}` {
+		t.Fatalf("environment = %s", deployInputs["environment"])
+	}
+	if string(deployInputs["notes"]) != `{"description":"Optional notes","default":""}` {
+		t.Fatalf("notes = %s", deployInputs["notes"])
+	}
+	if string(deployInputs["ref"]) != `{"description":"Git ref to deploy"}` {
+		t.Fatalf("ref = %s", deployInputs["ref"])
+	}
+}

@@ -580,3 +580,201 @@ Run it.
 		t.Fatalf("bad automation runs_on err = %v, want invalid label", err)
 	}
 }
+
+func TestPresetInputsParsingExtendsAndValidation(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"presets/default.yaml": `description: Default preset with optional inputs only.
+inputs:
+  branch:
+    description: Optional base branch
+    default: main
+  notes:
+    description: Optional empty-string default
+    default: ""
+steps:
+  - name: work
+    run: echo ok
+`,
+		"presets/deploy.yaml": `description: Deploy preset with required and optional inputs.
+inputs:
+  environment:
+    description: >
+      Target deployment
+      environment.
+  region:
+    description: Cloud region
+    default: us-east-1
+  dry_run:
+    description: Dry run flag
+    default: ""
+steps:
+  - name: deploy
+    run: echo deploy
+`,
+		"presets/deploy-eu.yaml": `description: EU deploy preset extending deploy.
+extends: deploy
+inputs:
+  region:
+    default: eu-west-1
+  environment:
+    description: EU environment name.
+  cluster:
+    description: Target cluster
+    default: primary
+`,
+		"automations/deploy-staging.md": `---
+repo: owner/repo
+preset: deploy-eu
+vars:
+  environment: staging
+---
+Deploy staging.
+`,
+	})
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Validate("default", []string{"owner/repo"}); err != nil {
+		t.Fatalf("Validate(default) = %v", err)
+	}
+
+	def := loaded.Presets["default"]
+	if len(def.Inputs) != 2 || def.Inputs["branch"].Required() || *def.Inputs["branch"].Default != "main" {
+		t.Fatalf("default inputs = %+v", def.Inputs)
+	}
+	if def.Inputs["notes"].Required() || def.Inputs["notes"].Default == nil || *def.Inputs["notes"].Default != "" {
+		t.Fatalf("empty-string default should be optional with empty default: %+v", def.Inputs["notes"])
+	}
+
+	deploy := loaded.Presets["deploy"]
+	if !deploy.Inputs["environment"].Required() || deploy.Inputs["environment"].Description != "Target deployment environment." {
+		t.Fatalf("deploy environment input = %+v", deploy.Inputs["environment"])
+	}
+	if deploy.Inputs["region"].Required() || *deploy.Inputs["region"].Default != "us-east-1" {
+		t.Fatalf("deploy region input = %+v", deploy.Inputs["region"])
+	}
+
+	eu := loaded.Presets["deploy-eu"]
+	if len(eu.Inputs) != 4 {
+		t.Fatalf("deploy-eu inputs = %+v", eu.Inputs)
+	}
+	if !eu.Inputs["environment"].Required() || eu.Inputs["environment"].Description != "EU environment name." {
+		t.Fatalf("deploy-eu environment = %+v", eu.Inputs["environment"])
+	}
+	if eu.Inputs["region"].Description != "Cloud region" || *eu.Inputs["region"].Default != "eu-west-1" {
+		t.Fatalf("deploy-eu region = %+v", eu.Inputs["region"])
+	}
+	if eu.Inputs["dry_run"].Required() || *eu.Inputs["dry_run"].Default != "" {
+		t.Fatalf("deploy-eu dry_run = %+v", eu.Inputs["dry_run"])
+	}
+	if *eu.Inputs["cluster"].Default != "primary" {
+		t.Fatalf("deploy-eu cluster = %+v", eu.Inputs["cluster"])
+	}
+	// Base preset must not be mutated by child overrides.
+	if *loaded.Presets["deploy"].Inputs["region"].Default != "us-east-1" {
+		t.Fatalf("base deploy region mutated: %+v", loaded.Presets["deploy"].Inputs["region"])
+	}
+
+	// default_preset must be rejected when it declares any required input.
+	if err := loaded.Validate("deploy", []string{"owner/repo"}); err == nil || !strings.Contains(err.Error(), "required inputs (environment)") {
+		t.Fatalf("Validate(deploy as default_preset) = %v", err)
+	}
+}
+
+func TestPresetInputsRejectReservedBadNamesAndValueLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, want string
+	}{
+		{
+			name: "reserved repo",
+			yaml: "description: Bad.\ninputs:\n  repo:\n    description: Reserved\nsteps:\n  - name: work\n    run: true\n",
+			want: `input "repo" is reserved`,
+		},
+		{
+			name: "uppercase input name",
+			yaml: "description: Bad.\ninputs:\n  Target:\n    description: Bad\nsteps:\n  - name: work\n    run: true\n",
+			want: "invalid name",
+		},
+		{
+			name: "hyphenated input name",
+			yaml: "description: Bad.\ninputs:\n  target-env:\n    description: Bad\nsteps:\n  - name: work\n    run: true\n",
+			want: "invalid name",
+		},
+		{
+			name: "digit-leading input name",
+			yaml: "description: Bad.\ninputs:\n  1env:\n    description: Bad\nsteps:\n  - name: work\n    run: true\n",
+			want: "invalid name",
+		},
+		{
+			name: "NUL in default value",
+			yaml: "description: Bad.\ninputs:\n  env:\n    default: \"bad\\0val\"\nsteps:\n  - name: work\n    run: true\n",
+			want: "NUL",
+		},
+		{
+			name: "oversize default value",
+			yaml: "description: Bad.\ninputs:\n  env:\n    default: \"" + strings.Repeat("a", MaxInputBytes+1) + "\"\nsteps:\n  - name: work\n    run: true\n",
+			want: "at most 1024 bytes",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeFiles(t, map[string]string{"presets/default.yaml": tc.yaml})
+			if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load() err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	// Exact 1024-byte UTF-8 default is allowed.
+	exactDir := writeFiles(t, map[string]string{
+		"presets/default.yaml": "description: Exact.\ninputs:\n  env:\n    default: \"" + strings.Repeat("a", MaxInputBytes) + "\"\nsteps:\n  - name: work\n    run: true\n",
+	})
+	if _, err := Load(exactDir); err != nil {
+		t.Fatalf("exact 1024-byte default failed: %v", err)
+	}
+}
+
+func TestAutomationFrontMatterVarsValidation(t *testing.T) {
+	basePreset := "description: Deploy.\ninputs:\n  environment:\n    description: Env\n  region:\n    default: us-east-1\nsteps:\n  - name: deploy\n    run: true\n"
+	defaultYAML := "description: Default.\nsteps:\n  - name: work\n    run: true\n"
+
+	for _, tc := range []struct {
+		name, auto, want string
+	}{
+		{
+			name: "missing required var",
+			auto: "---\nrepo: owner/repo\npreset: deploy\n---\nDeploy.\n",
+			want: "missing required vars: environment",
+		},
+		{
+			name: "unknown var",
+			auto: "---\nrepo: owner/repo\npreset: deploy\nvars:\n  environment: staging\n  extra: nope\n---\nDeploy.\n",
+			want: "unknown vars: extra",
+		},
+		{
+			name: "oversize var value",
+			auto: "---\nrepo: owner/repo\npreset: deploy\nvars:\n  environment: \"" + strings.Repeat("x", MaxInputBytes+1) + "\"\n---\nDeploy.\n",
+			want: "at most 1024 bytes",
+		},
+		{
+			name: "NUL var value",
+			auto: "---\nrepo: owner/repo\npreset: deploy\nvars:\n  environment: \"bad\\0val\"\n---\nDeploy.\n",
+			want: "NUL",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loaded, err := Load(writeFiles(t, map[string]string{
+				"presets/default.yaml":   defaultYAML,
+				"presets/deploy.yaml":    basePreset,
+				"automations/nightly.md": tc.auto,
+			}))
+			if err != nil {
+				t.Fatalf("Load() unexpected err = %v", err)
+			}
+			if err := loaded.Validate("default", []string{"owner/repo"}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
