@@ -275,10 +275,18 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 }
 
-// Tick expires lost leases and queues a run for each ticket that needs one.
+// Tick expires lost leases, times out expired gates, and queues a run for each
+// ticket that needs one.
 func (e *Engine) Tick(ctx context.Context) error {
 	if err := e.expireLeases(ctx); err != nil {
 		return err
+	}
+	expiredGates, err := e.Store.ExpireGates(ctx, e.now())
+	if err != nil {
+		return err
+	}
+	for _, ticket := range expiredGates {
+		e.UnpinThrough(ticket.ID, ticket.UpdatedAt)
 	}
 	waiting, err := e.Store.TicketsAwaitingRun(ctx)
 	if err != nil {
@@ -374,6 +382,16 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses, label
 	if preset.Timeout > 0 {
 		timeout = preset.Timeout
 	}
+	timeoutMillis := timeout.Milliseconds()
+	if claim.Ticket.RemainingTimeoutMillis != nil {
+		if *claim.Ticket.RemainingTimeoutMillis <= 0 {
+			message := "The job ran out of its run timeout budget before resuming."
+			return nil, e.completeRun(ctx, tickets.RunCompletion{RunID: claim.Run.ID, Status: tickets.RunFailed}, func(tickets.Ticket, string) tickets.Transition {
+				return tickets.Transition{State: tickets.StateFailed, Message: message}
+			})
+		}
+		timeoutMillis = *claim.Ticket.RemainingTimeoutMillis
+	}
 	token := ""
 	if cfg.githubToken != nil {
 		token, err = cfg.githubToken(ctx, claim.Ticket.Repo)
@@ -433,7 +451,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses, label
 		Prompt:         tickets.RenderLog(claim.Entries),
 		Files:          cfg.factory.Files,
 		Steps:          steps,
-		TimeoutMillis:  timeout.Milliseconds(),
+		TimeoutMillis:  timeoutMillis,
 		GitName:        gitName,
 		GitEmail:       gitEmail,
 		GitHubToken:    token,
@@ -474,7 +492,7 @@ func (e *Engine) Heartbeat(ctx context.Context, runID string) (bool, error) {
 // Complete records the end of a run and applies its row of the state table.
 func (e *Engine) Complete(ctx context.Context, runID string, completion protocol.Completion) error {
 	switch completion.State {
-	case tickets.RunSucceeded, tickets.RunFailed, tickets.RunCancelled, tickets.RunTimedOut:
+	case tickets.RunSucceeded, tickets.RunFailed, tickets.RunCancelled, tickets.RunTimedOut, tickets.RunWaiting:
 	default:
 		return fmt.Errorf("%w: unknown state %q", ErrInvalidCompletion, completion.State)
 	}
@@ -491,9 +509,17 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 			reason, report = err.Error(), nil
 		}
 	}
-	pr, err := e.findPR(ctx, runID)
-	if err != nil {
-		return err
+	var pr *PR
+	var err error
+	if completion.State != tickets.RunWaiting {
+		pr, err = e.findPR(ctx, runID)
+		if err != nil {
+			return err
+		}
+	}
+	var remainingTimeoutMillis *int64
+	if completion.State == tickets.RunWaiting {
+		remainingTimeoutMillis = e.remainingBudgetMillis(ctx, runID)
 	}
 	var reviews *tickets.Reviews
 	if pr != nil && pr.Merged {
@@ -523,6 +549,9 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 	}
 	return e.completeRun(ctx, tickets.RunCompletion{RunID: runID, Status: completion.State, Report: runReport, Tokens: completion.Tokens, Cost: completion.Cost, Stages: completion.Stages, Patch: completion.Patch, FailedStep: failedStep, Checkpoint: completion.Checkpoint}, func(ticket tickets.Ticket, status string) tickets.Transition {
 		transition := decide(status, report, reason, pr)
+		if transition.State == tickets.StateWaiting && remainingTimeoutMillis != nil {
+			transition.RemainingTimeoutMillis = remainingTimeoutMillis
+		}
 		if transition.State == tickets.StateFailed && len(completion.Patch) > 0 {
 			transition.Message = sentence(transition.Message) + " " + PatchSaved
 		}
@@ -540,6 +569,38 @@ func (e *Engine) Complete(ctx context.Context, runID string, completion protocol
 		}
 		return transition
 	})
+}
+
+func (e *Engine) remainingBudgetMillis(ctx context.Context, runID string) *int64 {
+	run, err := e.Store.Run(ctx, runID)
+	if err != nil || run.StartedAt == nil {
+		return nil
+	}
+	ticket, err := e.Store.Ticket(ctx, run.TicketID)
+	if err != nil {
+		return nil
+	}
+	var budget int64
+	if ticket.RemainingTimeoutMillis != nil {
+		budget = *ticket.RemainingTimeoutMillis
+	} else {
+		e.mu.RLock()
+		cfg := e.snapshotLocked()
+		e.mu.RUnlock()
+		timeout := cfg.runTimeout
+		if cfg.factory != nil {
+			if preset, ok := cfg.factory.Preset(ticket.Agent); ok && preset.Timeout > 0 {
+				timeout = preset.Timeout
+			}
+		}
+		budget = timeout.Milliseconds()
+		if budget <= 0 {
+			return nil
+		}
+	}
+	elapsed := max(e.now().Sub(*run.StartedAt).Milliseconds(), 0)
+	remaining := max(budget-elapsed, 0)
+	return &remaining
 }
 
 func mergeGateOf(request protocol.Ship) *tickets.MergeGate {
@@ -689,6 +750,14 @@ func decide(status string, report *protocol.Report, reason string, pr *PR) ticke
 	}
 	if status == tickets.RunInterrupted {
 		transition.State = tickets.StateWorking
+		return transition
+	}
+	if status == tickets.RunWaiting {
+		transition.State = tickets.StateWaiting
+		if report != nil {
+			transition.Report = report.Outcome + ": " + report.Summary
+			transition.Message = report.Summary
+		}
 		return transition
 	}
 	if status != tickets.RunSucceeded {

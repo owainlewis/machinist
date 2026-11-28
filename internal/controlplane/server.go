@@ -347,6 +347,7 @@ func linearPoller(ctx context.Context, machinistConfig config.Config, loaded *fa
 		Store:          store,
 		Interval:       linear.Poll,
 		MaxJobsPerHour: linear.MaxJobsPerHour,
+		PublicURL:      machinistConfig.Server.PublicURL,
 		Log:            log,
 	}, nil
 }
@@ -418,6 +419,7 @@ func githubIssuesPoller(machinistConfig config.Config, loaded *factory.Factory, 
 		Store:          store,
 		Interval:       ghIssues.PollInterval(),
 		MaxJobsPerHour: ghIssues.EffectiveMaxJobsPerHour(),
+		PublicURL:      machinistConfig.Server.PublicURL,
 		Log:            log,
 	}, nil
 }

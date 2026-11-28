@@ -298,6 +298,27 @@ var postgresMigrations = []postgresMigration{
 			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS previous_pr_number INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		version: 7,
+		statements: []string{
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_step TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_message TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_details TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_waiting_since TEXT`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_timeout_at TEXT`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_decided_by TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_decided_at TEXT`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_decision TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_reason TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS remaining_timeout_ms BIGINT`,
+			`DROP INDEX IF EXISTS one_active_ticket_per_issue`,
+			`CREATE UNIQUE INDEX one_active_ticket_per_issue ON tickets(repo, issue_number)
+  WHERE issue_number IS NOT NULL AND state IN ('working','waiting','needs_you','pr_ready')`,
+			`DROP INDEX IF EXISTS one_active_ticket_per_schedule`,
+			`CREATE UNIQUE INDEX one_active_ticket_per_schedule ON tickets(source)
+  WHERE source LIKE 'schedule:%' AND state IN ('working','waiting')`,
+		},
+	},
 }
 
 func postgresMaxOpenConns() (int, error) {
