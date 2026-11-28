@@ -425,3 +425,177 @@ func TestPostgresMigrationV6AddsPreviousPRNumberColumn(t *testing.T) {
 		t.Fatalf("v6 migration missing %q:\n%s", want, joined)
 	}
 }
+
+func TestConcurrentAddInputDuplicateSourceKey(t *testing.T) {
+	store := openStore(t)
+	ctx := t.Context()
+
+	ticket := createTicket(t, store, "concurrent:add-input:base")
+	if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 12}); err != nil {
+		t.Fatal(err)
+	}
+
+	var addedCount atomic.Int32
+	var wg sync.WaitGroup
+	errCh := make(chan error, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, added, err := store.AddInput(ctx, ticket.ID, Input{
+				Kind:      EntryComment,
+				Author:    "bob",
+				Body:      "same comment",
+				SourceKey: "concurrent:add-input:dup",
+			})
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if got.ID != ticket.ID {
+				errCh <- fmt.Errorf("got ticket ID %q, want %q", got.ID, ticket.ID)
+				return
+			}
+			if added {
+				addedCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("AddInput error: %v", err)
+	}
+	if addedCount.Load() != 1 {
+		t.Fatalf("addedCount = %d, want 1", addedCount.Load())
+	}
+}
+
+func TestConcurrentScheduleContentionInAddInputAndStewardRequeue(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("AddInput vs CreateTicket", func(t *testing.T) {
+		store := openStore(t)
+		for i := range 10 {
+			schedule := fmt.Sprintf("schedule:race-input-%d", i)
+			firstReq := request(fmt.Sprintf("race:input:first:%d", i))
+			firstReq.Source = schedule
+			first, created, err := store.CreateTicket(ctx, firstReq)
+			if err != nil || !created {
+				t.Fatalf("iter %d: create first: created=%v err=%v", i, created, err)
+			}
+			if _, _, err := store.Apply(ctx, first.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 100 + i}); err != nil {
+				t.Fatal(err)
+			}
+
+			freshKey := fmt.Sprintf("race:input:fresh:%d", i)
+			var wg sync.WaitGroup
+			var inputAdded bool
+			var inputErr error
+			var secondCreated bool
+			var secondErr error
+
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				_, inputAdded, inputErr = store.AddInput(ctx, first.ID, Input{
+					Kind:      EntryComment,
+					Author:    "alice",
+					Body:      "Fix lint",
+					SourceKey: freshKey,
+				})
+			}()
+			go func() {
+				defer wg.Done()
+				secondReq := request(fmt.Sprintf("race:input:second:%d", i))
+				secondReq.Source = schedule
+				_, secondCreated, secondErr = store.CreateTicket(ctx, secondReq)
+			}()
+			wg.Wait()
+
+			if secondErr != nil {
+				t.Fatalf("iter %d: CreateTicket err = %v", i, secondErr)
+			}
+			switch {
+			case inputErr == nil:
+				if !inputAdded {
+					t.Fatalf("iter %d: AddInput silently dropped fresh SourceKey (added=false, err=nil)", i)
+				}
+				if secondCreated {
+					t.Fatalf("iter %d: both AddInput and CreateTicket transitioned to working", i)
+				}
+			case errors.Is(inputErr, ErrStillWorking):
+				if inputAdded {
+					t.Fatalf("iter %d: AddInput returned added=true with ErrStillWorking", i)
+				}
+				if !secondCreated {
+					t.Fatalf("iter %d: AddInput got ErrStillWorking without second ticket created", i)
+				}
+				if _, err := store.TicketBySourceKey(ctx, freshKey); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("iter %d: fresh SourceKey recorded despite ErrStillWorking: err=%v", i, err)
+				}
+			default:
+				t.Fatalf("iter %d: unexpected AddInput err = %v", i, inputErr)
+			}
+		}
+	})
+
+	t.Run("StewardRequeue vs CreateTicket", func(t *testing.T) {
+		store := openStore(t)
+		for i := range 10 {
+			schedule := fmt.Sprintf("schedule:race-steward-%d", i)
+			firstReq := request(fmt.Sprintf("race:steward:first:%d", i))
+			firstReq.Source = schedule
+			first, created, err := store.CreateTicket(ctx, firstReq)
+			if err != nil || !created {
+				t.Fatalf("iter %d: create first: created=%v err=%v", i, created, err)
+			}
+			if _, _, err := store.Apply(ctx, first.ID, StateWorking, Transition{
+				State:    StatePRReady,
+				PRNumber: 200 + i,
+				Shipping: `{"head":"sha1"}`,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			listed, err := store.Ticket(ctx, first.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var wg sync.WaitGroup
+			var requeued bool
+			var stewardErr error
+			var secondCreated bool
+			var secondErr error
+
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				_, requeued, stewardErr = store.StewardRequeue(ctx, listed, StewardRequeueRequest{
+					MaxRetries: 2,
+					Prompt:     "fix failing check",
+				})
+			}()
+			go func() {
+				defer wg.Done()
+				secondReq := request(fmt.Sprintf("race:steward:second:%d", i))
+				secondReq.Source = schedule
+				_, secondCreated, secondErr = store.CreateTicket(ctx, secondReq)
+			}()
+			wg.Wait()
+
+			if secondErr != nil {
+				t.Fatalf("iter %d: CreateTicket err = %v", i, secondErr)
+			}
+			if stewardErr != nil {
+				t.Fatalf("iter %d: StewardRequeue returned error %v, want nil", i, stewardErr)
+			}
+			if requeued && secondCreated {
+				t.Fatalf("iter %d: both StewardRequeue and CreateTicket transitioned to working", i)
+			}
+			if !requeued && !secondCreated {
+				t.Fatalf("iter %d: neither StewardRequeue nor CreateTicket succeeded", i)
+			}
+		}
+	})
+}

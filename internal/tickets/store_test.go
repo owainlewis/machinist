@@ -326,6 +326,97 @@ func TestAddInputFollowsStateRows(t *testing.T) {
 	}
 }
 
+func TestAddInputScheduleContentionReturnsErrStillWorking(t *testing.T) {
+	ctx := t.Context()
+	store := openStore(t)
+
+	firstReq := request("sched:nightly:1")
+	firstReq.Source = "schedule:nightly"
+	first, created, err := store.CreateTicket(ctx, firstReq)
+	if err != nil || !created {
+		t.Fatalf("create first schedule ticket: created=%v err=%v", created, err)
+	}
+	if _, _, err := store.Apply(ctx, first.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 10}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second ticket for the same schedule can legitimately start working while
+	// the earlier ticket is in pr_ready.
+	secondReq := request("sched:nightly:2")
+	secondReq.Source = "schedule:nightly"
+	second, created, err := store.CreateTicket(ctx, secondReq)
+	if err != nil || !created || second.ID == first.ID {
+		t.Fatalf("create second schedule ticket: second=%+v created=%v err=%v", second, created, err)
+	}
+
+	// Adding fresh input with a SourceKey to the pr_ready ticket must fail with
+	// ErrStillWorking instead of silently returning (ticket, false, nil).
+	_, added, err := store.AddInput(ctx, first.ID, Input{
+		Kind:      EntryComment,
+		Author:    "bob",
+		Body:      "Please update the tests",
+		SourceKey: "github:comment:fresh-1",
+	})
+	if !errors.Is(err, ErrStillWorking) || added {
+		t.Fatalf("AddInput with fresh SourceKey during schedule contention: added=%v err=%v, want added=false err=ErrStillWorking", added, err)
+	}
+	if _, err := store.TicketBySourceKey(ctx, "github:comment:fresh-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("fresh SourceKey should not be recorded on contention: err=%v", err)
+	}
+	if got := reload(t, store, first.ID); got.State != StatePRReady {
+		t.Fatalf("first ticket state = %s, want %s", got.State, StatePRReady)
+	}
+	entries, err := store.Entries(ctx, first.ID)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries after contended AddInput = %+v, err=%v", entries, err)
+	}
+
+	// Empty SourceKey must also return ErrStillWorking.
+	if _, added, err := store.AddInput(ctx, first.ID, Input{
+		Kind:   EntryComment,
+		Author: "bob",
+		Body:   "No source key",
+	}); !errors.Is(err, ErrStillWorking) || added {
+		t.Fatalf("AddInput without SourceKey during schedule contention: added=%v err=%v, want added=false err=ErrStillWorking", added, err)
+	}
+
+	// An already-recorded SourceKey remains idempotent even during contention.
+	existing, added, err := store.AddInput(ctx, first.ID, Input{
+		Kind:      EntryComment,
+		Author:    "bob",
+		Body:      "duplicate",
+		SourceKey: "sched:nightly:1",
+	})
+	if err != nil || added || existing.ID != first.ID {
+		t.Fatalf("duplicate SourceKey during contention: existing=%+v added=%v err=%v", existing, added, err)
+	}
+
+	// A working ticket on a different schedule does not block first.
+	otherReq := request("sched:other:1")
+	otherReq.Source = "schedule:other"
+	if _, created, err := store.CreateTicket(ctx, otherReq); err != nil || !created {
+		t.Fatalf("create other schedule ticket: created=%v err=%v", created, err)
+	}
+
+	// Once the contending ticket on the same schedule leaves working, retrying
+	// AddInput with the fresh SourceKey succeeds.
+	if _, _, err := store.Apply(ctx, second.ID, StateWorking, Transition{State: StateDone}); err != nil {
+		t.Fatal(err)
+	}
+	updated, added, err := store.AddInput(ctx, first.ID, Input{
+		Kind:      EntryComment,
+		Author:    "bob",
+		Body:      "Please update the tests",
+		SourceKey: "github:comment:fresh-1",
+	})
+	if err != nil || !added || updated.State != StateWorking {
+		t.Fatalf("AddInput after contention cleared: updated=%+v added=%v err=%v", updated, added, err)
+	}
+	if got, err := store.TicketBySourceKey(ctx, "github:comment:fresh-1"); err != nil || got.ID != first.ID {
+		t.Fatalf("TicketBySourceKey = (%+v, %v), want %s", got, err, first.ID)
+	}
+}
+
 func TestTurnsSinceHumanRestartsOnHumanInput(t *testing.T) {
 	store := openStore(t)
 	ticket := createTicket(t, store, "api:1")

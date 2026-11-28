@@ -999,8 +999,21 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 	return ticket, created, err
 }
 
+func hasOtherWorkingScheduleTicket(ctx context.Context, q querier, ticket Ticket) (bool, error) {
+	if !ticket.Automation() {
+		return false, nil
+	}
+	var otherWorking int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state=? AND id<>?`, ticket.Source, StateWorking, ticket.ID).Scan(&otherWorking); err != nil {
+		return false, err
+	}
+	return otherWorking > 0, nil
+}
+
 // AddInput appends new text to an active ticket and applies its state row. The
-// bool reports whether the entry was added.
+// bool reports whether the entry was added. It returns ErrStillWorking when
+// moving a scheduled ticket from pr_ready to working would conflict with
+// another working ticket for the same schedule.
 func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Ticket, bool, error) {
 	var ticket Ticket
 	added := false
@@ -1019,11 +1032,19 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 				return err
 			}
 		}
+		if ticket.State == StatePRReady {
+			otherWorking, err := hasOtherWorkingScheduleTicket(ctx, tx, ticket)
+			if err != nil {
+				return err
+			}
+			if otherWorking {
+				return ErrStillWorking
+			}
+		}
 		now := s.now()
 		if err = insertEntry(ctx, tx, ticketID, input.Kind, input.Author, input.Body, nullableString(input.SourceKey), now); err != nil {
 			return err
 		}
-		added = true
 		if ticket.State == StatePRReady {
 			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',resume_from_step='',resume_checkpoint_run='',updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
 				return err
@@ -1034,14 +1055,26 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 			}
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)
-		return err
-	})
-	if err != nil && isUniqueViolation(err) && input.SourceKey != "" {
-		if existing, lookupErr := s.Ticket(ctx, ticketID); lookupErr == nil {
-			return existing, false, nil
+		if err != nil {
+			return err
 		}
+		added = true
+		return nil
+	})
+	if err != nil {
+		if isScheduleActiveUniqueViolation(err) {
+			return Ticket{}, false, ErrStillWorking
+		}
+		if input.SourceKey != "" && isSourceKeyUniqueViolation(err) {
+			if _, keyErr := ticketForSourceKey(ctx, s.q(), input.SourceKey); keyErr == nil {
+				if existing, lookupErr := s.Ticket(ctx, ticketID); lookupErr == nil {
+					return existing, false, nil
+				}
+			}
+		}
+		return Ticket{}, false, err
 	}
-	return ticket, added, err
+	return ticket, added, nil
 }
 
 // TicketBySourceKey finds the ticket that a piece of intake went to.
@@ -1467,14 +1500,12 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		if ticket.State == StateWorking {
 			return ErrStillWorking
 		}
-		if strings.HasPrefix(ticket.Source, sourceSchedulePrefix) {
-			var otherWorking int
-			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state=? AND id<>?`, ticket.Source, StateWorking, ticketID).Scan(&otherWorking); err != nil {
-				return err
-			}
-			if otherWorking > 0 {
-				return ErrStillWorking
-			}
+		otherWorking, err := hasOtherWorkingScheduleTicket(ctx, tx, ticket)
+		if err != nil {
+			return err
+		}
+		if otherWorking {
+			return ErrStillWorking
 		}
 		var active int
 		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND status IN (?,?)`, ticketID, RunQueued, RunRunning).Scan(&active); err != nil {
@@ -1532,11 +1563,8 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		ticket, err = loadTicket(ctx, tx, ticketID)
 		return err
 	})
-	if err != nil && isUniqueViolation(err) && strings.HasPrefix(ticket.Source, sourceSchedulePrefix) {
-		var otherWorking int
-		if checkErr := s.q().QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state=? AND id<>?`, ticket.Source, StateWorking, ticketID).Scan(&otherWorking); checkErr == nil && otherWorking > 0 {
-			return Ticket{}, ErrStillWorking
-		}
+	if err != nil && isScheduleActiveUniqueViolation(err) {
+		return Ticket{}, ErrStillWorking
 	}
 	return ticket, err
 }
