@@ -118,33 +118,37 @@ func TestFlushWithoutSpoolDoesNothing(t *testing.T) {
 	}
 }
 
-func TestStreamRunEventsStopWaitsForInFlightFlush(t *testing.T) {
-	inHandler := make(chan struct{})
-	releaseHandler := make(chan struct{})
+func TestStreamRunEventsFinishesInFlightFlushOnStop(t *testing.T) {
 	var mu sync.Mutex
 	var received []int64
-	var calls int
+	calls := 0
+	inFlight := make(chan struct{})
+	release := make(chan struct{})
+
 	server := httptest.NewServer(http.HandlerFunc(func(out http.ResponseWriter, r *http.Request) {
 		var batch protocol.RunEventBatch
 		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
-			t.Error(err)
+			http.Error(out, err.Error(), http.StatusBadRequest)
+			return
 		}
-		var cursor int64
 		mu.Lock()
 		calls++
-		call := calls
+		callNum := calls
+		var cursor int64
 		for _, raw := range batch.Events {
 			var event protocol.RunEvent
-			if err := json.Unmarshal(raw, &event); err != nil {
-				t.Error(err)
-			}
+			_ = json.Unmarshal(raw, &event)
 			received = append(received, event.Sequence)
 			cursor = event.Sequence
 		}
 		mu.Unlock()
-		if call == 1 {
-			close(inHandler)
-			<-releaseHandler
+		if callNum == 1 {
+			close(inFlight)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
 		}
 		_ = json.NewEncoder(out).Encode(protocol.RunEventPage{Cursor: cursor})
 	}))
@@ -160,25 +164,94 @@ func TestStreamRunEventsStopWaitsForInFlightFlush(t *testing.T) {
 	}
 
 	stopEvents := daemon.streamRunEvents(t.Context(), "run")
-	defer stopEvents()
+	select {
+	case <-inFlight:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for in-flight flush")
+	}
 
-	<-inHandler
 	stopped := make(chan struct{})
 	go func() {
 		stopEvents()
 		close(stopped)
 	}()
-	time.Sleep(20 * time.Millisecond)
-	close(releaseHandler)
-	<-stopped
+
+	// Give stopEvents a moment to cancel if it would abort in-flight flushes,
+	// then let the server answer the in-flight request.
+	select {
+	case <-stopped:
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopEvents did not return")
+	}
+	// Stopping is idempotent.
+	stopEvents()
 
 	if err := daemon.flushRunEvents(t.Context(), "run"); err != nil {
 		t.Fatal(err)
 	}
+
 	mu.Lock()
-	got := append([]int64(nil), received...)
+	gotCalls := calls
+	gotReceived := append([]int64(nil), received...)
 	mu.Unlock()
-	if len(got) != 1 || got[0] != 1 {
-		t.Fatalf("received sequences = %v, want [1] (in-flight flush was cancelled and replayed)", got)
+	if gotCalls != 1 || len(gotReceived) != 1 || gotReceived[0] != 1 {
+		t.Fatalf("expected single flushed event without replay; calls=%d received=%v", gotCalls, gotReceived)
+	}
+}
+
+func TestStreamRunEventsCancelsInFlightFlushWhenContextEnds(t *testing.T) {
+	inFlight := make(chan struct{})
+	done := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(out http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-inFlight:
+		default:
+			close(inFlight)
+		}
+		select {
+		case <-r.Context().Done():
+		case <-done:
+		}
+	}))
+	defer func() {
+		close(done)
+		server.Close()
+	}()
+
+	daemon := spoolDaemon(t, server.URL)
+	path := daemon.eventSpool("run")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{\"sequence\":1,\"type\":\"run.started\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	stopEvents := daemon.streamRunEvents(ctx, "run")
+	select {
+	case <-inFlight:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("timed out waiting for in-flight flush")
+	}
+
+	cancel()
+	stopped := make(chan struct{})
+	go func() {
+		stopEvents()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopEvents did not return after parent context cancellation")
 	}
 }

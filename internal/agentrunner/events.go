@@ -129,27 +129,27 @@ func (d *Daemon) flushRunEvents(ctx context.Context, runID string) error {
 }
 
 // streamRunEvents flushes activity while a run is live. The returned function
-// stops it and waits for any in-flight flush to finish, so the final flush
-// cannot run at the same time or replay an interrupted acknowledgment.
+// stops further ticks and waits for any in-flight flush to finish, so an
+// acknowledged batch is checkpointed before the final flush runs.
 func (d *Daemon) streamRunEvents(ctx context.Context, runID string) func() {
 	stop := make(chan struct{})
-	var stopOnce sync.Once
 	finished := make(chan struct{})
+	var once sync.Once
 	go func() {
 		defer close(finished)
 		ticker := time.NewTicker(d.eventInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stop:
-				return
 			case <-ctx.Done():
+				return
+			case <-stop:
 				return
 			case <-ticker.C:
 				select {
-				case <-stop:
-					return
 				case <-ctx.Done():
+					return
+				case <-stop:
 					return
 				default:
 				}
@@ -160,7 +160,7 @@ func (d *Daemon) streamRunEvents(ctx context.Context, runID string) func() {
 		}
 	}()
 	return func() {
-		stopOnce.Do(func() { close(stop) })
+		once.Do(func() { close(stop) })
 		<-finished
 	}
 }
