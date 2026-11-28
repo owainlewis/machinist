@@ -111,6 +111,13 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 	if nextLinear != nil {
 		nextLinear.Intake = s.intake
 	}
+	nextGitHubIssues, err := githubIssuesPoller(effectiveConfig, nextFactory, nextApp, candidateIntake, s.store, s.log)
+	if err != nil {
+		return ReloadResult{}, invalidReload(err)
+	}
+	if nextGitHubIssues != nil {
+		nextGitHubIssues.Intake = s.intake
+	}
 
 	var queuedTickets []tickets.Ticket
 	if s.store != nil {
@@ -122,6 +129,7 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 
 	changed := diffReload(prev.config, prev.appKeyHash, prev.factory, effectiveConfig, nextAppKeyHash, nextFactory)
 	linearChanged := linearPollerChanged(prev.config, prev.linear != nil, effectiveConfig, nextLinear != nil)
+	githubIssuesChanged := githubIssuesPollerChanged(prev.config, prev.appKeyHash, prev.githubIssues != nil, effectiveConfig, nextAppKeyHash, nextGitHubIssues != nil)
 
 	var tokens engine.TokenMinter
 	var identity engine.IdentityFinder
@@ -167,11 +175,17 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 	if linearChanged {
 		s.linear = nextLinear
 	}
+	if githubIssuesChanged {
+		s.githubIssues = nextGitHubIssues
+	}
 	s.githubCache.clear()
 	s.mu.Unlock()
 
 	if linearChanged {
 		s.notifyLinear()
+	}
+	if githubIssuesChanged {
+		s.notifyGitHubIssues()
 	}
 
 	warning := factory.WarningLine(nextFactory.Updates)
@@ -277,6 +291,9 @@ func diffReload(prevCfg config.Config, prevKeyHash [32]byte, prevFac *factory.Fa
 	}
 	if linearDiff := diffLinear(prevCfg, nextCfg); linearDiff != "" {
 		changed = append(changed, linearDiff)
+	}
+	if ghIssuesDiff := diffGitHubIssues(prevCfg, nextCfg); ghIssuesDiff != "" {
+		changed = append(changed, ghIssuesDiff)
 	}
 	changed = append(changed, diffFactory(prevFac, nextFac)...)
 	return changed
@@ -396,6 +413,80 @@ func diffLinear(prevCfg, nextCfg config.Config) string {
 		return ""
 	}
 	return "linear: updated (" + strings.Join(fields, ", ") + ")"
+}
+
+func effectiveGitHubIssuesPreset(cfg config.Config) string {
+	if cfg.GitHubIssues.Preset != "" {
+		return cfg.GitHubIssues.Preset
+	}
+	return cfg.Server.DefaultPreset
+}
+
+func effectiveGitHubIssuesRepositories(cfg config.Config) []string {
+	if len(cfg.GitHubIssues.Repositories) > 0 {
+		return cfg.GitHubIssues.Repositories
+	}
+	return cfg.GitHub.Repositories
+}
+
+func githubIssuesPollerChanged(prevCfg config.Config, prevAppHash [32]byte, prevActive bool, nextCfg config.Config, nextAppHash [32]byte, nextActive bool) bool {
+	if prevActive != nextActive {
+		return true
+	}
+	if !nextActive {
+		return false
+	}
+	if diffGitHubApp(prevCfg.GitHub.App, prevAppHash, nextCfg.GitHub.App, nextAppHash) != "" {
+		return true
+	}
+	prev, next := prevCfg.GitHubIssues, nextCfg.GitHubIssues
+	return prev.EffectiveLabel() != next.EffectiveLabel() ||
+		prev.InProgressLabel != next.InProgressLabel ||
+		!slices.Equal(prev.AllowedUsers, next.AllowedUsers) ||
+		effectiveGitHubIssuesPreset(prevCfg) != effectiveGitHubIssuesPreset(nextCfg) ||
+		!slices.Equal(effectiveGitHubIssuesRepositories(prevCfg), effectiveGitHubIssuesRepositories(nextCfg)) ||
+		prev.PollInterval() != next.PollInterval() ||
+		prev.EffectiveMaxJobsPerHour() != next.EffectiveMaxJobsPerHour() ||
+		prev.Token != next.Token
+}
+
+func diffGitHubIssues(prevCfg, nextCfg config.Config) string {
+	prevOn, nextOn := prevCfg.GitHubIssues.Enabled(), nextCfg.GitHubIssues.Enabled()
+	switch {
+	case !prevOn && !nextOn:
+		return ""
+	case !prevOn && nextOn:
+		return "github_issues: enabled"
+	case prevOn && !nextOn:
+		return "github_issues: disabled"
+	}
+	prev, next := prevCfg.GitHubIssues, nextCfg.GitHubIssues
+	var fields []string
+	if prev.EffectiveLabel() != next.EffectiveLabel() {
+		fields = append(fields, "label")
+	}
+	if prev.InProgressLabel != next.InProgressLabel {
+		fields = append(fields, "in_progress_label")
+	}
+	if !slices.Equal(prev.AllowedUsers, next.AllowedUsers) {
+		fields = append(fields, "allowed_users")
+	}
+	if !slices.Equal(prev.Repositories, next.Repositories) {
+		fields = append(fields, "repositories")
+	}
+	if prev.Preset != next.Preset {
+		fields = append(fields, "preset")
+	}
+	if prev.PollInterval() != next.PollInterval() {
+		fields = append(fields, "poll_seconds")
+	}
+	if prev.EffectiveMaxJobsPerHour() != next.EffectiveMaxJobsPerHour() {
+		fields = append(fields, "max_jobs_per_hour")
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return "github_issues: updated (" + strings.Join(fields, ", ") + ")"
 }
 
 func diffFactory(prev, next *factory.Factory) []string {

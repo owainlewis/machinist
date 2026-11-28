@@ -40,6 +40,9 @@ type Assignment struct {
 	// has none.
 	Project   string
 	ProjectID string
+	// Repo names the repository directly (owner/name) for trackers that live
+	// inside a repository, such as GitHub Issues.
+	Repo string
 	// Actor is the user who made the assignment. Empty means it could not be
 	// found, and the assignment is ignored.
 	Actor string
@@ -103,7 +106,13 @@ type Tracker interface {
 type TrackerRules struct {
 	// AllowedUsers may send work. An assignment by anyone else is ignored.
 	AllowedUsers []string
-	Preset       string
+	// CaseInsensitiveUsers compares AllowedUsers case-insensitively (e.g. for
+	// GitHub logins).
+	CaseInsensitiveUsers bool
+	Preset               string
+	// Repositories are allowed direct repositories for trackers whose issues
+	// already belong to a repository (Assignment.Repo), such as GitHub Issues.
+	Repositories []string
 	// Projects maps a project name or ID to a repository. A project's mapping
 	// wins over its team's.
 	Projects map[string]string
@@ -112,9 +121,32 @@ type TrackerRules struct {
 	Teams map[string]string
 }
 
+func (rules TrackerRules) isAllowed(user string) bool {
+	if user == "" {
+		return false
+	}
+	if !rules.CaseInsensitiveUsers {
+		return slices.Contains(rules.AllowedUsers, user)
+	}
+	for _, allowed := range rules.AllowedUsers {
+		if strings.EqualFold(allowed, user) {
+			return true
+		}
+	}
+	return false
+}
+
 // Route returns the repository an assignment runs in, or the reason it has
 // none.
 func (rules TrackerRules) Route(assignment Assignment) (string, string) {
+	if assignment.Repo != "" {
+		for _, repository := range rules.Repositories {
+			if strings.EqualFold(repository, assignment.Repo) {
+				return repository, ""
+			}
+		}
+		return "", fmt.Sprintf("repository %q is not connected", assignment.Repo)
+	}
 	// An ID is exact. A name matches in any case.
 	if repository, ok := rules.Projects[assignment.ProjectID]; ok && assignment.ProjectID != "" {
 		return repository, ""
@@ -144,7 +176,7 @@ func (rules TrackerRules) Decide(assignment Assignment) (start, string) {
 	if assignment.Actor == "" {
 		return start{}, "who assigned it is not known"
 	}
-	if !slices.Contains(rules.AllowedUsers, assignment.Actor) {
+	if !rules.isAllowed(assignment.Actor) {
 		return start{}, fmt.Sprintf("user %q may not start jobs", assignment.Actor)
 	}
 	return start{key: assignment.Key, link: assignment.URL, preset: rules.Preset, repo: repository, prompt: trackerPrompt(assignment)}, ""
@@ -335,7 +367,7 @@ func (p *Poller) replies(ctx context.Context) error {
 		switch {
 		case !reply.CreatedAt.After(ticket.CreatedAt):
 			// Discussion from before Machinist had the issue.
-		case !slices.Contains(p.Rules.AllowedUsers, reply.Author):
+		case !p.Rules.isAllowed(reply.Author):
 			fmt.Fprintf(p.log(), "machinist: %s reply on job %s ignored: user %q may not start jobs\n", name, ticket.ID, reply.Author)
 		case ticket.State == tickets.StateWorking:
 			cursor = minTime(cursor, reply.CreatedAt.Add(-time.Nanosecond))
@@ -408,7 +440,7 @@ func (p *Poller) handle(ctx context.Context, assignment Assignment) (handled, er
 	name := p.Tracker.Name()
 	// Only an allowed person hears that an issue maps to no repository, so
 	// anyone else who can hand Machinist an issue learns nothing of its config.
-	if _, reason := p.Rules.Route(assignment); reason != "" && slices.Contains(p.Rules.AllowedUsers, assignment.Actor) {
+	if _, reason := p.Rules.Route(assignment); reason != "" && p.Rules.isAllowed(assignment.Actor) {
 		fmt.Fprintf(p.log(), "machinist: %s issue %s ignored: %s\n", name, assignment.Identifier, reason)
 		return handledSkipped, p.unrouted(ctx, assignment, reason)
 	}
@@ -465,8 +497,12 @@ func (p *Poller) unrouted(ctx context.Context, assignment Assignment, reason str
 	if found && !assignment.GivenAt.After(told) {
 		return nil
 	}
-	comment := "Machinist cannot start a job for this issue: its " + reason + " to a repository.\n\n" +
-		"Map the project in `linear.projects` or the team in `linear.teams` in Machinist's config, then hand the issue to Machinist again."
+	comment := "Machinist cannot start a job for this issue: " + reason + ".\n\n" +
+		"Add the repository to Machinist's config, then hand the issue to Machinist again."
+	if name == "linear" {
+		comment = "Machinist cannot start a job for this issue: its " + reason + " to a repository.\n\n" +
+			"Map the project in `linear.projects` or the team in `linear.teams` in Machinist's config, then hand the issue to Machinist again."
+	}
 	if err := p.Tracker.Comment(ctx, assignment.Issue, comment); err != nil {
 		fmt.Fprintf(p.log(), "machinist: %s issue %s: comment failed: %v\n", name, assignment.Identifier, err)
 		return nil
