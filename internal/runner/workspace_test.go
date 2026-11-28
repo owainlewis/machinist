@@ -493,3 +493,103 @@ func TestStepsReceivePresetInputsWithoutCollidingWithBuiltins(t *testing.T) {
 		})
 	}
 }
+
+func TestVerboseOutputHelper(t *testing.T) {
+	if os.Getenv("MACHINIST_TEST_VERBOSE_OUTPUT") != "1" {
+		return
+	}
+	// Write enough output in 32 KiB chunks to approach MaxEventLogBytes (base64
+	// expands 3:4, so ~24 MiB of raw bytes is ~32 MiB of JSONL), then drip small
+	// chunks so pumpStream packs the log tightly against the truncation threshold.
+	bulk := make([]byte, 32<<10)
+	for i := range bulk {
+		bulk[i] = 'a'
+	}
+	for range 764 {
+		if _, err := os.Stdout.Write(bulk); err != nil {
+			os.Exit(1)
+		}
+	}
+	small := make([]byte, 256)
+	for i := range small {
+		small[i] = 'b'
+	}
+	for range 200 {
+		if _, err := os.Stdout.Write(small); err != nil {
+			os.Exit(1)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestMultiStepRunCompletesAfterEarlyStepTriggersOutputTruncation(t *testing.T) {
+	stepNames := []string{"checkout", "plan", "implement", "test", "review", "revise", "publish", "merge"}
+	steps := make([]Step, len(stepNames))
+	steps[0] = Step{
+		Name: stepNames[0],
+		Run:  fmt.Sprintf(`MACHINIST_TEST_VERBOSE_OUTPUT=1 %q -test.run=^TestVerboseOutputHelper$`, os.Args[0]),
+	}
+	for i := 1; i < len(stepNames); i++ {
+		steps[i] = Step{
+			Name: stepNames[i],
+			Run:  fmt.Sprintf(`echo "completed %s"`, stepNames[i]),
+		}
+	}
+
+	request := stepsRequest(steps...)
+	workspace := prepare(t, request)
+	dataDirectory := t.TempDir()
+	result := RunSteps(t.Context(), request, workspace, dataDirectory)
+	if result.State != StateSucceeded {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.Stages) != len(stepNames) {
+		t.Fatalf("stages = %d, want %d", len(result.Stages), len(stepNames))
+	}
+	for i, stage := range result.Stages {
+		if stage.State != string(StateSucceeded) {
+			t.Fatalf("stage %d (%s) = %+v", i, stage.Name, stage)
+		}
+	}
+
+	eventsPath := filepath.Join(dataDirectory, "runs", request.RunID, "events.jsonl")
+	info, err := os.Stat(eventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > MaxEventLogBytes {
+		t.Fatalf("event log size = %d, exceeds MaxEventLogBytes (%d)", info.Size(), MaxEventLogBytes)
+	}
+	events := readEvents(t, eventsPath)
+	truncations := 0
+	seenTruncation := false
+	var startedSteps []string
+	completedSteps := 0
+	for index, event := range events {
+		if event.Sequence != int64(index+1) {
+			t.Fatalf("event %d sequence = %d, want %d", index, event.Sequence, index+1)
+		}
+		switch event.Type {
+		case "process.output_truncated":
+			truncations++
+			seenTruncation = true
+		case "process.output":
+			if seenTruncation {
+				t.Fatalf("unexpected process.output after truncation at sequence %d", event.Sequence)
+			}
+		case "step.started":
+			startedSteps = append(startedSteps, strings.TrimPrefix(event.Message, "name="))
+		case "run.completed":
+			completedSteps++
+		}
+	}
+	if truncations != 1 {
+		t.Fatalf("truncation events = %d, want 1", truncations)
+	}
+	if !slices.Equal(startedSteps, stepNames) {
+		t.Fatalf("started steps = %v, want %v", startedSteps, stepNames)
+	}
+	if completedSteps != len(stepNames) {
+		t.Fatalf("run.completed events = %d, want %d", completedSteps, len(stepNames))
+	}
+}

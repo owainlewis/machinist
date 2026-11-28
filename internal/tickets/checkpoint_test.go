@@ -3,6 +3,7 @@ package tickets
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/owainlewis/machinist/internal/protocol"
 )
@@ -130,4 +131,169 @@ func TestCheckpointPersistAndRerunFromStep(t *testing.T) {
 	if run3.ResumeFromStep != "" || run3.CheckpointRunID != "" {
 		t.Fatalf("expected full rerun to have no resume state, got %+v", run3)
 	}
+}
+
+func setupResumedRun(t *testing.T, store *Store, sourceKey string) (Ticket, Run, Run) {
+	t.Helper()
+	ticket, _, err := store.CreateTicket(t.Context(), NewTicket{
+		Source:    "api",
+		Repo:      "owner/repo",
+		Title:     "Fix bug",
+		Body:      "Please fix it",
+		Agent:     "default",
+		CreatedBy: "alice",
+		SourceKey: sourceKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run1, err := store.QueueRun(t.Context(), ticket.ID, protocol.StepsHarness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim1, err := store.ClaimRun(t.Context(), "runner-1", []string{protocol.StepsHarness}, store.now().Add(60_000_000_000), nil)
+	if err != nil || claim1 == nil || claim1.Run.ID != run1.ID {
+		t.Fatalf("claim1 = %+v, err = %v", claim1, err)
+	}
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{
+		RunID:      run1.ID,
+		Status:     RunFailed,
+		FailedStep: "review",
+		Checkpoint: &protocol.Checkpoint{
+			FailedStep: "review",
+			HeadSHA:    "abc123",
+			BaseRef:    "origin/HEAD",
+			Patch:      []byte("patch-bytes"),
+		},
+	}, func(Ticket, string) Transition {
+		return Transition{State: StateFailed, Message: "step review failed"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RerunFromStep(t.Context(), ticket.ID, "alice", "review"); err != nil {
+		t.Fatal(err)
+	}
+	run2, err := store.QueueRun(t.Context(), ticket.ID, protocol.StepsHarness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run2.ResumeFromStep != "review" || run2.CheckpointRunID != run1.ID {
+		t.Fatalf("run2 = %+v, want resume from review/%s", run2, run1.ID)
+	}
+	claim2, err := store.ClaimRun(t.Context(), "runner-1", []string{protocol.StepsHarness}, store.now().Add(60_000_000_000), nil)
+	if err != nil || claim2 == nil || claim2.Run.ID != run2.ID {
+		t.Fatalf("claim2 = %+v, err = %v", claim2, err)
+	}
+	return ticket, run1, claim2.Run
+}
+
+func TestResumedRunWithMidRunInputClearsCheckpointFields(t *testing.T) {
+	store := openStore(t)
+	ticket, _, run2 := setupResumedRun(t, store, "api:resume-mid-input")
+
+	// New input arrives while the resumed run is in progress.
+	if _, added, err := store.AddInput(t.Context(), ticket.ID, Input{
+		Kind:      EntryComment,
+		Author:    "bob",
+		Body:      "Please also update docs.",
+		SourceKey: "api:comment:1",
+	}); err != nil || !added {
+		t.Fatalf("AddInput = added:%v err:%v", added, err)
+	}
+
+	// The resumed run succeeds with a PRReady transition, which CompleteRun converts
+	// to StateWorking because of the unconsumed mid-run input.
+	updated, transitioned, err := store.CompleteRun(t.Context(), RunCompletion{
+		RunID:  run2.ID,
+		Status: RunSucceeded,
+		Report: &protocol.Report{Outcome: protocol.OutcomePRReady, Summary: "Opened PR"},
+	}, func(Ticket, string) Transition {
+		return Transition{State: StatePRReady, PRNumber: 42, Message: "Opened PR"}
+	})
+	if err != nil || !transitioned {
+		t.Fatalf("CompleteRun = transitioned:%v err:%v", transitioned, err)
+	}
+	if updated.State != StateWorking {
+		t.Fatalf("updated.State = %q, want %q", updated.State, StateWorking)
+	}
+
+	// The follow-up run must not inherit the stale checkpoint fields from run1.
+	run3, err := store.QueueRun(t.Context(), ticket.ID, protocol.StepsHarness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run3.ResumeFromStep != "" || run3.CheckpointRunID != "" {
+		t.Fatalf("follow-up run inherited stale checkpoint fields: ResumeFromStep=%q CheckpointRunID=%q", run3.ResumeFromStep, run3.CheckpointRunID)
+	}
+	claim3, err := store.ClaimRun(t.Context(), "runner-1", []string{protocol.StepsHarness}, store.now().Add(60_000_000_000), nil)
+	if err != nil || claim3 == nil || claim3.Run.ID != run3.ID {
+		t.Fatalf("claim3 = %+v, err = %v", claim3, err)
+	}
+	if claim3.Run.ResumeFromStep != "" || claim3.Run.CheckpointRunID != "" {
+		t.Fatalf("claimed follow-up run inherited stale checkpoint fields: %+v", claim3.Run)
+	}
+}
+
+func TestResumedRunCheckpointRetentionByCompletionStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     string
+		wantRetain bool
+	}{
+		{name: "succeeded clears", status: RunSucceeded, wantRetain: false},
+		{name: "failed clears", status: RunFailed, wantRetain: false},
+		{name: "timed out clears", status: RunTimedOut, wantRetain: false},
+		{name: "interrupted retains", status: RunInterrupted, wantRetain: true},
+		{name: "runner stopped retains", status: RunCancelled, wantRetain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openStore(t)
+			ticket, run1, run2 := setupResumedRun(t, store, "api:status:"+tc.status)
+
+			updated, transitioned, err := store.CompleteRun(t.Context(), RunCompletion{
+				RunID:  run2.ID,
+				Status: tc.status,
+			}, func(Ticket, string) Transition {
+				return Transition{State: StateWorking}
+			})
+			if err != nil || !transitioned || updated.State != StateWorking {
+				t.Fatalf("CompleteRun = (%+v, %v, %v)", updated, transitioned, err)
+			}
+
+			run3, err := store.QueueRun(t.Context(), ticket.ID, protocol.StepsHarness)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantRetain {
+				if run3.ResumeFromStep != "review" || run3.CheckpointRunID != run1.ID {
+					t.Fatalf("run3 = %+v, want retained resume from review/%s", run3, run1.ID)
+				}
+			} else {
+				if run3.ResumeFromStep != "" || run3.CheckpointRunID != "" {
+					t.Fatalf("run3 = %+v, want cleared resume fields", run3)
+				}
+			}
+		})
+	}
+
+	t.Run("expired lease retains", func(t *testing.T) {
+		store := openStore(t)
+		now := store.now()
+		store.SetClock(func() time.Time { return now })
+		ticket, run1, _ := setupResumedRun(t, store, "api:status:expired")
+
+		now = now.Add(120 * time.Second)
+		expired, err := store.ExpireLeases(t.Context())
+		if err != nil || expired != 1 {
+			t.Fatalf("ExpireLeases = (%d, %v), want (1, nil)", expired, err)
+		}
+
+		run3, err := store.QueueRun(t.Context(), ticket.ID, protocol.StepsHarness)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run3.ResumeFromStep != "review" || run3.CheckpointRunID != run1.ID {
+			t.Fatalf("run3 = %+v, want retained resume from review/%s", run3, run1.ID)
+		}
+	})
 }
