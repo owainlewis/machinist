@@ -17,20 +17,22 @@ const (
 
 // clientIP extracts the caller IP respecting server.trusted_proxy_hops.
 // With trustedProxyHops == 0 (the default), X-Forwarded-For is ignored so a
-// direct VM cannot be spoofed. With N > 0 trusted hops, it selects the IP
-// N hops from the right of X-Forwarded-For, falling back to r.RemoteAddr.
+// direct VM cannot be spoofed. With N > 0 trusted hops, it combines all
+// X-Forwarded-For header values in order (RFC 9110 §5.3) and selects the IP
+// N hops from the right, falling back to r.RemoteAddr.
 func clientIP(r *http.Request, trustedProxyHops int) string {
 	if r == nil {
 		return ""
 	}
 	if trustedProxyHops > 0 {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			ips := make([]string, 0, len(parts))
-			for _, part := range parts {
-				candidate := strings.TrimSpace(part)
-				if ip := net.ParseIP(candidate); ip != nil {
-					ips = append(ips, ip.String())
+		if xffValues := r.Header.Values("X-Forwarded-For"); len(xffValues) > 0 {
+			ips := make([]string, 0, len(xffValues))
+			for _, value := range xffValues {
+				for _, part := range strings.Split(value, ",") {
+					candidate := strings.TrimSpace(part)
+					if ip := net.ParseIP(candidate); ip != nil {
+						ips = append(ips, ip.String())
+					}
 				}
 			}
 			if len(ips) >= trustedProxyHops {

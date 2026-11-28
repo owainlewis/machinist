@@ -82,21 +82,23 @@ test("a run that failed before any step started says no steps ran", { timeout: 3
   assert.doesNotMatch(document.body.textContent, /Loading steps/);
 });
 
-test("pr_ready stands out as Needs you, and active jobs offer Cancel instead of Run again", { timeout: 30000 }, async context => {
+test("pr_ready stands out as Needs you, shows Run again and Cancel, and active jobs offer Cancel only", { timeout: 30000 }, async context => {
   const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
   context.after(() => server.close());
   const { JobView } = await server.ssrLoadModule("/src/job-page.jsx");
-  const page = detail => renderToStaticMarkup(React.createElement(JobView, { detail }));
+  const page = (detail, role = "admin") => renderToStaticMarkup(React.createElement(JobView, { detail, role }));
 
   const queued = page({ ticket: { ...ticket, state: "working" }, runs: [{ id: "run_1", status: "queued" }] });
   assert.match(queued, />Cancel<\/button>/);
   assert.doesNotMatch(queued, />Run again<\/button>/);
+  assert.doesNotMatch(queued, />Delete<\/button>/);
 
   const running = page({ ticket: { ...ticket, state: "working" }, runs: [{ id: "run_1", status: "running", started_at: now }] });
   assert.match(running, />Cancel<\/button>/);
   assert.doesNotMatch(running, />Run again<\/button>/);
+  assert.doesNotMatch(running, />Delete<\/button>/);
 
-  const needsYou = page({
+  const needsYouDetail = {
     ticket: { ...ticket, state: "pr_ready", pr_number: 12, pr_state: "open", pr_state_at: now },
     steps: [{ name: "merge-gate", agents: [] }, { name: "merge", agents: [] }],
     runs: [{
@@ -110,12 +112,24 @@ test("pr_ready stands out as Needs you, and active jobs offer Cancel instead of 
         { name: "merge", state: "succeeded", duration_millis: 1000 },
       ],
     }],
-  });
+  };
+  const needsYou = page(needsYouDetail, "admin");
   assert.match(needsYou, /class="pill pill-warning"[^>]*>.*<span>Needs you<\/span><\/span>/);
   assert.match(needsYou, /data-state="held"[^>]*>.*merge.*Held/);
   assert.match(needsYou, /class="job-pr-value">.*#12<\/a> · Open <time/);
   assert.match(needsYou, />Run again<\/button>/);
-  assert.doesNotMatch(needsYou, />Cancel<\/button>/);
+  assert.match(needsYou, />Cancel<\/button>/);
+  assert.match(needsYou, />Delete<\/button>/);
+
+  const needsYouMember = page(needsYouDetail, "member");
+  assert.match(needsYouMember, />Run again<\/button>/);
+  assert.match(needsYouMember, />Cancel<\/button>/);
+  assert.doesNotMatch(needsYouMember, />Delete<\/button>/);
+
+  const needsYouViewer = page(needsYouDetail, "viewer");
+  assert.doesNotMatch(needsYouViewer, />Run again<\/button>/);
+  assert.doesNotMatch(needsYouViewer, />Cancel<\/button>/);
+  assert.doesNotMatch(needsYouViewer, />Delete<\/button>/);
 
   const heldShipping = page({
     ticket: { ...ticket, state: "pr_ready", pr_number: 13, pr_state: "open", pr_state_at: now, shipping: '{"hold":"merge gate requires human review"}' },
@@ -134,7 +148,8 @@ test("pr_ready stands out as Needs you, and active jobs offer Cancel instead of 
   assert.match(heldShipping, /class="pill pill-warning"[^>]*>.*<span>Needs you<\/span><\/span>/);
   assert.match(heldShipping, /data-state="held"[^>]*>.*merge.*Held/);
   assert.match(heldShipping, />Run again<\/button>/);
-  assert.doesNotMatch(heldShipping, />Cancel<\/button>/);
+  assert.match(heldShipping, />Cancel<\/button>/);
+  assert.match(heldShipping, />Delete<\/button>/);
 
   const waitingForCI = page({
     ticket: { ...ticket, state: "pr_ready", pr_number: 14, pr_state: "open", pr_state_at: now, shipping: '{"since":"2026-11-27T15:00:00Z","head":"abc"}' },
@@ -155,6 +170,29 @@ test("pr_ready stands out as Needs you, and active jobs offer Cancel instead of 
   assert.doesNotMatch(waitingForCI, /Needs you/);
   assert.match(waitingForCI, />Cancel<\/button>/);
   assert.doesNotMatch(waitingForCI, />Run again<\/button>/);
+  assert.doesNotMatch(waitingForCI, />Delete<\/button>/);
+
+  for (const endedState of ["done", "failed", "cancelled"]) {
+    const endedDetail = {
+      ticket: { ...ticket, state: endedState },
+      steps: [{ name: "merge", agents: [] }],
+      runs: [{ id: "run_1", status: endedState === "done" ? "succeeded" : endedState, started_at: now, ended_at: now, stages: [{ name: "merge", state: "succeeded", duration_millis: 1000 }] }],
+    };
+    const asAdmin = page(endedDetail, "admin");
+    assert.match(asAdmin, />Run again<\/button>/, `${endedState} admin shows Run again`);
+    assert.doesNotMatch(asAdmin, />Cancel<\/button>/, `${endedState} admin hides Cancel`);
+    assert.match(asAdmin, />Delete<\/button>/, `${endedState} admin shows Delete`);
+
+    const asMember = page(endedDetail, "member");
+    assert.match(asMember, />Run again<\/button>/, `${endedState} member shows Run again`);
+    assert.doesNotMatch(asMember, />Cancel<\/button>/, `${endedState} member hides Cancel`);
+    assert.doesNotMatch(asMember, />Delete<\/button>/, `${endedState} member hides Delete`);
+
+    const asViewer = page(endedDetail, "viewer");
+    assert.doesNotMatch(asViewer, />Run again<\/button>/, `${endedState} viewer hides Run again`);
+    assert.doesNotMatch(asViewer, />Cancel<\/button>/, `${endedState} viewer hides Cancel`);
+    assert.doesNotMatch(asViewer, />Delete<\/button>/, `${endedState} viewer hides Delete`);
+  }
 
   const done = page({
     ticket: { ...ticket, state: "done" },
@@ -163,8 +201,6 @@ test("pr_ready stands out as Needs you, and active jobs offer Cancel instead of 
   });
   assert.match(done, /class="pill pill-success"[^>]*>.*<span>Done<\/span><\/span>/);
   assert.doesNotMatch(done, /data-state="held"/);
-  assert.match(done, />Run again<\/button>/);
-  assert.doesNotMatch(done, />Cancel<\/button>/);
 });
 
 test("clicking Cancel on an active job posts to cancel and refreshes, or shows an error", { timeout: 30000 }, async context => {
@@ -486,4 +522,75 @@ test("JobView displays non-empty job inputs under job facts and omits empty ones
 
   const absent = page(undefined);
   assert.doesNotMatch(absent, /<dt>Inputs<\/dt>/);
+});
+
+test("admin two-step Delete calls DELETE /api/v1/tickets/{id} and navigates to #/jobs, or shows an error", { timeout: 30000 }, async context => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/#/jobs/t_1" });
+  const previous = new Map();
+  for (const name of ["window", "document", "navigator", "HTMLElement", "MouseEvent", "fetch", "IS_REACT_ACT_ENVIRONMENT"]) {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    if (name in dom.window) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
+  }
+  const calls = [];
+  let failDelete = false;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, method: init.method || "GET" });
+    if (url === "/api/v1/tickets/t_1" && init.method === "DELETE") {
+      if (failDelete) return { ok: false, status: 409, json: async () => ({ error: "the job is still running" }) };
+      return { ok: true, status: 204, json: async () => null };
+    }
+    return { ok: true, status: 200, json: async () => ({ events: [], cursor: 0 }) };
+  };
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom", logLevel: "silent" });
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(document.getElementById("root"));
+  context.after(async () => {
+    await act(async () => root.unmount());
+    await server.close();
+    dom.window.close();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  const { JobView } = await server.ssrLoadModule("/src/job-page.jsx");
+  const detail = {
+    ticket: { ...ticket, state: "pr_ready", pr_number: 12, pr_state: "open", pr_state_at: now },
+    runs: [{ id: "run_1", status: "succeeded", started_at: now, ended_at: now }],
+  };
+  await act(async () => root.render(React.createElement(JobView, { detail, role: "admin" })));
+
+  const deleteButton = () => [...document.querySelectorAll(".delete-job button")].find(button => button.textContent.trim() === "Delete");
+  const confirmButton = () => [...document.querySelectorAll(".delete-job button")].find(button => button.textContent.trim() === "Confirm delete");
+  const cancelConfirmButton = () => [...document.querySelectorAll(".delete-job button")].find(button => button.textContent.trim() === "Cancel");
+
+  assert.ok(deleteButton(), "expected Delete button for admin on needs_you job");
+  assert.equal(confirmButton(), undefined, "confirmation is hidden until Delete is clicked");
+
+  // Step 1: clicking Delete opens inline confirmation without sending DELETE yet.
+  await act(async () => deleteButton().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.ok(confirmButton(), "expected Confirm delete button");
+  assert.ok(cancelConfirmButton(), "expected Cancel confirmation button");
+  assert.equal(calls.filter(call => call.method === "DELETE").length, 0);
+
+  // Dismissing confirmation hides Confirm delete without sending DELETE.
+  await act(async () => cancelConfirmButton().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.ok(deleteButton(), "expected Delete button back after Cancel");
+  assert.equal(confirmButton(), undefined);
+  assert.equal(calls.filter(call => call.method === "DELETE").length, 0);
+
+  // Failed DELETE shows alert and keeps the user on the job page.
+  failDelete = true;
+  await act(async () => deleteButton().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await act(async () => confirmButton().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.match(document.querySelector('.delete-job [role="alert"]').textContent, /the job is still running/);
+  assert.equal(window.location.hash, "#/jobs/t_1");
+
+  // Confirmed DELETE succeeds and navigates back to #/jobs.
+  failDelete = false;
+  await act(async () => deleteButton().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await act(async () => confirmButton().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  assert.equal(calls.filter(call => call.url === "/api/v1/tickets/t_1" && call.method === "DELETE").length, 2);
+  assert.equal(window.location.hash, "#/jobs");
 });

@@ -1368,13 +1368,53 @@ func (s *Store) Cancel(ctx context.Context, ticketID, by string) (Ticket, error)
 		if _, err = tx.ExecContext(ctx, `UPDATE runs SET cancel_requested_at=? WHERE ticket_id=? AND status=? AND cancel_requested_at IS NULL`, stamp(now), ticketID, RunRunning); err != nil {
 			return err
 		}
-		if err = applyTransition(ctx, tx, ticket, Transition{State: StateCancelled, Message: "Cancelled by " + by}, now); err != nil {
+		if err = applyTransition(ctx, tx, ticket, Transition{State: StateCancelled, Message: "Cancelled by " + by}, now, true); err != nil {
 			return err
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)
 		return err
 	})
 	return ticket, err
+}
+
+// DeleteTicket permanently removes a ticket and every row belonging to it or
+// its runs. It returns ErrNotFound when the ticket does not exist and
+// ErrStillWorking when the ticket is still working or has a queued or running
+// run.
+func (s *Store) DeleteTicket(ctx context.Context, ticketID string) error {
+	return s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		if ticket.State == StateWorking {
+			return ErrStillWorking
+		}
+		var active int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND status IN (?,?)`, ticketID, RunQueued, RunRunning).Scan(&active); err != nil {
+			return err
+		}
+		if active > 0 {
+			return ErrStillWorking
+		}
+		for _, stmt := range []string{
+			`DELETE FROM run_activity_events WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_progress WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_stages WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_patches WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_checkpoints WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM runs WHERE ticket_id=?`,
+			`DELETE FROM ticket_entries WHERE ticket_id=?`,
+			`DELETE FROM tracker_reports WHERE ticket_id=?`,
+			`DELETE FROM human_touches WHERE ticket_id=?`,
+			`DELETE FROM tickets WHERE id=?`,
+		} {
+			if _, err = tx.ExecContext(ctx, stmt, ticketID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // ErrStillWorking means a ticket has a run going or about to, so it cannot run again yet.
@@ -1520,12 +1560,16 @@ func (s *Store) queueRun(ctx context.Context, q querier, ticketID, kind, reviewe
 	return id, err
 }
 
-func applyTransition(ctx context.Context, q querier, ticket Ticket, transition Transition, now time.Time) error {
+func terminalRunStatus(status string) bool {
+	return status == RunSucceeded || status == RunFailed || status == RunTimedOut
+}
+
+func applyTransition(ctx context.Context, q querier, ticket Ticket, transition Transition, now time.Time, clearResume bool) error {
 	var shipping any
 	if transition.State == StatePRReady {
 		shipping = nullableString(transition.Shipping)
 	}
-	if transition.State != StateWorking {
+	if clearResume || transition.State != StateWorking {
 		if _, err := q.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=COALESCE(?,pr_number),shipping=?,resume_from_step='',resume_checkpoint_run='',updated_at=? WHERE id=?`, transition.State, nullableInt(transition.PRNumber), shipping, stamp(now), ticket.ID); err != nil {
 			return err
 		}
@@ -1593,7 +1637,7 @@ func (s *Store) Apply(ctx context.Context, ticketID, from string, transition Tra
 		if err != nil || ticket.State != from {
 			return err
 		}
-		if err = applyTransition(ctx, tx, ticket, transition, s.now()); err != nil {
+		if err = applyTransition(ctx, tx, ticket, transition, s.now(), false); err != nil {
 			return err
 		}
 		updated, err = loadTicket(ctx, tx, ticketID)
@@ -1967,7 +2011,7 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 				transition.MergeGate = nil
 			}
 		}
-		if err = applyTransition(ctx, tx, ticket, transition, now); err != nil {
+		if err = applyTransition(ctx, tx, ticket, transition, now, terminalRunStatus(status)); err != nil {
 			return err
 		}
 		updated, err = loadTicket(ctx, tx, ticket.ID)

@@ -185,6 +185,80 @@ func TestLookLeavesItOpenWhenACheckDoesNotComeBackAfterAnUpdate(t *testing.T) {
 	}
 }
 
+func TestLookWaitsForDependentAggregatorCheckWhileUpstreamChecksRunPastStartGrace(t *testing.T) {
+	// Upstream checks run longer than StartGrace (e.g. 4 minutes) before the
+	// dependent "check" aggregator job registers. LookOnce must keep waiting
+	// while upstream checks are pending and only start the missing-check grace
+	// window once pending checks finish.
+	github := &fakeGitHub{
+		views: []PullRequest{open("sha2", "CLEAN")},
+		checks: [][]Check{
+			{{Name: "Linux checks", Bucket: "pending"}, {Name: "macOS checks", Bucket: "pass"}},
+			{{Name: "Linux checks", Bucket: "pending"}, {Name: "macOS checks", Bucket: "pass"}},
+			{{Name: "Linux checks", Bucket: "pass"}, {Name: "macOS checks", Bucket: "pass"}},
+			{{Name: "Linux checks", Bucket: "pass"}, {Name: "macOS checks", Bucket: "pass"}, {Name: "check", Bucket: "pass"}},
+		},
+	}
+	watch := Watch{Since: start, Seen: []string{"Linux checks", "macOS checks", "check"}, Head: "sha2", Updates: 1}
+
+	// Past StartGrace (3m and 4m), Linux checks is still pending: keep waiting and advance Since.
+	t1 := start.Add(3 * time.Minute)
+	got := look(t, github, watch, t1)
+	if got.Outcome != Waiting || !got.Watch.Since.Equal(t1) || len(github.merged) != 0 {
+		t.Fatalf("look at 3m = %+v, want Waiting with Since=%v", got, t1)
+	}
+	t2 := start.Add(4 * time.Minute)
+	got = look(t, github, got.Watch, t2)
+	if got.Outcome != Waiting || !got.Watch.Since.Equal(t2) || len(github.merged) != 0 {
+		t.Fatalf("look at 4m = %+v, want Waiting with Since=%v", got, t2)
+	}
+
+	// At 5m, Linux checks just passed and "check" has not appeared yet (1m since t2 < StartGrace): keep waiting.
+	t3 := start.Add(5 * time.Minute)
+	got = look(t, github, got.Watch, t3)
+	if got.Outcome != Waiting || len(github.merged) != 0 {
+		t.Fatalf("look at 5m = %+v, want Waiting", got)
+	}
+
+	// At 5m10s, "check" starts and passes: merge!
+	t4 := start.Add(5*time.Minute + 10*time.Second)
+	got = look(t, github, got.Watch, t4)
+	if got.Outcome != Merged || !slices.Equal(github.merged, []string{"sha2"}) {
+		t.Fatalf("look at 5m10s = %+v, merged %v", got, github.merged)
+	}
+}
+
+func TestLookStillFailsIfMissingCheckNeverStartsAfterUpstreamChecksFinish(t *testing.T) {
+	github := &fakeGitHub{
+		views: []PullRequest{open("sha2", "CLEAN")},
+		checks: [][]Check{
+			{{Name: "Linux checks", Bucket: "pending"}},
+			{{Name: "Linux checks", Bucket: "pass"}},
+			{{Name: "Linux checks", Bucket: "pass"}},
+		},
+	}
+	watch := Watch{Since: start, Seen: []string{"Linux checks", "check"}, Head: "sha2", Updates: 1}
+
+	// Still pending at 4m: refreshes Since to 4m.
+	t1 := start.Add(4 * time.Minute)
+	got := look(t, github, watch, t1)
+	if got.Outcome != Waiting || !got.Watch.Since.Equal(t1) {
+		t.Fatalf("look at 4m = %+v", got)
+	}
+	// Finished at 5m, missing "check", within StartGrace of 4m: keeps waiting.
+	t2 := start.Add(5 * time.Minute)
+	got = look(t, github, got.Watch, t2)
+	if got.Outcome != Waiting {
+		t.Fatalf("look at 5m = %+v, want Waiting", got)
+	}
+	// At 4m + StartGrace, "check" still never appeared: leaves PR open.
+	t3 := t1.Add(StartGrace)
+	got = look(t, github, got.Watch, t3)
+	if got.Outcome != LeftOpen || !strings.Contains(got.Message, `the checks "check" did not start on the updated branch`) || len(github.merged) != 0 {
+		t.Fatalf("look at grace expiry = %+v", got)
+	}
+}
+
 func TestLookLeavesItOpenWhenGitHubRefusesTheMerge(t *testing.T) {
 	github := &fakeGitHub{views: []PullRequest{open("sha1", "CLEAN")}, checks: [][]Check{passed}, refuse: []string{"Required review is missing"}}
 	got := look(t, github, Watch{Since: start}, start)
