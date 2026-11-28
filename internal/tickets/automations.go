@@ -14,32 +14,37 @@ import (
 // Automation is an automation created in the web app or API. Automations in
 // factory/automations/*.md live on disk, not here.
 type Automation struct {
-	Name      string    `json:"name"`
-	Repo      string    `json:"repo"`
-	Preset    string    `json:"preset"`
-	Prompt    string    `json:"prompt"`
-	Schedule  string    `json:"schedule,omitempty"`
-	Timezone  string    `json:"timezone,omitempty"`
-	Harness   string    `json:"harness,omitempty"`
-	Model     string    `json:"model,omitempty"`
-	RunsOn    []string  `json:"runs_on,omitempty"`
-	CreatedBy string    `json:"created_by,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Name      string            `json:"name"`
+	Repo      string            `json:"repo"`
+	Preset    string            `json:"preset"`
+	Prompt    string            `json:"prompt"`
+	Schedule  string            `json:"schedule,omitempty"`
+	Timezone  string            `json:"timezone,omitempty"`
+	Harness   string            `json:"harness,omitempty"`
+	Model     string            `json:"model,omitempty"`
+	RunsOn    []string          `json:"runs_on,omitempty"`
+	Vars      map[string]string `json:"vars,omitempty"`
+	CreatedBy string            `json:"created_by,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	UpdatedAt time.Time         `json:"updated_at"`
 }
 
-const automationColumns = `name,repo,preset,prompt,schedule,timezone,harness,model,COALESCE(runs_on,''),created_by,created_at,updated_at`
+const automationColumns = `name,repo,preset,prompt,schedule,timezone,harness,model,COALESCE(runs_on,''),COALESCE(vars,''),created_by,created_at,updated_at`
 
 func scanAutomation(row scanner) (Automation, error) {
 	var a Automation
-	var runsOn, created, updated string
-	if err := row.Scan(&a.Name, &a.Repo, &a.Preset, &a.Prompt, &a.Schedule, &a.Timezone, &a.Harness, &a.Model, &runsOn, &a.CreatedBy, &created, &updated); err != nil {
+	var runsOn, rawVars, created, updated string
+	if err := row.Scan(&a.Name, &a.Repo, &a.Preset, &a.Prompt, &a.Schedule, &a.Timezone, &a.Harness, &a.Model, &runsOn, &rawVars, &a.CreatedBy, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Automation{}, ErrNotFound
 		}
 		return Automation{}, err
 	}
 	a.RunsOn = splitLabels(runsOn)
+	var err error
+	if a.Vars, err = decodeVars(rawVars); err != nil {
+		return Automation{}, err
+	}
 	if at, err := time.Parse(time.RFC3339Nano, created); err == nil {
 		a.CreatedAt = at
 	}
@@ -79,10 +84,14 @@ func (s *Store) CreateAutomation(ctx context.Context, a Automation) (Automation,
 	if err != nil {
 		return Automation{}, fmt.Errorf("runs_on: %w", err)
 	}
+	encodedVars, err := encodeVars(a.Vars)
+	if err != nil {
+		return Automation{}, err
+	}
 	now := stamp(s.now())
 	_, err = s.q().ExecContext(ctx,
-		`INSERT INTO automations(name,repo,preset,prompt,schedule,timezone,harness,model,runs_on,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		a.Name, a.Repo, a.Preset, a.Prompt, a.Schedule, a.Timezone, a.Harness, a.Model, strings.Join(runsOn, ","), a.CreatedBy, now, now)
+		`INSERT INTO automations(name,repo,preset,prompt,schedule,timezone,harness,model,runs_on,vars,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.Name, a.Repo, a.Preset, a.Prompt, a.Schedule, a.Timezone, a.Harness, a.Model, strings.Join(runsOn, ","), encodedVars, a.CreatedBy, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Automation{}, ErrAutomationExists
@@ -98,10 +107,14 @@ func (s *Store) UpdateAutomation(ctx context.Context, a Automation) (Automation,
 	if err != nil {
 		return Automation{}, fmt.Errorf("runs_on: %w", err)
 	}
+	encodedVars, err := encodeVars(a.Vars)
+	if err != nil {
+		return Automation{}, err
+	}
 	now := stamp(s.now())
 	result, err := s.q().ExecContext(ctx,
-		`UPDATE automations SET repo=?,preset=?,prompt=?,schedule=?,timezone=?,harness=?,model=?,runs_on=?,updated_at=? WHERE name=?`,
-		a.Repo, a.Preset, a.Prompt, a.Schedule, a.Timezone, a.Harness, a.Model, strings.Join(runsOn, ","), now, a.Name)
+		`UPDATE automations SET repo=?,preset=?,prompt=?,schedule=?,timezone=?,harness=?,model=?,runs_on=?,vars=?,updated_at=? WHERE name=?`,
+		a.Repo, a.Preset, a.Prompt, a.Schedule, a.Timezone, a.Harness, a.Model, strings.Join(runsOn, ","), encodedVars, now, a.Name)
 	if err != nil {
 		return Automation{}, err
 	}

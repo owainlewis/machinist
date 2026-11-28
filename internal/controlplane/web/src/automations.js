@@ -48,31 +48,74 @@ export function isPromptEdited(current, saved) {
   return String(current ?? "").trim() !== String(saved ?? "").trim();
 }
 
-export function isRunEdited(current, saved) {
+function normalizeVars(vars, declared) {
+  const result = {};
+  if (Array.isArray(declared)) {
+    for (const item of declared) {
+      const hasValue = vars && Object.prototype.hasOwnProperty.call(vars, item.name) && vars[item.name] !== undefined && vars[item.name] !== null;
+      result[item.name] = hasValue ? String(vars[item.name]) : (item.default ?? "");
+    }
+    return result;
+  }
+  if (vars && typeof vars === "object") {
+    for (const [name, value] of Object.entries(vars)) {
+      if (name !== "repo" && value !== undefined && value !== null) result[name] = String(value);
+    }
+  }
+  return result;
+}
+
+function varsEqual(a, b) {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (!Object.prototype.hasOwnProperty.call(b, key) || a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+export function isRunEdited(current, saved, declared = []) {
   if (!current || typeof current !== "object") return isPromptEdited(current, saved);
-  return (
+  const baseChanged = (
     String(current.prompt ?? "").trim() !== String(saved?.prompt ?? "").trim() ||
     String(current.repo ?? "").trim() !== String(saved?.repo ?? "").trim() ||
     String(current.preset ?? "").trim() !== String(saved?.agent ?? saved?.preset ?? "").trim() ||
     String(current.harness ?? "").trim() !== String(saved?.harness ?? "").trim() ||
     String(current.model ?? "").trim() !== String(saved?.model ?? "").trim()
   );
+  if (baseChanged) return true;
+  if (declared.length > 0) {
+    return !varsEqual(normalizeVars(current.vars, declared), normalizeVars(saved?.vars, declared));
+  }
+  if (current.vars !== undefined) {
+    return !varsEqual(normalizeVars(current.vars), normalizeVars(saved?.vars));
+  }
+  return false;
 }
 
-export function canRunAutomation(prompt) {
-  return String(prompt ?? "").trim().length > 0;
+export function canRunAutomation(prompt, vars = {}, declared = []) {
+  if (String(prompt ?? "").trim().length === 0) return false;
+  for (const item of declared) {
+    if (item.required && !String(vars?.[item.name] ?? "").trim()) return false;
+  }
+  return true;
 }
 
-export function canSaveAutomation(form, { requireName = true } = {}) {
+export function canSaveAutomation(form, { requireName = true, presetInputs: declared = [] } = {}) {
   const name = String(form?.name ?? "").trim();
   const repo = String(form?.repo ?? "").trim();
   const preset = String(form?.preset ?? "").trim();
   const prompt = String(form?.prompt ?? "").trim();
   if (requireName && !name) return false;
-  return Boolean(repo && preset && prompt);
+  if (!repo || !preset || !prompt) return false;
+  for (const item of declared) {
+    if (item.required && !String(form?.vars?.[item.name] ?? "").trim()) return false;
+  }
+  return true;
 }
 
-export function automationPayload(form, { includeName = true } = {}) {
+export function automationPayload(form, { includeName = true, presetInputs: declared } = {}) {
   const schedule = String(form?.schedule ?? "").trim();
   const timezone = schedule ? (String(form?.timezone ?? "").trim() || "UTC") : "";
   const body = {
@@ -89,12 +132,14 @@ export function automationPayload(form, { includeName = true } = {}) {
     ? form.runs_on.map(item => String(item ?? "").trim()).filter(Boolean)
     : [];
   if (runsOn.length > 0) body.runs_on = runsOn;
+  const vars = normalizeVars(form?.vars, declared);
+  if (Object.keys(vars).length > 0) body.vars = vars;
   return body;
 }
 
 // runAutomationBody returns the optional JSON body for POST /api/v1/automations/{name}/run.
 // Leaving it undefined when unchanged runs the saved automation as-is.
-export function runAutomationBody(current, saved) {
+export function runAutomationBody(current, saved, declared = []) {
   if (typeof current === "string" || current == null) {
     const trimmed = String(current ?? "").trim();
     if (!isPromptEdited(trimmed, saved)) return undefined;
@@ -112,6 +157,15 @@ export function runAutomationBody(current, saved) {
   if (harness !== String(saved?.harness ?? "").trim()) body.harness = harness;
   const model = String(current.model ?? "").trim();
   if (model !== String(saved?.model ?? "").trim()) body.model = model;
+  if (declared.length > 0) {
+    const nextVars = normalizeVars(current.vars, declared);
+    const savedVars = normalizeVars(saved?.vars, declared);
+    if (body.preset || !varsEqual(nextVars, savedVars)) body.vars = nextVars;
+  } else if (current.vars !== undefined) {
+    const nextVars = normalizeVars(current.vars);
+    const savedVars = normalizeVars(saved?.vars);
+    if (!varsEqual(nextVars, savedVars)) body.vars = nextVars;
+  }
   return Object.keys(body).length > 0 ? body : undefined;
 }
 

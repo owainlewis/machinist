@@ -61,11 +61,36 @@ export function formatMedianCost({ median_cost: medianCost, has_cost: hasCost = 
 }
 
 // formatCostPerPR formats cost per merged PR without claiming $0.00 when runs
-// had unreported cost.
-export function formatCostPerPR(value, { mergedPRs = 0, costUnknown = 0 } = {}) {
+// had unreported cost. When USD cost is unreported and tokens were recorded,
+// it falls back to tokens per merged PR.
+export function formatCostPerPR(value, { mergedPRs = 0, costUnknown = 0, tokens = 0 } = {}) {
   if (Number.isFinite(value)) return `${formatUSD(value)}${costUnknown > 0 ? "+" : ""}`;
+  if (mergedPRs > 0 && tokens > 0) return `${formatTokens(Math.round(tokens / mergedPRs))} / PR`;
   if (mergedPRs > 0 && costUnknown > 0) return "Not reported";
   return "None yet";
+}
+
+// mergedWindow returns merged PR counts for today (the last UTC day in daily)
+// and the trailing up-to-7 UTC days.
+export function mergedWindow(daily = []) {
+  const today = daily.length ? (daily[daily.length - 1]?.merged || 0) : 0;
+  const last7d = daily.slice(-7).reduce((sum, day) => sum + (day?.merged || 0), 0);
+  return { today, last7d };
+}
+
+// handsFreeMerges computes the share and count of merged PRs that landed
+// without a human review.
+export function handsFreeMerges(cycle = {}) {
+  const merged = cycle?.merged || 0;
+  const reviewed = Math.min(Math.max(cycle?.reviewed || 0, 0), merged);
+  const auto = merged - reviewed;
+  return { merged, auto, rate: merged > 0 ? auto / merged : NaN };
+}
+
+// stewardDetail summarises PR Steward automatic retries for the Overview tile.
+export function stewardDetail(steward = {}) {
+  const retries = steward?.retries || 0;
+  return retries > 0 ? plural(retries, "auto-retry", "auto-retries") : "No conflicts or CI fixes needed";
 }
 
 export function unreportedNote(count, unit = "run") {
@@ -188,6 +213,23 @@ export function touchParts(touches) {
     plural(touches?.reruns || 0, "rerun"),
     plural(touches?.reviews || 0, "review"),
   ].join(", ");
+}
+
+// autoMergeRate returns the share of merge-gate evaluated tickets that
+// auto-merged with zero human reviews, or NaN when none were evaluated.
+export function autoMergeRate(mergeGate) {
+  const evaluated = mergeGate?.evaluated || 0;
+  return evaluated > 0 ? (mergeGate.auto_merged || 0) / evaluated : NaN;
+}
+
+// mergeGateRiskParts summarises evaluated tickets by risk level.
+export function mergeGateRiskParts(mergeGate) {
+  if (!(mergeGate?.evaluated > 0)) return "";
+  return [
+    `${formatCount(mergeGate.low_risk || 0)} low`,
+    `${formatCount(mergeGate.medium_risk || 0)} medium`,
+    `${formatCount(mergeGate.high_risk || 0)} high risk`,
+  ].join(" · ");
 }
 
 // The steps a factory's presets name. Each keeps its color whatever the range,

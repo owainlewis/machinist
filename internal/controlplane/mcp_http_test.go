@@ -749,3 +749,107 @@ func TestMCPRerunJobAndGetStats(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPRunJobSupportsPresetVars(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	regionDefault := "us-east-1"
+	f.server.factory.Presets["deploy"] = factory.Preset{
+		Name:        "deploy",
+		Description: "Deploy service.",
+		Inputs: map[string]factory.Input{
+			"environment": {Description: "Target environment"},
+			"region":      {Description: "Region", Default: &regionDefault},
+		},
+		Steps: []runner.Step{{Name: "deploy", Run: "true"}},
+	}
+	f.server.schedule.Automations = []factory.Automation{
+		{Name: "nightly", Repo: "owner/repo", Preset: "default", Prompt: "Check"},
+	}
+	runToken := f.newScopedToken(t, "grokbot", tickets.ScopeRun)
+
+	// Valid custom job with preset inputs applies defaults and persists vars.
+	created := decodeMCPToolJSON[mcpRunJobResult](t, f.mcpTool(t, runToken, "run_job", map[string]any{
+		"repo":   "owner/repo",
+		"preset": "deploy",
+		"prompt": "Deploy staging",
+		"vars":   map[string]string{"environment": "staging"},
+	}))
+	if !created.Created || created.Vars["environment"] != "staging" || created.Vars["region"] != "us-east-1" || len(created.Vars) != 2 {
+		t.Fatalf("created = %+v", created)
+	}
+	got := decodeMCPToolJSON[mcpJobDetail](t, f.mcpTool(t, runToken, "get_job", map[string]any{"id": created.ID}))
+	if got.Vars["environment"] != "staging" || got.Vars["region"] != "us-east-1" {
+		t.Fatalf("get_job vars = %+v", got.Vars)
+	}
+
+	// Missing required var, unknown var, reserved repo in vars, and vars with automation all return tool errors.
+	for name, args := range map[string]map[string]any{
+		"missing required": {"repo": "owner/repo", "preset": "deploy", "prompt": "Deploy"},
+		"unknown var":      {"repo": "owner/repo", "preset": "deploy", "prompt": "Deploy", "vars": map[string]string{"environment": "staging", "bogus": "1"}},
+		"reserved repo":    {"repo": "owner/repo", "preset": "deploy", "prompt": "Deploy", "vars": map[string]string{"repo": "owner/other", "environment": "staging"}},
+		"with automation":  {"automation": "nightly", "vars": map[string]string{"environment": "staging"}},
+	} {
+		res := f.mcpTool(t, runToken, "run_job", args)
+		if !res.IsError {
+			t.Fatalf("%s: expected tool error, got %+v", name, res)
+		}
+	}
+}
+
+func TestMCPRunJobAcceptsHarnessAndModel(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	cron, err := triggers.ParseCron("0 9 * * *", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server.schedule.Automations = []factory.Automation{
+		{Name: "nightly-review", Repo: "owner/repo", Preset: "default", Prompt: "Review open PRs", Cron: cron},
+	}
+	runToken := f.newScopedToken(t, "grokbot", tickets.ScopeRun)
+
+	// Custom job with harness and model overrides.
+	started := decodeMCPToolJSON[mcpRunJobResult](t, f.mcpTool(t, runToken, "run_job", map[string]any{
+		"repo":    "owner/repo",
+		"prompt":  "Refactor parser",
+		"harness": "claude",
+		"model":   "opus",
+	}))
+	if !started.Created || started.Harness != "claude" || started.Model != "opus" {
+		t.Fatalf("started = %+v", started)
+	}
+	got := decodeMCPToolJSON[mcpJobDetail](t, f.mcpTool(t, runToken, "get_job", map[string]any{"id": started.ID}))
+	if got.Harness != "claude" || got.Model != "opus" {
+		t.Fatalf("get_job = %+v", got)
+	}
+
+	// Invalid harness on custom job returns a tool error.
+	bad := f.mcpTool(t, runToken, "run_job", map[string]any{
+		"repo":    "owner/repo",
+		"prompt":  "Bad harness",
+		"harness": "nope",
+	})
+	if !bad.IsError || !strings.Contains(bad.Content[0].Text, "harness must be one of") {
+		t.Fatalf("bad custom harness = %+v", bad)
+	}
+
+	// Automation run with harness and model overrides.
+	autoStarted := decodeMCPToolJSON[mcpRunJobResult](t, f.mcpTool(t, runToken, "run_job", map[string]any{
+		"automation": "nightly-review",
+		"harness":    "codex",
+		"model":      "gpt-5-codex",
+	}))
+	if !autoStarted.Created || autoStarted.Harness != "codex" || autoStarted.Model != "gpt-5-codex" {
+		t.Fatalf("autoStarted = %+v", autoStarted)
+	}
+
+	// Invalid harness on automation run returns a tool error.
+	badAuto := f.mcpTool(t, runToken, "run_job", map[string]any{
+		"automation": "nightly-review",
+		"harness":    "invalid",
+	})
+	if !badAuto.IsError || !strings.Contains(badAuto.Content[0].Text, "harness must be one of") {
+		t.Fatalf("bad automation harness = %+v", badAuto)
+	}
+}

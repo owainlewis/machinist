@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -319,6 +320,20 @@ func (s *Server) cancelTicket(w http.ResponseWriter, r *http.Request, tokenName 
 	s.writeTicket(w, r, http.StatusOK, ticket)
 }
 
+func (s *Server) deleteTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
+	id := r.PathValue("id")
+	if err := s.store.DeleteTicket(r.Context(), id); err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	if s.engine != nil {
+		s.engine.Unpin(id)
+	}
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "job.deleted", actorID, actorName, id, "succeeded")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) runEvents(w http.ResponseWriter, r *http.Request, _ string) {
 	id := r.PathValue("id")
 	if _, err := s.store.Run(r.Context(), id); err != nil {
@@ -450,15 +465,16 @@ func (s *Server) listAutomations(w http.ResponseWriter, r *http.Request, _ strin
 }
 
 type automationRequest struct {
-	Name     string   `json:"name"`
-	Repo     string   `json:"repo"`
-	Preset   string   `json:"preset"`
-	Prompt   string   `json:"prompt"`
-	Schedule string   `json:"schedule"`
-	Timezone string   `json:"timezone"`
-	Harness  string   `json:"harness"`
-	Model    string   `json:"model"`
-	RunsOn   []string `json:"runs_on,omitempty"`
+	Name     string            `json:"name"`
+	Repo     string            `json:"repo"`
+	Preset   string            `json:"preset"`
+	Prompt   string            `json:"prompt"`
+	Schedule string            `json:"schedule"`
+	Timezone string            `json:"timezone"`
+	Harness  string            `json:"harness"`
+	Model    string            `json:"model"`
+	RunsOn   []string          `json:"runs_on,omitempty"`
+	Vars     map[string]string `json:"vars,omitempty"`
 }
 
 func (s *Server) resolveConnectedRepo(r *http.Request, repo string) (string, error) {
@@ -495,8 +511,16 @@ func (s *Server) validateAutomationInput(r *http.Request, name string, req autom
 	if loaded == nil {
 		return tickets.Automation{}, http.StatusBadRequest, fmt.Errorf("preset %q does not exist", preset)
 	}
-	if _, ok := loaded.Preset(preset); !ok {
+	loadedPreset, ok := loaded.Preset(preset)
+	if !ok {
 		return tickets.Automation{}, http.StatusBadRequest, fmt.Errorf("preset %q does not exist", preset)
+	}
+	if _, err := loadedPreset.ResolveVars(req.Vars); err != nil {
+		return tickets.Automation{}, http.StatusBadRequest, err
+	}
+	var vars map[string]string
+	if len(req.Vars) > 0 {
+		vars = maps.Clone(req.Vars)
 	}
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
@@ -533,6 +557,7 @@ func (s *Server) validateAutomationInput(r *http.Request, name string, req autom
 		Harness:  harnessName,
 		Model:    model,
 		RunsOn:   runsOn,
+		Vars:     vars,
 	}, http.StatusOK, nil
 }
 
@@ -612,12 +637,13 @@ func (s *Server) deleteAutomation(w http.ResponseWriter, r *http.Request, tokenN
 
 func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName string) {
 	var request struct {
-		Prompt  *string   `json:"prompt"`
-		Repo    *string   `json:"repo"`
-		Preset  *string   `json:"preset"`
-		Harness *string   `json:"harness"`
-		Model   *string   `json:"model"`
-		RunsOn  *[]string `json:"runs_on"`
+		Prompt  *string            `json:"prompt"`
+		Repo    *string            `json:"repo"`
+		Preset  *string            `json:"preset"`
+		Harness *string            `json:"harness"`
+		Model   *string            `json:"model"`
+		RunsOn  *[]string          `json:"runs_on"`
+		Vars    *map[string]string `json:"vars"`
 	}
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
@@ -687,6 +713,10 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 		overrides.RunsOn = runsOn
 		overrides.OverrideRunsOn = true
 	}
+	if request.Vars != nil {
+		overrides.Vars = maps.Clone(*request.Vars)
+		overrides.OverrideVars = true
+	}
 	ticket, created, err := s.schedule.RunNow(r.Context(), r.PathValue("name"), tokenName, overrides)
 	if err != nil {
 		writeTicketError(w, err)
@@ -704,14 +734,15 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request, tokenName
 // presetView is what the New job form and Settings show of a preset: its name,
 // what it does, any inheritance or model overrides, and its steps in order.
 type presetView struct {
-	Name          string           `json:"name"`
-	Description   string           `json:"description"`
-	Extends       string           `json:"extends,omitempty"`
-	Harness       string           `json:"harness,omitempty"`
-	Model         string           `json:"model,omitempty"`
-	RunsOn        []string         `json:"runs_on,omitempty"`
-	TimeoutMillis int64            `json:"timeout_millis,omitempty"`
-	Steps         []presetStepView `json:"steps"`
+	Name          string                   `json:"name"`
+	Description   string                   `json:"description"`
+	Extends       string                   `json:"extends,omitempty"`
+	Harness       string                   `json:"harness,omitempty"`
+	Model         string                   `json:"model,omitempty"`
+	RunsOn        []string                 `json:"runs_on,omitempty"`
+	TimeoutMillis int64                    `json:"timeout_millis,omitempty"`
+	Inputs        map[string]factory.Input `json:"inputs,omitempty"`
+	Steps         []presetStepView         `json:"steps"`
 }
 
 // presetStepView is one step on /api/v1/presets: its command, any referenced
@@ -758,6 +789,18 @@ func presetStepViews(loaded *factory.Factory, preset factory.Preset) []presetSte
 func presetViews(loaded *factory.Factory) []presetView {
 	views := make([]presetView, 0, len(loaded.Presets))
 	for name, preset := range loaded.Presets {
+		var inputs map[string]factory.Input
+		if len(preset.Inputs) > 0 {
+			inputs = make(map[string]factory.Input, len(preset.Inputs))
+			for inputName, spec := range preset.Inputs {
+				copied := factory.Input{Description: spec.Description}
+				if spec.Default != nil {
+					val := *spec.Default
+					copied.Default = &val
+				}
+				inputs[inputName] = copied
+			}
+		}
 		views = append(views, presetView{
 			Name:          name,
 			Description:   preset.Description,
@@ -766,6 +809,7 @@ func presetViews(loaded *factory.Factory) []presetView {
 			Model:         preset.Model,
 			RunsOn:        slices.Clone(preset.RunsOn),
 			TimeoutMillis: preset.Timeout.Milliseconds(),
+			Inputs:        inputs,
 			Steps:         presetStepViews(loaded, preset),
 		})
 	}

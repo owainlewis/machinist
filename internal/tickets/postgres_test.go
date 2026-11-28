@@ -391,3 +391,37 @@ func TestConcurrentUpdateUserLastAdminPreserved(t *testing.T) {
 		t.Fatalf("activeAdmins = %d, want 1", activeAdmins)
 	}
 }
+
+func TestPostgresMigrationV5AddsVarsColumns(t *testing.T) {
+	var v5 *postgresMigration
+	for i := range postgresMigrations {
+		if postgresMigrations[i].version == 5 {
+			v5 = &postgresMigrations[i]
+			break
+		}
+	}
+	if v5 == nil {
+		t.Fatal("v5 migration not found")
+	}
+	joined := strings.Join(v5.statements, "\n")
+	for _, want := range []string{
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS vars TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE automations ADD COLUMN IF NOT EXISTS vars TEXT NOT NULL DEFAULT ''`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("v5 migration missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestPostgresMigrationV6AddsPreviousPRNumberColumn(t *testing.T) {
+	last := postgresMigrations[len(postgresMigrations)-1]
+	if last.version != 6 {
+		t.Fatalf("latest postgres migration = v%d, want v6", last.version)
+	}
+	joined := strings.Join(last.statements, "\n")
+	want := `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS previous_pr_number INTEGER NOT NULL DEFAULT 0`
+	if !strings.Contains(joined, want) {
+		t.Fatalf("v6 migration missing %q:\n%s", want, joined)
+	}
+}

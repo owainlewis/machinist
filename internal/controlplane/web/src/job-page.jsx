@@ -1,5 +1,5 @@
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowUpRight, Ban, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, Play, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Ban, Check, ChevronRight, CircleAlert, CircleDashed, Download, LoaderCircle, Minus, Play, RotateCcw, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import { api, SignedOutError } from "./api.js";
 import { AgentBadges } from "./agent-badge.jsx";
 import { harnessList, labelList, waitingForRunner } from "./agents.js";
@@ -234,7 +234,7 @@ function RunAgain({ ticketID, fromStep = "", onDone }) {
   </div>;
 }
 
-// CancelJob stops an active (queued or running) job.
+// CancelJob stops an active or needs_you job.
 function CancelJob({ ticketID, onDone }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -252,6 +252,40 @@ function CancelJob({ ticketID, onDone }) {
   }
   return <div className="cancel-job">
     <Button variant="outline" size="sm" className="text-danger" onClick={cancel} disabled={busy}><Ban className="size-3.5" aria-hidden="true" />{busy ? "Cancelling" : "Cancel"}</Button>
+    {error && <p className="form-error" role="alert">{error}</p>}
+  </div>;
+}
+
+// DeleteJob permanently removes an ended or needs_you job after inline
+// confirmation, then returns to the jobs list.
+function DeleteJob({ ticketID, onSignedOut }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function remove() {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/v1/tickets/${encodeURIComponent(ticketID)}`, { method: "DELETE" });
+      window.location.hash = "#/jobs";
+    } catch (failure) {
+      if (failure instanceof SignedOutError) {
+        onSignedOut?.();
+        return;
+      }
+      setError(failure.message);
+      setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div className="delete-job">
+    {confirming
+      ? <div className="delete-job-confirm">
+        <Button type="button" variant="destructive" size="sm" onClick={remove} disabled={busy}>{busy ? "Deleting" : "Confirm delete"}</Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => setConfirming(false)} disabled={busy}>Cancel</Button>
+      </div>
+      : <Button type="button" variant="outline" size="sm" className="text-danger" onClick={() => { setError(""); setConfirming(true); }}><Trash2 className="size-3.5" aria-hidden="true" />Delete</Button>}
     {error && <p className="form-error" role="alert">{error}</p>}
   </div>;
 }
@@ -278,11 +312,17 @@ function MergeGatePanel({ ticket }) {
   </section>;
 }
 
-export function JobView({ detail, role = "admin", onChange }) {
+export function JobView({ detail, role = "admin", onChange, onSignedOut }) {
   const canRun = role !== "viewer";
+  const isAdmin = role === "admin";
   const { ticket, entries = [], runs = [], steps: presetSteps = [], waiting_for: waitingFor = [], waiting_for_labels: waitingForLabels = [], runs_on: detailRunsOn = [] } = detail;
   const runsOn = detailRunsOn.length ? detailRunsOn : (ticket.runs_on || []);
+  const jobInputs = Object.entries(ticket.vars || {})
+    .filter(([name, value]) => name !== "repo" && value !== "" && value != null)
+    .sort(([a], [b]) => a.localeCompare(b));
   const state = jobState(ticket, runs.some(run => run.status === "running"));
+  const finished = isFinished(state);
+  const canCancel = !finished || state === "needs_you";
   const pr = prLink(ticket);
   const original = sourceLink(ticket);
   const prompt = entries.find(entry => entry.kind === "request")?.body || "";
@@ -303,7 +343,9 @@ export function JobView({ detail, role = "admin", onChange }) {
       <h1>{ticket.title || ticket.id}</h1>
       <div className="job-actions">
         <State value={state} />
-        {canRun && (isFinished(state) ? <RunAgain ticketID={ticket.id} fromStep={retryStep} onDone={onChange} /> : <CancelJob ticketID={ticket.id} onDone={onChange} />)}
+        {canRun && finished && <RunAgain ticketID={ticket.id} fromStep={retryStep} onDone={onChange} />}
+        {canRun && canCancel && <CancelJob ticketID={ticket.id} onDone={onChange} />}
+        {isAdmin && finished && <DeleteJob ticketID={ticket.id} onSignedOut={onSignedOut} />}
       </div>
     </header>
     <dl className="job-facts">
@@ -311,6 +353,7 @@ export function JobView({ detail, role = "admin", onChange }) {
       <div><dt>Repository</dt><dd>{ticket.repo}</dd></div>
       <div><dt>Preset</dt><dd>{ticket.agent}</dd></div>
       {runsOn.length > 0 && <div><dt>Runs on</dt><dd><span className="runner-labels">{runsOn.map(label => <span key={label} className="runner-label">{label}</span>)}</span></dd></div>}
+      {jobInputs.length > 0 && <div><dt>Inputs</dt><dd><span className="job-inputs">{jobInputs.map(([name, value]) => <span key={name} className="job-input"><code>{name}</code><span>{value}</span></span>)}</span></dd></div>}
       <div><dt>Pull request</dt><dd>{pr ? <PullRequest ticket={ticket} link={pr} /> : noPullRequest(state)}</dd></div>
       <div><dt>Started by</dt><dd>{ticket.created_by}</dd></div>
       <div><dt>Created</dt><dd><time dateTime={ticket.created_at}>{relativeTime(ticket.created_at)}</time></dd></div>
@@ -398,5 +441,5 @@ export function JobPage({ jobID, role = "admin", onSignedOut }) {
     <a className="back-link" href="#/jobs"><ArrowLeft className="size-3.5" aria-hidden="true" />Jobs</a>
     {error ? <p className="form-error" role="alert">{error}</p> : <p className="page-note" role="status">Loading job</p>}
   </div>;
-  return <>{error && <p className="form-error page-banner" role="alert">{error}</p>}<JobView detail={detail} role={role} onChange={refresh} /></>;
+  return <>{error && <p className="form-error page-banner" role="alert">{error}</p>}<JobView detail={detail} role={role} onChange={refresh} onSignedOut={onSignedOut} /></>;
 }

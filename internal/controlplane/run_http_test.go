@@ -2,11 +2,13 @@ package controlplane
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/sources"
@@ -363,5 +365,273 @@ func TestRunAPIAndAutomationsAcceptRunsOn(t *testing.T) {
 	}
 	if strings.Join(ticket.RunsOn, ",") != "macos" {
 		t.Fatalf("automation ticket runs_on = %v, want [macos]", ticket.RunsOn)
+	}
+}
+
+func TestRunAPIValidatesPresetInputsAndAppliesDefaults(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	regionDefault := "us-east-1"
+	emptyDefault := ""
+	f.server.factory.Presets["deploy"] = factory.Preset{
+		Name:        "deploy",
+		Description: "Deploy service.",
+		Inputs: map[string]factory.Input{
+			"environment": {Description: "Target environment"},
+			"region":      {Description: "AWS region", Default: &regionDefault},
+			"notes":       {Description: "Optional notes", Default: &emptyDefault},
+		},
+		Steps: []runner.Step{{Name: "deploy", Run: "true"}},
+	}
+	f.server.presets = presetViews(f.server.factory)
+
+	// Missing required input, empty required input, unknown var, oversize value, and NUL byte all return 400.
+	for name, vars := range map[string]map[string]string{
+		"missing required": {"repo": "owner/repo"},
+		"empty required":   {"repo": "owner/repo", "environment": ""},
+		"unknown input":    {"repo": "owner/repo", "environment": "staging", "bogus": "1"},
+		"oversize value":   {"repo": "owner/repo", "environment": strings.Repeat("a", factory.MaxInputBytes+1)},
+		"NUL byte":         {"repo": "owner/repo", "environment": "bad\x00env"},
+	} {
+		req := sources.RunRequest{Key: "bad-" + name, Preset: "deploy", Vars: vars, Prompt: "Deploy now."}
+		if resp, body := f.call(t, http.MethodPost, "/machinist/run", f.token, req); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d: %s", name, resp.StatusCode, body)
+		}
+	}
+
+	// Valid request applies defaults and returns resolved vars (including repo) across run and job routes.
+	resp, body := f.call(t, http.MethodPost, "/machinist/run", f.token, sources.RunRequest{
+		Key:    "deploy-1",
+		Preset: "deploy",
+		Vars:   map[string]string{"repo": "owner/repo", "environment": "staging"},
+		Prompt: "Deploy staging.",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /machinist/run = %d: %s", resp.StatusCode, body)
+	}
+	wantJobVars := map[string]string{
+		"repo":        "owner/repo",
+		"environment": "staging",
+		"region":      "us-east-1",
+		"notes":       "",
+	}
+	created := decodeJob(t, body)
+	if !maps.Equal(created.Vars, wantJobVars) {
+		t.Fatalf("created.Vars = %+v, want %+v", created.Vars, wantJobVars)
+	}
+	fetched := f.getJob(t, created.ID)
+	if !maps.Equal(fetched.Vars, wantJobVars) {
+		t.Fatalf("GET /machinist/jobs/{id} vars = %+v, want %+v", fetched.Vars, wantJobVars)
+	}
+	listResp, listBody := f.call(t, http.MethodGet, "/machinist/jobs", f.token, nil)
+	var list struct {
+		Jobs []job `json:"jobs"`
+	}
+	if listResp.StatusCode != http.StatusOK || json.Unmarshal(listBody, &list) != nil || len(list.Jobs) != 1 || !maps.Equal(list.Jobs[0].Vars, wantJobVars) {
+		t.Fatalf("GET /machinist/jobs = %d %s", listResp.StatusCode, listBody)
+	}
+
+	// /api/v1/tickets/{id} returns declared preset inputs (without repo) on ticket.vars.
+	ticketResp, ticketBody := f.call(t, http.MethodGet, "/api/v1/tickets/"+created.ID, f.token, nil)
+	var detail struct {
+		Ticket tickets.Ticket `json:"ticket"`
+	}
+	if ticketResp.StatusCode != http.StatusOK || json.Unmarshal(ticketBody, &detail) != nil {
+		t.Fatalf("GET /api/v1/tickets/{id} = %d %s", ticketResp.StatusCode, ticketBody)
+	}
+	wantTicketVars := map[string]string{"environment": "staging", "region": "us-east-1", "notes": ""}
+	if !maps.Equal(detail.Ticket.Vars, wantTicketVars) {
+		t.Fatalf("ticket.Vars = %+v, want %+v", detail.Ticket.Vars, wantTicketVars)
+	}
+
+	// Polling runner receives declared inputs on RunRequest.Inputs and built-ins on RunRequest.Vars.
+	if err := f.server.engine.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	pollResp, pollBody := f.call(t, http.MethodPost, "/api/v1/runners/poll", f.token, protocol.PollRequest{Harnesses: []string{protocol.StepsHarness}})
+	var runReq runner.RunRequest
+	if pollResp.StatusCode != http.StatusOK || json.Unmarshal(pollBody, &runReq) != nil {
+		t.Fatalf("poll = %d %s", pollResp.StatusCode, pollBody)
+	}
+	if !maps.Equal(runReq.Inputs, wantTicketVars) {
+		t.Fatalf("RunRequest.Inputs = %+v, want %+v", runReq.Inputs, wantTicketVars)
+	}
+	if runReq.Vars["repo"] != "owner/repo" || runReq.Vars["auto_merge"] != "true" || len(runReq.Vars) != 2 {
+		t.Fatalf("RunRequest.Vars = %+v", runReq.Vars)
+	}
+
+	// Optional input can be explicitly overridden to empty string.
+	resp, body = f.call(t, http.MethodPost, "/machinist/run", f.token, sources.RunRequest{
+		Key:    "deploy-2",
+		Preset: "deploy",
+		Vars:   map[string]string{"repo": "owner/repo", "environment": "prod", "region": ""},
+		Prompt: "Deploy prod.",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("explicit empty override = %d: %s", resp.StatusCode, body)
+	}
+	if got := decodeJob(t, body).Vars; got["region"] != "" || got["environment"] != "prod" {
+		t.Fatalf("explicit empty override vars = %+v", got)
+	}
+}
+
+func TestAutomationsAPIAndRunOverridesSupportVars(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	regionDefault := "us-east-1"
+	f.server.factory.Presets["deploy"] = factory.Preset{
+		Name:        "deploy",
+		Description: "Deploy service.",
+		Inputs: map[string]factory.Input{
+			"environment": {Description: "Target environment"},
+			"region":      {Description: "AWS region", Default: &regionDefault},
+		},
+		Steps: []runner.Step{{Name: "deploy", Run: "true"}},
+	}
+	f.server.presets = presetViews(f.server.factory)
+
+	// Missing required var and unknown var rejected on create.
+	for name, vars := range map[string]any{
+		"missing required": nil,
+		"unknown var":      map[string]string{"environment": "staging", "bogus": "x"},
+	} {
+		if resp, body := f.call(t, http.MethodPost, "/api/v1/automations", f.token, map[string]any{
+			"name":   "deploy-staging",
+			"repo":   "owner/repo",
+			"preset": "deploy",
+			"prompt": "Deploy staging.",
+			"vars":   vars,
+		}); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("create %s = %d: %s", name, resp.StatusCode, body)
+		}
+	}
+
+	// Create automation with valid vars.
+	resp, body := f.call(t, http.MethodPost, "/api/v1/automations", f.token, map[string]any{
+		"name":   "deploy-staging",
+		"repo":   "owner/repo",
+		"preset": "deploy",
+		"prompt": "Deploy staging.",
+		"vars":   map[string]string{"environment": "staging"},
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create = %d: %s", resp.StatusCode, body)
+	}
+	var created tickets.Automation
+	if err := json.Unmarshal(body, &created); err != nil || !maps.Equal(created.Vars, map[string]string{"environment": "staging"}) {
+		t.Fatalf("created = %+v, err = %v", created, err)
+	}
+
+	// Update automation vars (invalid rejected, valid persisted).
+	if resp, body := f.call(t, http.MethodPut, "/api/v1/automations/deploy-staging", f.token, map[string]any{
+		"repo":   "owner/repo",
+		"preset": "deploy",
+		"prompt": "Deploy staging.",
+		"vars":   map[string]string{"unknown": "x"},
+	}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad update = %d: %s", resp.StatusCode, body)
+	}
+	resp, body = f.call(t, http.MethodPut, "/api/v1/automations/deploy-staging", f.token, map[string]any{
+		"repo":   "owner/repo",
+		"preset": "deploy",
+		"prompt": "Deploy EU staging.",
+		"vars":   map[string]string{"environment": "staging", "region": "eu-west-1"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update = %d: %s", resp.StatusCode, body)
+	}
+
+	// GET /api/v1/automations returns saved vars.
+	listResp, listBody := f.call(t, http.MethodGet, "/api/v1/automations", f.token, nil)
+	var listed struct {
+		Automations []sources.AutomationStatus `json:"automations"`
+	}
+	if listResp.StatusCode != http.StatusOK || json.Unmarshal(listBody, &listed) != nil || len(listed.Automations) != 1 || !maps.Equal(listed.Automations[0].Vars, map[string]string{"environment": "staging", "region": "eu-west-1"}) {
+		t.Fatalf("GET /api/v1/automations = %d %s", listResp.StatusCode, listBody)
+	}
+
+	// Run without override inherits saved vars.
+	resp, body = f.call(t, http.MethodPost, "/api/v1/automations/deploy-staging/run", f.token, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("run default = %d: %s", resp.StatusCode, body)
+	}
+	var ticket tickets.Ticket
+	if err := json.Unmarshal(body, &ticket); err != nil || !maps.Equal(ticket.Vars, map[string]string{"environment": "staging", "region": "eu-west-1"}) {
+		t.Fatalf("inherited run ticket = %+v, err = %v", ticket, err)
+	}
+	if _, err := f.store.Cancel(t.Context(), ticket.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run with invalid vars override returns 400.
+	if resp, body := f.call(t, http.MethodPost, "/api/v1/automations/deploy-staging/run", f.token, map[string]any{
+		"vars": map[string]string{"bogus": "nope"},
+	}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad run override = %d: %s", resp.StatusCode, body)
+	}
+
+	// Run with valid vars override applies override + preset defaults without modifying saved automation.
+	resp, body = f.call(t, http.MethodPost, "/api/v1/automations/deploy-staging/run", f.token, map[string]any{
+		"vars": map[string]string{"environment": "prod"},
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("override run = %d: %s", resp.StatusCode, body)
+	}
+	var overridden tickets.Ticket
+	if err := json.Unmarshal(body, &overridden); err != nil || !maps.Equal(overridden.Vars, map[string]string{"environment": "prod", "region": "us-east-1"}) {
+		t.Fatalf("overridden run ticket = %+v, err = %v", overridden, err)
+	}
+}
+
+func TestRunAPIAcceptsAndReturnsHarnessAndModel(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+
+	// Invalid harness is rejected with 400 Bad Request.
+	bad := runRequest("bad-harness")
+	bad.Harness = "unknown"
+	if resp, body := f.call(t, http.MethodPost, "/machinist/run", f.token, bad); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad harness = %d: %s", resp.StatusCode, body)
+	}
+
+	// Without harness/model, the JSON response omits both fields.
+	plainReq := runRequest("plain-job")
+	resp, body := f.call(t, http.MethodPost, "/machinist/run", f.token, plainReq)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("plain run = %d: %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), `"harness"`) || strings.Contains(string(body), `"model"`) {
+		t.Fatalf("expected harness/model omitted when unset: %s", body)
+	}
+
+	// Valid harness and model are trimmed, persisted on the ticket, and returned on job endpoints.
+	req := runRequest("harness-job")
+	req.Harness = " codex "
+	req.Model = " gpt-5-codex "
+	resp, body = f.call(t, http.MethodPost, "/machinist/run", f.token, req)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("run = %d: %s", resp.StatusCode, body)
+	}
+	created := decodeJob(t, body)
+	if created.Harness != "codex" || created.Model != "gpt-5-codex" {
+		t.Fatalf("created = %+v", created)
+	}
+
+	fetched := f.getJob(t, created.ID)
+	if fetched.Harness != "codex" || fetched.Model != "gpt-5-codex" {
+		t.Fatalf("fetched = %+v", fetched)
+	}
+
+	stored, err := f.store.Ticket(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Harness != "codex" || stored.Model != "gpt-5-codex" {
+		t.Fatalf("stored ticket = %+v", stored)
+	}
+
+	resp, body = f.call(t, http.MethodGet, "/machinist/jobs", f.token, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"harness":"codex"`) || !strings.Contains(string(body), `"model":"gpt-5-codex"`) {
+		t.Fatalf("list = %d: %s", resp.StatusCode, body)
 	}
 }

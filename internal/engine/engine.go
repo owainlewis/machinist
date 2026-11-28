@@ -184,6 +184,13 @@ func (e *Engine) PinnedFactory(ticketID string, updatedAt time.Time) *factory.Fa
 	return nil
 }
 
+// Unpin drops any reload pin for ticketID.
+func (e *Engine) Unpin(ticketID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.pinned, ticketID)
+}
+
 // UnpinThrough drops any reload pin for ticketID recorded at or before at.
 func (e *Engine) UnpinThrough(ticketID string, at time.Time) {
 	e.mu.Lock()
@@ -402,6 +409,19 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses, label
 			})
 		}
 	}
+	var inputs map[string]string
+	if len(claim.Ticket.Vars) > 0 {
+		inputs = make(map[string]string, len(claim.Ticket.Vars))
+		for name, value := range claim.Ticket.Vars {
+			if name == "repo" {
+				continue
+			}
+			inputs[name] = value
+		}
+		if len(inputs) == 0 {
+			inputs = nil
+		}
+	}
 	return &runner.RunRequest{
 		RunID:          claim.Run.ID,
 		TicketID:       claim.Ticket.ID,
@@ -409,6 +429,7 @@ func (e *Engine) Assign(ctx context.Context, runnerName string, harnesses, label
 		Repository:     claim.Ticket.Repo,
 		Branch:         claim.Ticket.Branch(),
 		Vars:           map[string]string{"repo": claim.Ticket.Repo, "auto_merge": strconv.FormatBool(cfg.autoMerge)},
+		Inputs:         inputs,
 		Prompt:         tickets.RenderLog(claim.Entries),
 		Files:          cfg.factory.Files,
 		Steps:          steps,
@@ -621,7 +642,17 @@ func (e *Engine) findPR(ctx context.Context, runID string) (*PR, error) {
 	if err != nil {
 		return nil, err
 	}
-	return e.FindPR(ctx, ticket.Repo, ticket.Branch())
+	pr, err := e.FindPR(ctx, ticket.Repo, ticket.Branch())
+	if err != nil || pr == nil {
+		return nil, err
+	}
+	// Every run of a ticket reuses the same branch. When a rerun or reply
+	// cleared an already-merged or closed PR, ignore that historical PR (and
+	// any older one) unless it is currently attached or open again.
+	if (pr.Closed || pr.Merged) && pr.Number != ticket.PRNumber && pr.Number <= ticket.PreviousPRNumber {
+		return nil, nil
+	}
+	return pr, nil
 }
 
 // readReviews reads the reviews of a run's merged pull request up to mergedAt.
