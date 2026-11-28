@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
   state TEXT NOT NULL, agent TEXT NOT NULL, harness TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
   runs_on TEXT NOT NULL DEFAULT '', vars TEXT NOT NULL DEFAULT '',
-  pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
+  pr_number INTEGER, previous_pr_number INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL, human_commits INTEGER,
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
   origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT,
   merge_gate_decision TEXT NOT NULL DEFAULT '', merge_gate_risk TEXT NOT NULL DEFAULT '', merge_gate_reason TEXT NOT NULL DEFAULT '',
@@ -215,20 +215,24 @@ type Ticket struct {
 	// name such as linear.
 	Origin string `json:"source"`
 	// SourceURL links to the issue or message the job came from, if any.
-	SourceURL    string            `json:"source_url,omitempty"`
-	Repo         string            `json:"repo"`
-	IssueNumber  int               `json:"issue_number,omitempty"`
-	Title        string            `json:"title"`
-	State        string            `json:"state"`
-	Agent        string            `json:"agent"`
-	Harness      string            `json:"harness,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	RunsOn       []string          `json:"runs_on,omitempty"`
-	Vars         map[string]string `json:"vars,omitempty"`
-	PRNumber     int               `json:"pr_number,omitempty"`
-	CreatedBy    string            `json:"created_by"`
-	HumanCommits *int              `json:"human_commits,omitempty"`
-	MergedAt     *time.Time        `json:"merged_at,omitempty"`
+	SourceURL   string            `json:"source_url,omitempty"`
+	Repo        string            `json:"repo"`
+	IssueNumber int               `json:"issue_number,omitempty"`
+	Title       string            `json:"title"`
+	State       string            `json:"state"`
+	Agent       string            `json:"agent"`
+	Harness     string            `json:"harness,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	RunsOn      []string          `json:"runs_on,omitempty"`
+	Vars        map[string]string `json:"vars,omitempty"`
+	PRNumber    int               `json:"pr_number,omitempty"`
+	// PreviousPRNumber is the highest pull request number that merged or closed
+	// before a rerun or reply cleared it, so later runs on the reused branch do
+	// not re-attach historical pull requests.
+	PreviousPRNumber int        `json:"-"`
+	CreatedBy        string     `json:"created_by"`
+	HumanCommits     *int       `json:"human_commits,omitempty"`
+	MergedAt         *time.Time `json:"merged_at,omitempty"`
 	// PRState is open, merged or closed, and PRStateAt is when Machinist saw
 	// it change. Both are empty until the job has a pull request.
 	PRState   string     `json:"pr_state,omitempty"`
@@ -520,6 +524,10 @@ func openSQLite(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "tickets", "previous_pr_number INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Backfill monotonic seq for upgraded SQLite databases, reconcile any
 	// pre-existing duplicate working scheduled tickets before creating the
 	// partial unique index, and install seq indexes (including leading seq
@@ -648,7 +656,7 @@ func decodeVars(raw string) (map[string]string, error) {
 	return vars, nil
 }
 
-const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,COALESCE(harness,''),COALESCE(model,''),COALESCE(runs_on,''),COALESCE(vars,''),pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
+const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,COALESCE(harness,''),COALESCE(model,''),COALESCE(runs_on,''),COALESCE(vars,''),pr_number,COALESCE(previous_pr_number,0),created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
 
 type scanner interface{ Scan(...any) error }
 
@@ -657,7 +665,7 @@ func scanTicket(row scanner) (Ticket, error) {
 	var issue, pr, commits sql.NullInt64
 	var merged, prStateAt sql.NullString
 	var runsOn, rawVars, created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &ticket.Harness, &ticket.Model, &runsOn, &rawVars, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &ticket.Harness, &ticket.Model, &runsOn, &rawVars, &pr, &ticket.PreviousPRNumber, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
@@ -1491,7 +1499,8 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 			return err
 		}
 		if ticket.MergedAt != nil || ticket.PRState == PRMerged || ticket.PRState == PRClosed {
-			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=NULL,merged_at=NULL,pr_opened_at=NULL,first_review_at=NULL,human_reviews=NULL WHERE id=?`, ticketID); err != nil {
+			previousPR := max(ticket.PreviousPRNumber, ticket.PRNumber)
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET previous_pr_number=?,pr_number=NULL,merged_at=NULL,pr_opened_at=NULL,first_review_at=NULL,human_reviews=NULL WHERE id=?`, previousPR, ticketID); err != nil {
 				return err
 			}
 			// Drop touches from the finished pull request so the next pull
