@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -204,9 +205,12 @@ type Poller struct {
 	Interval time.Duration
 	// MaxJobsPerHour caps the jobs the tracker can start in any hour.
 	MaxJobsPerHour int
-	Log            io.Writer
-	now            func() time.Time
-	sleep          func(context.Context, time.Duration) bool
+	// PublicURL is the control plane's base URL, used to link to jobs in
+	// tracker comments (such as gate approval alerts).
+	PublicURL string
+	Log       io.Writer
+	now       func() time.Time
+	sleep     func(context.Context, time.Duration) bool
 
 	mu      sync.Mutex
 	started []time.Time
@@ -369,7 +373,7 @@ func (p *Poller) replies(ctx context.Context) error {
 			// Discussion from before Machinist had the issue.
 		case !p.Rules.isAllowed(reply.Author):
 			fmt.Fprintf(p.log(), "machinist: %s reply on job %s ignored: user %q may not start jobs\n", name, ticket.ID, reply.Author)
-		case ticket.State == tickets.StateWorking:
+		case ticket.State == tickets.StateWorking || ticket.State == tickets.StateWaiting:
 			cursor = minTime(cursor, reply.CreatedAt.Add(-time.Nanosecond))
 			return p.runReplies(ctx, order, batches, first, cursor)
 		default:
@@ -563,7 +567,7 @@ func (p *Poller) sync(ctx context.Context) error {
 		}
 		// Only a job whose issue Machinist moved to In Progress on an
 		// earlier poll is watched, so a slow write is never read as a move.
-		if job.State == tickets.StateWorking && job.Reported[tickets.ReportStarted] {
+		if (job.State == tickets.StateWorking || job.State == tickets.StateWaiting) && job.Reported[tickets.ReportStarted] {
 			watched[issue] = job
 		}
 	}
@@ -583,9 +587,15 @@ func (p *Poller) syncJob(ctx context.Context, issue string, job tickets.TrackerJ
 		}
 		return p.Store.MarkReported(ctx, job.TicketID, kind)
 	}
-	if job.State == tickets.StateWorking {
+	if job.State == tickets.StateWorking || job.State == tickets.StateWaiting {
 		if err := report(tickets.ReportStarted, func() error { return p.Tracker.Start(ctx, issue) }); err != nil {
 			return fmt.Errorf("move to In Progress: %w", err)
+		}
+	}
+	if job.State == tickets.StateWaiting {
+		comment := gateComment(job.TicketID, job.GateMessage, p.PublicURL)
+		if err := report(tickets.ReportGate, func() error { return p.Tracker.Comment(ctx, issue, comment) }); err != nil {
+			return fmt.Errorf("comment the gate: %w", err)
 		}
 	}
 	if job.PRNumber > 0 {
@@ -640,6 +650,18 @@ func clip(text, fallback string) string {
 		return string(runes[:maxReason-1]) + "…"
 	}
 	return text
+}
+
+// gateComment builds the comment posted to a tracker when a job pauses at an
+// approval gate. Only the static gate message and job link are included; gate
+// details are never posted to external trackers.
+func gateComment(ticketID, message, publicURL string) string {
+	msg := clip(message, "Approval required.")
+	if base := strings.TrimRight(strings.TrimSpace(publicURL), "/"); base != "" {
+		link := base + "/#/jobs/" + url.PathEscape(ticketID)
+		return "Machinist is waiting for approval: " + msg + "\n\nApprove or deny this job in Machinist: " + link
+	}
+	return "Machinist is waiting for approval: " + msg + "\n\nApprove or deny job " + ticketID + " in Machinist."
 }
 
 // cancelMoved cancels each job whose issue was unassigned from Machinist or

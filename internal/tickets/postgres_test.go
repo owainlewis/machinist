@@ -415,14 +415,48 @@ func TestPostgresMigrationV5AddsVarsColumns(t *testing.T) {
 }
 
 func TestPostgresMigrationV6AddsPreviousPRNumberColumn(t *testing.T) {
-	last := postgresMigrations[len(postgresMigrations)-1]
-	if last.version != 6 {
-		t.Fatalf("latest postgres migration = v%d, want v6", last.version)
+	var v6 *postgresMigration
+	for i := range postgresMigrations {
+		if postgresMigrations[i].version == 6 {
+			v6 = &postgresMigrations[i]
+			break
+		}
 	}
-	joined := strings.Join(last.statements, "\n")
+	if v6 == nil {
+		t.Fatal("v6 migration not found")
+	}
+	joined := strings.Join(v6.statements, "\n")
 	want := `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS previous_pr_number INTEGER NOT NULL DEFAULT 0`
 	if !strings.Contains(joined, want) {
 		t.Fatalf("v6 migration missing %q:\n%s", want, joined)
+	}
+}
+
+func TestPostgresMigrationV7AddsGateColumnsAndIndexes(t *testing.T) {
+	last := postgresMigrations[len(postgresMigrations)-1]
+	if last.version != 7 {
+		t.Fatalf("latest postgres migration = v%d, want v7", last.version)
+	}
+	joined := strings.Join(last.statements, "\n")
+	for _, want := range []string{
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_step TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_message TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_details TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_waiting_since TEXT`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_timeout_at TEXT`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_decided_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_decided_at TEXT`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_decision TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS gate_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS remaining_timeout_ms BIGINT`,
+		`DROP INDEX IF EXISTS one_active_ticket_per_issue`,
+		`state IN ('working','waiting','needs_you','pr_ready')`,
+		`DROP INDEX IF EXISTS one_active_ticket_per_schedule`,
+		`state IN ('working','waiting')`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("v7 migration missing %q:\n%s", want, joined)
+		}
 	}
 }
 

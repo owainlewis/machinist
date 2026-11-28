@@ -16,6 +16,7 @@ import (
 type JobCounts struct {
 	Total     int `json:"total"`
 	Active    int `json:"active"`
+	Waiting   int `json:"waiting"`
 	Done      int `json:"done"`
 	Failed    int `json:"failed"`
 	Cancelled int `json:"cancelled"`
@@ -216,6 +217,8 @@ func countJob(counts *JobCounts, state string) {
 	switch state {
 	case StateWorking:
 		counts.Active++
+	case StateWaiting:
+		counts.Waiting++
 	case StatePRReady, StateDone:
 		counts.Done++
 	case StateCancelled:
@@ -373,6 +376,8 @@ func (s *Store) Stats(ctx context.Context, days int, repo string) (Stats, error)
 			if day >= 0 {
 				stats.Daily[day].Cancelled++
 			}
+		case RunWaiting:
+			// A run that paused at a gate did not fail and does not affect SuccessRate.
 		default:
 			stats.Runs.Failed++
 			if day >= 0 {
@@ -830,6 +835,8 @@ func (s *Store) modelStats(ctx context.Context, stats *Stats, first time.Time, r
 				acc.passed++
 			case RunCancelled:
 				acc.cancelled++
+			case RunWaiting:
+				// Gate pause stage is not a failure.
 			default:
 				acc.failed++
 			}

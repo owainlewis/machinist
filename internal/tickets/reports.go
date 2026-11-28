@@ -8,6 +8,7 @@ import (
 // What Machinist has told a tracker about a ticket. Each is told once.
 const (
 	ReportStarted = "started"
+	ReportGate    = "gate"
 	ReportPR      = "pr"
 	ReportFailed  = "failed"
 	ReportMerged  = "merged"
@@ -24,35 +25,38 @@ type TrackerJob struct {
 	State    string
 	PRNumber int
 	// PRState is open, merged or closed, or empty with no pull request.
-	PRState   string
-	SourceKey string
+	PRState string
+	// GateMessage is the static prompt configured on the active gate step.
+	// Gate details are never exposed to external trackers.
+	GateMessage string
+	SourceKey   string
 	// Reported holds what the tracker has been told already.
 	Reported map[string]bool
 }
 
-// TrackerJobs lists a source's tickets that are working, or whose pull
-// request, its merge or close, or a failure has not been reported to the
-// source yet.
+// TrackerJobs lists a source's tickets that are working or waiting at a gate,
+// or whose pull request, its merge or close, or a failure has not been reported
+// to the source yet.
 func (s *Store) TrackerJobs(ctx context.Context, source string) ([]TrackerJob, error) {
 	unreported := `NOT EXISTS (SELECT 1 FROM tracker_reports r WHERE r.ticket_id=t.id AND r.kind=?)`
 	var jobs []TrackerJob
 	err := s.inTxReadOnly(ctx, func(tx querier) error {
-		rows, err := tx.QueryContext(ctx, `SELECT t.id,t.repo,t.state,COALESCE(t.pr_number,0),COALESCE(t.pr_state,''),e.source_key
+		rows, err := tx.QueryContext(ctx, `SELECT t.id,t.repo,t.state,COALESCE(t.pr_number,0),COALESCE(t.pr_state,''),COALESCE(t.gate_message,''),e.source_key
   FROM tickets t JOIN ticket_entries e ON e.ticket_id=t.id AND e.kind=? AND e.source_key IS NOT NULL
-  WHERE t.source=? AND (t.state=?
+  WHERE t.source=? AND (t.state IN (?,?)
     OR (COALESCE(t.pr_number,0)>0 AND `+unreported+`)
     OR (t.state=? AND `+unreported+`)
     OR (t.pr_state=? AND `+unreported+`)
     OR (t.pr_state=? AND `+unreported+`)
     OR (t.state=? AND COALESCE(t.pr_number,0)=0 AND `+unreported+`))
-  ORDER BY t.created_at`, EntryRequest, source, StateWorking, ReportPR, StateFailed, ReportFailed, PRMerged, ReportMerged, PRClosed, ReportClosed, StateDone, ReportFinished)
+  ORDER BY t.created_at`, EntryRequest, source, StateWorking, StateWaiting, ReportPR, StateFailed, ReportFailed, PRMerged, ReportMerged, PRClosed, ReportClosed, StateDone, ReportFinished)
 		if err != nil {
 			return err
 		}
 		jobs = []TrackerJob{}
 		for rows.Next() {
 			var job TrackerJob
-			if err := rows.Scan(&job.TicketID, &job.Repo, &job.State, &job.PRNumber, &job.PRState, &job.SourceKey); err != nil {
+			if err := rows.Scan(&job.TicketID, &job.Repo, &job.State, &job.PRNumber, &job.PRState, &job.GateMessage, &job.SourceKey); err != nil {
 				rows.Close()
 				return err
 			}

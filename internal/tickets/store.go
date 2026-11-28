@@ -22,10 +22,16 @@ import (
 
 const (
 	StateWorking   = "working"
+	StateWaiting   = "waiting"
 	StatePRReady   = "pr_ready"
 	StateDone      = "done"
 	StateFailed    = "failed"
 	StateCancelled = "cancelled"
+
+	// Gate decisions recorded when a waiting gate resolves.
+	GateDecisionApproved = "approved"
+	GateDecisionDenied   = "denied"
+	GateDecisionTimedOut = "timed_out"
 
 	// A pull request's state, as Machinist last read it from GitHub.
 	PROpen   = "open"
@@ -36,6 +42,7 @@ const (
 
 	RunQueued      = "queued"
 	RunRunning     = "running"
+	RunWaiting     = "waiting"
 	RunSucceeded   = "succeeded"
 	RunFailed      = "failed"
 	RunCancelled   = "cancelled"
@@ -59,6 +66,7 @@ var (
 	ErrRunNotActive      = errors.New("run is not active")
 	ErrTicketEnded       = errors.New("ticket has ended")
 	ErrNotWorking        = errors.New("ticket is not working")
+	ErrNotWaiting        = errors.New("ticket is not waiting at a gate")
 	ErrTokenExists       = errors.New("an active token with this name exists")
 	ErrAutomationExists  = errors.New("an automation with this name already exists")
 	ErrNoCheckpoint      = errors.New("no saved checkpoint is available to resume from")
@@ -74,9 +82,13 @@ CREATE TABLE IF NOT EXISTS tickets (
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
   origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT,
   merge_gate_decision TEXT NOT NULL DEFAULT '', merge_gate_risk TEXT NOT NULL DEFAULT '', merge_gate_reason TEXT NOT NULL DEFAULT '',
-  steward_retries INTEGER NOT NULL DEFAULT 0, resume_from_step TEXT NOT NULL DEFAULT '', resume_checkpoint_run TEXT NOT NULL DEFAULT '', seq INTEGER NOT NULL DEFAULT 0);
+  steward_retries INTEGER NOT NULL DEFAULT 0, resume_from_step TEXT NOT NULL DEFAULT '', resume_checkpoint_run TEXT NOT NULL DEFAULT '',
+  gate_step TEXT NOT NULL DEFAULT '', gate_message TEXT NOT NULL DEFAULT '', gate_details TEXT NOT NULL DEFAULT '',
+  gate_waiting_since TEXT, gate_timeout_at TEXT, gate_decided_by TEXT NOT NULL DEFAULT '', gate_decided_at TEXT,
+  gate_decision TEXT NOT NULL DEFAULT '', gate_reason TEXT NOT NULL DEFAULT '', remaining_timeout_ms BIGINT,
+  seq INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_issue ON tickets(repo, issue_number)
-  WHERE issue_number IS NOT NULL AND state IN ('working','needs_you','pr_ready');
+  WHERE issue_number IS NOT NULL AND state IN ('working','waiting','needs_you','pr_ready');
 CREATE INDEX IF NOT EXISTS tickets_created_at ON tickets(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS tickets_updated_at ON tickets(updated_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS ticket_entries (
@@ -253,6 +265,31 @@ type Ticket struct {
 	// nothing waits. Exposed in JSON so the UI can distinguish PRs waiting on
 	// CI to auto-merge from PRs held for human review.
 	Shipping string `json:"shipping,omitempty"`
+	// Gate holds the active approval gate while the ticket is waiting, or the
+	// most recent gate decision history once resolved.
+	Gate *Gate `json:"gate,omitempty"`
+	// RemainingTimeoutMillis tracks the remaining run-timeout budget across a
+	// gate pause, excluding time spent waiting. Nil means the full timeout applies.
+	RemainingTimeoutMillis *int64 `json:"-"`
+}
+
+// Gate is the persisted approval-gate state and decision history on a ticket.
+type Gate struct {
+	Step         string     `json:"step,omitempty"`
+	Message      string     `json:"message,omitempty"`
+	Details      string     `json:"details,omitempty"`
+	WaitingSince *time.Time `json:"waiting_since,omitempty"`
+	TimeoutAt    *time.Time `json:"timeout_at,omitempty"`
+	DecidedBy    string     `json:"decided_by,omitempty"`
+	DecidedAt    *time.Time `json:"decided_at,omitempty"`
+	Decision     string     `json:"decision,omitempty"`
+	Reason       string     `json:"reason,omitempty"`
+}
+
+func (g Gate) isEmpty() bool {
+	return g.Step == "" && g.Message == "" && g.Details == "" &&
+		g.WaitingSince == nil && g.TimeoutAt == nil &&
+		g.DecidedBy == "" && g.DecidedAt == nil && g.Decision == "" && g.Reason == ""
 }
 
 // Branch is the one branch every run of this ticket works on.
@@ -368,6 +405,11 @@ type Transition struct {
 	Reviews *Reviews
 	// MergeGate, when set, records the merge gate's judgment on the ticket.
 	MergeGate *MergeGate
+	// Gate, when set on a move to waiting, persists the active gate metadata.
+	Gate *Gate
+	// RemainingTimeoutMillis, when set, records the remaining run-timeout
+	// budget (in milliseconds) across a gate pause.
+	RemainingTimeoutMillis *int64
 }
 
 // MergeGate is the merge gate's persisted judgment on a ticket's pull request.
@@ -528,6 +570,21 @@ func openSQLite(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "tickets",
+		"gate_step TEXT NOT NULL DEFAULT ''",
+		"gate_message TEXT NOT NULL DEFAULT ''",
+		"gate_details TEXT NOT NULL DEFAULT ''",
+		"gate_waiting_since TEXT",
+		"gate_timeout_at TEXT",
+		"gate_decided_by TEXT NOT NULL DEFAULT ''",
+		"gate_decided_at TEXT",
+		"gate_decision TEXT NOT NULL DEFAULT ''",
+		"gate_reason TEXT NOT NULL DEFAULT ''",
+		"remaining_timeout_ms BIGINT",
+	); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Backfill monotonic seq for upgraded SQLite databases, reconcile any
 	// pre-existing duplicate working scheduled tickets before creating the
 	// partial unique index, and install seq indexes (including leading seq
@@ -555,7 +612,10 @@ func openSQLite(path string) (*Store, error) {
 			SELECT 1 FROM tickets newer
 			WHERE newer.source = tickets.source AND newer.state='working' AND newer.seq > tickets.seq
 		   )`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS one_active_ticket_per_schedule ON tickets(source) WHERE source LIKE 'schedule:%' AND state='working'`,
+		`DROP INDEX IF EXISTS one_active_ticket_per_issue`,
+		`CREATE UNIQUE INDEX one_active_ticket_per_issue ON tickets(repo, issue_number) WHERE issue_number IS NOT NULL AND state IN ('working','waiting','needs_you','pr_ready')`,
+		`DROP INDEX IF EXISTS one_active_ticket_per_schedule`,
+		`CREATE UNIQUE INDEX one_active_ticket_per_schedule ON tickets(source) WHERE source LIKE 'schedule:%' AND state IN ('working','waiting')`,
 		`UPDATE runs SET status='cancelled' WHERE status='queued' AND kind<>'agent'`,
 		`UPDATE tickets SET state='failed' WHERE state='needs_you'`,
 	} {
@@ -656,16 +716,17 @@ func decodeVars(raw string) (map[string]string, error) {
 	return vars, nil
 }
 
-const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,COALESCE(harness,''),COALESCE(model,''),COALESCE(runs_on,''),COALESCE(vars,''),pr_number,COALESCE(previous_pr_number,0),created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
+const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,COALESCE(harness,''),COALESCE(model,''),COALESCE(runs_on,''),COALESCE(vars,''),pr_number,COALESCE(previous_pr_number,0),created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0),COALESCE(gate_step,''),COALESCE(gate_message,''),COALESCE(gate_details,''),gate_waiting_since,gate_timeout_at,COALESCE(gate_decided_by,''),gate_decided_at,COALESCE(gate_decision,''),COALESCE(gate_reason,''),remaining_timeout_ms`
 
 type scanner interface{ Scan(...any) error }
 
 func scanTicket(row scanner) (Ticket, error) {
 	var ticket Ticket
-	var issue, pr, commits sql.NullInt64
-	var merged, prStateAt sql.NullString
+	var issue, pr, commits, remainingTimeout sql.NullInt64
+	var merged, prStateAt, gateWaitingSince, gateTimeoutAt, gateDecidedAt sql.NullString
 	var runsOn, rawVars, created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &ticket.Harness, &ticket.Model, &runsOn, &rawVars, &pr, &ticket.PreviousPRNumber, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
+	var gate Gate
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &ticket.Harness, &ticket.Model, &runsOn, &rawVars, &pr, &ticket.PreviousPRNumber, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries, &gate.Step, &gate.Message, &gate.Details, &gateWaitingSince, &gateTimeoutAt, &gate.DecidedBy, &gateDecidedAt, &gate.Decision, &gate.Reason, &remainingTimeout); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
@@ -685,6 +746,16 @@ func scanTicket(row scanner) (Ticket, error) {
 	ticket.PRStateAt = parseTime(prStateAt)
 	ticket.CreatedAt = *parseTime(sql.NullString{String: created, Valid: true})
 	ticket.UpdatedAt = *parseTime(sql.NullString{String: updated, Valid: true})
+	gate.WaitingSince = parseTime(gateWaitingSince)
+	gate.TimeoutAt = parseTime(gateTimeoutAt)
+	gate.DecidedAt = parseTime(gateDecidedAt)
+	if !gate.isEmpty() {
+		ticket.Gate = &gate
+	}
+	if remainingTimeout.Valid {
+		ms := remainingTimeout.Int64
+		ticket.RemainingTimeoutMillis = &ms
+	}
 	return ticket, nil
 }
 
@@ -787,7 +858,7 @@ func latestCheckpoint(ctx context.Context, q querier, ticketID string) (string, 
 	if err != nil {
 		return "", nil, err
 	}
-	if status != RunFailed && status != RunTimedOut {
+	if status != RunFailed && status != RunTimedOut && status != RunWaiting {
 		return "", nil, ErrNoCheckpoint
 	}
 	cp, err := loadRunCheckpoint(ctx, q, runID)
@@ -921,7 +992,7 @@ func (s *Store) findExistingTicket(ctx context.Context, q querier, request NewTi
 		return existing, err
 	}
 	if request.IssueNumber != 0 {
-		existing, err = scanTicket(q.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND issue_number=? AND state IN ('working','pr_ready')`, request.Repo, request.IssueNumber))
+		existing, err = scanTicket(q.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND issue_number=? AND state IN ('working','waiting','pr_ready')`, request.Repo, request.IssueNumber))
 		if err == nil || !errors.Is(err, ErrNotFound) {
 			return existing, err
 		}
@@ -929,7 +1000,7 @@ func (s *Store) findExistingTicket(ctx context.Context, q querier, request NewTi
 	if strings.HasPrefix(request.Source, sourceSchedulePrefix) {
 		// An automation runs one ticket at a time. Machinist no longer
 		// follows pull requests, so an open one does not hold the schedule.
-		existing, err = scanTicket(q.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? AND state=? LIMIT 1`, request.Source, StateWorking))
+		existing, err = scanTicket(q.QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE source=? AND state IN (?,?) LIMIT 1`, request.Source, StateWorking, StateWaiting))
 		if err == nil || !errors.Is(err, ErrNotFound) {
 			return existing, err
 		}
@@ -1004,7 +1075,7 @@ func hasOtherWorkingScheduleTicket(ctx context.Context, q querier, ticket Ticket
 		return false, nil
 	}
 	var otherWorking int
-	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state=? AND id<>?`, ticket.Source, StateWorking, ticket.ID).Scan(&otherWorking); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state IN (?,?) AND id<>?`, ticket.Source, StateWorking, StateWaiting, ticket.ID).Scan(&otherWorking); err != nil {
 		return false, err
 	}
 	return otherWorking > 0, nil
@@ -1104,6 +1175,7 @@ type TicketFilter struct {
 type TicketCounts struct {
 	Queued      int `json:"queued"`
 	Running     int `json:"running"`
+	Waiting     int `json:"waiting"`
 	Done        int `json:"done"`
 	Failed      int `json:"failed"`
 	NeedsPerson int `json:"needs_person"`
@@ -1197,6 +1269,9 @@ func ticketSummary(ctx context.Context, q querier, repo, source string) (TicketC
 			} else {
 				counts.Queued += n
 			}
+		case StateWaiting:
+			counts.Waiting += n
+			counts.NeedsPerson += n
 		case StatePRReady:
 			counts.Done += n
 			counts.NeedsPerson += n
@@ -1287,8 +1362,9 @@ func (s *Store) ListTicketsPage(ctx context.Context, filter TicketFilter) (Ticke
 	return page, nil
 }
 
-// ListBoardTickets returns every matching active (queued, running, or in-review)
-// ticket uncapped, plus at most doneLimit of the most recently updated finished tickets.
+// ListBoardTickets returns every matching active (queued, running, waiting, or
+// in-review) ticket uncapped, plus at most doneLimit of the most recently
+// updated finished tickets.
 func (s *Store) ListBoardTickets(ctx context.Context, filter TicketFilter, doneLimit int) (TicketPage, error) {
 	if doneLimit <= 0 {
 		doneLimit = DefaultBoardDoneLimit
@@ -1300,7 +1376,7 @@ func (s *Store) ListBoardTickets(ctx context.Context, filter TicketFilter, doneL
 	where, args := ticketWhere(filter)
 	var page TicketPage
 	err := s.inTxReadOnly(ctx, func(tx querier) error {
-		activeRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state IN ('working','pr_ready') AND (`+where+`) ORDER BY created_at ASC, id ASC`, args...)
+		activeRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state IN ('working','waiting','pr_ready') AND (`+where+`) ORDER BY created_at ASC, id ASC`, args...)
 		if err != nil {
 			return err
 		}
@@ -1311,12 +1387,12 @@ func (s *Store) ListBoardTickets(ctx context.Context, filter TicketFilter, doneL
 		}
 
 		var doneTotal int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE state NOT IN ('working','pr_ready') AND (`+where+`)`, args...).Scan(&doneTotal); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE state NOT IN ('working','waiting','pr_ready') AND (`+where+`)`, args...).Scan(&doneTotal); err != nil {
 			return err
 		}
 
 		doneArgs := append(append([]any{}, args...), doneLimit)
-		doneRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state NOT IN ('working','pr_ready') AND (`+where+`) ORDER BY updated_at DESC, id DESC LIMIT ?`, doneArgs...)
+		doneRows, err := tx.QueryContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE state NOT IN ('working','waiting','pr_ready') AND (`+where+`) ORDER BY updated_at DESC, id DESC LIMIT ?`, doneArgs...)
 		if err != nil {
 			return err
 		}
@@ -1378,7 +1454,203 @@ func (s *Store) LatestTicketBySource(ctx context.Context, source string) (Ticket
 }
 
 func activeState(state string) bool {
-	return state == StateWorking || state == StatePRReady
+	return state == StateWorking || state == StateWaiting || state == StatePRReady
+}
+
+// ApproveGate approves a ticket waiting at a human approval gate, records the
+// decision and a human timeline comment (resetting TurnsSinceHuman), and moves
+// the ticket back to StateWorking to resume from nextStep using the saved
+// checkpoint. It returns ErrNotWaiting when the ticket is not waiting,
+// ErrInvalidResumeStep when nextStep is empty, or ErrNoCheckpoint when no
+// resumable checkpoint exists.
+func (s *Store) ApproveGate(ctx context.Context, ticketID, by, reason, nextStep string) (Ticket, error) {
+	nextStep = strings.TrimSpace(nextStep)
+	if nextStep == "" {
+		return Ticket{}, ErrInvalidResumeStep
+	}
+	by = strings.TrimSpace(by)
+	reason = strings.TrimSpace(reason)
+
+	var updated Ticket
+	err := s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		if ticket.State != StateWaiting {
+			return ErrNotWaiting
+		}
+		checkpointRunID, _, err := latestCheckpoint(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		now := s.now()
+		comment := "Approved gate."
+		if ticket.Gate != nil && ticket.Gate.Step != "" {
+			comment = fmt.Sprintf("Approved gate %q.", ticket.Gate.Step)
+		}
+		if reason != "" {
+			if ticket.Gate != nil && ticket.Gate.Step != "" {
+				comment = fmt.Sprintf("Approved gate %q: %s", ticket.Gate.Step, reason)
+			} else {
+				comment = "Approved gate: " + reason
+			}
+		}
+		if err = insertEntry(ctx, tx, ticketID, EntryComment, by, comment, nil, now); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET
+			state=?,resume_from_step=?,resume_checkpoint_run=?,
+			gate_step='',gate_message='',gate_details='',gate_waiting_since=NULL,gate_timeout_at=NULL,
+			gate_decided_by=?,gate_decided_at=?,gate_decision=?,gate_reason=?,
+			updated_at=? WHERE id=?`,
+			StateWorking, nextStep, checkpointRunID,
+			by, stamp(now), GateDecisionApproved, reason,
+			stamp(now), ticketID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind=?`, ticketID, ReportGate); err != nil {
+			return err
+		}
+		updated, err = loadTicket(ctx, tx, ticketID)
+		return err
+	})
+	return updated, err
+}
+
+// DenyGate denies a ticket waiting at a human approval gate, recording the
+// decision and transitioning the ticket to StateCancelled.
+func (s *Store) DenyGate(ctx context.Context, ticketID, by, reason string) (Ticket, error) {
+	by = strings.TrimSpace(by)
+	reason = strings.TrimSpace(reason)
+
+	var updated Ticket
+	err := s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		if ticket.State != StateWaiting {
+			return ErrNotWaiting
+		}
+		now := s.now()
+		message := "Denied."
+		if by != "" {
+			message = fmt.Sprintf("Denied by %s.", by)
+			if reason != "" {
+				message = fmt.Sprintf("Denied by %s: %s", by, reason)
+			}
+		} else if reason != "" {
+			message = "Denied: " + reason
+		}
+		if err = cancelQueuedRuns(ctx, tx, ticketID, now); err != nil {
+			return err
+		}
+		if err = applyTransition(ctx, tx, ticket, Transition{State: StateCancelled, Message: message}, now, true); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET gate_decided_by=?,gate_decided_at=?,gate_decision=?,gate_reason=? WHERE id=?`,
+			by, stamp(now), GateDecisionDenied, reason, ticketID); err != nil {
+			return err
+		}
+		updated, err = loadTicket(ctx, tx, ticketID)
+		return err
+	})
+	return updated, err
+}
+
+// ExpireGates finds waiting tickets whose gate_timeout_at is at or before now
+// and atomically transitions each to StateCancelled with gate_decision="timed_out".
+func (s *Store) ExpireGates(ctx context.Context, now time.Time) ([]Ticket, error) {
+	if now.IsZero() {
+		now = s.now()
+	}
+	rows, err := s.q().QueryContext(ctx, `SELECT id FROM tickets WHERE state=? AND gate_timeout_at IS NOT NULL AND gate_timeout_at<=? ORDER BY gate_timeout_at ASC, id ASC`, StateWaiting, stamp(now))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	var expired []Ticket
+	for _, id := range ids {
+		var transitioned *Ticket
+		err := s.inTx(ctx, func(tx querier) error {
+			ticket, err := s.loadTicketForUpdate(ctx, tx, id)
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if ticket.State != StateWaiting || ticket.Gate == nil || ticket.Gate.TimeoutAt == nil || ticket.Gate.TimeoutAt.After(now) {
+				return nil
+			}
+			message := "Gate timed out."
+			if ticket.Gate.WaitingSince != nil {
+				if d := ticket.Gate.TimeoutAt.Sub(*ticket.Gate.WaitingSince); d > 0 {
+					message = fmt.Sprintf("Gate timed out after %s.", formatGateDuration(d))
+				}
+			}
+			if err = cancelQueuedRuns(ctx, tx, id, now); err != nil {
+				return err
+			}
+			if err = applyTransition(ctx, tx, ticket, Transition{State: StateCancelled, Message: message}, now, true); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET gate_decided_by='',gate_decided_at=?,gate_decision=?,gate_reason='' WHERE id=?`,
+				stamp(now), GateDecisionTimedOut, id); err != nil {
+				return err
+			}
+			loaded, err := loadTicket(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			transitioned = &loaded
+			return nil
+		})
+		if err != nil {
+			return expired, err
+		}
+		if transitioned != nil {
+			expired = append(expired, *transitioned)
+		}
+	}
+	return expired, nil
+}
+
+func formatGateDuration(d time.Duration) string {
+	if d < time.Second {
+		return d.String()
+	}
+	d = d.Round(time.Second)
+	h := d / time.Hour
+	m := (d % time.Hour) / time.Minute
+	s := (d % time.Minute) / time.Second
+	var b strings.Builder
+	if h > 0 {
+		fmt.Fprintf(&b, "%dh", h)
+	}
+	if m > 0 {
+		fmt.Fprintf(&b, "%dm", m)
+	}
+	if s > 0 || b.Len() == 0 {
+		fmt.Fprintf(&b, "%ds", s)
+	}
+	return b.String()
 }
 
 // Cancel ends a ticket. A queued run stops here. A running run is marked, and
@@ -1420,7 +1692,7 @@ func (s *Store) DeleteTicket(ctx context.Context, ticketID string) error {
 		if err != nil {
 			return err
 		}
-		if ticket.State == StateWorking {
+		if ticket.State == StateWorking || ticket.State == StateWaiting {
 			return ErrStillWorking
 		}
 		var active int
@@ -1497,7 +1769,7 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		if ticket, err = s.loadTicketForUpdate(ctx, tx, ticketID); err != nil {
 			return err
 		}
-		if ticket.State == StateWorking {
+		if ticket.State == StateWorking || ticket.State == StateWaiting {
 			return ErrStillWorking
 		}
 		otherWorking, err := hasOtherWorkingScheduleTicket(ctx, tx, ticket)
@@ -1535,7 +1807,7 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		// again that it started and how it ends. A pull request that merged or
 		// closed is finished with, so the new run opens and counts its own. An
 		// open one stays, so the new run keeps working on it.
-		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',steward_retries=0,resume_from_step=?,resume_checkpoint_run=?,updated_at=? WHERE id=?`, StateWorking, fromStep, checkpointRunID, stamp(now), ticketID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,pr_state=NULL,pr_state_at=NULL,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',steward_retries=0,resume_from_step=?,resume_checkpoint_run=?,gate_step='',gate_message='',gate_details='',gate_waiting_since=NULL,gate_timeout_at=NULL,gate_decided_by='',gate_decided_at=NULL,gate_decision='',gate_reason='',remaining_timeout_ms=NULL,updated_at=? WHERE id=?`, StateWorking, fromStep, checkpointRunID, stamp(now), ticketID); err != nil {
 			return err
 		}
 		if ticket.MergedAt != nil || ticket.PRState == PRMerged || ticket.PRState == PRClosed {
@@ -1557,7 +1829,7 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		if _, err = tx.ExecContext(ctx, `INSERT INTO human_touches(ticket_id,kind,author,at) VALUES(?,?,?,?)`, ticketID, kind, by, stamp(now)); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?,?)`, ticketID, ReportStarted, ReportFailed, ReportMerged, ReportClosed, ReportFinished); err != nil {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM tracker_reports WHERE ticket_id=? AND kind IN (?,?,?,?,?,?)`, ticketID, ReportStarted, ReportGate, ReportFailed, ReportMerged, ReportClosed, ReportFinished); err != nil {
 			return err
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)
@@ -1589,7 +1861,7 @@ func (s *Store) queueRun(ctx context.Context, q querier, ticketID, kind, reviewe
 }
 
 func terminalRunStatus(status string) bool {
-	return status == RunSucceeded || status == RunFailed || status == RunTimedOut
+	return status == RunSucceeded || status == RunFailed || status == RunTimedOut || status == RunWaiting
 }
 
 func applyTransition(ctx context.Context, q querier, ticket Ticket, transition Transition, now time.Time, clearResume bool) error {
@@ -1603,6 +1875,42 @@ func applyTransition(ctx context.Context, q querier, ticket Ticket, transition T
 		}
 	} else {
 		if _, err := q.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=COALESCE(?,pr_number),shipping=?,updated_at=? WHERE id=?`, transition.State, nullableInt(transition.PRNumber), shipping, stamp(now), ticket.ID); err != nil {
+			return err
+		}
+	}
+	if transition.State == StateWaiting {
+		var step, message, details string
+		waitingSince := stamp(now)
+		var timeoutAt any
+		if transition.Gate != nil {
+			step = transition.Gate.Step
+			message = transition.Gate.Message
+			details = transition.Gate.Details
+			if transition.Gate.WaitingSince != nil {
+				waitingSince = stamp(*transition.Gate.WaitingSince)
+			}
+			if transition.Gate.TimeoutAt != nil {
+				timeoutAt = stamp(*transition.Gate.TimeoutAt)
+			}
+		}
+		if _, err := q.ExecContext(ctx, `UPDATE tickets SET gate_step=?,gate_message=?,gate_details=?,gate_waiting_since=?,gate_timeout_at=?,gate_decided_by='',gate_decided_at=NULL,gate_decision='',gate_reason=? WHERE id=?`,
+			step, message, details, waitingSince, timeoutAt, "", ticket.ID); err != nil {
+			return err
+		}
+	} else {
+		if ticket.State == StateWaiting {
+			if _, err := q.ExecContext(ctx, `UPDATE tickets SET gate_step='',gate_message='',gate_details='',gate_waiting_since=NULL,gate_timeout_at=NULL WHERE id=?`, ticket.ID); err != nil {
+				return err
+			}
+		}
+		if transition.State != StateWorking {
+			if _, err := q.ExecContext(ctx, `UPDATE tickets SET remaining_timeout_ms=NULL WHERE id=?`, ticket.ID); err != nil {
+				return err
+			}
+		}
+	}
+	if transition.RemainingTimeoutMillis != nil {
+		if _, err := q.ExecContext(ctx, `UPDATE tickets SET remaining_timeout_ms=? WHERE id=?`, *transition.RemainingTimeoutMillis, ticket.ID); err != nil {
 			return err
 		}
 	}
@@ -2131,7 +2439,7 @@ func (s *Store) RunEvents(ctx context.Context, runID string, after int64) (proto
 
 // ActiveTicketFor finds the active ticket on an issue or PR number.
 func (s *Store) ActiveTicketFor(ctx context.Context, repo string, number int) (Ticket, error) {
-	return scanTicket(s.q().QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND (issue_number=? OR pr_number=?) AND state IN (?,?) ORDER BY created_at DESC LIMIT 1`, repo, number, number, StateWorking, StatePRReady))
+	return scanTicket(s.q().QueryRowContext(ctx, `SELECT `+ticketColumns+` FROM tickets WHERE repo=? AND (issue_number=? OR pr_number=?) AND state IN (?,?,?) ORDER BY created_at DESC LIMIT 1`, repo, number, number, StateWorking, StateWaiting, StatePRReady))
 }
 
 // Cursor returns a source's stored position. The bool is false on first use.

@@ -32,7 +32,7 @@ func writeTicketError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err)
 	case errors.Is(err, tickets.ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
-	case errors.Is(err, tickets.ErrTicketEnded), errors.Is(err, tickets.ErrStillWorking):
+	case errors.Is(err, tickets.ErrTicketEnded), errors.Is(err, tickets.ErrStillWorking), errors.Is(err, tickets.ErrNotWaiting):
 		writeError(w, http.StatusConflict, err)
 	default:
 		writeError(w, http.StatusInternalServerError, err)
@@ -256,7 +256,7 @@ func (s *Server) rerunTicketWithBody(w http.ResponseWriter, r *http.Request, id,
 		writeTicketError(w, err)
 		return tickets.Ticket{}, false
 	}
-	if existing.State == tickets.StateWorking {
+	if existing.State == tickets.StateWorking || existing.State == tickets.StateWaiting {
 		writeTicketError(w, tickets.ErrStillWorking)
 		return tickets.Ticket{}, false
 	}

@@ -141,3 +141,22 @@ func TestRerunFromStepHTTP(t *testing.T) {
 		t.Fatalf("expected full rerun without resume state, got %+v", run3)
 	}
 }
+
+func TestRerunWhileWaitingReturnsConflict(t *testing.T) {
+	f := newFixture(t)
+	ticket := f.assign(t, "waiting-rerun")
+	if _, _, err := f.store.Apply(t.Context(), ticket.ID, tickets.StateWorking, tickets.Transition{
+		State: tickets.StateWaiting,
+		Gate:  &tickets.Gate{Step: "approve", Message: "Proceed?"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rerunPath := "/api/v1/tickets/" + ticket.ID + "/rerun"
+	if resp, body := f.call(t, http.MethodPost, rerunPath, f.token, nil); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("full rerun while waiting: status=%d body=%s, want 409", resp.StatusCode, body)
+	}
+	if resp, body := f.call(t, http.MethodPost, rerunPath, f.token, map[string]string{"from_step": "implement"}); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("rerun from_step while waiting: status=%d body=%s, want 409", resp.StatusCode, body)
+	}
+}
