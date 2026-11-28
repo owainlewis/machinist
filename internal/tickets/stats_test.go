@@ -80,7 +80,7 @@ func TestStatsSummarisesJobsAndRuns(t *testing.T) {
 
 func TestStatsWithNothingHasNoRates(t *testing.T) {
 	stats, err := openStore(t).Stats(t.Context(), 14, "")
-	if err != nil || stats.SuccessRate != nil || stats.RunMillis.Median != nil || len(stats.Daily) != 14 || stats.Presets == nil || stats.Sources == nil || stats.Models == nil || stats.ModelSteps == nil || stats.Repositories == nil || stats.CostPerMergedPR != nil || stats.MonthSpend.CostPerMergedPR != nil {
+	if err != nil || stats.SuccessRate != nil || stats.RunMillis.Median != nil || len(stats.Daily) != 14 || stats.Presets == nil || stats.Sources == nil || stats.Models == nil || stats.ModelSteps == nil || stats.Repositories == nil || stats.CostPerMergedPR != nil || stats.MonthSpend.CostPerMergedPR != nil || stats.Steward != (StewardStats{}) || stats.MergeGate != (StatsMergeGate{}) {
 		t.Fatalf("stats = %+v, err = %v", stats, err)
 	}
 }
@@ -458,6 +458,328 @@ func TestStatsComparesModelsAndStepsAndFiltersByRepo(t *testing.T) {
 	}
 	if len(filtered.Models) != 2 || filtered.Models[0].Steps != 3 || !approx(filtered.Models[0].Cost, 0.70) {
 		t.Fatalf("filtered models = %+v", filtered.Models)
+	}
+}
+
+func TestStatsStewardRetriesAndRescued(t *testing.T) {
+	store := openStore(t)
+	ctx := t.Context()
+
+	stewardRetry := func(ticket Ticket, pr int, attempt int, at *time.Time) Ticket {
+		t.Helper()
+		*at = at.Add(time.Minute)
+		if _, _, err := store.Apply(ctx, ticket.ID, StateWorking, Transition{
+			State:    StatePRReady,
+			PRNumber: pr,
+			Shipping: `{"head":"sha"}`,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		listed, err := store.Ticket(ctx, ticket.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		*at = at.Add(time.Minute)
+		updated, requeued, err := store.StewardRequeue(ctx, listed, StewardRequeueRequest{
+			MaxRetries: 5,
+			Prompt:     "PR Steward fix",
+		})
+		if err != nil || !requeued || updated.StewardRetries != attempt {
+			t.Fatalf("steward retry %d: updated=%+v requeued=%v err=%v", attempt, updated, requeued, err)
+		}
+		return updated
+	}
+
+	// Ticket outside the 7-day window (created, retried, and merged on May 1): must be excluded.
+	at := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return at })
+	oldReq := request("api:old-steward")
+	oldReq.Repo = "owner/app"
+	oldTicket, _, err := store.CreateTicket(ctx, oldReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stewardRetry(oldTicket, 1, 1, &at)
+	oldMerged := at.Add(5 * time.Minute)
+	at = oldMerged
+	if _, _, err := store.Apply(ctx, oldTicket.ID, StateWorking, Transition{State: StateDone, PRNumber: 1, PROpenedAt: &oldMerged, MergedAt: &oldMerged}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ticket in owner/app: 2 steward retries and merged in range -> 2 retries, 1 rescued.
+	at = time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC)
+	reqRescuedApp := request("api:rescued-app")
+	reqRescuedApp.Repo = "owner/app"
+	rescuedApp, _, err := store.CreateTicket(ctx, reqRescuedApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stewardRetry(rescuedApp, 10, 1, &at)
+	stewardRetry(rescuedApp, 10, 2, &at)
+	mergedAppAt := at.Add(10 * time.Minute)
+	at = mergedAppAt
+	if _, _, err := store.Apply(ctx, rescuedApp.ID, StateWorking, Transition{State: StateDone, PRNumber: 10, PROpenedAt: &mergedAppAt, MergedAt: &mergedAppAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ticket in owner/app: 1 steward retry, still open (not merged) -> 1 retry, 0 rescued.
+	at = time.Date(2026, 5, 19, 9, 0, 0, 0, time.UTC)
+	reqUnmergedApp := request("api:unmerged-app")
+	reqUnmergedApp.Repo = "owner/app"
+	unmergedApp, _, err := store.CreateTicket(ctx, reqUnmergedApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stewardRetry(unmergedApp, 11, 1, &at)
+
+	// Ticket in owner/app: merged cleanly without steward retries -> 0 retries, 0 rescued.
+	at = time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	reqCleanApp := request("api:clean-app")
+	reqCleanApp.Repo = "owner/app"
+	cleanApp, _, err := store.CreateTicket(ctx, reqCleanApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanMergedAt := at.Add(5 * time.Minute)
+	at = cleanMergedAt
+	if _, _, err := store.Apply(ctx, cleanApp.ID, StateWorking, Transition{State: StateDone, PRNumber: 12, PROpenedAt: &cleanMergedAt, MergedAt: &cleanMergedAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ticket in owner/api: 1 steward retry and merged in range -> 1 retry, 1 rescued.
+	at = time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
+	reqRescuedAPI := request("api:rescued-api")
+	reqRescuedAPI.Repo = "owner/api"
+	rescuedAPI, _, err := store.CreateTicket(ctx, reqRescuedAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stewardRetry(rescuedAPI, 20, 1, &at)
+	mergedAPIAt := at.Add(5 * time.Minute)
+	at = mergedAPIAt
+	if _, _, err := store.Apply(ctx, rescuedAPI.ID, StateWorking, Transition{State: StateDone, PRNumber: 20, PROpenedAt: &mergedAPIAt, MergedAt: &mergedAPIAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := store.Stats(ctx, 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.Steward != (StewardStats{Retries: 4, Rescued: 2}) {
+		t.Fatalf("all steward = %+v, want {Retries:4 Rescued:2}", all.Steward)
+	}
+
+	app, err := store.Stats(ctx, 7, "owner/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.Steward != (StewardStats{Retries: 3, Rescued: 1}) {
+		t.Fatalf("app steward = %+v, want {Retries:3 Rescued:1}", app.Steward)
+	}
+
+	apiStats, err := store.Stats(ctx, 7, "owner/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apiStats.Steward != (StewardStats{Retries: 1, Rescued: 1}) {
+		t.Fatalf("api steward = %+v, want {Retries:1 Rescued:1}", apiStats.Steward)
+	}
+}
+
+func TestStatsMergeGateBreakdown(t *testing.T) {
+	store := openStore(t)
+	ctx := t.Context()
+
+	createInRepo := func(key, repo string) Ticket {
+		t.Helper()
+		req := request(key)
+		req.Repo = repo
+		tk, _, err := store.CreateTicket(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tk
+	}
+
+	// Old ticket outside 7-day window, inside 30-day window.
+	at := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return at })
+	oldMerged := at.Add(15 * time.Minute)
+	oldTicket := createInRepo("api:mg-old", "owner/app")
+	runTo(t, store, oldTicket, Transition{
+		State:      StateDone,
+		PRNumber:   1,
+		PROpenedAt: &at,
+		MergedAt:   &oldMerged,
+		MergeGate:  &MergeGate{Decision: "approve", Risk: "low", Reason: "Small doc typo."},
+	})
+
+	// Tickets inside the 7-day window on June 15.
+	at = time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)
+
+	// No merge-gate verdict recorded: excluded from evaluated count.
+	noGate := createInRepo("api:mg-none", "owner/app")
+	noGateMerged := at.Add(10 * time.Minute)
+	runTo(t, store, noGate, Transition{State: StateDone, PRNumber: 2, PROpenedAt: &at, MergedAt: &noGateMerged})
+
+	// 1. Approved + low risk + merged with zero human reviews -> auto_merged.
+	autoMerged := createInRepo("api:mg-auto", "owner/app")
+	t1Merged := at.Add(20 * time.Minute)
+	runTo(t, store, autoMerged, Transition{
+		State:      StateDone,
+		PRNumber:   3,
+		PROpenedAt: &at,
+		MergedAt:   &t1Merged,
+		MergeGate:  &MergeGate{Decision: "approve", Risk: "low", Reason: "Covered by unit tests."},
+	})
+
+	// 2. Approved + low risk + merged with a human review (e.g. observe mode) -> approved, not auto_merged.
+	reviewedApproved := createInRepo("api:mg-observed", "owner/app")
+	t2Reviewed := at.Add(25 * time.Minute)
+	t2Merged := at.Add(30 * time.Minute)
+	runTo(t, store, reviewedApproved, Transition{
+		State:      StateDone,
+		PRNumber:   4,
+		PROpenedAt: &at,
+		MergedAt:   &t2Merged,
+		Reviews:    &Reviews{Count: 1, First: &t2Reviewed},
+		MergeGate:  &MergeGate{Decision: "approve", Risk: "low", Reason: "Low-risk refactor."},
+	})
+
+	// 3. Approved + low risk + still open -> approved, not auto_merged.
+	openApproved := createInRepo("api:mg-open", "owner/app")
+	runTo(t, store, openApproved, Transition{
+		State:      StatePRReady,
+		PRNumber:   5,
+		PROpenedAt: &at,
+		MergeGate:  &MergeGate{Decision: "approve", Risk: "low", Reason: "Waiting on CI."},
+	})
+
+	// 4. Approved decision but medium risk -> held_policy, not approved.
+	mediumApproved := createInRepo("api:mg-med-approve", "owner/app")
+	runTo(t, store, mediumApproved, Transition{
+		State:      StatePRReady,
+		PRNumber:   6,
+		PROpenedAt: &at,
+		MergeGate:  &MergeGate{Decision: "approve", Risk: "medium", Reason: "Changes API response schema."},
+	})
+
+	// 5. Human review + high risk (policy) -> held_policy.
+	highPolicy := createInRepo("api:mg-high-policy", "owner/app")
+	runTo(t, store, highPolicy, Transition{
+		State:      StatePRReady,
+		PRNumber:   7,
+		PROpenedAt: &at,
+		MergeGate:  &MergeGate{Decision: "human_review", Risk: "high", Reason: "Alters authentication flow."},
+	})
+
+	// 6. Human review + medium risk + Tripwire prefix -> held_tripwire.
+	medTripwire := createInRepo("api:mg-med-tripwire", "owner/app")
+	runTo(t, store, medTripwire, Transition{
+		State:      StatePRReady,
+		PRNumber:   8,
+		PROpenedAt: &at,
+		MergeGate:  &MergeGate{Decision: "human_review", Risk: "medium", Reason: "Tripwire: modified .github/workflows/ci.yml"},
+	})
+
+	// 7. Separate repo: human review + low risk + Tripwire prefix -> held_tripwire + low_risk.
+	apiTripwire := createInRepo("api:mg-api-tripwire", "owner/api")
+	runTo(t, store, apiTripwire, Transition{
+		State:      StatePRReady,
+		PRNumber:   9,
+		PROpenedAt: &at,
+		MergeGate:  &MergeGate{Decision: "human_review", Risk: "low", Reason: "Tripwire: touched deploy manifest"},
+	})
+
+	// 8. Separate repo: approved + low risk + merged via SetPRState with 0 reviews -> auto_merged.
+	apiAuto := createInRepo("api:mg-api-auto", "owner/api")
+	runTo(t, store, apiAuto, Transition{
+		State:      StatePRReady,
+		PRNumber:   10,
+		PROpenedAt: &at,
+		MergeGate:  &MergeGate{Decision: "approve", Risk: "low", Reason: "Safe formatting change."},
+	})
+	listed, err := store.TicketsWithOpenPRs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range listed {
+		if tk.ID == apiAuto.ID {
+			if _, _, err := store.SetPRState(ctx, tk, PRUpdate{Number: 10, State: PRMerged, At: at.Add(40 * time.Minute), OpenedAt: at, Reviews: &Reviews{}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// Unfiltered 7-day window.
+	all7, err := store.Stats(ctx, 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAll7 := StatsMergeGate{
+		Evaluated:    8,
+		Approved:     4,
+		AutoMerged:   2,
+		HeldPolicy:   2,
+		HeldTripwire: 2,
+		LowRisk:      5,
+		MediumRisk:   2,
+		HighRisk:     1,
+	}
+	if all7.MergeGate != wantAll7 {
+		t.Fatalf("all 7d merge_gate = %+v, want %+v", all7.MergeGate, wantAll7)
+	}
+
+	// Filtered to owner/app (7d).
+	app7, err := store.Stats(ctx, 7, "owner/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantApp7 := StatsMergeGate{
+		Evaluated:    6,
+		Approved:     3,
+		AutoMerged:   1,
+		HeldPolicy:   2,
+		HeldTripwire: 1,
+		LowRisk:      3,
+		MediumRisk:   2,
+		HighRisk:     1,
+	}
+	if app7.MergeGate != wantApp7 {
+		t.Fatalf("owner/app 7d merge_gate = %+v, want %+v", app7.MergeGate, wantApp7)
+	}
+
+	// Filtered to owner/api (7d).
+	api7, err := store.Stats(ctx, 7, "owner/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAPI7 := StatsMergeGate{
+		Evaluated:    2,
+		Approved:     1,
+		AutoMerged:   1,
+		HeldPolicy:   0,
+		HeldTripwire: 1,
+		LowRisk:      2,
+		MediumRisk:   0,
+		HighRisk:     0,
+	}
+	if api7.MergeGate != wantAPI7 {
+		t.Fatalf("owner/api 7d merge_gate = %+v, want %+v", api7.MergeGate, wantAPI7)
+	}
+
+	// Unfiltered 30-day window includes the June 1 ticket.
+	all30, err := store.Stats(ctx, 30, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAll30 := wantAll7
+	wantAll30.Evaluated++
+	wantAll30.Approved++
+	wantAll30.AutoMerged++
+	wantAll30.LowRisk++
+	if all30.MergeGate != wantAll30 {
+		t.Fatalf("all 30d merge_gate = %+v, want %+v", all30.MergeGate, wantAll30)
 	}
 }
 

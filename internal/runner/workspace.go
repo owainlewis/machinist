@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -140,11 +142,21 @@ func stepEnvironment(options WorkspaceOptions, control string) ([]string, error)
 		"MACHINIST_DIR="+control,
 	)
 	environment = withScriptsOnPath(environment, control)
-	for name, value := range request.Vars {
+	for _, name := range slices.Sorted(maps.Keys(request.Vars)) {
 		if !varName.MatchString(name) {
 			return nil, fmt.Errorf("invalid var name %q", name)
 		}
-		environment = append(environment, "MACHINIST_"+strings.ToUpper(name)+"="+value)
+		environment = append(environment, "MACHINIST_"+strings.ToUpper(name)+"="+request.Vars[name])
+	}
+	for _, name := range slices.Sorted(maps.Keys(request.Inputs)) {
+		if !varName.MatchString(name) || name == "repo" {
+			return nil, fmt.Errorf("invalid input name %q", name)
+		}
+		value := request.Inputs[name]
+		if strings.ContainsRune(value, '\x00') {
+			return nil, fmt.Errorf("invalid input value for %q: contains NUL byte", name)
+		}
+		environment = append(environment, "MACHINIST_INPUT_"+strings.ToUpper(name)+"="+value)
 	}
 	if request.Repository != "" {
 		github, err := githubauth.GitHubEnvironment(options.GitHubToken, request.Repository)
@@ -173,7 +185,7 @@ func RunSteps(ctx context.Context, request RunRequest, workspace Workspace, data
 	}
 	// Every step appends to one event log, so the sequence numbers stay
 	// continuous for the whole run.
-	log, err := newEventLog(filepath.Join(runDirectory, "events.jsonl"))
+	log, err := newEventLogForSteps(filepath.Join(runDirectory, "events.jsonl"), len(request.Steps))
 	if err != nil {
 		return RunResult{State: StateFailed, Error: err.Error()}
 	}

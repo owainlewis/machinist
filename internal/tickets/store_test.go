@@ -326,6 +326,97 @@ func TestAddInputFollowsStateRows(t *testing.T) {
 	}
 }
 
+func TestAddInputScheduleContentionReturnsErrStillWorking(t *testing.T) {
+	ctx := t.Context()
+	store := openStore(t)
+
+	firstReq := request("sched:nightly:1")
+	firstReq.Source = "schedule:nightly"
+	first, created, err := store.CreateTicket(ctx, firstReq)
+	if err != nil || !created {
+		t.Fatalf("create first schedule ticket: created=%v err=%v", created, err)
+	}
+	if _, _, err := store.Apply(ctx, first.ID, StateWorking, Transition{State: StatePRReady, PRNumber: 10}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second ticket for the same schedule can legitimately start working while
+	// the earlier ticket is in pr_ready.
+	secondReq := request("sched:nightly:2")
+	secondReq.Source = "schedule:nightly"
+	second, created, err := store.CreateTicket(ctx, secondReq)
+	if err != nil || !created || second.ID == first.ID {
+		t.Fatalf("create second schedule ticket: second=%+v created=%v err=%v", second, created, err)
+	}
+
+	// Adding fresh input with a SourceKey to the pr_ready ticket must fail with
+	// ErrStillWorking instead of silently returning (ticket, false, nil).
+	_, added, err := store.AddInput(ctx, first.ID, Input{
+		Kind:      EntryComment,
+		Author:    "bob",
+		Body:      "Please update the tests",
+		SourceKey: "github:comment:fresh-1",
+	})
+	if !errors.Is(err, ErrStillWorking) || added {
+		t.Fatalf("AddInput with fresh SourceKey during schedule contention: added=%v err=%v, want added=false err=ErrStillWorking", added, err)
+	}
+	if _, err := store.TicketBySourceKey(ctx, "github:comment:fresh-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("fresh SourceKey should not be recorded on contention: err=%v", err)
+	}
+	if got := reload(t, store, first.ID); got.State != StatePRReady {
+		t.Fatalf("first ticket state = %s, want %s", got.State, StatePRReady)
+	}
+	entries, err := store.Entries(ctx, first.ID)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries after contended AddInput = %+v, err=%v", entries, err)
+	}
+
+	// Empty SourceKey must also return ErrStillWorking.
+	if _, added, err := store.AddInput(ctx, first.ID, Input{
+		Kind:   EntryComment,
+		Author: "bob",
+		Body:   "No source key",
+	}); !errors.Is(err, ErrStillWorking) || added {
+		t.Fatalf("AddInput without SourceKey during schedule contention: added=%v err=%v, want added=false err=ErrStillWorking", added, err)
+	}
+
+	// An already-recorded SourceKey remains idempotent even during contention.
+	existing, added, err := store.AddInput(ctx, first.ID, Input{
+		Kind:      EntryComment,
+		Author:    "bob",
+		Body:      "duplicate",
+		SourceKey: "sched:nightly:1",
+	})
+	if err != nil || added || existing.ID != first.ID {
+		t.Fatalf("duplicate SourceKey during contention: existing=%+v added=%v err=%v", existing, added, err)
+	}
+
+	// A working ticket on a different schedule does not block first.
+	otherReq := request("sched:other:1")
+	otherReq.Source = "schedule:other"
+	if _, created, err := store.CreateTicket(ctx, otherReq); err != nil || !created {
+		t.Fatalf("create other schedule ticket: created=%v err=%v", created, err)
+	}
+
+	// Once the contending ticket on the same schedule leaves working, retrying
+	// AddInput with the fresh SourceKey succeeds.
+	if _, _, err := store.Apply(ctx, second.ID, StateWorking, Transition{State: StateDone}); err != nil {
+		t.Fatal(err)
+	}
+	updated, added, err := store.AddInput(ctx, first.ID, Input{
+		Kind:      EntryComment,
+		Author:    "bob",
+		Body:      "Please update the tests",
+		SourceKey: "github:comment:fresh-1",
+	})
+	if err != nil || !added || updated.State != StateWorking {
+		t.Fatalf("AddInput after contention cleared: updated=%+v added=%v err=%v", updated, added, err)
+	}
+	if got, err := store.TicketBySourceKey(ctx, "github:comment:fresh-1"); err != nil || got.ID != first.ID {
+		t.Fatalf("TicketBySourceKey = (%+v, %v), want %s", got, err, first.ID)
+	}
+}
+
 func TestTurnsSinceHumanRestartsOnHumanInput(t *testing.T) {
 	store := openStore(t)
 	ticket := createTicket(t, store, "api:1")
@@ -1127,8 +1218,22 @@ func TestReplyAfterAMergeForgetsTheMergedPullRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.PRNumber != 0 || again.MergedAt != nil || again.PRState != "" {
-		t.Fatalf("stale pull request: number = %d, merged_at = %v, state = %q", again.PRNumber, again.MergedAt, again.PRState)
+	if again.PRNumber != 0 || again.MergedAt != nil || again.PRState != "" || again.PreviousPRNumber != 7 {
+		t.Fatalf("stale pull request: number = %d, previous = %d, merged_at = %v, state = %q", again.PRNumber, again.PreviousPRNumber, again.MergedAt, again.PRState)
+	}
+	// A subsequent rerun after failing with no PR preserves PreviousPRNumber.
+	second := claimRun(t, store, again).Run
+	if _, _, err := store.CompleteRun(t.Context(), RunCompletion{RunID: second.ID, Status: RunFailed}, func(Ticket, string) Transition {
+		return Transition{State: StateFailed, Message: "boom"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	third, err := store.Rerun(t.Context(), ticket.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.PRNumber != 0 || third.PreviousPRNumber != 7 {
+		t.Fatalf("after second rerun: number = %d, previous = %d", third.PRNumber, third.PreviousPRNumber)
 	}
 }
 
@@ -1282,4 +1387,173 @@ func TestTokenScopesAndRevocation(t *testing.T) {
 	if scopes["watcher"] != ScopeRead || scopes["alice"] != ScopeAll {
 		t.Fatalf("active scopes = %+v", scopes)
 	}
+}
+
+func TestDeleteTicketRemovesAllRelatedRows(t *testing.T) {
+	ctx := t.Context()
+
+	populate := func(t *testing.T, store *Store, key, finalState string) (Ticket, string) {
+		t.Helper()
+		ticket := createTicket(t, store, key)
+		claim := claimRun(t, store, ticket)
+		if _, err := store.IngestRunEvents(ctx, claim.Run.ID, []json.RawMessage{
+			json.RawMessage(`{"sequence":1,"time":"2026-01-02T03:01:00Z","type":"step.started","message":"name=work"}`),
+		}); err != nil {
+			t.Fatalf("IngestRunEvents: %v", err)
+		}
+		completion := RunCompletion{
+			RunID:      claim.Run.ID,
+			Status:     RunFailed,
+			FailedStep: "work",
+			Stages:     []protocol.StageResult{{Name: "work", Kind: "step", State: RunFailed, DurationMillis: 100}},
+			Patch:      []byte("diff --git a/a b/a\n"),
+			Checkpoint: &protocol.Checkpoint{
+				FailedStep:   "work",
+				HeadSHA:      "abc123",
+				BaseRef:      "main",
+				Patch:        []byte("patch"),
+				ControlFiles: map[string]string{"note.txt": "hi"},
+			},
+		}
+		if _, _, err := store.CompleteRun(ctx, completion, completeTo(StateFailed)); err != nil {
+			t.Fatalf("CompleteRun: %v", err)
+		}
+		// Rerun once to record a human touch, then settle into finalState.
+		if _, err := store.Rerun(ctx, ticket.ID, "alice"); err != nil {
+			t.Fatalf("Rerun: %v", err)
+		}
+		if finalState == StateCancelled {
+			if _, err := store.Cancel(ctx, ticket.ID, "alice"); err != nil {
+				t.Fatalf("Cancel: %v", err)
+			}
+		} else {
+			claim2 := claimRun(t, store, ticket)
+			completeRun(t, store, claim2.Run.ID, finalState)
+		}
+		if err := store.MarkReported(ctx, ticket.ID, ReportStarted); err != nil {
+			t.Fatalf("MarkReported: %v", err)
+		}
+		return ticket, claim.Run.ID
+	}
+
+	count := func(t *testing.T, store *Store, query string, arg any) int {
+		t.Helper()
+		var n int
+		if err := store.q().QueryRowContext(ctx, query, arg).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+		return n
+	}
+
+	for _, state := range []string{StateDone, StateFailed, StateCancelled, StatePRReady} {
+		t.Run(state, func(t *testing.T) {
+			store := openStore(t)
+			victim, victimRunID := populate(t, store, "victim:"+state, state)
+			survivor, survivorRunID := populate(t, store, "survivor:"+state, StateDone)
+
+			if err := store.DeleteTicket(ctx, victim.ID); err != nil {
+				t.Fatalf("DeleteTicket(%s): %v", state, err)
+			}
+
+			if _, err := store.Ticket(ctx, victim.ID); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("deleted ticket lookup = %v, want ErrNotFound", err)
+			}
+			for _, check := range []struct {
+				name, query string
+				arg         any
+			}{
+				{"tickets", `SELECT COUNT(*) FROM tickets WHERE id=?`, victim.ID},
+				{"runs", `SELECT COUNT(*) FROM runs WHERE ticket_id=?`, victim.ID},
+				{"run_activity_events", `SELECT COUNT(*) FROM run_activity_events WHERE run=?`, victimRunID},
+				{"run_progress", `SELECT COUNT(*) FROM run_progress WHERE run=?`, victimRunID},
+				{"run_stages", `SELECT COUNT(*) FROM run_stages WHERE run=?`, victimRunID},
+				{"run_patches", `SELECT COUNT(*) FROM run_patches WHERE run=?`, victimRunID},
+				{"run_checkpoints", `SELECT COUNT(*) FROM run_checkpoints WHERE run=?`, victimRunID},
+				{"ticket_entries", `SELECT COUNT(*) FROM ticket_entries WHERE ticket_id=?`, victim.ID},
+				{"tracker_reports", `SELECT COUNT(*) FROM tracker_reports WHERE ticket_id=?`, victim.ID},
+				{"human_touches", `SELECT COUNT(*) FROM human_touches WHERE ticket_id=?`, victim.ID},
+			} {
+				if n := count(t, store, check.query, check.arg); n != 0 {
+					t.Fatalf("%s still has %d rows for deleted ticket", check.name, n)
+				}
+			}
+
+			// Ensure sibling ticket and its child rows were untouched.
+			if _, err := store.Ticket(ctx, survivor.ID); err != nil {
+				t.Fatalf("survivor ticket missing: %v", err)
+			}
+			for _, check := range []struct {
+				name, query string
+				arg         any
+			}{
+				{"runs", `SELECT COUNT(*) FROM runs WHERE ticket_id=?`, survivor.ID},
+				{"run_activity_events", `SELECT COUNT(*) FROM run_activity_events WHERE run=?`, survivorRunID},
+				{"run_progress", `SELECT COUNT(*) FROM run_progress WHERE run=?`, survivorRunID},
+				{"run_stages", `SELECT COUNT(*) FROM run_stages WHERE run=?`, survivorRunID},
+				{"run_patches", `SELECT COUNT(*) FROM run_patches WHERE run=?`, survivorRunID},
+				{"run_checkpoints", `SELECT COUNT(*) FROM run_checkpoints WHERE run=?`, survivorRunID},
+				{"ticket_entries", `SELECT COUNT(*) FROM ticket_entries WHERE ticket_id=?`, survivor.ID},
+				{"tracker_reports", `SELECT COUNT(*) FROM tracker_reports WHERE ticket_id=?`, survivor.ID},
+				{"human_touches", `SELECT COUNT(*) FROM human_touches WHERE ticket_id=?`, survivor.ID},
+			} {
+				if n := count(t, store, check.query, check.arg); n == 0 {
+					t.Fatalf("survivor %s lost its rows", check.name)
+				}
+			}
+		})
+	}
+}
+
+func TestDeleteTicketRejectsWorkingActiveRunsAndMissing(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("missing", func(t *testing.T) {
+		store := openStore(t)
+		if err := store.DeleteTicket(ctx, "t_missing"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("missing ticket = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("working and queued", func(t *testing.T) {
+		store := openStore(t)
+		working := createTicket(t, store, "api:working")
+		if err := store.DeleteTicket(ctx, working.ID); !errors.Is(err, ErrStillWorking) {
+			t.Fatalf("working ticket = %v, want ErrStillWorking", err)
+		}
+		if _, err := store.QueueRun(ctx, working.ID, "claude"); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DeleteTicket(ctx, working.ID); !errors.Is(err, ErrStillWorking) {
+			t.Fatalf("queued ticket = %v, want ErrStillWorking", err)
+		}
+	})
+
+	t.Run("cancelled with active run", func(t *testing.T) {
+		store := openStore(t)
+		running := createTicket(t, store, "api:running-cancel")
+		claim := claimRun(t, store, running)
+		if claim.Run.TicketID != running.ID {
+			t.Fatalf("claimed run for %s, want %s", claim.Run.TicketID, running.ID)
+		}
+		if _, err := store.Cancel(ctx, running.ID, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DeleteTicket(ctx, running.ID); !errors.Is(err, ErrStillWorking) {
+			t.Fatalf("cancelled ticket with active run = %v, want ErrStillWorking", err)
+		}
+		if _, err := store.Ticket(ctx, running.ID); err != nil {
+			t.Fatalf("refused deletion should leave ticket intact: %v", err)
+		}
+
+		// Once the running run finishes, the cancelled ticket can be deleted.
+		if _, _, err := store.CompleteRun(ctx, RunCompletion{RunID: claim.Run.ID, Status: RunCancelled}, completeTo(StateDone)); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DeleteTicket(ctx, running.ID); err != nil {
+			t.Fatalf("DeleteTicket after run ended = %v", err)
+		}
+		if _, err := store.Ticket(ctx, running.ID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("deleted ticket lookup = %v, want ErrNotFound", err)
+		}
+	})
 }

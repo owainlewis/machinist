@@ -117,14 +117,16 @@ test("sign in, find a job, then read what its steps printed", { timeout: 30000 }
   await eventually(() => assert.equal(reruns, 1));
 
   await act(async () => { window.location.hash = "#/dashboard"; });
-  await eventually(() => assert.equal(document.querySelector(".stat-tile:nth-child(3) .stat-value")?.textContent, "75%"));
+  await eventually(() => assert.equal(document.querySelector(".stat-tile:nth-child(2) .stat-value")?.textContent, "2h 0m"));
   assert.equal(document.querySelector("h1").textContent, "Dashboard");
   assert.equal(document.querySelectorAll('[aria-labelledby="runs-chart"] .chart-column').length, 14);
   assert.match(document.querySelector("#presets-table").parentElement.textContent, /coding.*50%.*1m 30s/);
   const merge = document.querySelector('[aria-labelledby="merge-heading"]');
-  assert.deepEqual([...merge.querySelectorAll(".stat-tile")].map(tile => tile.querySelector(".stat-value").textContent), ["2h 0m", "30m 0s", "1h 0m", "None yet", "1.3"]);
+  assert.deepEqual([...merge.querySelectorAll(".stat-tile")].map(tile => tile.querySelector(".stat-value").textContent), ["30m 0s", "1h 0m", "None yet", "1.3"]);
   assert.match(merge.textContent, /2 of 3 merged PRs reviewed by a person/);
   assert.match(merge.textContent, /2 replies, 1 rerun, 1 review/);
+  const exec = document.querySelector('[aria-labelledby="execution-heading"]');
+  assert.match(exec.textContent, /Run success75%/);
   assert.match(document.querySelector('[aria-labelledby="prs-chart"]').textContent, /Merge rate 50% of 6 opened PRs/);
   assert.equal(document.querySelectorAll('[aria-labelledby="prs-chart"] polyline').length, 2);
   assert.deepEqual([...document.querySelectorAll('[aria-labelledby="steps-chart"] .legend li')].map(item => item.textContent), ["Implement", "Review", "Lint"]);

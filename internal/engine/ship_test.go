@@ -805,3 +805,70 @@ func TestPRStewardIgnoresStaleGenerationDuringLookOnce(t *testing.T) {
 		t.Fatalf("message = %q, want newer generation message", msg)
 	}
 }
+
+func TestPRStewardDefersWhenSameScheduleTicketIsWorking(t *testing.T) {
+	e := newEngine(t)
+	e.AutoMerge = true
+	e.StewardRetries = 2
+	withPR(e)
+	pull := &fakePull{
+		pr:     ship.PullRequest{Number: 42, URL: "https://github.com/owner/repo/pull/42", State: "OPEN", MergeStateStatus: "CLEAN", HeadRefOid: "sha1"},
+		checks: []ship.Check{{Name: "test", Bucket: "fail", Link: "https://ci.example.test/fail"}},
+	}
+	e.PullRequests = func(repository string, number int) ship.GitHub {
+		if repository != "owner/repo" || number != 42 {
+			t.Errorf("watched %s#%d", repository, number)
+		}
+		return pull
+	}
+
+	first, created, err := e.Store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source:    "schedule:nightly",
+		Repo:      "owner/repo",
+		Title:     "Nightly 1",
+		Body:      "Do nightly work",
+		Agent:     "default",
+		CreatedBy: "schedule",
+		SourceKey: "sched:nightly:1",
+	})
+	if err != nil || !created {
+		t.Fatalf("create first schedule ticket: created=%v err=%v", created, err)
+	}
+	run := assignRun(t, e)
+	completion := succeed(protocol.OutcomeNoChange, "Merges once its checks pass: https://github.com/owner/repo/pull/42")
+	completion.Ship = &protocol.Ship{Verdict: ship.Accepted, Head: "sha1"}
+	if err := e.Complete(t.Context(), run.RunID, completion); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start a newer working ticket on the same schedule.
+	second, created, err := e.Store.CreateTicket(t.Context(), tickets.NewTicket{
+		Source:    "schedule:nightly",
+		Repo:      "owner/repo",
+		Title:     "Nightly 2",
+		Body:      "Do nightly work again",
+		Agent:     "default",
+		CreatedBy: "schedule",
+		SourceKey: "sched:nightly:2",
+	})
+	if err != nil || !created {
+		t.Fatalf("create second schedule ticket: created=%v err=%v", created, err)
+	}
+
+	// PR watch tick defers cleanly without error or failing the ticket.
+	checkPRs(t, e)
+	got := ticketOf(t, e, first.ID)
+	if got.State != tickets.StatePRReady || got.StewardRetries != 0 || got.Shipping == "" {
+		t.Fatalf("first ticket while schedule active = %+v, want pr_ready with watch intact", got)
+	}
+
+	// Once the newer scheduled ticket finishes, PR Steward requeues the first ticket.
+	if _, _, err := e.Store.Apply(t.Context(), second.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone}); err != nil {
+		t.Fatal(err)
+	}
+	checkPRs(t, e)
+	got = ticketOf(t, e, first.ID)
+	if got.State != tickets.StateWorking || got.StewardRetries != 1 || got.Shipping != "" {
+		t.Fatalf("first ticket after schedule cleared = %+v, want working with StewardRetries=1", got)
+	}
+}

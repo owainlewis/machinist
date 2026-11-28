@@ -182,3 +182,34 @@ func isPostgresUniqueViolation(err error) bool {
 	}
 	return strings.Contains(err.Error(), "SQLSTATE 23505")
 }
+
+// isScheduleActiveUniqueViolation reports whether err is a unique constraint
+// failure on one_active_ticket_per_schedule (PostgreSQL) or tickets.source
+// (SQLite).
+func isScheduleActiveUniqueViolation(err error) bool {
+	if !isUniqueViolation(err) {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505" && pgErr.ConstraintName == "one_active_ticket_per_schedule"
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "one_active_ticket_per_schedule") ||
+		strings.Contains(msg, "tickets.source")
+}
+
+// isSourceKeyUniqueViolation reports whether err is a unique constraint
+// failure on ticket_entries.source_key on SQLite or PostgreSQL.
+func isSourceKeyUniqueViolation(err error) bool {
+	if !isUniqueViolation(err) {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505" && (pgErr.ConstraintName == "ticket_entries_source_key_key" || pgErr.TableName == "ticket_entries")
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "ticket_entries.source_key") ||
+		strings.Contains(msg, "ticket_entries_source_key_key")
+}

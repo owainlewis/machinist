@@ -112,6 +112,8 @@ func TestRBACMatrixAcrossAllRolesAndPlanes(t *testing.T) {
 		{"GET /api/v1/team/members", http.MethodGet, "/api/v1/team/members", nil, 401, 403, 403, 200, 403},
 		{"GET /api/v1/team/invites", http.MethodGet, "/api/v1/team/invites", nil, 401, 403, 403, 200, 403},
 		{"DELETE /api/v1/runners/missing", http.MethodDelete, "/api/v1/runners/missing", nil, 401, 403, 403, 404, 403},
+		{"DELETE /api/v1/tickets/t_missing", http.MethodDelete, "/api/v1/tickets/t_missing", nil, 401, 403, 403, 404, 403},
+		{"DELETE /machinist/jobs/t_missing", http.MethodDelete, "/machinist/jobs/t_missing", nil, 401, 403, 403, 404, 403},
 		{"POST /api/v1/runners/poll", http.MethodPost, "/api/v1/runners/poll", map[string]any{}, 401, 401, 401, 401, 204},
 	}
 

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/factory"
+	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/sources"
 )
 
@@ -56,5 +58,43 @@ func TestLinearMayNameARepositoryAddedInTheWebApp(t *testing.T) {
 	}
 	if poller.Rules.Projects["Slip"] != "Owner/Slip" || poller.Rules.Teams["ENG"] != "owner/slip" {
 		t.Fatalf("rules = %+v", poller.Rules)
+	}
+}
+
+func TestLinearRejectsPresetWithRequiredInputs(t *testing.T) {
+	intake := linearIntake(t, "owner/machinist", "owner/airtime")
+	emptyDefault := ""
+	loaded := &factory.Factory{
+		Presets: map[string]factory.Preset{
+			"default": {
+				Name:   "default",
+				Inputs: map[string]factory.Input{"notes": {Default: &emptyDefault}},
+				Steps:  []runner.Step{{Name: "work", Run: "true"}},
+			},
+			"deploy": {
+				Name:   "deploy",
+				Inputs: map[string]factory.Input{"environment": {Description: "Target env"}},
+				Steps:  []runner.Step{{Name: "deploy", Run: "true"}},
+			},
+		},
+	}
+
+	// Preset with only optional inputs (including empty-string default) is allowed.
+	if poller, err := linearPoller(t.Context(), linearConfig(nil, map[string]string{"ENG": "owner/machinist"}), loaded, intake, intake.Store, io.Discard); err != nil || poller == nil {
+		t.Fatalf("optional-input preset rejected: poller = %v, err = %v", poller, err)
+	}
+
+	// Explicit linear.preset with required inputs is rejected.
+	cfg := linearConfig(nil, map[string]string{"ENG": "owner/machinist"})
+	cfg.Linear.Preset = "deploy"
+	if _, err := linearPoller(t.Context(), cfg, loaded, intake, intake.Store, io.Discard); err == nil || !strings.Contains(err.Error(), "required inputs (environment)") {
+		t.Fatalf("linear.preset with required input err = %v", err)
+	}
+
+	// Fallback to default_preset with required inputs is also rejected.
+	cfg = linearConfig(nil, map[string]string{"ENG": "owner/machinist"})
+	cfg.Server.DefaultPreset = "deploy"
+	if _, err := linearPoller(t.Context(), cfg, loaded, intake, intake.Store, io.Discard); err == nil || !strings.Contains(err.Error(), "required inputs (environment)") {
+		t.Fatalf("fallback default_preset with required input err = %v", err)
 	}
 }

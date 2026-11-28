@@ -449,6 +449,77 @@ func TestStewardRequeueIgnoresStaleGeneration(t *testing.T) {
 	}
 }
 
+func TestStewardRequeueDefersOnScheduleContention(t *testing.T) {
+	ctx := t.Context()
+	store := openStore(t)
+	now := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
+
+	firstReq := request("sched:steward:1")
+	firstReq.Source = "schedule:nightly"
+	first, created, err := store.CreateTicket(ctx, firstReq)
+	if err != nil || !created {
+		t.Fatalf("create first schedule ticket: created=%v err=%v", created, err)
+	}
+	if _, _, err := store.Apply(ctx, first.ID, StateWorking, Transition{
+		State:    StatePRReady,
+		PRNumber: 42,
+		Shipping: `{"head":"sha1"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.Ticket(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Start another working ticket on the same schedule.
+	secondReq := request("sched:steward:2")
+	secondReq.Source = "schedule:nightly"
+	second, created, err := store.CreateTicket(ctx, secondReq)
+	if err != nil || !created || second.ID == first.ID {
+		t.Fatalf("create second schedule ticket: second=%+v created=%v err=%v", second, created, err)
+	}
+
+	// StewardRequeue must defer cleanly without surfacing a DB constraint error
+	// and without mutating the pr_ready ticket or inserting an EntryCI.
+	now = now.Add(time.Minute)
+	deferred, requeued, err := store.StewardRequeue(ctx, listed, StewardRequeueRequest{
+		MaxRetries: 2,
+		Prompt:     `PR Steward (attempt 1/2): check "test" failed.`,
+	})
+	if err != nil || requeued {
+		t.Fatalf("StewardRequeue during schedule contention: deferred=%+v requeued=%v err=%v, want requeued=false err=nil", deferred, requeued, err)
+	}
+	if deferred.ID != first.ID || deferred.State != StatePRReady || deferred.Shipping != `{"head":"sha1"}` || deferred.StewardRetries != 0 {
+		t.Fatalf("deferred ticket = %+v", deferred)
+	}
+	entries, err := store.Entries(ctx, first.ID)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries after deferred StewardRequeue = %+v, err=%v", entries, err)
+	}
+
+	// Once the other scheduled ticket leaves working, StewardRequeue succeeds.
+	if _, _, err := store.Apply(ctx, second.ID, StateWorking, Transition{State: StateDone}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	updated, requeued, err := store.StewardRequeue(ctx, listed, StewardRequeueRequest{
+		MaxRetries: 2,
+		Prompt:     `PR Steward (attempt 1/2): check "test" failed.`,
+	})
+	if err != nil || !requeued {
+		t.Fatalf("StewardRequeue after contention cleared: updated=%+v requeued=%v err=%v", updated, requeued, err)
+	}
+	if updated.State != StateWorking || updated.Shipping != "" || updated.StewardRetries != 1 {
+		t.Fatalf("updated = %+v", updated)
+	}
+	entries, err = store.Entries(ctx, first.ID)
+	if err != nil || len(entries) != 2 || entries[1].Kind != EntryCI {
+		t.Fatalf("entries after successful StewardRequeue = %+v, err=%v", entries, err)
+	}
+}
+
 func TestTicketsWithOpenPRsIncludesFailedAndCancelledOpenPRs(t *testing.T) {
 	ctx := context.Background()
 	store := openStore(t)

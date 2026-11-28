@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func openAuthTestStore(t *testing.T) (*Store, *time.Time) {
@@ -235,5 +236,224 @@ func TestPruneExpiredAuthAndHasActiveRoleAllToken(t *testing.T) {
 	_ = store.q().QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&sessCount)
 	if oauthCount != 0 || sessCount != 0 {
 		t.Fatalf("after prune: oauth=%d sessions=%d, want 0, 0", oauthCount, sessCount)
+	}
+}
+
+func TestTruncateFieldUTF8Boundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxBytes int
+		want     string
+	}{
+		{
+			name:     "empty and whitespace",
+			input:    "   \t\n  ",
+			maxBytes: 10,
+			want:     "",
+		},
+		{
+			name:     "zero limit",
+			input:    "hello",
+			maxBytes: 0,
+			want:     "",
+		},
+		{
+			name:     "negative limit",
+			input:    "hello",
+			maxBytes: -5,
+			want:     "",
+		},
+		{
+			name:     "within limit trims whitespace",
+			input:    "  héllo 日本語 😀  ",
+			maxBytes: 64,
+			want:     "héllo 日本語 😀",
+		},
+		{
+			name:     "2-byte rune fits exactly at limit",
+			input:    strings.Repeat("a", 254) + "é" + "tail",
+			maxBytes: 256,
+			want:     strings.Repeat("a", 254) + "é",
+		},
+		{
+			name:     "2-byte rune straddles 256-byte limit",
+			input:    strings.Repeat("a", 255) + "é" + "tail",
+			maxBytes: 256,
+			want:     strings.Repeat("a", 255),
+		},
+		{
+			name:     "3-byte rune straddles 256-byte limit by 1 byte",
+			input:    strings.Repeat("a", 255) + "日" + "tail",
+			maxBytes: 256,
+			want:     strings.Repeat("a", 255),
+		},
+		{
+			name:     "3-byte rune straddles 256-byte limit by 2 bytes",
+			input:    strings.Repeat("a", 254) + "日" + "tail",
+			maxBytes: 256,
+			want:     strings.Repeat("a", 254),
+		},
+		{
+			name:     "3-byte rune fits exactly at 256-byte limit",
+			input:    strings.Repeat("a", 253) + "日" + "tail",
+			maxBytes: 256,
+			want:     strings.Repeat("a", 253) + "日",
+		},
+		{
+			name:     "4-byte emoji straddles 512-byte limit by 1 byte",
+			input:    strings.Repeat("a", 511) + "😀" + "tail",
+			maxBytes: 512,
+			want:     strings.Repeat("a", 511),
+		},
+		{
+			name:     "4-byte emoji straddles 512-byte limit by 2 bytes",
+			input:    strings.Repeat("a", 510) + "😀" + "tail",
+			maxBytes: 512,
+			want:     strings.Repeat("a", 510),
+		},
+		{
+			name:     "4-byte emoji straddles 512-byte limit by 3 bytes",
+			input:    strings.Repeat("a", 509) + "😀" + "tail",
+			maxBytes: 512,
+			want:     strings.Repeat("a", 509),
+		},
+		{
+			name:     "4-byte emoji fits exactly at 512-byte limit",
+			input:    strings.Repeat("a", 508) + "😀" + "tail",
+			maxBytes: 512,
+			want:     strings.Repeat("a", 508) + "😀",
+		},
+		{
+			name:     "all multi-byte runes exceeding limit",
+			input:    strings.Repeat("🚀", 80), // 320 bytes
+			maxBytes: 256,
+			want:     strings.Repeat("🚀", 64), // 256 bytes
+		},
+		{
+			name:     "all 3-byte runes exceeding 256",
+			input:    strings.Repeat("日", 100), // 300 bytes
+			maxBytes: 256,
+			want:     strings.Repeat("日", 85), // 255 bytes
+		},
+		{
+			name:     "single rune larger than limit",
+			input:    "😀",
+			maxBytes: 3,
+			want:     "",
+		},
+		{
+			name:     "invalid utf8 input stripped before truncation",
+			input:    "ok\xff\xfe" + strings.Repeat("a", 10),
+			maxBytes: 8,
+			want:     "okaaaaaa",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateField(tc.input, tc.maxBytes)
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncateField(%q, %d) returned invalid UTF-8: %x", tc.input, tc.maxBytes, got)
+			}
+			if tc.maxBytes >= 0 && len(got) > tc.maxBytes {
+				t.Fatalf("len(truncateField) = %d, want <= %d", len(got), tc.maxBytes)
+			}
+			if got != tc.want {
+				t.Fatalf("truncateField = %q (len %d), want %q (len %d)", got, len(got), tc.want, len(tc.want))
+			}
+		})
+	}
+}
+
+func TestAuthMultibyteUTF8Truncation(t *testing.T) {
+	store, _ := openAuthTestStore(t)
+	ctx := t.Context()
+
+	// Display names with multi-byte UTF-8 runes straddling the 256-byte boundary.
+	initialName := strings.Repeat("a", 255) + "é" + " overflow"
+	wantInitialName := strings.Repeat("a", 255)
+
+	res, err := store.ResolveGitHubLogin(ctx, GitHubProfile{
+		ID:             "1001",
+		Login:          "utf8admin",
+		Name:           initialName,
+		PrimaryEmail:   "utf8@example.com",
+		VerifiedEmails: []string{"utf8@example.com"},
+	}, "github:utf8admin", "")
+	if err != nil {
+		t.Fatalf("ResolveGitHubLogin bootstrap: %v", err)
+	}
+	if !utf8.ValidString(res.User.Name) || len(res.User.Name) > 256 || res.User.Name != wantInitialName {
+		t.Fatalf("bootstrap User.Name = %q (valid=%v len=%d), want %q", res.User.Name, utf8.ValidString(res.User.Name), len(res.User.Name), wantInitialName)
+	}
+
+	// Re-login refreshes display name via UPDATE users with a 4-byte emoji straddling 256 bytes.
+	refreshedName := strings.Repeat("b", 254) + "😀" + " overflow"
+	wantRefreshedName := strings.Repeat("b", 254)
+	res2, err := store.ResolveGitHubLogin(ctx, GitHubProfile{
+		ID:             "1001",
+		Login:          "utf8admin",
+		Name:           refreshedName,
+		PrimaryEmail:   "utf8@example.com",
+		VerifiedEmails: []string{"utf8@example.com"},
+	}, "github:utf8admin", "")
+	if err != nil {
+		t.Fatalf("ResolveGitHubLogin refresh: %v", err)
+	}
+	if !utf8.ValidString(res2.User.Name) || len(res2.User.Name) > 256 || res2.User.Name != wantRefreshedName {
+		t.Fatalf("refresh User.Name = %q (valid=%v len=%d), want %q", res2.User.Name, utf8.ValidString(res2.User.Name), len(res2.User.Name), wantRefreshedName)
+	}
+
+	storedUser, err := store.FindUserByIDOrLogin(ctx, res.User.ID)
+	if err != nil {
+		t.Fatalf("FindUserByIDOrLogin: %v", err)
+	}
+	if !utf8.ValidString(storedUser.Name) || storedUser.Name != wantRefreshedName {
+		t.Fatalf("stored User.Name = %q (valid=%v), want %q", storedUser.Name, utf8.ValidString(storedUser.Name), wantRefreshedName)
+	}
+
+	// User-Agent with multi-byte UTF-8 rune straddling the 512-byte boundary for user session.
+	userUA := strings.Repeat("u", 510) + "😀" + " extra"
+	wantUserUA := strings.Repeat("u", 510)
+	userSecret, userSess, err := store.CreateUserSession(ctx, res.User.ID, userUA, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("CreateUserSession: %v", err)
+	}
+	if !utf8.ValidString(userSess.UserAgent) || len(userSess.UserAgent) > 512 || userSess.UserAgent != wantUserUA {
+		t.Fatalf("CreateUserSession UserAgent = %q (valid=%v len=%d), want %q", userSess.UserAgent, utf8.ValidString(userSess.UserAgent), len(userSess.UserAgent), wantUserUA)
+	}
+	if _, err := store.AuthenticateSession(ctx, userSecret); err != nil {
+		t.Fatalf("AuthenticateSession(user): %v", err)
+	}
+	userSessions, err := store.ListActiveSessionsForUser(ctx, res.User.ID)
+	if err != nil || len(userSessions) != 1 || userSessions[0].UserAgent != wantUserUA {
+		t.Fatalf("ListActiveSessionsForUser = %+v, err = %v", userSessions, err)
+	}
+
+	// User-Agent with multi-byte UTF-8 rune straddling the 512-byte boundary for token session.
+	tok, err := store.CreateToken(ctx, "utf8-op", RoleOperator)
+	if err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+	tokAuth, err := store.Authenticate(ctx, tok)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	tokenUA := strings.Repeat("t", 511) + "日" + " extra"
+	wantTokenUA := strings.Repeat("t", 511)
+	tokSecret, tokSess, err := store.CreateTokenSession(ctx, tokAuth.ID, tokenUA, "203.0.113.11")
+	if err != nil {
+		t.Fatalf("CreateTokenSession: %v", err)
+	}
+	if !utf8.ValidString(tokSess.UserAgent) || len(tokSess.UserAgent) > 512 || tokSess.UserAgent != wantTokenUA {
+		t.Fatalf("CreateTokenSession UserAgent = %q (valid=%v len=%d), want %q", tokSess.UserAgent, utf8.ValidString(tokSess.UserAgent), len(tokSess.UserAgent), wantTokenUA)
+	}
+	if _, err := store.AuthenticateSession(ctx, tokSecret); err != nil {
+		t.Fatalf("AuthenticateSession(token): %v", err)
+	}
+	tokSessions, err := store.ListActiveSessionsForToken(ctx, tokAuth.ID)
+	if err != nil || len(tokSessions) != 1 || tokSessions[0].UserAgent != wantTokenUA {
+		t.Fatalf("ListActiveSessionsForToken = %+v, err = %v", tokSessions, err)
 	}
 }

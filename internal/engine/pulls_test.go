@@ -509,3 +509,270 @@ func TestFailedAndCancelledJobsWithOpenPRNeverRunShipOrSteward(t *testing.T) {
 		})
 	}
 }
+
+func TestFailedRerunAfterMergedPRDoesNotReattachHistoricalPR(t *testing.T) {
+	e, github, ticket := jobWithOpenPR(t)
+
+	// The first run's PR #42 merges.
+	merged := time.Date(2026, 11, 20, 10, 30, 0, 0, time.UTC)
+	github.pr = PR{Number: 42, Merged: true, ChangedAt: merged, OpenedAt: merged.Add(-time.Hour)}
+	checkPRs(t, e)
+	if got := ticketOf(t, e, ticket.ID); got.State != tickets.StateDone || got.PRNumber != 42 || got.PRState != tickets.PRMerged {
+		t.Fatalf("after merge: %+v", got)
+	}
+
+	// Rerun the job after PR #42 merged; the rerun fails without opening a new PR.
+	// FindPR still falls back to historical merged PR #42 on the reused branch.
+	if _, err := e.Store.Rerun(t.Context(), ticket.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	var reviewCalls int
+	e.Reviews = func(context.Context, string, int, time.Time) (tickets.Reviews, error) {
+		reviewCalls++
+		return tickets.Reviews{Count: 1}, nil
+	}
+	req := assignRun(t, e)
+	if err := e.Complete(t.Context(), req.RunID, protocol.Completion{State: tickets.RunFailed, Error: "tests failed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StateFailed || got.PRNumber != 0 || got.PRState != "" || got.MergedAt != nil {
+		t.Fatalf("after failed rerun: %+v", got)
+	}
+	if reviewCalls != 0 {
+		t.Fatalf("reviewCalls = %d, want 0", reviewCalls)
+	}
+
+	// Subsequent CheckPRs ticks must keep the job failed with pr_number == 0.
+	github.calls = 0
+	checkPRs(t, e)
+	got = ticketOf(t, e, ticket.ID)
+	if got.State != tickets.StateFailed || got.PRNumber != 0 || got.PRState != "" || got.MergedAt != nil {
+		t.Fatalf("after CheckPRs: %+v", got)
+	}
+	if github.calls != 0 {
+		t.Fatalf("CheckPRs queried GitHub %d times for failed rerun with no PR, want 0", github.calls)
+	}
+}
+
+func TestNoChangeReplyAfterClosedOrMergedPRDoesNotReattachHistoricalPR(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pr   PR
+	}{
+		{
+			name: "closed",
+			pr:   PR{Number: 42, Closed: true, ChangedAt: time.Date(2026, 11, 20, 10, 30, 0, 0, time.UTC)},
+		},
+		{
+			name: "merged",
+			pr:   PR{Number: 42, Merged: true, ChangedAt: time.Date(2026, 11, 20, 10, 30, 0, 0, time.UTC)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEngine(t)
+			github := &githubPRs{pr: PR{Number: 42}}
+			e.FindPR = github.find
+
+			// Use an issue ticket so FirstPR would post a GitHub comment if triggered.
+			ticket := newIssueTicket(t, e)
+			prReady(t, e, ticket)
+
+			// First PR closes or merges.
+			github.pr = tc.pr
+			checkPRs(t, e)
+			beforeMsgs := messages(t, e, ticket.ID)
+			if len(beforeMsgs) != 2 || beforeMsgs[1] != "Opened a PR: https://github.com/owner/repo/pull/42" {
+				t.Fatalf("initial messages = %q", beforeMsgs)
+			}
+
+			// Reply to the job; the rerun finishes no_change without opening a new PR.
+			if _, err := e.Store.Reply(t.Context(), ticket.ID, "alice", []tickets.Comment{{Body: "Please double-check this."}}); err != nil {
+				t.Fatal(err)
+			}
+			var reviewCalls int
+			e.Reviews = func(context.Context, string, int, time.Time) (tickets.Reviews, error) {
+				reviewCalls++
+				return tickets.Reviews{Count: 1}, nil
+			}
+			req := assignRun(t, e)
+			if err := e.Complete(t.Context(), req.RunID, succeed(protocol.OutcomeNoChange, "Nothing to change")); err != nil {
+				t.Fatal(err)
+			}
+
+			got := ticketOf(t, e, ticket.ID)
+			if got.State != tickets.StateDone || got.PRNumber != 0 || got.PRState != "" || got.MergedAt != nil {
+				t.Fatalf("after no_change reply: %+v", got)
+			}
+			if reviewCalls != 0 {
+				t.Fatalf("reviewCalls = %d, want 0", reviewCalls)
+			}
+
+			// No duplicate FirstPR message should be emitted; only the no_change summary.
+			afterMsgs := messages(t, e, ticket.ID)
+			if len(afterMsgs) != len(beforeMsgs)+1 || afterMsgs[len(afterMsgs)-1] != "Nothing to change" {
+				t.Fatalf("messages = %q, want one new summary message after %q", afterMsgs, beforeMsgs)
+			}
+
+			// The rerun's stored report must remain no_change (not relabelled to merged).
+			runs, err := e.Store.Runs(t.Context(), ticket.ID)
+			if err != nil || len(runs) != 2 || runs[1].Report == nil || runs[1].Report.Outcome != protocol.OutcomeNoChange {
+				t.Fatalf("runs = %+v, err = %v", runs, err)
+			}
+
+			// CheckPRs must leave the finished job untouched.
+			github.calls = 0
+			checkPRs(t, e)
+			got = ticketOf(t, e, ticket.ID)
+			if got.State != tickets.StateDone || got.PRNumber != 0 || got.PRState != "" || got.MergedAt != nil {
+				t.Fatalf("after CheckPRs: %+v", got)
+			}
+		})
+	}
+}
+
+func TestRerunAfterEndedPRHandlesNewPRAndMultipleReruns(t *testing.T) {
+	t.Run("opens new open PR", func(t *testing.T) {
+		e := newEngine(t)
+		github := &githubPRs{pr: PR{Number: 42}}
+		e.FindPR = github.find
+		ticket := newIssueTicket(t, e)
+		prReady(t, e, ticket)
+
+		github.pr = PR{Number: 42, Merged: true, ChangedAt: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)}
+		checkPRs(t, e)
+
+		if _, err := e.Store.Rerun(t.Context(), ticket.ID, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		github.pr = PR{Number: 43}
+		prReady(t, e, ticket)
+
+		got := ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StatePRReady || got.PRNumber != 43 || got.PRState != tickets.PROpen {
+			t.Fatalf("after new PR: %+v", got)
+		}
+		all := messages(t, e, ticket.ID)
+		if len(all) != 3 || all[2] != "Opened a PR: https://github.com/owner/repo/pull/43" {
+			t.Fatalf("messages = %q", all)
+		}
+	})
+
+	t.Run("opens and merges new PR in same run", func(t *testing.T) {
+		e, github, ticket := jobWithOpenPR(t)
+		firstMerged := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+		github.pr = PR{Number: 42, Merged: true, ChangedAt: firstMerged}
+		checkPRs(t, e)
+
+		if _, err := e.Store.Rerun(t.Context(), ticket.ID, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		secondMerged := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		github.pr = PR{Number: 43, Merged: true, ChangedAt: secondMerged, OpenedAt: secondMerged.Add(-time.Hour)}
+		var reviewedPR int
+		e.Reviews = func(_ context.Context, _ string, number int, _ time.Time) (tickets.Reviews, error) {
+			reviewedPR = number
+			return tickets.Reviews{Count: 1}, nil
+		}
+		req := assignRun(t, e)
+		if err := e.Complete(t.Context(), req.RunID, succeed(protocol.OutcomeNoChange, "Merged #43")); err != nil {
+			t.Fatal(err)
+		}
+		got := ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StateDone || got.PRNumber != 43 || got.PRState != tickets.PRMerged || got.MergedAt == nil || !got.MergedAt.Equal(secondMerged) {
+			t.Fatalf("after new merged PR: %+v", got)
+		}
+		if reviewedPR != 43 {
+			t.Fatalf("reviewedPR = %d, want 43", reviewedPR)
+		}
+	})
+
+	t.Run("failed rerun that opens new open PR keeps watching new PR", func(t *testing.T) {
+		e, github, ticket := jobWithOpenPR(t)
+		github.pr = PR{Number: 42, Merged: true, ChangedAt: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)}
+		checkPRs(t, e)
+
+		if _, err := e.Store.Rerun(t.Context(), ticket.ID, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		github.pr = PR{Number: 43}
+		req := assignRun(t, e)
+		if err := e.Complete(t.Context(), req.RunID, protocol.Completion{State: tickets.RunFailed, Error: "ci failed"}); err != nil {
+			t.Fatal(err)
+		}
+		got := ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StateFailed || got.PRNumber != 43 {
+			t.Fatalf("after failed rerun with new open PR: %+v", got)
+		}
+		merged := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
+		github.pr = PR{Number: 43, Merged: true, ChangedAt: merged}
+		checkPRs(t, e)
+		got = ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StateDone || got.PRNumber != 43 || got.PRState != tickets.PRMerged {
+			t.Fatalf("after human merged #43: %+v", got)
+		}
+	})
+
+	t.Run("multiple consecutive reruns without new PR never reattach historical PR", func(t *testing.T) {
+		e, github, ticket := jobWithOpenPR(t)
+		github.pr = PR{Number: 42, Merged: true, ChangedAt: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)}
+		checkPRs(t, e)
+
+		// First rerun fails without opening a PR.
+		if _, err := e.Store.Rerun(t.Context(), ticket.ID, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		req := assignRun(t, e)
+		if err := e.Complete(t.Context(), req.RunID, protocol.Completion{State: tickets.RunFailed, Error: "boom"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := ticketOf(t, e, ticket.ID); got.State != tickets.StateFailed || got.PRNumber != 0 {
+			t.Fatalf("after first rerun: %+v", got)
+		}
+
+		// Second rerun finishes no_change without opening a PR.
+		if _, err := e.Store.Rerun(t.Context(), ticket.ID, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		req = assignRun(t, e)
+		if err := e.Complete(t.Context(), req.RunID, succeed(protocol.OutcomeNoChange, "Still nothing")); err != nil {
+			t.Fatal(err)
+		}
+		got := ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StateDone || got.PRNumber != 0 || got.PRState != "" || got.MergedAt != nil {
+			t.Fatalf("after second rerun: %+v", got)
+		}
+	})
+
+	t.Run("reopened closed PR is attached and can later merge", func(t *testing.T) {
+		e, github, ticket := jobWithOpenPR(t)
+		github.pr = PR{Number: 42, Closed: true, ChangedAt: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)}
+		checkPRs(t, e)
+
+		if _, err := e.Store.Rerun(t.Context(), ticket.ID, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		// Someone reopens PR #42 on GitHub before the rerun completes.
+		github.pr = PR{Number: 42}
+		prReady(t, e, ticket)
+		if got := ticketOf(t, e, ticket.ID); got.State != tickets.StatePRReady || got.PRNumber != 42 || got.PRState != tickets.PROpen {
+			t.Fatalf("after reopened PR: %+v", got)
+		}
+
+		// Replying while #42 is open keeps it attached; merging during the run records it.
+		if _, err := e.Store.Reply(t.Context(), ticket.ID, "alice", []tickets.Comment{{Body: "Merge it"}}); err != nil {
+			t.Fatal(err)
+		}
+		merged := time.Date(2026, 11, 21, 14, 0, 0, 0, time.UTC)
+		github.pr = PR{Number: 42, Merged: true, ChangedAt: merged}
+		req := assignRun(t, e)
+		if err := e.Complete(t.Context(), req.RunID, succeed(protocol.OutcomeNoChange, "Merged reopened PR")); err != nil {
+			t.Fatal(err)
+		}
+		got := ticketOf(t, e, ticket.ID)
+		if got.State != tickets.StateDone || got.PRNumber != 42 || got.PRState != tickets.PRMerged || got.MergedAt == nil || !got.MergedAt.Equal(merged) {
+			t.Fatalf("after merging reopened PR: %+v", got)
+		}
+	})
+}

@@ -262,8 +262,9 @@ func (p *Poller) clock() time.Time {
 }
 
 // Poll starts a job for each new assignment, then tells the tracker what
-// happened to each job. The cursor moves past an assignment only once it is
-// handled, so a restart neither misses nor repeats one.
+// happened to each job. The cursor moves past a timestamp only once every
+// assignment at that timestamp has been handled, so a mid-batch cap, error or
+// restart neither misses nor repeats one.
 func (p *Poller) Poll(ctx context.Context) error {
 	name := p.Tracker.Name()
 	since, found, err := p.Store.Cursor(ctx, name, "")
@@ -283,7 +284,8 @@ func (p *Poller) Poll(ctx context.Context) error {
 		return err
 	}
 	started := 0
-	for _, assignment := range assignments {
+	advanced := since
+	for i, assignment := range assignments {
 		outcome, err := p.handle(ctx, assignment)
 		if err != nil {
 			return err
@@ -294,8 +296,12 @@ func (p *Poller) Poll(ctx context.Context) error {
 		if outcome == handledStarted {
 			started++
 		}
-		if assignment.UpdatedAt.After(since) {
-			since = assignment.UpdatedAt
+		advanced = maxTime(advanced, assignment.UpdatedAt)
+		if i+1 < len(assignments) && !assignments[i+1].UpdatedAt.After(advanced) {
+			continue
+		}
+		if advanced.After(since) {
+			since = advanced
 			if err := p.Store.SetCursor(ctx, name, "", since); err != nil {
 				return err
 			}
@@ -455,13 +461,19 @@ func (p *Poller) handle(ctx context.Context, assignment Assignment) (handled, er
 	// A tracker's jobs take its name as their source, so a new tracker shows
 	// in the jobs list, its filter and the dashboard with no other change.
 	job.source, job.origin, job.by = name, name, name
-	ticket, _, err := p.Intake.start(ctx, job)
+	ticket, created, err := p.Intake.start(ctx, job)
 	if errors.Is(err, ErrInvalidRequest) {
+		p.unallow()
 		fmt.Fprintf(p.log(), "machinist: %s issue %s ignored: %v\n", name, assignment.Identifier, err)
 		return handledSkipped, nil
 	}
 	if err != nil {
+		p.unallow()
 		return handledLater, err
+	}
+	if !created {
+		p.unallow()
+		return handledSkipped, nil
 	}
 	fmt.Fprintf(p.log(), "machinist: %s issue %s started job %s\n", name, assignment.Identifier, ticket.ID)
 	return handledStarted, nil

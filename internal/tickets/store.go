@@ -69,8 +69,8 @@ const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreig
 CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, source TEXT NOT NULL, repo TEXT NOT NULL, issue_number INTEGER, title TEXT NOT NULL,
   state TEXT NOT NULL, agent TEXT NOT NULL, harness TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
-  runs_on TEXT NOT NULL DEFAULT '',
-  pr_number INTEGER, created_by TEXT NOT NULL, human_commits INTEGER,
+  runs_on TEXT NOT NULL DEFAULT '', vars TEXT NOT NULL DEFAULT '',
+  pr_number INTEGER, previous_pr_number INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL, human_commits INTEGER,
   merged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pr_state TEXT, pr_state_at TEXT,
   origin TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', shipping TEXT,
   merge_gate_decision TEXT NOT NULL DEFAULT '', merge_gate_risk TEXT NOT NULL DEFAULT '', merge_gate_reason TEXT NOT NULL DEFAULT '',
@@ -195,6 +195,7 @@ CREATE TABLE IF NOT EXISTS automations (
   harness TEXT NOT NULL DEFAULT '',
   model TEXT NOT NULL DEFAULT '',
   runs_on TEXT NOT NULL DEFAULT '',
+  vars TEXT NOT NULL DEFAULT '',
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL);`
@@ -214,19 +215,24 @@ type Ticket struct {
 	// name such as linear.
 	Origin string `json:"source"`
 	// SourceURL links to the issue or message the job came from, if any.
-	SourceURL    string     `json:"source_url,omitempty"`
-	Repo         string     `json:"repo"`
-	IssueNumber  int        `json:"issue_number,omitempty"`
-	Title        string     `json:"title"`
-	State        string     `json:"state"`
-	Agent        string     `json:"agent"`
-	Harness      string     `json:"harness,omitempty"`
-	Model        string     `json:"model,omitempty"`
-	RunsOn       []string   `json:"runs_on,omitempty"`
-	PRNumber     int        `json:"pr_number,omitempty"`
-	CreatedBy    string     `json:"created_by"`
-	HumanCommits *int       `json:"human_commits,omitempty"`
-	MergedAt     *time.Time `json:"merged_at,omitempty"`
+	SourceURL   string            `json:"source_url,omitempty"`
+	Repo        string            `json:"repo"`
+	IssueNumber int               `json:"issue_number,omitempty"`
+	Title       string            `json:"title"`
+	State       string            `json:"state"`
+	Agent       string            `json:"agent"`
+	Harness     string            `json:"harness,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	RunsOn      []string          `json:"runs_on,omitempty"`
+	Vars        map[string]string `json:"vars,omitempty"`
+	PRNumber    int               `json:"pr_number,omitempty"`
+	// PreviousPRNumber is the highest pull request number that merged or closed
+	// before a rerun or reply cleared it, so later runs on the reused branch do
+	// not re-attach historical pull requests.
+	PreviousPRNumber int        `json:"-"`
+	CreatedBy        string     `json:"created_by"`
+	HumanCommits     *int       `json:"human_commits,omitempty"`
+	MergedAt         *time.Time `json:"merged_at,omitempty"`
 	// PRState is open, merged or closed, and PRStateAt is when Machinist saw
 	// it change. Both are empty until the job has a pull request.
 	PRState   string     `json:"pr_state,omitempty"`
@@ -324,6 +330,7 @@ type NewTicket struct {
 	Harness     string
 	Model       string
 	RunsOn      []string
+	Vars        map[string]string
 	CreatedBy   string
 	SourceKey   string
 }
@@ -509,6 +516,18 @@ func openSQLite(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = addColumns(db, "tickets", "vars TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = addColumns(db, "automations", "vars TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = addColumns(db, "tickets", "previous_pr_number INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Backfill monotonic seq for upgraded SQLite databases, reconcile any
 	// pre-existing duplicate working scheduled tickets before creating the
 	// partial unique index, and install seq indexes (including leading seq
@@ -612,7 +631,32 @@ func splitLabels(raw string) []string {
 	return strings.Split(raw, ",")
 }
 
-const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,COALESCE(harness,''),COALESCE(model,''),COALESCE(runs_on,''),pr_number,created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
+func encodeVars(vars map[string]string) (string, error) {
+	if len(vars) == 0 {
+		return "", nil
+	}
+	encoded, err := json.Marshal(vars)
+	if err != nil {
+		return "", fmt.Errorf("encode vars: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func decodeVars(raw string) (map[string]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var vars map[string]string
+	if err := json.Unmarshal([]byte(raw), &vars); err != nil {
+		return nil, fmt.Errorf("decode stored vars: %w", err)
+	}
+	if len(vars) == 0 {
+		return nil, nil
+	}
+	return vars, nil
+}
+
+const ticketColumns = `id,source,origin,source_url,repo,issue_number,title,state,agent,COALESCE(harness,''),COALESCE(model,''),COALESCE(runs_on,''),COALESCE(vars,''),pr_number,COALESCE(previous_pr_number,0),created_by,human_commits,merged_at,created_at,updated_at,COALESCE(pr_state,''),pr_state_at,COALESCE(shipping,''),COALESCE(merge_gate_decision,''),COALESCE(merge_gate_risk,''),COALESCE(merge_gate_reason,''),COALESCE(steward_retries,0)`
 
 type scanner interface{ Scan(...any) error }
 
@@ -620,14 +664,18 @@ func scanTicket(row scanner) (Ticket, error) {
 	var ticket Ticket
 	var issue, pr, commits sql.NullInt64
 	var merged, prStateAt sql.NullString
-	var runsOn, created, updated string
-	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &ticket.Harness, &ticket.Model, &runsOn, &pr, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
+	var runsOn, rawVars, created, updated string
+	if err := row.Scan(&ticket.ID, &ticket.Source, &ticket.Origin, &ticket.SourceURL, &ticket.Repo, &issue, &ticket.Title, &ticket.State, &ticket.Agent, &ticket.Harness, &ticket.Model, &runsOn, &rawVars, &pr, &ticket.PreviousPRNumber, &ticket.CreatedBy, &commits, &merged, &created, &updated, &ticket.PRState, &prStateAt, &ticket.Shipping, &ticket.MergeGateDecision, &ticket.MergeGateRisk, &ticket.MergeGateReason, &ticket.StewardRetries); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Ticket{}, ErrNotFound
 		}
 		return Ticket{}, err
 	}
 	ticket.RunsOn = splitLabels(runsOn)
+	var err error
+	if ticket.Vars, err = decodeVars(rawVars); err != nil {
+		return Ticket{}, err
+	}
 	ticket.IssueNumber, ticket.PRNumber = int(issue.Int64), int(pr.Int64)
 	if commits.Valid {
 		count := int(commits.Int64)
@@ -899,6 +947,10 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 	if err != nil {
 		return Ticket{}, false, fmt.Errorf("runs_on: %w", err)
 	}
+	encodedVars, err := encodeVars(request.Vars)
+	if err != nil {
+		return Ticket{}, false, err
+	}
 	id, err := randomHex(8)
 	if err != nil {
 		return Ticket{}, false, err
@@ -920,11 +972,11 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 		if origin == "" {
 			origin = originOf(request.Source, request.SourceKey)
 		}
-		insertQuery := `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,runs_on,created_by,created_at,updated_at,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM tickets))`
+		insertQuery := `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,runs_on,vars,created_by,created_at,updated_at,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM tickets))`
 		if s.dialect == dialectPostgres {
-			insertQuery = `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,runs_on,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+			insertQuery = `INSERT INTO tickets(id,source,origin,source_url,repo,issue_number,title,state,agent,harness,model,runs_on,vars,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 		}
-		if _, err = tx.ExecContext(ctx, insertQuery, id, request.Source, origin, SourceURL(request.SourceURL), request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.Harness, request.Model, strings.Join(runsOn, ","), request.CreatedBy, stamp(now), stamp(now)); err != nil {
+		if _, err = tx.ExecContext(ctx, insertQuery, id, request.Source, origin, SourceURL(request.SourceURL), request.Repo, nullableInt(request.IssueNumber), request.Title, StateWorking, request.Agent, request.Harness, request.Model, strings.Join(runsOn, ","), encodedVars, request.CreatedBy, stamp(now), stamp(now)); err != nil {
 			return err
 		}
 		if err = insertEntry(ctx, tx, id, EntryRequest, request.CreatedBy, request.Body, request.SourceKey, now); err != nil {
@@ -947,8 +999,21 @@ func (s *Store) CreateTicket(ctx context.Context, request NewTicket) (Ticket, bo
 	return ticket, created, err
 }
 
+func hasOtherWorkingScheduleTicket(ctx context.Context, q querier, ticket Ticket) (bool, error) {
+	if !ticket.Automation() {
+		return false, nil
+	}
+	var otherWorking int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state=? AND id<>?`, ticket.Source, StateWorking, ticket.ID).Scan(&otherWorking); err != nil {
+		return false, err
+	}
+	return otherWorking > 0, nil
+}
+
 // AddInput appends new text to an active ticket and applies its state row. The
-// bool reports whether the entry was added.
+// bool reports whether the entry was added. It returns ErrStillWorking when
+// moving a scheduled ticket from pr_ready to working would conflict with
+// another working ticket for the same schedule.
 func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Ticket, bool, error) {
 	var ticket Ticket
 	added := false
@@ -967,11 +1032,19 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 				return err
 			}
 		}
+		if ticket.State == StatePRReady {
+			otherWorking, err := hasOtherWorkingScheduleTicket(ctx, tx, ticket)
+			if err != nil {
+				return err
+			}
+			if otherWorking {
+				return ErrStillWorking
+			}
+		}
 		now := s.now()
 		if err = insertEntry(ctx, tx, ticketID, input.Kind, input.Author, input.Body, nullableString(input.SourceKey), now); err != nil {
 			return err
 		}
-		added = true
 		if ticket.State == StatePRReady {
 			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET state=?,shipping=NULL,merge_gate_decision='',merge_gate_risk='',merge_gate_reason='',resume_from_step='',resume_checkpoint_run='',updated_at=? WHERE id=?`, StateWorking, stamp(now), ticketID); err != nil {
 				return err
@@ -982,14 +1055,26 @@ func (s *Store) AddInput(ctx context.Context, ticketID string, input Input) (Tic
 			}
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)
-		return err
-	})
-	if err != nil && isUniqueViolation(err) && input.SourceKey != "" {
-		if existing, lookupErr := s.Ticket(ctx, ticketID); lookupErr == nil {
-			return existing, false, nil
+		if err != nil {
+			return err
 		}
+		added = true
+		return nil
+	})
+	if err != nil {
+		if isScheduleActiveUniqueViolation(err) {
+			return Ticket{}, false, ErrStillWorking
+		}
+		if input.SourceKey != "" && isSourceKeyUniqueViolation(err) {
+			if _, keyErr := ticketForSourceKey(ctx, s.q(), input.SourceKey); keyErr == nil {
+				if existing, lookupErr := s.Ticket(ctx, ticketID); lookupErr == nil {
+					return existing, false, nil
+				}
+			}
+		}
+		return Ticket{}, false, err
 	}
-	return ticket, added, err
+	return ticket, added, nil
 }
 
 // TicketBySourceKey finds the ticket that a piece of intake went to.
@@ -1316,13 +1401,53 @@ func (s *Store) Cancel(ctx context.Context, ticketID, by string) (Ticket, error)
 		if _, err = tx.ExecContext(ctx, `UPDATE runs SET cancel_requested_at=? WHERE ticket_id=? AND status=? AND cancel_requested_at IS NULL`, stamp(now), ticketID, RunRunning); err != nil {
 			return err
 		}
-		if err = applyTransition(ctx, tx, ticket, Transition{State: StateCancelled, Message: "Cancelled by " + by}, now); err != nil {
+		if err = applyTransition(ctx, tx, ticket, Transition{State: StateCancelled, Message: "Cancelled by " + by}, now, true); err != nil {
 			return err
 		}
 		ticket, err = loadTicket(ctx, tx, ticketID)
 		return err
 	})
 	return ticket, err
+}
+
+// DeleteTicket permanently removes a ticket and every row belonging to it or
+// its runs. It returns ErrNotFound when the ticket does not exist and
+// ErrStillWorking when the ticket is still working or has a queued or running
+// run.
+func (s *Store) DeleteTicket(ctx context.Context, ticketID string) error {
+	return s.inTx(ctx, func(tx querier) error {
+		ticket, err := s.loadTicketForUpdate(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		if ticket.State == StateWorking {
+			return ErrStillWorking
+		}
+		var active int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND status IN (?,?)`, ticketID, RunQueued, RunRunning).Scan(&active); err != nil {
+			return err
+		}
+		if active > 0 {
+			return ErrStillWorking
+		}
+		for _, stmt := range []string{
+			`DELETE FROM run_activity_events WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_progress WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_stages WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_patches WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM run_checkpoints WHERE run IN (SELECT id FROM runs WHERE ticket_id=?)`,
+			`DELETE FROM runs WHERE ticket_id=?`,
+			`DELETE FROM ticket_entries WHERE ticket_id=?`,
+			`DELETE FROM tracker_reports WHERE ticket_id=?`,
+			`DELETE FROM human_touches WHERE ticket_id=?`,
+			`DELETE FROM tickets WHERE id=?`,
+		} {
+			if _, err = tx.ExecContext(ctx, stmt, ticketID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // ErrStillWorking means a ticket has a run going or about to, so it cannot run again yet.
@@ -1375,14 +1500,12 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		if ticket.State == StateWorking {
 			return ErrStillWorking
 		}
-		if strings.HasPrefix(ticket.Source, sourceSchedulePrefix) {
-			var otherWorking int
-			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state=? AND id<>?`, ticket.Source, StateWorking, ticketID).Scan(&otherWorking); err != nil {
-				return err
-			}
-			if otherWorking > 0 {
-				return ErrStillWorking
-			}
+		otherWorking, err := hasOtherWorkingScheduleTicket(ctx, tx, ticket)
+		if err != nil {
+			return err
+		}
+		if otherWorking {
+			return ErrStillWorking
 		}
 		var active int
 		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ticket_id=? AND status IN (?,?)`, ticketID, RunQueued, RunRunning).Scan(&active); err != nil {
@@ -1416,7 +1539,8 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 			return err
 		}
 		if ticket.MergedAt != nil || ticket.PRState == PRMerged || ticket.PRState == PRClosed {
-			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET pr_number=NULL,merged_at=NULL,pr_opened_at=NULL,first_review_at=NULL,human_reviews=NULL WHERE id=?`, ticketID); err != nil {
+			previousPR := max(ticket.PreviousPRNumber, ticket.PRNumber)
+			if _, err = tx.ExecContext(ctx, `UPDATE tickets SET previous_pr_number=?,pr_number=NULL,merged_at=NULL,pr_opened_at=NULL,first_review_at=NULL,human_reviews=NULL WHERE id=?`, previousPR, ticketID); err != nil {
 				return err
 			}
 			// Drop touches from the finished pull request so the next pull
@@ -1439,11 +1563,8 @@ func (s *Store) reply(ctx context.Context, ticketID, by, kind string, comments [
 		ticket, err = loadTicket(ctx, tx, ticketID)
 		return err
 	})
-	if err != nil && isUniqueViolation(err) && strings.HasPrefix(ticket.Source, sourceSchedulePrefix) {
-		var otherWorking int
-		if checkErr := s.q().QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets WHERE source=? AND state=? AND id<>?`, ticket.Source, StateWorking, ticketID).Scan(&otherWorking); checkErr == nil && otherWorking > 0 {
-			return Ticket{}, ErrStillWorking
-		}
+	if err != nil && isScheduleActiveUniqueViolation(err) {
+		return Ticket{}, ErrStillWorking
 	}
 	return ticket, err
 }
@@ -1467,12 +1588,16 @@ func (s *Store) queueRun(ctx context.Context, q querier, ticketID, kind, reviewe
 	return id, err
 }
 
-func applyTransition(ctx context.Context, q querier, ticket Ticket, transition Transition, now time.Time) error {
+func terminalRunStatus(status string) bool {
+	return status == RunSucceeded || status == RunFailed || status == RunTimedOut
+}
+
+func applyTransition(ctx context.Context, q querier, ticket Ticket, transition Transition, now time.Time, clearResume bool) error {
 	var shipping any
 	if transition.State == StatePRReady {
 		shipping = nullableString(transition.Shipping)
 	}
-	if transition.State != StateWorking {
+	if clearResume || transition.State != StateWorking {
 		if _, err := q.ExecContext(ctx, `UPDATE tickets SET state=?,pr_number=COALESCE(?,pr_number),shipping=?,resume_from_step='',resume_checkpoint_run='',updated_at=? WHERE id=?`, transition.State, nullableInt(transition.PRNumber), shipping, stamp(now), ticket.ID); err != nil {
 			return err
 		}
@@ -1540,7 +1665,7 @@ func (s *Store) Apply(ctx context.Context, ticketID, from string, transition Tra
 		if err != nil || ticket.State != from {
 			return err
 		}
-		if err = applyTransition(ctx, tx, ticket, transition, s.now()); err != nil {
+		if err = applyTransition(ctx, tx, ticket, transition, s.now(), false); err != nil {
 			return err
 		}
 		updated, err = loadTicket(ctx, tx, ticketID)
@@ -1914,7 +2039,7 @@ func (s *Store) CompleteRun(ctx context.Context, completion RunCompletion, decid
 				transition.MergeGate = nil
 			}
 		}
-		if err = applyTransition(ctx, tx, ticket, transition, now); err != nil {
+		if err = applyTransition(ctx, tx, ticket, transition, now, terminalRunStatus(status)); err != nil {
 			return err
 		}
 		updated, err = loadTicket(ctx, tx, ticket.ID)
