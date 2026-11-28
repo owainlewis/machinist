@@ -223,3 +223,7 @@ func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request, tokenName str
 	s.audit(r, "job.cancelled", actorID, actorName, ticket.ID, "succeeded")
 	s.writeJob(w, r, http.StatusOK, ticket)
 }
+
+func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request, tokenName string) {
+	s.deleteTicket(w, r, tokenName)
+}
