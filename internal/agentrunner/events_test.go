@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -114,5 +115,70 @@ func TestFlushWithoutSpoolDoesNothing(t *testing.T) {
 	daemon := spoolDaemon(t, "http://127.0.0.1:1")
 	if err := daemon.flushRunEvents(t.Context(), "run_missing"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStreamRunEventsStopWaitsForInFlightFlush(t *testing.T) {
+	inHandler := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	var mu sync.Mutex
+	var received []int64
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(out http.ResponseWriter, r *http.Request) {
+		var batch protocol.RunEventBatch
+		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+			t.Error(err)
+		}
+		var cursor int64
+		mu.Lock()
+		calls++
+		call := calls
+		for _, raw := range batch.Events {
+			var event protocol.RunEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				t.Error(err)
+			}
+			received = append(received, event.Sequence)
+			cursor = event.Sequence
+		}
+		mu.Unlock()
+		if call == 1 {
+			close(inHandler)
+			<-releaseHandler
+		}
+		_ = json.NewEncoder(out).Encode(protocol.RunEventPage{Cursor: cursor})
+	}))
+	defer server.Close()
+
+	daemon := spoolDaemon(t, server.URL)
+	path := daemon.eventSpool("run")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{\"sequence\":1,\"type\":\"run.completed\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stopEvents := daemon.streamRunEvents(t.Context(), "run")
+	defer stopEvents()
+
+	<-inHandler
+	stopped := make(chan struct{})
+	go func() {
+		stopEvents()
+		close(stopped)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	close(releaseHandler)
+	<-stopped
+
+	if err := daemon.flushRunEvents(t.Context(), "run"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := append([]int64(nil), received...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("received sequences = %v, want [1] (in-flight flush was cancelled and replayed)", got)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/protocol"
@@ -128,9 +129,11 @@ func (d *Daemon) flushRunEvents(ctx context.Context, runID string) error {
 }
 
 // streamRunEvents flushes activity while a run is live. The returned function
-// stops it, so the final flush cannot run at the same time.
+// stops it and waits for any in-flight flush to finish, so the final flush
+// cannot run at the same time or replay an interrupted acknowledgment.
 func (d *Daemon) streamRunEvents(ctx context.Context, runID string) func() {
-	ctx, cancel := context.WithCancel(ctx)
+	stop := make(chan struct{})
+	var stopOnce sync.Once
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
@@ -138,14 +141,26 @@ func (d *Daemon) streamRunEvents(ctx context.Context, runID string) func() {
 		defer ticker.Stop()
 		for {
 			select {
+			case <-stop:
+				return
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				call, stop := context.WithTimeout(ctx, callTimeout)
+				select {
+				case <-stop:
+					return
+				case <-ctx.Done():
+					return
+				default:
+				}
+				call, cancel := context.WithTimeout(ctx, callTimeout)
 				_ = d.flushRunEvents(call, runID)
-				stop()
+				cancel()
 			}
 		}
 	}()
-	return func() { cancel(); <-finished }
+	return func() {
+		stopOnce.Do(func() { close(stop) })
+		<-finished
+	}
 }
