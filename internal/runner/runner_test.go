@@ -308,6 +308,74 @@ func TestEventLogBoundsActualFileAcrossTinyChunks(t *testing.T) {
 	}
 }
 
+func TestEventLogAllowsLifecycleEventsAfterOutputTruncation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := newEventLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.fileLimit = 4 << 10
+	for range 1000 {
+		if err := log.appendOutput("stdout", []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !log.outputTruncated {
+		t.Fatal("expected output truncation to engage")
+	}
+	recordedAfterTruncation := log.outputBytes
+	for step := range 10 {
+		name := "step-" + strconv.Itoa(step)
+		if err := log.append("step.started", "", "name="+name); err != nil {
+			t.Fatalf("step %s step.started: %v", name, err)
+		}
+		if err := log.append("run.started", "", "command="+name); err != nil {
+			t.Fatalf("step %s run.started: %v", name, err)
+		}
+		if err := log.append("process.started", "", "pid=12345"); err != nil {
+			t.Fatalf("step %s process.started: %v", name, err)
+		}
+		if err := log.appendOutput("stdout", []byte("suppressed output after truncation\n")); err != nil {
+			t.Fatalf("step %s appendOutput: %v", name, err)
+		}
+		if err := log.append("run.completed", "", "state=succeeded exit_code=0 message="); err != nil {
+			t.Fatalf("step %s run.completed: %v", name, err)
+		}
+	}
+	if log.outputBytes != recordedAfterTruncation {
+		t.Fatalf("outputBytes grew after truncation: got %d, want %d", log.outputBytes, recordedAfterTruncation)
+	}
+	if err := log.close(); err != nil {
+		t.Fatal(err)
+	}
+	events := readEvents(t, path)
+	truncations := 0
+	seenTruncation := false
+	stepStarts := 0
+	for index, event := range events {
+		if event.Sequence != int64(index+1) {
+			t.Fatalf("event %d sequence = %d, want %d", index, event.Sequence, index+1)
+		}
+		switch event.Type {
+		case "process.output_truncated":
+			truncations++
+			seenTruncation = true
+		case "process.output":
+			if seenTruncation {
+				t.Fatalf("unexpected process.output after truncation at sequence %d", event.Sequence)
+			}
+		case "step.started":
+			stepStarts++
+		}
+	}
+	if truncations != 1 {
+		t.Fatalf("truncation events = %d, want 1", truncations)
+	}
+	if stepStarts != 10 {
+		t.Fatalf("step.started events = %d, want 10", stepStarts)
+	}
+}
+
 func TestWritePromptAcceptsSupervisorCloseAfterCompleteDelivery(t *testing.T) {
 	result := make(chan error, 1)
 	writePrompt(completeThenClosedWriter{}, "complete prompt\n", result)
