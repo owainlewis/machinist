@@ -217,6 +217,15 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 	}
 	missing := absent(watch.Seen, names)
 	switch {
+	case pending > 0:
+		// Keep waiting while any check is still running. Advance Since when
+		// previously-seen checks have not registered yet (such as an aggregator
+		// job that depends on upstream jobs) so StartGrace does not expire
+		// before those upstream checks finish.
+		if len(missing) > 0 {
+			watch.Since = now
+		}
+		return waiting(watch), nil
 	case len(checks) == 0 || len(missing) > 0:
 		if now.Sub(watch.Since) < StartGrace {
 			return waiting(watch), nil
@@ -225,8 +234,6 @@ func LookOnce(ctx context.Context, github GitHub, watch Watch, now time.Time) (L
 			return leaveOpen(pr, (&missingChecksError{Checks: missing}).Error()), nil
 		}
 		// No checks started in all that time, so there are none to wait for.
-	case pending > 0:
-		return waiting(watch), nil
 	}
 	if watch.Hold != "" {
 		// The run's result already said why it stays open.
