@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -174,10 +175,20 @@ type SessionAuth struct {
 
 func truncateField(s string, maxBytes int) string {
 	s = strings.TrimSpace(s)
+	if maxBytes <= 0 {
+		return ""
+	}
+	if !utf8.ValidString(s) {
+		s = strings.TrimSpace(strings.ToValidUTF8(s, ""))
+	}
 	if len(s) <= maxBytes {
 		return s
 	}
-	return s[:maxBytes]
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // sanitizeAvatarURL keeps only https:// URLs <= 512 bytes.

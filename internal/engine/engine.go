@@ -184,6 +184,13 @@ func (e *Engine) PinnedFactory(ticketID string, updatedAt time.Time) *factory.Fa
 	return nil
 }
 
+// Unpin drops any reload pin for ticketID.
+func (e *Engine) Unpin(ticketID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.pinned, ticketID)
+}
+
 // UnpinThrough drops any reload pin for ticketID recorded at or before at.
 func (e *Engine) UnpinThrough(ticketID string, at time.Time) {
 	e.mu.Lock()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -365,6 +366,91 @@ func TestRateLimiterAndClientIPExtraction(t *testing.T) {
 	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
 		t.Fatalf("rate limited response = %d, Retry-After=%q", resp.StatusCode, resp.Header.Get("Retry-After"))
 	}
+}
+
+func TestClientIPCombinesMultipleXForwardedForHeaders(t *testing.T) {
+	t.Run("multiple header lines select rightmost trusted hop", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/session", nil)
+		req.RemoteAddr = "192.0.2.1:4321"
+		req.Header.Add("X-Forwarded-For", "198.51.100.99")
+		req.Header.Add("X-Forwarded-For", "203.0.113.5")
+
+		if got := clientIP(req, 0); got != "192.0.2.1" {
+			t.Fatalf("hops=0 got %q, want 192.0.2.1", got)
+		}
+		if got := clientIP(req, 1); got != "203.0.113.5" {
+			t.Fatalf("hops=1 got %q, want 203.0.113.5", got)
+		}
+		if got := clientIP(req, 2); got != "198.51.100.99" {
+			t.Fatalf("hops=2 got %q, want 198.51.100.99", got)
+		}
+	})
+
+	t.Run("comma-separated values across multiple header lines preserve order", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/session", nil)
+		req.RemoteAddr = "192.0.2.1:4321"
+		req.Header.Add("X-Forwarded-For", "198.51.100.1, 198.51.100.2")
+		req.Header.Add("X-Forwarded-For", "203.0.113.5, 10.0.0.1")
+
+		if got := clientIP(req, 1); got != "10.0.0.1" {
+			t.Fatalf("hops=1 got %q, want 10.0.0.1", got)
+		}
+		if got := clientIP(req, 2); got != "203.0.113.5" {
+			t.Fatalf("hops=2 got %q, want 203.0.113.5", got)
+		}
+		if got := clientIP(req, 3); got != "198.51.100.2" {
+			t.Fatalf("hops=3 got %q, want 198.51.100.2", got)
+		}
+		if got := clientIP(req, 4); got != "198.51.100.1" {
+			t.Fatalf("hops=4 got %q, want 198.51.100.1", got)
+		}
+	})
+
+	t.Run("empty first header does not mask subsequent real client IP", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/session", nil)
+		req.RemoteAddr = "192.0.2.1:4321"
+		req.Header.Add("X-Forwarded-For", "")
+		req.Header.Add("X-Forwarded-For", "203.0.113.5")
+
+		if got := clientIP(req, 1); got != "203.0.113.5" {
+			t.Fatalf("hops=1 with empty first header got %q, want 203.0.113.5", got)
+		}
+	})
+
+	t.Run("authLimiter enforces burst despite rotating spoofed first header", func(t *testing.T) {
+		fakegh.Install(t, testConfig().GitHub.Handle)
+		store := openTestStore(t)
+		cfg := testConfig()
+		cfg.Server.TrustedProxyHops = 1
+		srv, err := New(cfg, store, testFactory(), "v1.2.3", io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := srv.Handler()
+
+		send := func(spoofed string) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/session", bytes.NewBufferString(`{"token":"wrong"}`))
+			req.Host = "127.0.0.1"
+			req.RemoteAddr = "192.0.2.1:4321"
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Add("X-Forwarded-For", spoofed)
+			req.Header.Add("X-Forwarded-For", "203.0.113.5")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			return rec
+		}
+
+		for i := range int(authRateLimitBurst) {
+			rec := send(fmt.Sprintf("198.51.100.%d", i+1))
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("attempt %d = %d, want 401", i+1, rec.Code)
+			}
+		}
+		rec := send("198.51.100.250")
+		if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+			t.Fatalf("rate limited response = %d, Retry-After=%q, want 429 with Retry-After", rec.Code, rec.Header().Get("Retry-After"))
+		}
+	})
 }
 
 func TestReloadTreatsPublicURLProxyHopsAndAuthAsRestartOnly(t *testing.T) {

@@ -320,6 +320,20 @@ func (s *Server) cancelTicket(w http.ResponseWriter, r *http.Request, tokenName 
 	s.writeTicket(w, r, http.StatusOK, ticket)
 }
 
+func (s *Server) deleteTicket(w http.ResponseWriter, r *http.Request, tokenName string) {
+	id := r.PathValue("id")
+	if err := s.store.DeleteTicket(r.Context(), id); err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	if s.engine != nil {
+		s.engine.Unpin(id)
+	}
+	actorID, actorName := s.actorInfo(r, tokenName)
+	s.audit(r, "job.deleted", actorID, actorName, id, "succeeded")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) runEvents(w http.ResponseWriter, r *http.Request, _ string) {
 	id := r.PathValue("id")
 	if _, err := s.store.Run(r.Context(), id); err != nil {
