@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/machinist/internal/protocol"
@@ -128,10 +129,12 @@ func (d *Daemon) flushRunEvents(ctx context.Context, runID string) error {
 }
 
 // streamRunEvents flushes activity while a run is live. The returned function
-// stops it, so the final flush cannot run at the same time.
+// stops further ticks and waits for any in-flight flush to finish, so an
+// acknowledged batch is checkpointed before the final flush runs.
 func (d *Daemon) streamRunEvents(ctx context.Context, runID string) func() {
-	ctx, cancel := context.WithCancel(ctx)
+	stop := make(chan struct{})
 	finished := make(chan struct{})
+	var once sync.Once
 	go func() {
 		defer close(finished)
 		ticker := time.NewTicker(d.eventInterval)
@@ -140,12 +143,24 @@ func (d *Daemon) streamRunEvents(ctx context.Context, runID string) func() {
 			select {
 			case <-ctx.Done():
 				return
+			case <-stop:
+				return
 			case <-ticker.C:
-				call, stop := context.WithTimeout(ctx, callTimeout)
+				select {
+				case <-ctx.Done():
+					return
+				case <-stop:
+					return
+				default:
+				}
+				call, cancel := context.WithTimeout(ctx, callTimeout)
 				_ = d.flushRunEvents(call, runID)
-				stop()
+				cancel()
 			}
 		}
 	}()
-	return func() { cancel(); <-finished }
+	return func() {
+		once.Do(func() { close(stop) })
+		<-finished
+	}
 }

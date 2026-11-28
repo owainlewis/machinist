@@ -266,7 +266,7 @@ a.source:hover span { text-decoration: underline; }
 .job-inputs { display: flex; flex-wrap: wrap; gap: 6px; }
 .job-input { display: inline-flex; align-items: baseline; gap: 5px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--muted); color: var(--foreground); font-size: 12px; line-height: 18px; }
 .job-input code { color: var(--muted-foreground); font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; }
-.job-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.job-actions { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .job-actions .pill { margin-top: 0; }
 .job-failure { border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); background: var(--danger-soft); }
 .job-failure .label { display: flex; align-items: center; gap: 6px; color: var(--danger); }
@@ -283,8 +283,8 @@ a.source:hover span { text-decoration: underline; }
 .merge-gate-reason { margin: 0; }
 .job-page .prose a { color: var(--info); overflow-wrap: anywhere; }
 .job-page .prose a:hover { text-decoration: underline; }
-.run-again, .cancel-job { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-.run-again-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.run-again, .cancel-job, .delete-job { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.run-again-buttons, .delete-job-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 /* The pipeline: one node per step, left to right, compact so 6-7 steps fit cleanly on desktop. */
 .pipeline { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: radial-gradient(circle at 1px 1px, rgb(255 255 255 / .045) 1px, transparent 0) 0 0 / 16px 16px, var(--surface); box-shadow: var(--specular); padding: 8px; }
@@ -535,7 +535,8 @@ a.source:hover span { text-decoration: underline; }
   .page { gap: 16px; padding: 20px 16px 48px; }
   .page-banner { padding-inline: 16px; }
   .job-head { flex-direction: column; gap: 8px; }
-  .run-again, .cancel-job { align-items: flex-start; }
+  .job-actions { justify-content: flex-start; }
+  .run-again, .cancel-job, .delete-job { align-items: flex-start; }
   .job-head h1 { font-size: 19px; }
   .job-facts { gap: 8px 20px; }
   .step-row { grid-template-columns: auto minmax(0, 1fr) auto auto; }
