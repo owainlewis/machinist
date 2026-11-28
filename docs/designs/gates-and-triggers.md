@@ -146,7 +146,7 @@ Reuses Machinist's checkpoint infrastructure (`internal/runner/checkpoint.go`, `
 
 1. **Runner reaches gate:** When `RunSteps` reaches a `gate` step:
    * If `details` is configured, reads `$MACHINIST_DIR/<details>` (using regular-file + `Lstat` + `64 KiB` checks). If the file is missing, `details` text is empty; if unreadable/oversize/non-regular, the run fails.
-   * Captures a checkpoint via `captureCheckpoint` including commits beyond `BaseRef`, uncommitted `Worktree` diff, `protocol.CheckpointControlFiles`, **and** the `details` file (if present).
+   * Captures a checkpoint via `captureCheckpoint` recording the immutable resolved `BaseSHA` (the exact commit SHA `BaseRef` resolved to, or `HeadSHA` when `Patch` is empty) alongside `BaseRef`, commits beyond `BaseSHA`, uncommitted `Worktree` diff, `protocol.CheckpointControlFiles`, **and** the `details` file (if present).
    * Unlike failure checkpoints (which silently drop oversize payloads), if a gate checkpoint exceeds `protocol.MaxPatchBytes` (4 MiB) or git snapshot fails in a git worktree, **the run fails immediately** with an explicit error rather than waiting on a checkpoint that cannot resume.
    * Marks the gate stage with state `waiting` (new `protocol.StageWaiting = "waiting"`), leaves later stages `skipped`, and reports `Completion{State: tickets.RunWaiting, GateStep: step.Name, GateDetails: detailsText, Checkpoint: cp, ...}` (plus any `Triggers` recorded before the gate).
 2. **Control plane parks the job:**
@@ -157,7 +157,7 @@ Reuses Machinist's checkpoint infrastructure (`internal/runner/checkpoint.go`, `
    * Validates the ticket is in `waiting` (else `409 Conflict`), looks up `ticket.GateStep` in the current preset to find the next step (returning a clear error / failing if the preset or gate step was removed during a reload).
    * Records who approved, when, and optional reason on the ticket and timeline (`EntryComment` / human touch so `TurnsSinceHuman` resets and `maxAttempts` never trips across multi-gate presets).
    * Atomically sets `state = working`, `resume_from_step = nextStep`, `resume_checkpoint_run = checkpointRunID`, and clears active gate wait fields (keeping decision history).
-   * Any online runner matching the preset's `runs_on` and harnesses claims the resumed run, runs `checkout`, restores the checkpoint (extending `restoreCheckpoint` to restore `protocol.CheckpointControlFiles` plus any validated single-segment file present in `checkpoint.ControlFiles`), and executes from `nextStep` onward.
+   * Any online runner matching the preset's `runs_on` and harnesses claims the resumed run, runs `checkout`, restores the checkpoint to the pinned `BaseSHA` (fetching `BaseSHA` from `origin` if absent in a shallow checkout, falling back to `BaseRef` only for legacy checkpoints without `BaseSHA`, and restoring `protocol.CheckpointControlFiles` plus any validated single-segment file present in `checkpoint.ControlFiles`), and executes from `nextStep` onward. This guarantees that advancing `main` while a gate waits never silently swaps the code being approved.
 4. **On deny, timeout, or cancel:**
    * Transitions `waiting -> cancelled`, queues no run, clears pending wait, and records:
      * Deny: `"Denied by <actor>: <reason>"` (or `"Denied by <actor>."` if no reason)
