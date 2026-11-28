@@ -38,6 +38,7 @@ Start with the [quick start](../README.md#quick-start).
 | [Cloud Run packaging](designs/cloud-run-packaging.md) | Read Spec 3: Cloud Run runtime, baked-config container image, and Secret Manager deploy |
 | [Production Cloud Run & auth](designs/production-cloud-run.md) | Read the parent architecture for Cloud Run, PostgreSQL, baked config, and public auth |
 | [Job sources](designs/issue-sources.md) | See where jobs come from and how a new tracker plugs in |
+| [Gates, inputs & triggers](designs/gates-and-triggers.md) | Read the engineering spec for human approval gates, preset inputs, and linked job triggers |
 | [Earlier design](designs/machinist-redesign.md) | Read the GitHub-first design the code still follows |
 | [Examples](../examples/README.md) | See the files `machinist init` installs |
 | [Issue triage demo](issue-triage-demo.md) | See a standalone GitHub Actions demo |
