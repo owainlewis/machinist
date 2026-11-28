@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -433,7 +434,9 @@ func newGHPolling(t *testing.T, repos ...string) *ghPolling {
 			Store:         store,
 			DefaultPreset: "default",
 			Repositories:  repos,
-			Presets:       func(name string) bool { return name == "default" || name == "fast" },
+			Presets: func(name string) (factory.Preset, bool) {
+				return factory.Preset{Name: name}, name == "default" || name == "fast"
+			},
 		},
 		Store:          store,
 		Interval:       time.Minute,
