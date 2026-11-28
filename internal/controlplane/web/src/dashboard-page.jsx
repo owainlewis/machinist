@@ -5,10 +5,11 @@ import { api, SignedOutError } from "./api.js";
 import { HarnessMark } from "./harness-mark.jsx";
 import { Source } from "./source-mark.jsx";
 import {
-  availableRepos, dailyTouchTrend, dayLabel, doneRate, formatCostPerPR, formatCount, formatMedianCost,
-  formatMillis, formatPercent, formatRatio, formatSpend, formatTokens, formatUSD, linePoints, modelLabel,
-  monthLabel, monthSpendOf, niceMax, outcomes, plural, ranges, runsOn, sortBySpend, sparkPoints,
-  spendShare, statsPath, stepDays, stepSeries, tabs, touchParts, unreportedNote,
+  autoMergeRate, availableRepos, dailyTouchTrend, dayLabel, doneRate, formatCostPerPR, formatCount,
+  formatMedianCost, formatMillis, formatPercent, formatRatio, formatSpend, formatTokens, formatUSD,
+  handsFreeMerges, linePoints, mergeGateRiskParts, mergedWindow, modelLabel, monthLabel, monthSpendOf,
+  niceMax, outcomes, plural, ranges, runsOn, sortBySpend, sparkPoints, spendShare, statsPath, stepDays,
+  stepSeries, stewardDetail, tabs, touchParts, unreportedNote,
 } from "./dashboard.js";
 
 const refreshMillis = 15_000;
@@ -121,19 +122,63 @@ function SpreadTile({ label, spread = {}, detail, none }) {
   return <StatTile label={label} value={formatMillis(spread.median)} detail={spread.p90 != null ? detail || `90% under ${formatMillis(spread.p90)}` : none} />;
 }
 
-// MergeSection answers how long a job takes to merge and how much of a
-// person it needs, from the pull requests that merged in the range.
+// MergeSection answers where time goes before merge and how much of a person
+// each PR needs, from the pull requests that merged in the range.
 function MergeSection({ cycle = {}, touches = {}, days, daily = [] }) {
   const noMerges = "No merged pull requests";
   const reviewed = cycle.merged ? `${formatCount(cycle.reviewed)} of ${plural(cycle.merged, "merged PR")} reviewed by a person` : noMerges;
   return <section className="dashboard-section" aria-labelledby="merge-heading">
     <h2 id="merge-heading" className="label">Time to merge, for pull requests merged in the last {days} days</h2>
-    <div className="stat-tiles stat-tiles-5">
-      <SpreadTile label="Started to merged" spread={cycle.to_merge} none={noMerges} />
+    <div className="stat-tiles stat-tiles-4">
       <SpreadTile label="Started to PR" spread={cycle.to_pr} none={noMerges} />
       <SpreadTile label="PR to first review" spread={cycle.to_review} detail={reviewed} none={cycle.merged ? reviewed : noMerges} />
       <SpreadTile label="Review to merged" spread={cycle.review_to_merge} none={cycle.merged ? reviewed : noMerges} />
       <StatTile label="Human touches per PR" value={formatRatio(touches.per_pr)} detail={cycle.merged ? touchParts(touches) : noMerges} trend={dailyTouchTrend(daily)} />
+    </div>
+  </section>;
+}
+
+// MergeGateSection summarises how often the merge gate auto-merged changes vs.
+// held them by policy or tripwire. Hidden when no verdicts exist in range.
+function MergeGateSection({ mergeGate, days }) {
+  if (!(mergeGate?.evaluated > 0)) return null;
+  const {
+    evaluated,
+    approved = 0,
+    auto_merged: autoMerged = 0,
+    held_policy: heldPolicy = 0,
+    held_tripwire: heldTripwire = 0,
+  } = mergeGate;
+  const riskNote = mergeGateRiskParts(mergeGate);
+  const approvedDetail = approved > 0
+    ? `${formatPercent(approved / evaluated)} of evaluated · ${formatCount(autoMerged)} auto-merged`
+    : `${formatPercent(approved / evaluated)} of evaluated`;
+  return <section className="dashboard-section" aria-labelledby="merge-gate-heading">
+    <div className="dashboard-section-head">
+      <h2 id="merge-gate-heading" className="label">Merge gate, for pull requests evaluated in the last {days} days</h2>
+      {riskNote && <p className="chart-note">{riskNote}</p>}
+    </div>
+    <div className="stat-tiles stat-tiles-4">
+      <StatTile label="Auto-merge rate" value={formatPercent(autoMergeRate(mergeGate))} detail={`${formatCount(autoMerged)} of ${plural(evaluated, "evaluated PR")}`} />
+      <StatTile label="Approved (low risk)" value={formatCount(approved)} detail={approvedDetail} />
+      <StatTile label="Held by policy" value={formatCount(heldPolicy)} detail={`${formatPercent(heldPolicy / evaluated)} of evaluated`} />
+      <StatTile label="Held by tripwire" value={formatCount(heldTripwire)} detail={`${formatPercent(heldTripwire / evaluated)} of evaluated`} />
+    </div>
+  </section>;
+}
+
+// ExecutionSection keeps runner and execution telemetry cleanly visible
+// beneath the factory output headline row.
+function ExecutionSection({ current }) {
+  const runs = current.runs || {};
+  const finished = (runs.succeeded || 0) + (runs.failed || 0);
+  return <section className="dashboard-section" aria-labelledby="execution-heading">
+    <h2 id="execution-heading" className="label">Execution, in the last {current.days} days</h2>
+    <div className="stat-tiles stat-tiles-4">
+      <StatTile label="Runs" value={formatCount(runs.total)} detail={`${formatCount(current.jobs?.active)} jobs active`} trend={current.daily.map(runsOn)} />
+      <StatTile label="Run success" value={formatPercent(current.success_rate)} detail={finished ? `${formatCount(runs.succeeded)} of ${formatCount(finished)} runs` : "No finished runs"} />
+      <StatTile label="Median run" value={formatMillis(current.run_millis?.median)} detail={current.run_millis?.p90 != null ? `90% under ${formatMillis(current.run_millis.p90)}` : "No finished runs"} />
+      <StatTile label="Median wait" value={formatMillis(current.wait_millis?.median)} detail={current.wait_millis?.p90 != null ? `90% under ${formatMillis(current.wait_millis.p90)}` : "No runs started"} />
     </div>
   </section>;
 }
@@ -194,38 +239,32 @@ function DailyTable({ days }) {
   </details>;
 }
 
-function overviewSpendDetail(current, mtd) {
-  const parts = [];
-  if (Number.isFinite(current.cost_per_merged_pr)) {
-    parts.push(`${formatUSD(current.cost_per_merged_pr)}${current.cost_unknown ? "+" : ""} / merged PR`);
-  } else if (current.prs?.merged > 0 && current.cost_unknown > 0) {
-    parts.push("Cost / PR not reported");
-  } else if (mtd.tokens || current.tokens) {
-    parts.push(`${formatTokens(mtd.tokens || current.tokens)} tokens`);
-  }
-  if (mtd.cost_unknown > 0) {
-    if (!parts.some(part => part.includes("tokens")) && mtd.tokens > 0) parts.push(`${formatTokens(mtd.tokens)} tokens`);
-    parts.push(unreportedNote(mtd.cost_unknown));
-  }
-  return parts.join(" · ") || "No spend yet";
-}
-
 function OverviewTab({ current }) {
-  const runs = current.runs;
-  const finished = runs ? runs.succeeded + runs.failed : 0;
   const steps = stepSeries(current.steps || []);
-  const mtd = monthSpendOf(current);
+  const merged = mergedWindow(current.daily);
+  const handsFree = handsFreeMerges(current.cycle);
+  const cycleToMerge = current.cycle?.to_merge || {};
   return <>
     <div className="stat-tiles">
-      <StatTile label="Jobs" value={formatCount(current.jobs.total)} detail={`${formatCount(current.jobs.done)} done, ${formatCount(current.jobs.failed)} failed`} trend={current.daily.map(day => day.jobs)} />
-      <StatTile label="Runs" value={formatCount(runs.total)} detail={`${formatCount(current.jobs.active)} jobs active`} trend={current.daily.map(runsOn)} />
-      <StatTile label="Run success" value={formatPercent(current.success_rate)} detail={finished ? `${formatCount(runs.succeeded)} of ${formatCount(finished)} runs` : "No finished runs"} />
-      <StatTile label="Median run" value={formatMillis(current.run_millis.median)} detail={current.run_millis.p90 != null ? `90% under ${formatMillis(current.run_millis.p90)}` : "No finished runs"} />
-      <StatTile label="Median wait" value={formatMillis(current.wait_millis.median)} detail={current.wait_millis.p90 != null ? `90% under ${formatMillis(current.wait_millis.p90)}` : "No runs started"} />
-      <StatTile label="Spend this month" value={formatSpend(mtd)} detail={overviewSpendDetail(current, mtd)}
-        title={mtd.cost_unknown > 0 ? "Some runs used harnesses that do not report USD cost" : undefined} />
+      <StatTile label="PRs merged" value={formatCount(current.prs?.merged || 0)}
+        detail={`${formatCount(merged.today)} today · ${formatCount(merged.last7d)} last 7d`}
+        trend={current.daily.map(day => day.merged || 0)} />
+      <StatTile label="Cycle time" value={formatMillis(cycleToMerge.median)}
+        detail={cycleToMerge.p90 != null ? `90% under ${formatMillis(cycleToMerge.p90)}` : "No merged PRs"}
+        title="Started → merged" />
+      <StatTile label="Hands-free merges" value={formatPercent(handsFree.rate)}
+        detail={handsFree.merged ? `${formatCount(handsFree.auto)} of ${plural(handsFree.merged, "merged PR")} without human review` : "No merged PRs"} />
+      <StatTile label="PR Steward saves" value={formatCount(current.steward?.rescued || 0)}
+        detail={stewardDetail(current.steward)} />
+      <StatTile label="Merge rate" value={formatPercent(current.prs?.merge_rate)}
+        detail={current.prs?.opened ? `${formatCount(current.prs?.merged)} of ${formatCount(current.prs?.opened)} opened PRs` : "No opened PRs"} />
+      <StatTile label="Jobs" value={formatCount(current.jobs.total)}
+        detail={`${formatCount(current.jobs.done)} done · ${formatCount(current.jobs.active)} active · ${formatCount(current.jobs.failed)} failed`}
+        trend={current.daily.map(day => day.jobs)} />
     </div>
     <MergeSection cycle={current.cycle} touches={current.touches} days={current.days} daily={current.daily} />
+    <MergeGateSection mergeGate={current.merge_gate} days={current.days} />
+    <ExecutionSection current={current} />
     <div className="chart-row">
       <LineChart id="prs-chart" title="Pull requests per day" days={current.daily} series={prSeries}
         note={<p className="chart-note">Merge rate <b>{formatPercent(current.prs?.merge_rate)}</b>{current.prs?.opened ? ` of ${plural(current.prs.opened, "opened PR")}` : ""}</p>} />
@@ -324,7 +363,7 @@ function SpendGroupTable({ id, title, groups = [] }) {
             <td>{formatCount(group.runs)}</td>
             <td>{formatCount(group.merged_prs)}</td>
             <td><SpendCell entry={group} /></td>
-            <td>{formatCostPerPR(perPR, { mergedPRs: group.merged_prs, costUnknown: group.cost_unknown })}</td>
+            <td>{formatCostPerPR(perPR, { mergedPRs: group.merged_prs, costUnknown: group.cost_unknown, tokens: group.tokens })}</td>
             <td>{formatTokens(group.tokens)}</td>
           </tr>;
         })}</tbody>
@@ -335,24 +374,31 @@ function SpendGroupTable({ id, title, groups = [] }) {
 
 function SpendingTab({ current }) {
   const mtd = monthSpendOf(current);
-  const rangeSpend = { cost: current.cost, has_cost: current.has_cost || current.cost > 0, cost_unknown: current.cost_unknown || 0, tokens: current.tokens };
+  const hasMtdCost = Boolean(mtd.has_cost || mtd.cost > 0);
+  const hasRangeCost = Boolean(current.has_cost || current.cost > 0);
+  const rangeSpend = { cost: current.cost, has_cost: hasRangeCost, cost_unknown: current.cost_unknown || 0, tokens: current.tokens };
+  const tokenOnlyPerPR = !Number.isFinite(current.cost_per_merged_pr) && (current.tokens || 0) > 0 && (current.prs?.merged || 0) > 0;
   const modelsBySpend = [...(current.models || [])].sort((a, b) => (b.cost || 0) - (a.cost || 0) || (b.tokens || 0) - (a.tokens || 0));
   const totalModelCost = modelsBySpend.reduce((sum, row) => sum + (row.cost || 0), 0);
-  const mtdDetail = [monthLabel(mtd.month), `${formatTokens(mtd.tokens)} tokens`, unreportedNote(mtd.cost_unknown)].filter(Boolean).join(" · ");
-  const rangeDetail = [plural(current.runs?.total || 0, "run"), `${formatTokens(current.tokens)} tokens`, unreportedNote(current.cost_unknown)].filter(Boolean).join(" · ");
-  const perPRDetail = [
-    current.prs?.merged ? `${plural(current.prs.merged, "merged PR")} in last ${current.days} days` : "No merged PRs in range",
-    unreportedNote(current.cost_unknown),
-  ].filter(Boolean).join(" · ");
+  const mtdDetail = [monthLabel(mtd.month), `${formatTokens(mtd.tokens)} tokens`, hasMtdCost ? unreportedNote(mtd.cost_unknown) : ""].filter(Boolean).join(" · ");
+  const rangeDetail = [plural(current.runs?.total || 0, "run"), `${formatTokens(current.tokens)} tokens`, hasRangeCost ? unreportedNote(current.cost_unknown) : ""].filter(Boolean).join(" · ");
+  const perPRDetail = tokenOnlyPerPR
+    ? "Token-only harnesses — USD not reported"
+    : [
+        current.prs?.merged ? `${plural(current.prs.merged, "merged PR")} in last ${current.days} days` : "No merged PRs in range",
+        hasRangeCost ? unreportedNote(current.cost_unknown) : "",
+      ].filter(Boolean).join(" · ");
   const tokensDetail = current.cost_unknown > 0
-    ? `${plural(current.cost_unknown, "run")} with unreported cost`
+    ? (hasRangeCost ? `${plural(current.cost_unknown, "run")} with unreported cost` : `${plural(current.runs?.total || current.cost_unknown, "run")} in last ${current.days} days`)
     : current.runs?.total > 0 ? "All runs reported cost" : "No runs in range";
 
   return <>
     <div className="stat-tiles stat-tiles-4">
       <StatTile label="Total spend this month" value={formatSpend(mtd)} detail={mtdDetail} />
       <StatTile label={`Spend (${current.days} days)`} value={formatSpend(rangeSpend)} detail={rangeDetail} trend={current.daily.map(day => day.cost || 0)} />
-      <StatTile label="Cost per merged PR" value={formatCostPerPR(current.cost_per_merged_pr, { mergedPRs: current.prs?.merged || 0, costUnknown: current.cost_unknown || 0 })} detail={perPRDetail} />
+      <StatTile label={tokenOnlyPerPR ? "Tokens per merged PR" : "Cost per merged PR"}
+        value={formatCostPerPR(current.cost_per_merged_pr, { mergedPRs: current.prs?.merged || 0, costUnknown: current.cost_unknown || 0, tokens: current.tokens || 0 })}
+        detail={perPRDetail} />
       <StatTile label={`Tokens (${current.days} days)`} value={formatTokens(current.tokens)} detail={tokensDetail} />
     </div>
     <ColumnChart id="spend-chart" title="Daily spend" days={current.daily} series={spendSeries}

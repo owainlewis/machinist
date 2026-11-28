@@ -188,10 +188,7 @@ func New(machinistConfig config.Config, store *tickets.Store, loaded *factory.Fa
 		Store:         store,
 		DefaultPreset: machinistConfig.Server.DefaultPreset,
 		Repositories:  machinistConfig.GitHub.Repositories,
-		Presets: func(name string) bool {
-			_, ok := loaded.Preset(name)
-			return ok
-		},
+		Presets:       loaded.Preset,
 	}
 	linear, err := linearPoller(context.Background(), machinistConfig, loaded, intake, store, log)
 	if err != nil {
@@ -286,8 +283,12 @@ func linearPoller(ctx context.Context, machinistConfig config.Config, loaded *fa
 	if preset == "" {
 		preset = machinistConfig.Server.DefaultPreset
 	}
-	if _, ok := loaded.Preset(preset); !ok {
+	loadedPreset, ok := loaded.Preset(preset)
+	if !ok {
 		return nil, fmt.Errorf("linear.preset %q is not in the factory", preset)
+	}
+	if required := loadedPreset.RequiredInputs(); len(required) > 0 {
+		return nil, fmt.Errorf("linear.preset %q declares required inputs (%s) and cannot be used with Linear", preset, strings.Join(required, ", "))
 	}
 	connected, err := intake.Connected(ctx)
 	if err != nil {
@@ -478,6 +479,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/tickets", s.requireScope(tickets.ScopeRun, s.createTicket))
 	mux.HandleFunc("GET /api/v1/tickets", s.requireScope(tickets.ScopeRead, s.listTickets))
 	mux.HandleFunc("GET /api/v1/tickets/{id}", s.requireScope(tickets.ScopeRead, s.getTicket))
+	mux.HandleFunc("DELETE /api/v1/tickets/{id}", s.requireToken(s.deleteTicket))
 	mux.HandleFunc("POST /api/v1/tickets/{id}/cancel", s.requireScope(tickets.ScopeRun, s.cancelTicket))
 	mux.HandleFunc("POST /api/v1/tickets/{id}/rerun", s.requireScope(tickets.ScopeRun, s.rerunTicket))
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.requireScope(tickets.ScopeRead, s.runEvents))
@@ -488,6 +490,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /machinist/run", s.requireScope(tickets.ScopeRun, s.runJob))
 	mux.HandleFunc("GET /machinist/jobs", s.requireScope(tickets.ScopeRead, s.listJobs))
 	mux.HandleFunc("GET /machinist/jobs/{id}", s.requireScope(tickets.ScopeRead, s.getJob))
+	mux.HandleFunc("DELETE /machinist/jobs/{id}", s.requireToken(s.deleteJob))
 	mux.HandleFunc("POST /machinist/jobs/{id}/cancel", s.requireScope(tickets.ScopeRun, s.cancelJob))
 	mux.HandleFunc("POST /machinist/jobs/{id}/rerun", s.requireScope(tickets.ScopeRun, s.rerunJob))
 	mux.HandleFunc("POST /api/v1/runners/poll", s.requireRunner(s.poll))

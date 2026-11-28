@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/ghclient"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
@@ -32,13 +33,13 @@ type Intake struct {
 	Store         *tickets.Store
 	DefaultPreset string
 	Repositories  []string
-	// Presets reports whether a preset exists.
-	Presets func(name string) bool
+	// Presets looks up a preset by name.
+	Presets func(name string) (factory.Preset, bool)
 	mu      sync.RWMutex
 }
 
 // Update replaces the reloadable intake settings atomically.
-func (i *Intake) Update(defaultPreset string, repositories []string, presets func(name string) bool) {
+func (i *Intake) Update(defaultPreset string, repositories []string, presets func(name string) (factory.Preset, bool)) {
 	i.mu.Lock()
 	i.DefaultPreset = defaultPreset
 	i.Repositories = slices.Clone(repositories)
@@ -53,7 +54,7 @@ func (i *Intake) ConfigRepositories() []string {
 	return slices.Clone(i.Repositories)
 }
 
-func (i *Intake) presetConfig() (string, func(name string) bool) {
+func (i *Intake) presetConfig() (string, func(name string) (factory.Preset, bool)) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.DefaultPreset, i.Presets
@@ -117,8 +118,17 @@ func (i *Intake) Assign(ctx context.Context, request AssignRequest, by string) (
 		return tickets.Ticket{}, false, invalid("send either issue_number, or both title and body")
 	}
 	key := "api:" + request.RequestID
-	defaultPreset, _ := i.presetConfig()
-	ticket := tickets.NewTicket{Source: "api", Origin: tickets.OriginAPI, Repo: repository, Title: request.Title, Body: request.Body, Agent: defaultPreset, CreatedBy: by, SourceKey: key}
+	defaultPreset, presets := i.presetConfig()
+	var resolvedVars map[string]string
+	if presets != nil {
+		if preset, ok := presets(defaultPreset); ok {
+			var err error
+			if resolvedVars, err = preset.ResolveVars(nil); err != nil {
+				return tickets.Ticket{}, false, invalid("%v", err)
+			}
+		}
+	}
+	ticket := tickets.NewTicket{Source: "api", Origin: tickets.OriginAPI, Repo: repository, Title: request.Title, Body: request.Body, Agent: defaultPreset, Vars: resolvedVars, CreatedBy: by, SourceKey: key}
 	if request.IssueNumber > 0 {
 		if existing, found, err := i.existing(ctx, key, repository, request.IssueNumber); err != nil || found {
 			return existing, false, err

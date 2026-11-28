@@ -36,6 +36,7 @@ type RunRequest struct {
 	Repository string            `json:"repository"`
 	Branch     string            `json:"branch"`
 	Vars       map[string]string `json:"vars,omitempty"`
+	Inputs     map[string]string `json:"inputs,omitempty"`
 	Prompt     string            `json:"prompt"`
 	// Files are the factory's prompts and scripts, by path such as
 	// prompts/plan.md. They are written to the control directory.

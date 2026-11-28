@@ -607,7 +607,7 @@ func TestStatsRoute(t *testing.T) {
 		t.Fatalf("stats = %+v", stats)
 	}
 	// The dashboard reads these even when nothing has merged yet.
-	for _, field := range []string{`"cycle":{"merged":0,`, `"touches":{"replies":0,`, `"prs":{"opened":0,`, `"steps":[]`, `"steps":{}`, `"models":[]`, `"model_steps":[]`, `"month_spend":{`, `"repositories":["owner/repo"]`} {
+	for _, field := range []string{`"cycle":{"merged":0,`, `"touches":{"replies":0,`, `"steward":{"retries":0,"rescued":0}`, `"prs":{"opened":0,`, `"merge_gate":{"evaluated":0,`, `"steps":[]`, `"steps":{}`, `"models":[]`, `"model_steps":[]`, `"month_spend":{`, `"repositories":["owner/repo"]`} {
 		if !strings.Contains(string(body), field) {
 			t.Fatalf("stats lack %s: %s", field, body)
 		}
@@ -635,7 +635,7 @@ func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
 		}
 		return decodeTicket(t, body)
 	}
-	complete := func(ticket tickets.Ticket, merged bool, stages ...protocol.StageResult) {
+	complete := func(ticket tickets.Ticket, merged bool, gate *tickets.MergeGate, stages ...protocol.StageResult) {
 		t.Helper()
 		if _, err := f.store.QueueRun(ctx, ticket.ID, protocol.StepsHarness); err != nil {
 			t.Fatal(err)
@@ -646,7 +646,7 @@ func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
 		}
 		tokens, cost := protocol.Totals(stages)
 		now := time.Now().UTC()
-		transition := tickets.Transition{State: tickets.StatePRReady, PRNumber: 1, PROpenedAt: &now}
+		transition := tickets.Transition{State: tickets.StatePRReady, PRNumber: 1, PROpenedAt: &now, MergeGate: gate}
 		if merged {
 			transition.State = tickets.StateDone
 			transition.MergedAt = &now
@@ -662,11 +662,11 @@ func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
 	apiTicket := assignRepo("r-api", "owner/api")
 	tok1, cost1 := int64(10_000), 1.25
 	tok2 := int64(25_000)
-	complete(appTicket, true,
+	complete(appTicket, true, &tickets.MergeGate{Decision: "approve", Risk: "low", Reason: "Small test-backed fix."},
 		protocol.StageResult{Name: "implement", State: tickets.RunSucceeded, DurationMillis: 40_000, Tokens: &tok1, Cost: &cost1, Agents: []protocol.Agent{{Name: "coder", Harness: "claude", Model: "claude-opus-5-5"}}},
 		protocol.StageResult{Name: "review", State: tickets.RunSucceeded, DurationMillis: 20_000, Tokens: &tok2, CostUnknown: true, Agents: []protocol.Agent{{Name: "review", Harness: "agy", Model: "gemini-4-neon-high"}}})
 	tok3, cost3 := int64(5_000), 0.50
-	complete(apiTicket, false,
+	complete(apiTicket, false, &tickets.MergeGate{Decision: "human_review", Risk: "high", Reason: "Tripwire: touches auth middleware."},
 		protocol.StageResult{Name: "implement", State: tickets.RunSucceeded, DurationMillis: 15_000, Tokens: &tok3, Cost: &cost3, Agents: []protocol.Agent{{Name: "coder", Harness: "claude", Model: "claude-opus-5-5"}}})
 
 	getStats := func(query string) tickets.Stats {
@@ -686,15 +686,24 @@ func TestStatsRouteFiltersByRepoAndReportsModelsAndSpend(t *testing.T) {
 	if all.Jobs.Total != 2 || len(all.Repositories) != 2 || len(all.Models) != 2 || len(all.ModelSteps) != 2 || all.Cost != 1.75 || all.CostUnknown != 1 || all.MonthSpend.Cost != 1.75 || all.CostPerMergedPR == nil || *all.CostPerMergedPR != 1.75 {
 		t.Fatalf("all = %+v", all)
 	}
+	if all.MergeGate != (tickets.StatsMergeGate{Evaluated: 2, Approved: 1, AutoMerged: 1, HeldTripwire: 1, LowRisk: 1, HighRisk: 1}) {
+		t.Fatalf("all merge_gate = %+v", all.MergeGate)
+	}
 
 	app := getStats("?days=7&repo=owner/app")
 	if app.Repo != "owner/app" || len(app.Repositories) != 2 || app.Jobs.Total != 1 || app.Cost != 1.25 || app.CostUnknown != 1 || app.MonthSpend.Cost != 1.25 || app.CostPerMergedPR == nil || *app.CostPerMergedPR != 1.25 || len(app.Models) != 2 {
 		t.Fatalf("app = %+v", app)
 	}
+	if app.MergeGate != (tickets.StatsMergeGate{Evaluated: 1, Approved: 1, AutoMerged: 1, LowRisk: 1}) {
+		t.Fatalf("app merge_gate = %+v", app.MergeGate)
+	}
 
 	api := getStats("?days=7&repo=owner/api")
 	if api.Repo != "owner/api" || api.Jobs.Total != 1 || api.Cost != 0.50 || api.CostUnknown != 0 || api.CostPerMergedPR != nil || len(api.Models) != 1 || api.Models[0].Harness != "claude" {
 		t.Fatalf("api = %+v", api)
+	}
+	if api.MergeGate != (tickets.StatsMergeGate{Evaluated: 1, HeldTripwire: 1, HighRisk: 1}) {
+		t.Fatalf("api merge_gate = %+v", api.MergeGate)
 	}
 }
 
@@ -924,6 +933,145 @@ func TestTicketAPIShippingJSONSerialization(t *testing.T) {
 		}
 		if len(page.Tickets) != 1 || page.Tickets[0].Shipping != watch {
 			t.Fatalf("GET %s tickets = %+v, want shipping %q", path, page.Tickets, watch)
+		}
+	}
+}
+
+func TestPresetsRouteIncludesDeclaredInputs(t *testing.T) {
+	f := newFixture(t)
+	staging := "staging"
+	empty := ""
+	loaded := &factory.Factory{
+		Presets: map[string]factory.Preset{
+			"default": {
+				Name:        "default",
+				Description: "Default.",
+				Steps:       []runner.Step{{Name: "work", Run: "true"}},
+			},
+			"deploy": {
+				Name:        "deploy",
+				Description: "Deploy service.",
+				Inputs: map[string]factory.Input{
+					"environment": {Description: "Target environment", Default: &staging},
+					"notes":       {Description: "Optional notes", Default: &empty},
+					"ref":         {Description: "Git ref to deploy"},
+				},
+				Steps: []runner.Step{{Name: "deploy", Run: "true"}},
+			},
+		},
+	}
+	f.server.factory = loaded
+	f.server.presets = presetViews(loaded)
+
+	response, body := f.call(t, http.MethodGet, "/api/v1/presets", f.token, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.StatusCode, body)
+	}
+	var payload struct {
+		Presets []struct {
+			Name   string                     `json:"name"`
+			Inputs map[string]json.RawMessage `json:"inputs"`
+		} `json:"presets"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("%v: %s", err, body)
+	}
+	if len(payload.Presets) != 2 || payload.Presets[0].Inputs != nil {
+		t.Fatalf("presets = %s", body)
+	}
+	deployInputs := payload.Presets[1].Inputs
+	if string(deployInputs["environment"]) != `{"description":"Target environment","default":"staging"}` {
+		t.Fatalf("environment = %s", deployInputs["environment"])
+	}
+	if string(deployInputs["notes"]) != `{"description":"Optional notes","default":""}` {
+		t.Fatalf("notes = %s", deployInputs["notes"])
+	}
+	if string(deployInputs["ref"]) != `{"description":"Git ref to deploy"}` {
+		t.Fatalf("ref = %s", deployInputs["ref"])
+	}
+}
+
+func TestDeleteTicketAndJobEndpoints(t *testing.T) {
+	f := newFixture(t)
+	f.connect(t)
+	var logs bytes.Buffer
+	f.server.auditLog = newAuditLogger(&logs)
+
+	adminTok := f.newToken(t, "admin-op", tickets.RoleOperator)
+	runTok := f.newScopedToken(t, "run-op", tickets.ScopeRun)
+	readTok := f.newScopedToken(t, "read-op", tickets.ScopeRead)
+	runnerTok := f.newToken(t, "runner-op", tickets.RoleRunner)
+
+	// Active (working) ticket cannot be deleted via either route (409 Conflict).
+	active := f.assign(t, "del-active")
+	for _, path := range []string{"/api/v1/tickets/" + active.ID, "/machinist/jobs/" + active.ID} {
+		if resp, body := f.call(t, http.MethodDelete, path, adminTok, nil); resp.StatusCode != http.StatusConflict {
+			t.Fatalf("DELETE active %s = %d, want 409: %s", path, resp.StatusCode, body)
+		}
+	}
+
+	// Missing ticket returns 404 Not Found for admin, 403 Forbidden for non-admin tokens, 401 unauthenticated.
+	for _, path := range []string{"/api/v1/tickets/t_missing", "/machinist/jobs/t_missing"} {
+		if resp, _ := f.call(t, http.MethodDelete, path, "", nil); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("unauth DELETE %s = %d, want 401", path, resp.StatusCode)
+		}
+		for name, tok := range map[string]string{"run": runTok, "read": readTok, "runner": runnerTok} {
+			if resp, body := f.call(t, http.MethodDelete, path, tok, nil); resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("%s DELETE %s = %d, want 403: %s", name, path, resp.StatusCode, body)
+			}
+		}
+		if resp, body := f.call(t, http.MethodDelete, path, adminTok, nil); resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("admin DELETE %s = %d, want 404: %s", path, resp.StatusCode, body)
+		}
+	}
+
+	// Cancel active ticket, pin it via Reload, and delete via /api/v1/tickets/{id}.
+	if _, err := f.store.Cancel(t.Context(), active.ID, "admin-op"); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := f.store.Ticket(t.Context(), active.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server.engine.Reload([]tickets.Ticket{cancelled}, testFactory(), time.Minute, "machinist-bot", false, 0, nil, nil)
+	if f.server.engine.PinnedFactory(cancelled.ID, cancelled.UpdatedAt) == nil {
+		t.Fatal("expected ticket to be pinned before delete")
+	}
+
+	// Non-admin tokens still get 403 on a deletable ticket.
+	for name, tok := range map[string]string{"run": runTok, "read": readTok, "runner": runnerTok} {
+		if resp, body := f.call(t, http.MethodDelete, "/api/v1/tickets/"+cancelled.ID, tok, nil); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s DELETE deletable = %d, want 403: %s", name, resp.StatusCode, body)
+		}
+	}
+
+	// Admin deletes via /api/v1/tickets/{id} -> 204, unpinned, removed, and audited.
+	if resp, body := f.call(t, http.MethodDelete, "/api/v1/tickets/"+cancelled.ID, adminTok, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /api/v1/tickets/%s = %d, want 204: %s", cancelled.ID, resp.StatusCode, body)
+	}
+	if f.server.engine.PinnedFactory(cancelled.ID, cancelled.UpdatedAt) != nil {
+		t.Fatal("expected reload pin to be dropped after delete")
+	}
+	if resp, _ := f.call(t, http.MethodGet, "/api/v1/tickets/"+cancelled.ID, adminTok, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET deleted ticket = %d, want 404", resp.StatusCode)
+	}
+
+	// Admin deletes a pr_ready job via /machinist/jobs/{id} -> 204, removed, and audited.
+	prReady := f.assign(t, "del-pr-ready")
+	if _, _, err := f.store.Apply(t.Context(), prReady.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 42}); err != nil {
+		t.Fatal(err)
+	}
+	if resp, body := f.call(t, http.MethodDelete, "/machinist/jobs/"+prReady.ID, adminTok, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /machinist/jobs/%s = %d, want 204: %s", prReady.ID, resp.StatusCode, body)
+	}
+	if resp, _ := f.call(t, http.MethodGet, "/machinist/jobs/"+prReady.ID, adminTok, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET deleted job = %d, want 404", resp.StatusCode)
+	}
+
+	logOutput := logs.String()
+	for _, id := range []string{cancelled.ID, prReady.ID} {
+		if !strings.Contains(logOutput, `"action":"job.deleted"`) || !strings.Contains(logOutput, `"target":"`+id+`"`) {
+			t.Fatalf("missing job.deleted audit entry for %s in:\n%s", id, logOutput)
 		}
 	}
 }

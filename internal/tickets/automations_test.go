@@ -2,6 +2,7 @@ package tickets
 
 import (
 	"errors"
+	"maps"
 	"slices"
 	"testing"
 )
@@ -25,12 +26,13 @@ func TestAutomationsCRUDAndTicketOverrides(t *testing.T) {
 		Harness:   "codex",
 		Model:     "gpt-5-codex",
 		RunsOn:    []string{" GPU ", "linux", "gpu"},
+		Vars:      map[string]string{"environment": "staging", "notes": ""},
 		CreatedBy: "alice",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if created.Name != "triage-prs" || created.Harness != "codex" || created.Model != "gpt-5-codex" || created.Schedule != "0 9 * * 1-5" || !slices.Equal(created.RunsOn, []string{"gpu", "linux"}) {
+	if created.Name != "triage-prs" || created.Harness != "codex" || created.Model != "gpt-5-codex" || created.Schedule != "0 9 * * 1-5" || !slices.Equal(created.RunsOn, []string{"gpu", "linux"}) || !maps.Equal(created.Vars, map[string]string{"environment": "staging", "notes": ""}) {
 		t.Fatalf("created = %+v", created)
 	}
 
@@ -68,15 +70,16 @@ func TestAutomationsCRUDAndTicketOverrides(t *testing.T) {
 		Harness: "claude",
 		Model:   "opus",
 		RunsOn:  []string{"MacOS", "arm64"},
+		Vars:    map[string]string{"environment": "prod"},
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.Repo != "owner/api" || updated.Preset != "opus" || updated.Schedule != "" || updated.Harness != "claude" || updated.Model != "opus" || !slices.Equal(updated.RunsOn, []string{"arm64", "macos"}) {
+	if updated.Repo != "owner/api" || updated.Preset != "opus" || updated.Schedule != "" || updated.Harness != "claude" || updated.Model != "opus" || !slices.Equal(updated.RunsOn, []string{"arm64", "macos"}) || !maps.Equal(updated.Vars, map[string]string{"environment": "prod"}) {
 		t.Fatalf("updated = %+v", updated)
 	}
 	fetched, err := store.Automation(ctx, "triage-prs")
-	if err != nil || !slices.Equal(fetched.RunsOn, []string{"arm64", "macos"}) {
+	if err != nil || !slices.Equal(fetched.RunsOn, []string{"arm64", "macos"}) || !maps.Equal(fetched.Vars, map[string]string{"environment": "prod"}) {
 		t.Fatalf("fetched automation = %+v, %v", fetched, err)
 	}
 
@@ -93,7 +96,7 @@ func TestAutomationsCRUDAndTicketOverrides(t *testing.T) {
 		t.Fatalf("second delete = %v, %v", removed, err)
 	}
 
-	// Ticket harness, model and runs_on overrides round-trip.
+	// Ticket harness, model, runs_on and vars round-trip.
 	ticket, createdTicket, err := store.CreateTicket(ctx, NewTicket{
 		Source:    "schedule:audit-deps",
 		Origin:    OriginSchedule,
@@ -104,17 +107,18 @@ func TestAutomationsCRUDAndTicketOverrides(t *testing.T) {
 		Harness:   "codex",
 		Model:     "gpt-5-codex",
 		RunsOn:    []string{"GPU", "linux", "gpu"},
+		Vars:      map[string]string{"environment": "staging", "notes": ""},
 		CreatedBy: "alice",
 		SourceKey: "schedule:audit-deps:manual:1",
 	})
 	if err != nil || !createdTicket {
 		t.Fatalf("create ticket = %+v, %v, %v", ticket, createdTicket, err)
 	}
-	if ticket.Harness != "codex" || ticket.Model != "gpt-5-codex" || len(ticket.RunsOn) != 2 || ticket.RunsOn[0] != "gpu" || ticket.RunsOn[1] != "linux" {
-		t.Fatalf("ticket overrides = harness:%q model:%q runs_on:%v", ticket.Harness, ticket.Model, ticket.RunsOn)
+	if ticket.Harness != "codex" || ticket.Model != "gpt-5-codex" || len(ticket.RunsOn) != 2 || ticket.RunsOn[0] != "gpu" || ticket.RunsOn[1] != "linux" || !maps.Equal(ticket.Vars, map[string]string{"environment": "staging", "notes": ""}) {
+		t.Fatalf("ticket overrides = harness:%q model:%q runs_on:%v vars:%v", ticket.Harness, ticket.Model, ticket.RunsOn, ticket.Vars)
 	}
 	reloaded, err := store.Ticket(ctx, ticket.ID)
-	if err != nil || reloaded.Harness != "codex" || reloaded.Model != "gpt-5-codex" || len(reloaded.RunsOn) != 2 || reloaded.RunsOn[0] != "gpu" || reloaded.RunsOn[1] != "linux" {
+	if err != nil || reloaded.Harness != "codex" || reloaded.Model != "gpt-5-codex" || len(reloaded.RunsOn) != 2 || reloaded.RunsOn[0] != "gpu" || reloaded.RunsOn[1] != "linux" || !maps.Equal(reloaded.Vars, map[string]string{"environment": "staging", "notes": ""}) {
 		t.Fatalf("reloaded ticket = %+v, %v", reloaded, err)
 	}
 }

@@ -1065,3 +1065,43 @@ func TestReloadDetectsRunsOnChanges(t *testing.T) {
 		t.Fatalf("no-op reload after runs_on update = %d %+v err=%q", status, res, errMsg)
 	}
 }
+
+func TestReloadDetectsPresetInputsAndAutomationVarsChanges(t *testing.T) {
+	rf := newReloadFixture(t)
+	deployPath := filepath.Join(rf.factoryDir, "presets", "deploy.yaml")
+	autoPath := filepath.Join(rf.factoryDir, "automations", "deploy-nightly.md")
+	writeFile(t, deployPath, "description: Deploy.\ninputs:\n  env:\n    description: Target env\n    default: staging\nsteps:\n  - name: deploy\n    run: echo deploy\n")
+	writeFile(t, autoPath, "---\nschedule: \"0 9 * * *\"\ntimezone: UTC\nrepo: owner/alpha\npreset: deploy\nvars:\n  env: staging\n---\nDeploy nightly.\n")
+
+	status, res, errMsg := rf.postReload(t, rf.token)
+	if status != http.StatusOK || !slices.Contains(res.Changed, "preset added: deploy") || !slices.Contains(res.Changed, "automation added: deploy-nightly") {
+		t.Fatalf("initial reload = %d %+v err=%q", status, res, errMsg)
+	}
+
+	// No-op reload with identical inputs/vars reports no changes.
+	status, res, errMsg = rf.postReload(t, rf.token)
+	if status != http.StatusOK || len(res.Changed) != 0 {
+		t.Fatalf("no-op reload = %d %+v err=%q", status, res, errMsg)
+	}
+
+	// Updating only preset input default and automation vars triggers preset & automation updated diffs.
+	writeFile(t, deployPath, "description: Deploy.\ninputs:\n  env:\n    description: Target env\n    default: prod\nsteps:\n  - name: deploy\n    run: echo deploy\n")
+	writeFile(t, autoPath, "---\nschedule: \"0 9 * * *\"\ntimezone: UTC\nrepo: owner/alpha\npreset: deploy\nvars:\n  env: prod\n---\nDeploy nightly.\n")
+	status, res, errMsg = rf.postReload(t, rf.token)
+	if status != http.StatusOK || !slices.Contains(res.Changed, "preset updated: deploy") || !slices.Contains(res.Changed, "automation updated: deploy-nightly") {
+		t.Fatalf("updated reload = %d %+v err=%q", status, res, errMsg)
+	}
+
+	// Making default_preset declare a required input rejects reload cleanly.
+	defaultPath := filepath.Join(rf.factoryDir, "presets", "default.yaml")
+	origDefault, err := os.ReadFile(defaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, defaultPath, "description: Broken default.\ninputs:\n  target:\n    description: Required\nsteps:\n  - name: work\n    run: echo ok\n")
+	t.Cleanup(func() { writeFile(t, defaultPath, string(origDefault)) })
+	status, _, errMsg = rf.postReload(t, rf.token)
+	if status != http.StatusBadRequest || !strings.Contains(errMsg, "required inputs (target)") {
+		t.Fatalf("reload default_preset with required input = %d %q", status, errMsg)
+	}
+}

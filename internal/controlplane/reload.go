@@ -149,10 +149,7 @@ func (s *Server) Reload(ctx context.Context) (ReloadResult, error) {
 	s.intake.Update(
 		effectiveConfig.Server.DefaultPreset,
 		effectiveConfig.GitHub.Repositories,
-		func(name string) bool {
-			_, ok := nextFactory.Preset(name)
-			return ok
-		},
+		nextFactory.Preset,
 	)
 	s.schedule.SetAutomations(nextFactory.Automations)
 
@@ -475,6 +472,16 @@ func diffFactory(prev, next *factory.Factory) []string {
 	return changed
 }
 
+func inputsEqual(a, b factory.Input) bool {
+	if a.Description != b.Description {
+		return false
+	}
+	if (a.Default == nil) != (b.Default == nil) {
+		return false
+	}
+	return a.Default == nil || *a.Default == *b.Default
+}
+
 func presetsEqual(a, b factory.Preset) bool {
 	return a.Name == b.Name &&
 		a.Description == b.Description &&
@@ -483,11 +490,12 @@ func presetsEqual(a, b factory.Preset) bool {
 		a.Harness == b.Harness &&
 		a.Model == b.Model &&
 		slices.Equal(a.RunsOn, b.RunsOn) &&
+		maps.EqualFunc(a.Inputs, b.Inputs, inputsEqual) &&
 		slices.Equal(a.Steps, b.Steps)
 }
 
 func automationsEqual(a, b factory.Automation) bool {
-	if a.Name != b.Name || a.Repo != b.Repo || a.Preset != b.Preset || a.Harness != b.Harness || a.Model != b.Model || a.Prompt != b.Prompt || !slices.Equal(a.RunsOn, b.RunsOn) {
+	if a.Name != b.Name || a.Repo != b.Repo || a.Preset != b.Preset || a.Harness != b.Harness || a.Model != b.Model || a.Prompt != b.Prompt || !slices.Equal(a.RunsOn, b.RunsOn) || !maps.Equal(a.Vars, b.Vars) {
 		return false
 	}
 	if (a.Cron == nil) != (b.Cron == nil) {

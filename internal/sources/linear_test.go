@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/factory"
 	"github.com/owainlewis/machinist/internal/tickets"
 )
 
@@ -306,7 +307,12 @@ type polling struct {
 func newPolling(t *testing.T) *polling {
 	t.Helper()
 	intake, _ := newIntake(t)
-	intake.Presets = func(name string) bool { return name == "default" }
+	intake.Presets = func(name string) (factory.Preset, bool) {
+		if name == "default" {
+			return factory.Preset{Name: "default"}, true
+		}
+		return factory.Preset{}, false
+	}
 	fake := &fakeLinear{comments: map[string][]string{}}
 	server := httptest.NewServer(fake)
 	t.Cleanup(server.Close)
@@ -590,6 +596,147 @@ func TestTheHourlyCapHoldsAnAssignmentForALaterPoll(t *testing.T) {
 	p.poll(t)
 	if listed := p.tickets(t); len(listed) != 2 {
 		t.Fatalf("the held assignment did not start: %+v", listed)
+	}
+}
+
+func TestSameTimestampAssignmentsWaitPastTheHourlyCap(t *testing.T) {
+	p := newPolling(t)
+	p.poller.MaxJobsPerHour = 1
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	shared := p.now
+	p.linear.delegate("first", "ENG", "owain", shared)
+	p.linear.delegate("second", "ENG", "owain", shared)
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 {
+		t.Fatalf("poll 1 tickets = %+v, want 1", listed)
+	}
+
+	p.now = p.now.Add(time.Hour)
+	p.poll(t)
+	listed := p.tickets(t)
+	titles := map[string]bool{}
+	for _, ticket := range listed {
+		titles[ticket.Title] = true
+	}
+	if len(listed) != 2 || !titles["Fix first"] || !titles["Fix second"] {
+		t.Fatalf("poll 2 tickets = %+v, want both same-timestamp assignments started once", listed)
+	}
+	for _, id := range []string{"first", "second"} {
+		if comments := p.linear.comments[id]; len(comments) != 1 || comments[0] != acknowledgement {
+			t.Fatalf("issue %s comments = %v, want single acknowledgement", id, comments)
+		}
+	}
+
+	// Once both same-timestamp assignments finish, the cursor advances to their timestamp.
+	cursor, found, err := p.store.Cursor(t.Context(), "linear", "")
+	if err != nil || !found || !cursor.Equal(shared) {
+		t.Fatalf("cursor = %v (found=%v, err=%v), want %v", cursor, found, err, shared)
+	}
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 2 {
+		t.Fatalf("poll 3 tickets = %+v, want 2", listed)
+	}
+	var lastAssignedQuery string
+	for _, query := range p.linear.queries {
+		if strings.Contains(query, "query Assigned") {
+			lastAssignedQuery = query
+		}
+	}
+	if want := fmt.Sprintf(`updatedAt: {gt: %q}`, shared.UTC().Format(time.RFC3339Nano)); !strings.Contains(lastAssignedQuery, want) {
+		t.Fatalf("last query = %s, want cursor advanced past %s", lastAssignedQuery, want)
+	}
+}
+
+func TestATransientErrorDoesNotSkipSameTimestampAssignments(t *testing.T) {
+	p := newPolling(t)
+	p.poller.MaxJobsPerHour = 2
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	shared := p.now
+	p.linear.delegate("first", "ENG", "owain", shared)
+	p.linear.delegate("second", "ENG", "owain", shared)
+
+	pollCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	calls := 0
+	basePresets := p.poller.Intake.Presets
+	p.poller.Intake.Presets = func(name string) (factory.Preset, bool) {
+		calls++
+		if calls == 2 {
+			// Simulate a transient store/context failure while handling the second item.
+			cancel()
+		}
+		return basePresets(name)
+	}
+
+	if err := p.poller.Poll(pollCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("poll 1 err = %v, want context.Canceled", err)
+	}
+	if listed := p.tickets(t); len(listed) != 1 {
+		t.Fatalf("poll 1 tickets = %+v, want 1", listed)
+	}
+
+	// On the next poll (immediately, within the same hour), the second assignment
+	// must be retried and started without duplicating the first.
+	p.poller.Intake.Presets = basePresets
+	p.poll(t)
+	listed := p.tickets(t)
+	titles := map[string]bool{}
+	for _, ticket := range listed {
+		titles[ticket.Title] = true
+	}
+	if len(listed) != 2 || !titles["Fix first"] || !titles["Fix second"] {
+		t.Fatalf("poll 2 tickets = %+v, want both same-timestamp assignments started once", listed)
+	}
+	for _, id := range []string{"first", "second"} {
+		if comments := p.linear.comments[id]; len(comments) != 1 || comments[0] != acknowledgement {
+			t.Fatalf("issue %s comments = %v, want single acknowledgement", id, comments)
+		}
+	}
+	cursor, found, err := p.store.Cursor(t.Context(), "linear", "")
+	if err != nil || !found || !cursor.Equal(shared) {
+		t.Fatalf("cursor = %v (found=%v, err=%v), want %v", cursor, found, err, shared)
+	}
+}
+
+func TestSameTimestampUnroutedAssignmentDoesNotDuplicateCommentOnRetry(t *testing.T) {
+	p := newPolling(t)
+	p.poller.MaxJobsPerHour = 1
+	p.poll(t)
+	p.now = p.now.Add(time.Minute)
+	p.linear.delegate("busy", "ENG", "owain", p.now)
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 {
+		t.Fatalf("initial tickets = %+v, want 1", listed)
+	}
+
+	// Add a routable issue and an unrouted issue at the exact same timestamp.
+	// fakeLinear reverses same-timestamp issues, so "lost" is processed first
+	// and "ready" is deferred by the hourly cap.
+	p.now = p.now.Add(time.Minute)
+	shared := p.now
+	p.linear.delegate("ready", "ENG", "owain", shared)
+	p.linear.delegate("lost", "OPS", "owain", shared)
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 1 {
+		t.Fatalf("poll 1 tickets = %+v, want 1", listed)
+	}
+	if comments := p.linear.news("lost"); len(comments) != 1 {
+		t.Fatalf("poll 1 unrouted comments = %q, want 1", comments)
+	}
+
+	p.now = p.now.Add(time.Hour)
+	p.poll(t)
+	if listed := p.tickets(t); len(listed) != 2 {
+		t.Fatalf("poll 2 tickets = %+v, want 2", listed)
+	}
+	if comments := p.linear.news("lost"); len(comments) != 1 {
+		t.Fatalf("poll 2 unrouted comments = %q, want 1 (no duplicate comment)", comments)
+	}
+	cursor, found, err := p.store.Cursor(t.Context(), "linear", "")
+	if err != nil || !found || !cursor.Equal(shared) {
+		t.Fatalf("cursor = %v (found=%v, err=%v), want %v", cursor, found, err, shared)
 	}
 }
 
@@ -1011,6 +1158,40 @@ func TestRunningAJobAgainAfterItsPullRequestEndedCommentsTheNewOne(t *testing.T)
 			got := p.linear.news("a1")[before:]
 			if len(got) != 1 || got[0] != "Machinist opened a pull request: https://github.com/owner/repo/pull/8" {
 				t.Fatalf("comments after the rerun = %v", got)
+			}
+		})
+	}
+}
+
+func TestNoChangeRerunAfterEndedPRReturnsIssueWithoutRelinkingOldPR(t *testing.T) {
+	for _, ended := range []string{tickets.PRClosed, tickets.PRMerged} {
+		t.Run(ended, func(t *testing.T) {
+			p := newPolling(t)
+			job := p.started(t)
+			if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StatePRReady, PRNumber: 7}); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.setPR(t, job.ID, ended); err != nil {
+				t.Fatal(err)
+			}
+			p.poll(t)
+			before := len(p.linear.news("a1"))
+			if _, err := p.store.Reply(t.Context(), job.ID, "owain", []tickets.Comment{{Body: "No change needed?"}}); err != nil {
+				t.Fatal(err)
+			}
+			p.poll(t)
+			if _, _, err := p.store.Apply(t.Context(), job.ID, tickets.StateWorking, tickets.Transition{State: tickets.StateDone, Message: "Nothing to change"}); err != nil {
+				t.Fatal(err)
+			}
+			p.poll(t)
+			p.poll(t)
+			if got := p.linear.stateOf("a1"); got != "s-todo" {
+				t.Fatalf("issue state = %q, want s-todo (returned)", got)
+			}
+			got := p.linear.news("a1")[before:]
+			want := "Machinist finished without a pull request: Nothing to change\n\nReply here to give it more to go on, and it will run again."
+			if len(got) != 1 || got[0] != want {
+				t.Fatalf("comments after no_change reply = %v, want [%q]", got, want)
 			}
 		})
 	}
