@@ -198,16 +198,28 @@ type StewardRequeueRequest struct {
 // entry, and returns the ticket to working on the same branch without
 // recording a human touch (TouchRerun). It returns false without modifying the
 // ticket when the ticket has changed since listed, already has an active run,
-// or has reached request.MaxRetries.
+// has reached request.MaxRetries, or another ticket for the same schedule is
+// currently working.
 func (s *Store) StewardRequeue(ctx context.Context, listed Ticket, request StewardRequeueRequest) (Ticket, bool, error) {
 	var updated Ticket
 	var requeued bool
 	err := s.inTx(ctx, func(tx querier) error {
 		ticket, err := s.loadTicketForUpdate(ctx, tx, listed.ID)
-		if err != nil || ticket.State != StatePRReady || ticket.Shipping == "" || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
+		if err != nil {
 			return err
 		}
+		updated = ticket
+		if ticket.State != StatePRReady || ticket.Shipping == "" || !sameTime(ticket.PRStateAt, listed.PRStateAt) {
+			return nil
+		}
 		if request.MaxRetries <= 0 || ticket.StewardRetries >= request.MaxRetries {
+			return nil
+		}
+		otherWorking, err := hasOtherWorkingScheduleTicket(ctx, tx, ticket)
+		if err != nil {
+			return err
+		}
+		if otherWorking {
 			return nil
 		}
 		var active int
@@ -232,6 +244,12 @@ func (s *Store) StewardRequeue(ctx context.Context, listed Ticket, request Stewa
 		return nil
 	})
 	if err != nil {
+		if isScheduleActiveUniqueViolation(err) {
+			if current, loadErr := s.Ticket(ctx, listed.ID); loadErr == nil {
+				return current, false, nil
+			}
+			return updated, false, nil
+		}
 		return Ticket{}, false, err
 	}
 	return updated, requeued, nil
